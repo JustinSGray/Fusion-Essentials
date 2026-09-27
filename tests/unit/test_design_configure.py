@@ -653,12 +653,12 @@ class TestSuppressVisibility:
         d = _install(monkeypatch, _Design(configured=True, features={}))
         monkeypatch.setattr(dc._FEATURE, "resolve",
                             lambda raw: (None, "'feature': 'Extrude1' matches 2 timeline objects "
-                                              "(Extrude1@3, Extrude1@7) - name one with the "
-                                              "'name@index' form."))
+                                              "(A/Extrude1@3, B/Extrude1@7) - name one exactly "
+                                              "as listed."))
         dc.handler(action="add_configuration", name="Small")
         res = dc.handler(action="add_suppress", feature="Extrude1", suppressed_in=["Small"])
         assert res["isError"] is True
-        assert "name@index" in res["message"] and "Extrude1@3" in res["message"]
+        assert "exactly as listed" in res["message"] and "A/Extrude1@3" in res["message"]
         assert d.configurationTopTable.columns.added == []   # nothing mutated on a refusal
 
     def test_visibility_sets_is_visible(self, monkeypatch):

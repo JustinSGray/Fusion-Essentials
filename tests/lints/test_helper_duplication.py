@@ -303,9 +303,7 @@ _DENYLIST = {
     # copy can key on names and lose a namesake, or skip the collapsed groups the caveat names.
     "timeline_census": ("_design_common", "def"),
     "timeline_item_key": ("_design_common", "def"),
-    # The ONE open-Form-edit read and the no-timeline refusal worded off it: a second copy is how
-    # one read goes back to calling an open Form edit a healthy direct design.
-    "in_form_edit": ("_inputs", "def"),
+    # The ONE no-timeline refusal text every no-timeline call site shares.
     "no_timeline_reason": ("_design_common", "def"),
     # The ONE seam read - a second copy is how two tools call the same seam smooth and sharp.
     "edge_angles": ("_continuity", "def"),

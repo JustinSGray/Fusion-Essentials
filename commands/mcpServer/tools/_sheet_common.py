@@ -1,0 +1,173 @@
+# Copyright (c) Fusion-Essentials contributors
+# Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
+
+"""Shared sheet-metal rule, component, edge and flat-pattern reads."""
+
+import adsk.core
+from . import _assert, _geom
+from ._common import iter_collection, safe
+
+MAP_BLURB = ("rule_row/matching_rules/component_row/sheet_edge_faces/bend_face_count/bend_wall_groups/"
+             "flat_pattern_row - scoped rules, component state, a rim edge's faces, cylinder-face "
+             "count, bend walls paired per axis, flat health")
+
+_RULE_VALUES = ("thickness", "bendRadius", "gap", "reliefWidth", "reliefDepth",
+                "reliefRemnant", "twoBendReliefSize", "threeBendReliefRadius")
+
+
+def matching_rules(design, scope, name):
+    """Return exact case-insensitive rule matches in the requested scope."""
+    if scope not in ("design", "library"):
+        return None
+    collection = safe(lambda: (design.designSheetMetalRules if scope == "design"
+                               else design.librarySheetMetalRules))
+    if collection is None:
+        return None
+    want = name.strip().lower()
+    return [r for r in iter_collection(collection)
+            if (safe(lambda r=r: r.name) or "").lower() == want]
+
+
+def rule_ref_and_index(design, rule, scope):
+    """(ref, index): 'scope:name', suffixed '#n' (1-based, collection order) when the name repeats."""
+    name = safe(lambda: rule.name)
+    if not name or design is None:
+        return (f"{scope}:{name}" if name else None), None
+    collection = safe(lambda: (design.designSheetMetalRules if scope == "design"
+                               else design.librarySheetMetalRules))
+    index = (next((i for i, r in enumerate(iter_collection(collection)) if r == rule), None)
+             if collection is not None else None)
+    same = matching_rules(design, scope, name)
+    if not same or len(same) <= 1:
+        return f"{scope}:{name}", index
+    ordinal = next((i for i, r in enumerate(same) if r == rule), None)
+    return (f"{scope}:{name}#{ordinal + 1}" if ordinal is not None else f"{scope}:{name}"), index
+
+
+def rule_row(design, rule, scope):
+    """Return readable rule settings, the ownership flag valid for this scope, a duplicate-safe ref and its index."""
+    name = safe(lambda: rule.name)
+    ref, index = rule_ref_and_index(design, rule, scope)
+    out = {"name": name, "ref": ref, "index": index, "scope": scope,
+           "units": safe(lambda: rule.units), "k_factor": safe(lambda: rule.kFactor)}
+    for key in _RULE_VALUES:
+        value = safe(lambda key=key: getattr(rule, key))
+        out[key] = ({"expression": safe(lambda value=value: value.expression),
+                     "value_cm": safe(lambda value=value: value.value)} if value else None)
+    if scope == "design":
+        out["is_used"] = safe(lambda: rule.isUsed)
+    else:
+        out["is_default"] = safe(lambda: rule.isDefault)
+    return out
+
+
+def component_row(component):
+    """Return the component's active rule, native sheet bodies and flat presence."""
+    rule = safe(lambda: component.activeSheetMetalRule)
+    bodies = safe(lambda: component.bRepBodies)
+    rows = ([{"name": safe(lambda b=b: b.name),
+              "is_sheet_metal": safe(lambda b=b: b.isSheetMetal)}
+             for b in iter_collection(bodies)] if bodies is not None else None)
+    marker = object()
+    flat = safe(lambda: component.flatPattern, marker)
+    return {"component": safe(lambda: component.name),
+            "active_rule": safe(lambda: rule.name) if rule is not None else None,
+            "bodies": rows, "has_flat_pattern": (None if flat is marker else flat is not None)}
+
+
+def outward_normal(face):
+    """Return the face's outward unit normal at its point-on-face as a Vector3D, or None."""
+    parts = _geom.evaluator_normal_at(face, safe(lambda: face.pointOnFace), decimals=9)
+    return adsk.core.Vector3D.create(*parts) if parts else None
+
+
+def sheet_edge_faces(edge):
+    """Return (sheet_face, rim_face, None) for a straight rim edge joining a broad planar sheet face and its planar thickness face, else (None, None, why)."""
+    if safe(lambda: edge.geometry.objectType) != adsk.core.Line3D.classType():
+        return None, None, "is not a straight edge; pick a rim edge with find_geometry(kind='line_edge')."
+    faces = list(iter_collection(safe(lambda: edge.faces)))
+    if len(faces) != 2:
+        return None, None, f"is shared by {len(faces)} faces, not 2."
+    if any(safe(lambda f=f: f.geometry.objectType) != adsk.core.Plane.classType() for f in faces):
+        return None, None, "meets a curved face (a bend or blend); pick a rim edge between the sheet face and its thickness face."
+    faces.sort(key=lambda f: safe(lambda: f.area) or 0.0, reverse=True)
+    sheet, rim = faces
+    n_sheet, n_rim = outward_normal(sheet), outward_normal(rim)
+    if n_sheet is None or n_rim is None or abs(n_sheet.dotProduct(n_rim)) > 1e-3:
+        return None, None, "joins two faces that are not perpendicular; pick a rim edge of the sheet."
+    return sheet, rim, None
+
+
+def bend_face_count(body):
+    """Return the number of cylindrical faces on the body (a bend contributes its inner and outer face), or None."""
+    faces = safe(lambda: body.faces)
+    if faces is None:
+        return None
+    return len([f for f in iter_collection(faces)
+                if safe(lambda f=f: f.geometry.objectType) == adsk.core.Cylinder.classType()])
+
+
+def _unit(v):
+    """A unit copy of an [x, y, z] sequence, or None when it has no length."""
+    mag = _geom.dot(v, v) ** 0.5
+    return None if mag < 1e-12 else [c / mag for c in v]
+
+
+def _coaxial(origin_a, axis_a, origin_b, axis_b):
+    """True when two unit axes are parallel (cross components within 1e-6) and one line (offset within 1e-4 cm)."""
+    if any(abs(c) > 1e-6 for c in _geom.cross(axis_a, axis_b)):
+        return False
+    offset = [origin_b[i] - origin_a[i] for i in range(3)]
+    return all(abs(c) < 1e-4 for c in _geom.cross(offset, axis_a))
+
+
+def bend_wall_groups(body):
+    """Return the body's cylinder faces grouped per shared axis line at two or more radii (a hole has one), or None when a face will not read."""
+    # Never BRepBody.getBendFaces() here: a call on the body before an unfold makes the later
+    # refold land the body rotated 90 deg. A hole through a flange leg has its axis in the base
+    # plane, so the inner/outer pairing, not the axis direction, tells a wall from a hole.
+    faces = safe(lambda: body.faces)
+    if faces is None:
+        return None
+    groups = []
+    for f in iter_collection(faces):
+        kind = safe(lambda f=f: f.geometry.objectType)
+        if kind is None:
+            return None
+        if kind != adsk.core.Cylinder.classType():
+            continue
+        shape = safe(lambda f=f: (list(f.geometry.origin.asArray()), _unit(list(f.geometry.axis.asArray())),
+                                  float(f.geometry.radius)))
+        if shape is None or shape[1] is None:
+            return None
+        origin, axis, radius = shape
+        for grp in groups:
+            if _coaxial(grp["origin"], grp["axis"], origin, axis):
+                grp["faces"].append(f)
+                grp["radii"].append(radius)
+                break
+        else:
+            groups.append({"origin": origin, "axis": axis, "faces": [f], "radii": [radius]})
+    out = []
+    for grp in groups:
+        distinct = []
+        for r in grp["radii"]:
+            if all(abs(r - d) > 1e-5 for d in distinct):
+                distinct.append(r)
+        if len(distinct) >= 2:
+            out.append(grp["faces"])
+    return out
+
+
+def flat_pattern_row(component):
+    """Return the component's flat-pattern presence, health message and flat volume."""
+    marker = object()
+    flat = safe(lambda: component.flatPattern, marker)
+    if flat is marker:
+        return {"present": None}
+    if flat is None:
+        return {"present": False}
+    state, failure = _assert.compute_state(flat)
+    return {"present": True, "healthy": state == "healthy",
+            "message": failure[1] if failure else None,
+            "flat_volume_cm3": safe(lambda: flat.flatBody.volume)}

@@ -11,9 +11,10 @@ import time
 
 import adsk.core
 import adsk.cam
+import adsk.fusion
 
-from ._common import (counted, measured, named_with_remainder, native_identity, iter_collection,
-                      read_flag, safe, scale, told_apart)
+from ._common import (all_components, counted, measured, named_with_remainder, native_identity,
+                      iter_collection, read_flag, safe, scale, told_apart)
 from ._write_guard import _active_identity, document_key, on_key_renamed
 from . import _geom
 from . import _inputs
@@ -230,6 +231,11 @@ def validity_sync_miss() -> str:
     return "" if _VALIDITY_SYNCED[0] else _SYNC_MISS
 
 
+def validity_synced() -> bool:
+    """Whether this call's get_cam(sync=True) ran checkValidity."""
+    return _VALIDITY_SYNCED[0]
+
+
 def with_validity_clause(verdict: str) -> str:
     """`verdict` plus this call's unsynced-validity clause, held inside the wire budget: the clause
     is the half an agent must not miss, so a verdict past the budget is the half that gives way."""
@@ -238,6 +244,20 @@ def with_validity_clause(verdict: str) -> str:
         return verdict
     room = _MISS_BUDGET - len(clause)
     return (verdict if len(verdict) <= room else verdict[:room - 3].rstrip() + "...") + clause
+
+
+def _touch_flat_patterns(products) -> None:
+    """Read every flat pattern's CURRENT flat body, so a stale one cannot pass checkValidity."""
+    # MEASURED (2706.0.97): a flat pattern recomputes LAZILY after its source changes -
+    # checkValidity() alone validates against the STALE flat and leaves a stale op reading valid.
+    # Reading flatBody.revisionId first forces the recompute checkValidity then sees.
+    design = safe(lambda: adsk.fusion.Design.cast(products.itemByProductType('DesignProductType')))
+    if design is None:
+        return
+    for comp in all_components(design):
+        flat = safe(lambda comp=comp: comp.flatPattern)
+        if flat is not None:
+            safe(lambda flat=flat: flat.flatBody.revisionId)
 
 
 def get_cam(sync: bool = False):
@@ -256,6 +276,9 @@ def get_cam(sync: bool = False):
                       "one on first entry: call view_switch_workspace('manufacture') once, then "
                       "retry this call.")
     if sync:
+        # checkValidity holds no persistent state and the writers already call it, so a read tool
+        # syncing before it reads stays write="read".
+        _touch_flat_patterns(products)
         sync_validity(cam)
     return cam, None
 
@@ -670,6 +693,77 @@ def owning_setup(node):
     return None
 
 
+
+def refresh_flat_setup_models(setup):
+    """Rebind one setup's selected flat bodies to their current developed geometry."""
+    raw = safe(lambda: setup.models)
+    if raw is None:
+        return 0, "Setup.models could not be read; no flat refresh attempted."
+    models = list(raw) if isinstance(raw, (list, tuple)) else list(iter_collection(raw))
+    expected = len(raw) if isinstance(raw, (list, tuple)) else counted(lambda: raw.count)
+    if expected is None or expected != len(models):
+        return 0, "Setup.models could not be read completely; no flat refresh attempted."
+    if not models:
+        return 0, None
+    selected, flats = [], 0
+    for model in models:
+        design = safe(lambda model=model: model.parentComponent.parentDesign)
+        if design is None:
+            design = safe(lambda model=model: model.component.parentDesign)
+        if design is None:
+            design = safe(lambda model=model: model.parentDesign)
+        product_type = safe(lambda design=design: design.objectType)
+        if product_type is None:
+            return 0, (f"Selected model '{safe(lambda model=model: model.name)}' has no readable "
+                       "product type; setup models were not changed.")
+        if product_type != "adsk::fusion::FlatPatternProduct":
+            selected.append(model)
+            continue
+        flat = safe(lambda design=design: design.flatPattern)
+        if flat is None:
+            return 0, "A selected flat model has no readable flatPattern; setup models were not changed."
+        developed = safe(lambda flat=flat: flat.flatBody)
+        if native_identity(developed) is None:
+            return 0, "A selected flat model's current flat body has no readable identity; setup models were not changed."
+        selected.append(developed)
+        flats += 1
+    if not flats:
+        return 0, None
+    collection = adsk.core.ObjectCollection.create()
+    for model in selected:
+        collection.add(model)
+    try:
+        setup.models = collection
+    except Exception as exc:
+        return 0, f"Flat setup model refresh failed: {exc}. Inspect the setup before retrying."
+    landed_raw = safe(lambda: setup.models)
+    landed = (list(landed_raw) if isinstance(landed_raw, (list, tuple))
+              else list(iter_collection(landed_raw)) if landed_raw is not None else None)
+    landed_count = (len(landed_raw) if isinstance(landed_raw, (list, tuple))
+                    else counted(lambda: landed_raw.count) if landed_raw is not None else None)
+    wanted_keys = [native_identity(model) for model in selected]
+    landed_keys = [native_identity(model) for model in landed] if landed is not None else None
+    if (landed_count is None or landed_count != len(selected)
+            or landed_keys is None or len(landed_keys) != len(wanted_keys)
+            or None in landed_keys or landed_keys != wanted_keys):
+        return flats, "Flat setup models were reassigned, but their identities did not read back. Inspect the setup before retrying."
+    return flats, None
+
+
+def flat_setups_for_operations(operations):
+    """Return unique owning setups for the given operation scope."""
+    out, seen = [], set()
+    for op in operations:
+        setup = safe(lambda op=op: op.parentSetup)
+        name = safe(lambda setup=setup: setup.name)
+        if setup is None or not name:
+            return None, f"Operation '{safe(lambda op=op: op.name)}' has no readable owning setup."
+        key = name.lower()
+        if key not in seen:
+            out.append(setup)
+            seen.add(key)
+    return out, None
+
 # What each write path would LAND instead, and so the scope its clash census reads. MEASURED: the
 # create goes through operations.add, which dedupes DOCUMENT-WIDE to '<name> (2)'; the rename sets
 # Operation.name, which dedupes inside one setup and takes a twin in another setup exactly.
@@ -967,14 +1061,18 @@ def is_empty_toolpath(facts: dict) -> bool:
 
 
 def toolpath_present_tally(ops):
-    """(rows reading hasToolpath True and not errored, rows whose flag did not read) - an errored
-    row reads hasToolpath True but a post will not write it."""
+    """(present, unread) - a suppressed or errored row never counts as present."""
     present = unread = 0
     for row in (ops or []):
         flag = read_flag(lambda row=row: row.hasToolpath)
         if flag is None:
             unread += 1
-        elif flag and not safe(lambda row=row: row.hasError, False):
+            continue
+        if not flag:
+            continue
+        facts = {"is_suppressed": safe(lambda row=row: row.isSuppressed, False),
+                 "operation_state": safe(lambda row=row: row.operationState)}
+        if not op_is_suppressed(facts) and not safe(lambda row=row: row.hasError, False):
             present += 1
     return present, unread
 
@@ -999,23 +1097,24 @@ def op_state_tally(ops, cam=None) -> dict:
             warnings += 1                            # OVERLAY: the op still lands in a bucket below
             if warning_sample is None:
                 warning_sample = {"name": facts["name"], "warning": first_warning_line(op)}
-        if facts["has_error"]:
+        if op_is_suppressed(facts):
+            suppressed += 1                          # the flag/state outrank hasError - suppressed wins
+        elif facts["has_error"]:
             errored += 1                             # FAILED, not pending - its own bucket
             if op_sample is None:
                 op_sample = {"name": facts["name"], "error": first_error_line(op)}
             continue
-        state = facts["operation_state"]
-        if state == 0:
-            if facts["nonfinite_toolpath"]:
-                nonfinite_names.append(facts["name"] or _UNREAD_SEGMENT)
-            else:
-                valid += 1
-        elif state == 2:
-            suppressed += 1
-        elif state in (1, 3):
-            ood += 1
         else:
-            unread += 1
+            state = facts["operation_state"]
+            if state == 0:
+                if facts["nonfinite_toolpath"]:
+                    nonfinite_names.append(facts["name"] or _UNREAD_SEGMENT)
+                else:
+                    valid += 1
+            elif state in (1, 3):
+                ood += 1
+            else:
+                unread += 1
         if facts["is_generating"]:
             generating += 1
             if op_settled(facts):

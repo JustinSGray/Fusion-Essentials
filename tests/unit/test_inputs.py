@@ -16,7 +16,7 @@ import pytest
 from conftest import (load_tool, make_design, make_occurrence, _make_object_collection,
                       _MeshBodies, _NamedCollection, BRepBody, BRepEdge, BRepFace, Circle3D,
                       Cylinder, FakeApplication, FakeBaseFeature, FakeOccurrence, FakePoint,
-                      FakeTimelineObject, FakeUserInterface, FakeVector3D, Line3D, MakeComp,
+                      FakeTimeline, FakeTimelineObject, FakeUserInterface, FakeVector3D, Line3D, MakeComp,
                       MakeDesign, MeshBody, Plane, Profile, Sketch, body_proxy, entity_proxy,
                       make_source_document)
 
@@ -2453,8 +2453,8 @@ def _FakeModeDesign(design_type=None, edit_object=None):
 
 
 def _install_mode():
-    """Wire BaseFeature so current_design_type / _in_base_feature_scope work (the DesignTypes ints
-    come seeded from live_api_facts)."""
+    """Wire BaseFeature so current_design_type reads (the DesignTypes ints come seeded from
+    live_api_facts)."""
     import adsk.fusion
     adsk.fusion.BaseFeature = FakeBaseFeature
 
@@ -2502,24 +2502,9 @@ class TestModeGuard:
         ok, err = g.check(_FakeModeDesign(design_type=0))
         assert ok is False and f"needs {inp.MODE_PARAMETRIC} mode" in err["message"]
 
-    def test_base_feature_guard_passes_inside_a_base_feature_scope(self):
-        _install_mode()
-        des = _FakeModeDesign(design_type=1, edit_object=FakeBaseFeature())
-        g = inp.ModeGuard(inp.MODE_BASE_FEATURE)
-        ok, err = g.check(des)
-        assert ok is True and err is None
-
-    def test_base_feature_guard_fails_without_scope(self):
-        _install_mode()
-        des = _FakeModeDesign(design_type=1, edit_object=None)
-        g = inp.ModeGuard(inp.MODE_BASE_FEATURE)
-        ok, err = g.check(des)
-        assert ok is False and "BASE-FEATURE edit scope" in err["message"]
-
     def test_contract_note(self):
         _install_mode()
         assert inp.ModeGuard(inp.MODE_DIRECT).contract_note() == "Requires direct mode."
-        assert "base-feature" in inp.ModeGuard(inp.MODE_BASE_FEATURE).contract_note()
 
 
 def _app_in(workspace_id):
@@ -2528,62 +2513,44 @@ def _app_in(workspace_id):
         active_workspace=types.SimpleNamespace(id=workspace_id)))
 
 
-class TestInFormEdit:
-    """An open Form edit reads designType direct AND the Form workspace active - either alone is
-    not one (a direct design, or the workspace read lagging a closed edit)."""
+class TestFeatureRefResolve:
+    """FeatureRef.resolve against timeline edge cases: a bare number's collapsed-group twin, and a
+    member visible only inside a collapsed group."""
 
-    @pytest.mark.parametrize("design_type,workspace,want", [
-        (0, "TSplineEnvironment", True), (1, "TSplineEnvironment", False),
-        (0, "FusionSolidEnvironment", False)])
-    def test_both_halves_are_needed(self, monkeypatch, design_type, workspace, want):
-        monkeypatch.setattr(inp._common, "app", _app_in(workspace))
-        assert inp.in_form_edit(MakeDesign(design_type=design_type)) is want
+    def test_the_kind_refuses_a_bare_number_whose_twin_hides_in_a_collapsed_group(self, monkeypatch):
+        # the visible hit's name does not read: the refusal counts it instead of raising
+        seat = FakeTimelineObject(None, 0, entity=object())
+        design = MakeDesign(design_type=1)
+        design.timeline = FakeTimeline([seat])
+        monkeypatch.setattr(inp._common, "app", _app_in("FusionSolidEnvironment"))
+        monkeypatch.setattr(inp._common, "design", lambda: design)
+        dc = load_tool("_design_common")
+        monkeypatch.setattr(dc, "collapsed_group_holding",
+                            lambda timeline, want: "Imports" if want == "0" else None)
+        _val, err = inp.FeatureRef("feature").resolve("0")
+        assert err and "'0' matches 1 whose name or index does not read and also names" in err
+        assert "collapsed timeline group 'Imports'" in err and "and retry" in err
 
-    @staticmethod
-    def _switch_on_pump(monkeypatch, n):
-        """Count doEvents pumps; the Form workspace arrives on pump `n`."""
-        app = _app_in("FusionSolidEnvironment")
-        monkeypatch.setattr(inp._common, "app", app)
-        pumps = []
+    def test_the_kind_names_the_collapsed_group_holding_a_member_it_cannot_see(self, monkeypatch):
+        # the member is absent from the walk and its bare number is no visible index or name
+        design = MakeDesign(design_type=1)
+        design.timeline = FakeTimeline([FakeTimelineObject("Extrude1", 0, entity=object())])
+        member = FakeTimelineObject("5", 2, entity=object())
+        group = types.SimpleNamespace(name="Imports", isCollapsed=True, count=1,
+                                      item=lambda i: member)
+        design.timeline.timelineGroups = _NamedCollection([group])
+        monkeypatch.setattr(inp._common, "app", _app_in("FusionSolidEnvironment"))
+        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _val, err = inp.FeatureRef("feature").resolve("5")
+        assert err and "'5' is inside the collapsed timeline group 'Imports'" in err
+        assert "design_edit_timeline(action='ungroup', feature='Imports')" in err
+        assert "matches" not in err
 
-        def pump():
-            pumps.append(1)
-            if len(pumps) == n:
-                app.userInterface.activeWorkspace = types.SimpleNamespace(id="TSplineEnvironment")
-        monkeypatch.setattr(inp._pump_until.__globals__["adsk"], "doEvents", pump, raising=False)
-        return pumps
-
-    def test_an_edit_opened_just_before_the_read_is_found_after_the_workspace_switch(
-            self, monkeypatch):
-        pumps = self._switch_on_pump(monkeypatch, 3)
-        assert inp.in_form_edit(MakeDesign(design_type=0)) is True
-        assert len(pumps) == 3
-
-    @pytest.mark.parametrize("extra,want", [(0, True), (1, False)])
-    def test_the_wait_is_bounded_by_the_pump_count(self, monkeypatch, extra, want):
-        pumps = self._switch_on_pump(monkeypatch, inp._FORM_SWITCH_PUMPS + extra)
-        assert inp.in_form_edit(MakeDesign(design_type=0)) is want
-        assert len(pumps) == inp._FORM_SWITCH_PUMPS
-
-    def test_an_open_base_feature_scope_is_not_a_form_edit_and_pumps_nothing(self, monkeypatch):
-        _install_mode()
-        pumps = self._switch_on_pump(monkeypatch, 1)
-        monkeypatch.setattr(inp._common, "app", _app_in("TSplineEnvironment"))
-        design = _FakeModeDesign(design_type=0, edit_object=FakeBaseFeature())
-        assert inp.in_form_edit(design) is False and pumps == []
-
-    def test_the_parametric_guard_names_the_open_edit(self, monkeypatch):
-        monkeypatch.setattr(inp._common, "app", _app_in("TSplineEnvironment"))
-        ok, err = inp.ModeGuard(inp.MODE_PARAMETRIC).check(MakeDesign(design_type=0))
-        assert ok is False and "A Form edit is open" in err["message"]
-        assert "Finish Form" in err["message"] and "direct mode" not in err["message"]
-
-    def test_a_feature_name_in_an_open_form_edit_names_the_edit(self, monkeypatch):
+    def test_a_feature_name_when_the_design_reads_direct_has_no_timeline(self, monkeypatch):
         design = MakeDesign(design_type=0)
-        monkeypatch.setattr(inp._common, "app", _app_in("TSplineEnvironment"))
         monkeypatch.setattr(inp._common, "design", lambda: design)
         _val, err = inp.FeatureRef("feature").resolve("Fillet2")
-        assert "A Form edit is open" in err and "Act on the bodies" not in err
+        assert "This design has no timeline" in err and "Act on the bodies" in err
 
 
 # ── ProfileRef / ProfileRefList: stable handle first, legacy {sketch, index} fallback, ORDER-keeping ─
@@ -4661,12 +4628,127 @@ class TestQualifiedAndIndexAddressing:
         objs = [_tl_obj("Extrude1", 0), _tl_obj("Fillet1", 4)]
         assert inp._match_timeline_objects(objs, "4") == [objs[1]]
 
+    def test_a_number_that_is_also_a_feature_name_is_refused_naming_both(self):
+        # A DXF import lands a sketch literally named "0" while index 0 is the Bracket occurrence
+        # (a row with no component, as measured): the bare "0" must refuse, not delete the occurrence.
+        bracket, zero = _tl_obj(" Bracket:1", 0), _tl_obj("0", 7, comp="Root")
+        objs = [bracket, _tl_obj("Extrude1", 1, comp="Root"), zero]
+        assert inp._match_timeline_objects(objs, "0") == [bracket, zero]
+        obj, err = inp.resolve_timeline_object(objs, "0", "'feature'")
+        assert obj is None and "matches 2 timeline objects" in err
+        assert "(Bracket:1@0, Root/0@7)" in err and "exactly as listed" in err
+
+    def test_every_candidate_a_refusal_prints_resolves_back_to_its_own_object(self):
+        # The remedy is only a remedy if the resolver reads the exact strings it printed.
+        # an occurrence-create row reads no component (measured), so its candidate is '<name>@<index>'
+        bracket, zero = _tl_obj(" Bracket:1", 0), _tl_obj("0", 7, comp="Root")
+        a, b = _tl_obj("Pipe4", 3, comp="COOLING - cockpit"), _tl_obj("Pipe4", 9, comp="FRAME")
+        seat, slashed = _tl_obj("Extrude1", 0), _tl_obj("0", 5, comp="X/Y")
+        for objs, want in (([bracket, zero], "0"), ([a, b], "Pipe4"), ([seat, slashed], "0")):
+            _, err = inp.resolve_timeline_object(objs, want, "'feature'")
+            cands = [c.strip("'") for c in err.split("(")[1].split(")")[0].split(", ")]
+            assert len(cands) == 2
+            for cand, target in zip(cands, objs):
+                assert inp._match_timeline_objects(objs, cand) == [target], cand
+
+    def test_the_explicit_forms_still_pick_one_side_of_a_collision(self):
+        bracket, zero = _tl_obj(" Bracket:1", 0, comp="Root"), _tl_obj("0", 7, comp="Root")
+        objs = [bracket, zero]
+        assert inp._match_timeline_objects(objs, "0@7") == [zero]
+        assert inp._match_timeline_objects(objs, "Bracket:1@0") == [bracket]
+        assert inp._match_timeline_objects(objs, "7") == [zero]
+
+    def test_a_digit_named_feature_at_its_own_index_is_one_hit_not_a_self_collision(self):
+        objs = [_tl_obj("0", 0), _tl_obj("Extrude1", 1)]
+        assert inp._match_timeline_objects(objs, "0") == [objs[0]]
+
+    def test_a_qualified_address_holds_the_component_not_only_the_name(self):
+        # After a reorder FRAME's Pipe4 can sit where COOLING's did: the qualifier must miss.
+        a, b = _tl_obj("Pipe4", 3, comp="COOLING - cockpit"), _tl_obj("Pipe4", 9, comp="FRAME")
+        assert inp._match_timeline_objects([a, b], "FRAME/Pipe4@3") == []
+        assert inp._match_timeline_objects([a, b], "NoSuchComp/Pipe4@9") == []
+        assert inp._match_timeline_objects([a, b], "COOLING - cockpit/Pipe4@3") == [a]
+        obj, err = inp.resolve_timeline_object([a, b], "FRAME/Pipe4@3", "'feature'")
+        assert obj is None and "index 3 is 'COOLING - cockpit/Pipe4'" in err
+        assert "'FRAME/Pipe4' is at index 9" in err
+
+    def test_a_feature_literally_named_with_a_slash_keeps_its_whole_name(self):
+        objs = [_tl_obj("A/B", 4, comp="Root")]
+        assert inp._match_timeline_objects(objs, "A/B@4") == objs
+        assert inp._match_timeline_objects(objs, "A/B") == objs
+
+    def test_a_non_ascii_digit_is_a_name_not_an_index(self):
+        # an Arabic-Indic zero is decimal but not ASCII: a name, never index 0
+        objs = [_tl_obj("X", 0), _tl_obj("\u0660", 1)]
+        assert inp._match_timeline_objects(objs, "\u0660") == [objs[1]]
+        assert inp._match_timeline_objects(objs, "X@\u0660") == []
+
+    def test_a_feature_literally_named_with_an_at_sign_resolves_and_a_clash_is_refused(self):
+        alone = [_tl_obj("Rev@2", 6, comp="Root")]
+        assert inp._match_timeline_objects(alone, "Rev@2") == alone
+        rev, literal = _tl_obj("Rev", 2, comp="Root"), _tl_obj("Rev@2", 6, comp="Root")
+        obj, err = inp.resolve_timeline_object([rev, literal], "Rev@2", "'feature'")
+        assert obj is None and "(Root/Rev@2, Root/Rev@2@6)" in err
+        assert inp._match_timeline_objects([rev, literal], "Root/Rev@2") == [rev]
+        assert inp._match_timeline_objects([rev, literal], "Root/Rev@2@6") == [literal]
+
+    def test_a_candidate_whose_name_does_not_read_is_counted_not_dropped(self):
+        unread, zero = FakeTimelineObject(None, 0, entity=object()), _tl_obj("0", 7, comp="Root")
+        obj, err = inp.resolve_timeline_object([unread, zero], "0", "'feature'")
+        assert obj is None and "(Root/0@7 and 1 whose name or index does not read)" in err
+
+    def test_an_address_miss_says_when_the_seat_does_not_read_its_name(self):
+        objs = [FakeTimelineObject(None, 5, entity=object()), _tl_obj("Pipe4", 3, comp="FRAME")]
+        obj, err = inp.resolve_timeline_object(objs, "FRAME/Pipe4@5", "'feature'")
+        assert obj is None and "the item at index 5 does not read its name" in err
+        assert "'FRAME/Pipe4' is at index 3" in err
+        obj, err = inp.resolve_timeline_object(objs, "Ghost@3", "'feature'")
+        assert obj is None and "no timeline feature named 'Ghost@3'" in err
+
+    def test_a_bare_number_whose_literal_twin_hides_in_a_collapsed_group_is_refused(self):
+        bracket = _tl_obj(" Bracket:1", 0)
+        obj, err = inp.resolve_timeline_object(
+            [bracket], "0", "'feature'",
+            hidden_hint=lambda want, hits: "'0' is inside the collapsed timeline group 'Imports'.")
+        assert obj is None and "collapsed timeline group 'Imports'" in err
+        obj, err = inp.resolve_timeline_object([bracket], "0", "'feature'",
+                                               hidden_hint=lambda want, hits: None)
+        assert obj is bracket and err is None
+
+    def test_a_printed_address_of_a_collapsed_member_reaches_the_group_hint_by_its_base(self):
+        bracket, asked = _tl_obj(" Bracket:1", 0), []
+
+        def hint(name):
+            asked.append(name)
+            return ("'Root/0' is inside the collapsed timeline group 'Imports'." if name == "Root/0"
+                    else None)
+        obj, err = inp.resolve_timeline_object([bracket], "Root/0@1", "'feature'", miss_hint=hint)
+        assert obj is None and "collapsed timeline group 'Imports'" in err
+        assert asked == ["Root/0@1", "Root/0"]
+        obj, err = inp.resolve_timeline_object([bracket], "Root/Ghost@9", "'feature'", miss_hint=hint)
+        assert obj is None and "no feature named 'Ghost' in component 'Root'" in err
+
+    def test_a_bare_number_with_no_visible_hit_takes_the_group_miss_not_the_twin_refusal(self):
+        obj, err = inp.resolve_timeline_object(
+            [_tl_obj("Extrude1", 0)], "5", "'feature'",
+            miss_hint=lambda name: ("'5' is inside the collapsed timeline group 'Imports'."
+                                    if name == "5" else None),
+            hidden_hint=lambda want, hits: (f"'{want}' matches {inp._candidates_listed(hits)} and "
+                                            "also names a hidden item."))
+        assert obj is None and "is inside the collapsed timeline group 'Imports'" in err
+        assert "matches" not in err
+
+    def test_a_qualified_name_at_index_that_disagrees_names_the_seat(self):
+        objs = [_tl_obj("Pipe4", 3, comp="FRAME"), _tl_obj("Extrude1", 5, comp="FRAME")]
+        obj, err = inp.resolve_timeline_object(objs, "FRAME/Pipe4@5", "'feature'")
+        assert obj is None and "index 5 is 'FRAME/Extrude1'" in err and "'FRAME/Pipe4' is at index 3" in err
+
     def test_two_same_named_features_in_two_components_bare_name_refuses_naming_both(self):
         a, b = _tl_obj("Pipe4", 3, comp="COOLING - cockpit"), _tl_obj("Pipe4", 9, comp="FRAME")
         obj, err = inp.resolve_timeline_object([a, b], "Pipe4", "'feature'")
         assert obj is None and "matches 2 timeline objects" in err
-        assert "COOLING - cockpit/Pipe4" in err and "FRAME/Pipe4" in err
-        assert "<component>/<name>" in err
+        assert "COOLING - cockpit/Pipe4@3" in err and "FRAME/Pipe4@9" in err
+        assert "exactly as listed" in err
 
     def test_a_qualified_miss_names_the_component_and_the_feature(self):
         objs = [_tl_obj("Pipe4", 3, comp="FRAME")]
@@ -5414,3 +5496,64 @@ class TestBodyRefListComponentScope:
         _install_shared_body_name(monkeypatch)
         got, err = self._scoped(required=True).resolve([], "Bracket")
         assert got is None and err == "'bodies' needs at least one body (handle or name)."
+
+
+# ── SheetMetalRuleRef: 'design:<name>' / 'library:<name>', and '#<n>' for a repeated name ──────────
+# sheet_get's rule rows carry '#<n>' (1-based, collection order) only when a name repeats in scope;
+# the kind must resolve that ordinal exactly and keep resolving a unique name unchanged.
+
+class TestSheetMetalRuleRefOrdinals:
+    def _design(self, *rules):
+        design = types.SimpleNamespace()
+        design.designSheetMetalRules = _NamedCollection(items=list(rules))
+        return design
+
+    def test_resolves_the_hash_ordinal_to_the_second_object(self, monkeypatch):
+        r1 = types.SimpleNamespace(name="Steel (mm)")
+        r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
+        monkeypatch.setattr(inp._common, "design", lambda: self._design(r1, r2))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)#2")
+        assert err is None
+        rule, scope = got
+        assert rule is r2 and scope == "design"
+
+    def test_bare_duplicate_name_is_refused_naming_both_refs(self, monkeypatch):
+        r1 = types.SimpleNamespace(name="Steel (mm)")
+        r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
+        monkeypatch.setattr(inp._common, "design", lambda: self._design(r1, r2))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)")
+        assert got is None
+        assert "design:Steel (mm)#1" in err and "design:Steel (mm)#2" in err
+
+    def test_a_unique_name_still_resolves_without_a_hash(self, monkeypatch):
+        r = types.SimpleNamespace(name="Aluminum (mm)")
+        monkeypatch.setattr(inp._common, "design", lambda: self._design(r))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Aluminum (mm)")
+        assert err is None
+        rule, scope = got
+        assert rule is r and scope == "design"
+
+    def test_a_unique_name_containing_a_literal_hash_round_trips(self, monkeypatch):
+        # A unique rule keeps its plain 'scope:name' ref (rule_ref_and_index) even when the name
+        # itself ends in '#<digits>' - the literal lookup must win before '#<n>' is read as an ordinal.
+        r = types.SimpleNamespace(name="Gauge #16")
+        monkeypatch.setattr(inp._common, "design", lambda: self._design(r))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Gauge #16")
+        assert err is None
+        rule, scope = got
+        assert rule is r and scope == "design"
+
+    def test_hash_zero_is_refused_not_the_last_hit(self, monkeypatch):
+        r1 = types.SimpleNamespace(name="Steel (mm)")
+        r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
+        monkeypatch.setattr(inp._common, "design", lambda: self._design(r1, r2))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)#0")
+        assert got is None and err is not None
+
+    def test_hash_out_of_range_is_refused_naming_the_count(self, monkeypatch):
+        r1 = types.SimpleNamespace(name="Steel (mm)")
+        r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
+        monkeypatch.setattr(inp._common, "design", lambda: self._design(r1, r2))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)#3")
+        assert got is None
+        assert "has 2 rule(s)" in err

@@ -24,6 +24,7 @@ import math
 from types import SimpleNamespace
 
 import adsk.cam
+import adsk.fusion
 import pytest
 
 from conftest import (_AdditiveContainer, _BaseNode, _FakeObjectCollection, _NamedCollection,
@@ -136,7 +137,7 @@ class _RaisingSetup(FakeSetup):
     doc_insert_occurrence(remove_existing=...)."""
 
     def __init__(self, raising=("models",), models=(), fixtures=(), stock=(), name="Setup1"):
-        super().__init__(name)
+        super().__init__(name, models=FakeSetup._UNSET)
         self._raising = set(raising)
         self._lists = {"models": list(models), "fixtures": list(fixtures),
                        "stockSolids": list(stock)}
@@ -1317,6 +1318,20 @@ def _MTOp(name="Op", valid=True, suppressed=False, has_toolpath=True):
         name, has_toolpath=has_toolpath, valid=valid, suppressed=suppressed,
         operation_state=(adsk.cam.OperationStates.SuppressedOperationState if suppressed
                          else adsk.cam.OperationStates.IsValidOperationState))
+
+
+class TestErroredOpNamesReadsSuppressionFirst:
+    def test_a_suppressed_faulted_op_is_excluded(self):
+        # MEASURED on 2706: suppressing a faulted op keeps hasError True - the errors list must
+        # not fold it in just because the flag is still set.
+        op = _MTOp("Off1", suppressed=True)
+        op.hasError = True
+        assert cr._errored_op_names([op]) == []
+
+    def test_an_unsuppressed_faulted_op_is_still_named(self):
+        op = _MTOp("Bad")
+        op.hasError = True
+        assert cr._errored_op_names([op]) == ["Bad"]
 
 
 def _MTSetup(name, has_valid_toolpath=True, ops=None):
@@ -2802,10 +2817,91 @@ class TestValiditySync:
         assert "Validity not synced this call." in summary["readiness"]
         assert "checkValidity raised" in summary["validity_not_synced"]
 
+    def test_a_synced_manufacture_read_reports_validity_basis_checked(self, monkeypatch):
+        # validity_basis says 'manufacture_verified' (the bare workspace gate) unless the sync for
+        # THIS call actually ran - only then does it say 'checked'.
+        monkeypatch.setattr(cc, "_VALIDITY_SYNCED", [True])
+        monkeypatch.setattr(cr, "validity_basis", lambda: "manufacture_verified")
+        summary = cr._operations_summary([])
+        assert summary["validity_synced"] is True
+        assert summary["validity_basis"] == "checked"
+
+    def test_an_unsynced_manufacture_read_keeps_the_bare_basis_name(self, monkeypatch):
+        monkeypatch.setattr(cc, "_VALIDITY_SYNCED", [False])
+        monkeypatch.setattr(cr, "validity_basis", lambda: "manufacture_verified")
+        summary = cr._operations_summary([])
+        assert summary["validity_synced"] is False
+        assert summary["validity_basis"] == "manufacture_verified"
+
+    def test_setups_and_time_slices_report_validity_synced(self, monkeypatch,
+                                                           operation_cast_passthrough):
+        self._wire(monkeypatch, make_cam(FakeSetup("S1", ops=[FakeOperation("Face1")])))
+        assert _payload(cr.get_cam_setups_handler())["validity_synced"] is True
+        assert _payload(cr.get_machining_time_handler())["validity_synced"] is True
+
+    def test_setups_and_time_slices_report_validity_synced_false_on_a_raising_sync(
+            self, monkeypatch, operation_cast_passthrough):
+        # a constant True would pass the test above unchanged - only a REAL raising sync proves
+        # each slice reads its own call's flag rather than publishing a fixed value.
+        def _boom():
+            raise RuntimeError("checkValidity is not available on this build")
+        self._wire(monkeypatch, make_cam(FakeSetup("S1", ops=[FakeOperation("Face1")]),
+                                         check_validity=_boom))
+        assert _payload(cr.get_cam_setups_handler())["validity_synced"] is False
+        assert _payload(cr.get_machining_time_handler())["validity_synced"] is False
+
     def test_sync_validity_answers_whether_the_call_ran(self, monkeypatch):
         monkeypatch.setattr(cc, "_VALIDITY_SYNCED", [True])
         assert cc.sync_validity(make_cam(FakeSetup("S1"))) is True
         assert cc.sync_validity(SimpleNamespace()) is False      # no such member on this product
+
+
+class _FlatCollection:
+    """A minimal Design.allComponents stand-in: count + item(i) over a fixed list."""
+
+    def __init__(self, items):
+        self._items = items
+
+    @property
+    def count(self):
+        return len(self._items)
+
+    def item(self, i):
+        return self._items[i]
+
+
+class TestFlatTouchBeforeCheckValidity:
+    """get_cam(sync=True) reads every flat pattern's CURRENT flat body before checkValidity - a flat
+    pattern recomputes LAZILY, so checkValidity() alone can validate against a stale one."""
+
+    def _wire(self, monkeypatch, cam, design):
+        monkeypatch.setattr(cc, "_VALIDITY_SYNCED", [True])
+        monkeypatch.setattr(cc, "app", FakeApplication(
+            active_document=FakeFusionDocument(products=FakeProducts(cam=cam, design=design))))
+        monkeypatch.setattr(adsk.cam.CAM, "cast", lambda x: x if x is cam else None)
+        monkeypatch.setattr(adsk.fusion.Design, "cast", lambda x: x if x is design else None)
+
+    def test_the_flat_body_is_read_before_the_check_and_a_flatless_component_is_skipped(
+            self, monkeypatch):
+        order = []
+
+        class _FlatBody:
+            @property
+            def revisionId(self_inner):
+                order.append("flat_read")
+                return "rev-2"
+
+        class _Comp:
+            def __init__(self, has_flat):
+                self.flatPattern = SimpleNamespace(flatBody=_FlatBody()) if has_flat else None
+
+        comps = [_Comp(has_flat=False), _Comp(has_flat=True)]     # the flatless one costs no crash
+        design = SimpleNamespace(rootComponent=comps[0], allComponents=_FlatCollection(comps))
+        cam = make_cam(FakeSetup("S1"), check_validity=lambda: order.append("check"))
+        self._wire(monkeypatch, cam, design)
+        got, err = cc.get_cam(sync=True)
+        assert err is None and got is cam
+        assert order == ["flat_read", "check"]
 
 
 # The exception codes an ordinary broken job carries at once - each one contributing its own remedy
@@ -2970,6 +3066,12 @@ class TestWarningOverlayTally:
         # so its warning demotes nothing in this tally.
         t = cc.op_state_tally([_tally_op("Off1", state=2, suppressed=True, warning=True)])
         assert t["suppressed"] == 1 and t["warnings"] == 0 and t["warning_sample"] is None
+
+    def test_a_suppressed_ops_error_flag_keeps_it_suppressed(self, operation_cast_passthrough):
+        # MEASURED on 2706: suppressing a faulted op does NOT clear hasError - it stays True beside
+        # isSuppressed True. The bucket must read isSuppressed first, not fold hasError into errored.
+        t = cc.op_state_tally([_tally_op("Face1", state=2, suppressed=True, error=True)])
+        assert t["suppressed"] == 1 and t["errored"] == 0
 
     def test_the_sample_is_the_FIRST_counted_warning_not_a_later_one(self, operation_cast_passthrough):
         t = cc.op_state_tally([_tally_op("Off1", state=2, suppressed=True, warning=True),
@@ -4596,6 +4698,15 @@ class TestNcProgramPostedOperations:
         errored = _row_op("Bad1")
         errored.hasError = True
         held = [_row_op("Cut"), errored]
+        install(SimpleNamespace(ncPrograms=_NamedCollection([self._program(held)])))
+        entry = _payload(cr.get_nc_programs_handler())["nc_programs"][0]
+        assert entry["operation_count"] == 2 and entry["posted_operations"] == 1
+
+    def test_a_suppressed_held_row_is_never_counted_as_posted(
+            self, install, operation_cast_passthrough):
+        # the tally reads isSuppressed before it trusts hasToolpath/hasError - a suppressed row is
+        # excluded whatever the other two flags say.
+        held = [_row_op("Cut"), _row_op("Off1", suppressed=True)]
         install(SimpleNamespace(ncPrograms=_NamedCollection([self._program(held)])))
         entry = _payload(cr.get_nc_programs_handler())["nc_programs"][0]
         assert entry["operation_count"] == 2 and entry["posted_operations"] == 1
@@ -6954,3 +7065,26 @@ class TestFuturesCount:
 
     def test_a_single_future_still_reads_its_own_count(self):
         assert cc.futures_count([self._future(4, 2)], "numberOfOperations") == 4
+
+
+def test_flat_refresh_uses_selected_model_in_milling_setup(monkeypatch):
+    developed = SimpleNamespace(name="current flat", entityToken="fresh")
+    flat_product = SimpleNamespace(objectType="adsk::fusion::FlatPatternProduct",
+                                   flatPattern=SimpleNamespace(flatBody=developed))
+    cached = SimpleNamespace(name="cached flat", entityToken="old",
+                             parentComponent=SimpleNamespace(parentDesign=flat_product))
+    setup = FakeSetup("Flat Mill", models=[cached])
+    monkeypatch.setattr(cc, "native_identity", lambda body: body.entityToken)
+    monkeypatch.setattr(cc.adsk.core.ObjectCollection, "create",
+                        staticmethod(_make_object_collection))
+    count, reason = cc.refresh_flat_setup_models(setup)
+    assert reason is None and count == 1
+    assert list(setup.models) == [developed]
+
+    ordinary = SimpleNamespace(name="ordinary",
+                               parentComponent=SimpleNamespace(parentDesign=SimpleNamespace(
+                                   objectType="adsk::fusion::Design")))
+    plain_setup = FakeSetup("Ordinary Mill", models=[ordinary])
+    count, reason = cc.refresh_flat_setup_models(plain_setup)
+    assert reason is None and count == 0
+    assert plain_setup.models == [ordinary]

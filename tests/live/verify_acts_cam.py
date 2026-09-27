@@ -264,6 +264,24 @@ def _empty_pocket_settled(p, handle_key):
                      and "cam_generate(target=<op>, skip_valid=false)" in (p.get("empty_triage") or ""))
 
 
+def _face_op_settled(handle_key, label, want):
+    """Poll the face op's own generation by handle until it completes, then require `want`'s counts."""
+    def check(p):
+        handle = _RECALL[handle_key]
+        for _attempt in range(60):
+            if p.get("completed") is True:
+                break
+            time.sleep(1)
+            failed, p = facade("call")("cam_get_status", {"handle": handle})
+            if failed:
+                raise AssertionError(f"cam_get_status(handle={handle!r}) failed: {p}")
+        live = p.get("live_states") or {}
+        return _measured(label, {"completed": p.get("completed"), "live_states": live},
+                         p.get("completed") is True
+                         and all(live.get(k) == v for k, v in want.items()))
+    return check
+
+
 def _empty_pocket_raw(p):
     """Require the named pocket's raw empty-path flags and warning in the setup read."""
     row = _operation_row(p, FLIP_SETUP, _EMPTY_REMEDY_OP)
@@ -2249,6 +2267,44 @@ _CAM_DELIVER = [
     ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "drill_op", "the drill op"),
                                       "suppressed": False},
      lambda p: p["is_suppressed"] is False, None),
+    # A FAULTED operation suppressed: the face op is driven into the generator's own fault (a
+    # bottom offset above its top), generated to it, then suppressed - and the readiness read and
+    # the census both count it SUPPRESSED, not errored, although the platform keeps hasError and
+    # the fault text under suppression. The restore puts the offset back and regenerates it clean
+    # before the teardown, so the later posts see the job whole.
+    ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
+                                      "parameters": {"bottomHeight_offset": "50 mm"}},
+     lambda p: p.get("updated_count") == 1, None),
+    ("cam_generate", lambda c: {"target": _ctx_get(c, "face_op", "the face op"),
+                                "skip_valid": False},
+     lambda p: p.get("launched") is True and bool(p.get("handle")),
+     ("faulted_face", _recall("faulted_face", lambda p: p["handle"]))),
+    ("cam_get_status", lambda c: {"handle": _ctx_get(c, "faulted_face", "the faulted generation")},
+     _face_op_settled("faulted_face", "the fault lands: the scoped read counts one errored operation",
+                      {"errored": 1}), None),
+    ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
+                                      "suppressed": True},
+     lambda p: p["is_suppressed"] is True and p["was_suppressed"] is False, None),
+    ("cam_get_status", {"target": CAM_SETUP},
+     lambda p: _measured("a suppressed faulted operation reads suppressed, not errored",
+                         {"live_states": p.get("live_states"), "readiness": p.get("readiness")},
+                         (p.get("live_states") or {}).get("errored") == 0
+                         and (p.get("live_states") or {}).get("suppressed") == 1), None),
+    ("cam_get", {"include": ["operations"], "setup": CAM_SETUP},
+     lambda p: _suppressed_census(CAM_SETUP, 1)(p), None),
+    ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
+                                      "suppressed": False},
+     lambda p: p["is_suppressed"] is False and p["was_suppressed"] is True, None),
+    ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
+                                      "parameters": {"bottomHeight_offset": "0 mm"}},
+     lambda p: p.get("updated_count") == 1, None),
+    ("cam_generate", lambda c: {"target": _ctx_get(c, "face_op", "the face op"),
+                                "skip_valid": False},
+     lambda p: p.get("launched") is True and bool(p.get("handle")),
+     ("restored_face", _recall("restored_face", lambda p: p["handle"]))),
+    ("cam_get_status", lambda c: {"handle": _ctx_get(c, "restored_face", "the restored generation")},
+     _face_op_settled("restored_face", "the restored face op generates clean",
+                      {"errored": 0, "valid": 1}), None),
     # TEARDOWN of the two assets this run leaves outside the document, each after the beats that use
     # it: the confirm_name guard while the asset exists, the delete on its own read-backs, then the
     # library read as witness. 10a's narrative with 10b's fallback leaves the run-stamped machine.

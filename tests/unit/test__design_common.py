@@ -7,14 +7,11 @@ Pinned (the definition of done):
     corrupt later calls), and run_in_base_feature opens no scope at all in a direct design.
 """
 
-import types
-
 import pytest
 
 import live_api_facts as _api_facts
-from conftest import (FakeApplication, FakeBaseFeature, FakeBaseFeatures, FakeFeatures,
-                      FakeUserInterface, MakeComp, install, load_tool, make_design, make_timeline,
-                      payload)
+from conftest import (FakeBaseFeature, FakeBaseFeatures, FakeFeatures, MakeComp, install,
+                      load_tool, make_design, make_timeline, payload)
 
 dm = load_tool("_design_common")
 
@@ -71,6 +68,8 @@ class TestGetMode:
         assert out["design_type"] == "direct"
         assert out["has_timeline"] is False
         assert out["timeline_feature_count"] is None
+        # An open Form or base-feature edit reads direct too - the note carries the caveat.
+        assert "Finish Form" in out["note"]
         can = out["can"]
         # direct: coordinate datums ON; timeline / base-feature OFF; ->parametric ON
         assert can["construction_point_by_coordinate"] is True
@@ -87,25 +86,16 @@ class TestGetMode:
         out = payload(dm.get_mode_handler())
         assert out["base_feature_count"] == 2
 
-    def test_in_base_feature_edit_true_when_editing(self, monkeypatch):
-        _wire(monkeypatch, _design(edit_object=FakeBaseFeature()))
+    def test_reports_parametric_with_no_caveat_in_the_note(self, monkeypatch):
+        _wire(monkeypatch, _design(timeline=make_timeline("A")))
         out = payload(dm.get_mode_handler())
-        assert out["in_base_feature_edit"] is True
+        assert "Finish Form" not in out["note"]
 
-    def test_an_open_form_edit_reads_in_form_edit_beside_the_direct_type(self, monkeypatch):
-        _wire(monkeypatch, _design(design_type=_DIRECT))
-        monkeypatch.setattr(dm._common, "app", FakeApplication(user_interface=FakeUserInterface(
-            active_workspace=types.SimpleNamespace(id="TSplineEnvironment"))))
-        out = payload(dm.get_mode_handler())
-        assert out["design_type"] == "direct" and out["in_form_edit"] is True
-        # the direct read is the edit's, so no capability and no design_set_mode pointer ride it
-        assert set(out["can"].values()) == {None}
-        assert "Finish Form" in out["note"] and "design_set_mode" not in out["note"]
-
-    def test_a_handler_that_read_the_form_edit_is_not_read_again(self, monkeypatch):
-        monkeypatch.setattr(dm._inputs, "in_form_edit", lambda d: pytest.fail("read twice"))
-        assert dm.no_timeline_reason(object(), "direct", form_edit=True) == dm.FORM_EDIT_OPEN
-        assert dm.no_timeline_reason(object(), "direct", form_edit=False) == "direct"
+    def test_no_timeline_reason_is_the_direct_text_plus_the_open_edit_caveat(self):
+        # An open Form edit reads direct and cannot be told apart, so the direct remedy carries
+        # the Finish Form caveat - dropping it steers a delete into the Form-deleting path.
+        msg = dm.no_timeline_reason("a direct-modeling design has no timeline")
+        assert msg.startswith("a direct-modeling design has no timeline") and "Finish Form" in msg
 
 
 # ── the leak-proof wrapper: finish-in-finally even when the inner op raises ──────────────────────

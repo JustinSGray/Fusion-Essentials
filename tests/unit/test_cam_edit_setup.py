@@ -54,7 +54,8 @@ class _Setup(FakeSetup):
     _CAD_PARAMS = ("wcs_origin_point", "wcs_orientation_axisZ", "wcs_orientation_axisX")
 
     def __init__(self, name, params, machine_sticks=True, require_enable=True):
-        super().__init__(name, parameters=_params(params, cad_params=self._CAD_PARAMS))
+        super().__init__(name, parameters=_params(params, cad_params=self._CAD_PARAMS),
+                         models=FakeSetup._UNSET)
         self._models = _make_object_collection()
         self._fixtures = _make_object_collection()
         self._stock = _make_object_collection()

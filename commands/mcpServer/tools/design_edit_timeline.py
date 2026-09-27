@@ -92,7 +92,8 @@ def _resolve_object(timeline, want, role, roll=False):
     `role` is this call's noun for the target, and the miss hint names a collapsed group."""
     return _inputs.resolve_timeline_object(
         _objects(timeline), want, role,
-        miss_hint=lambda name: _design_common.collapsed_group_hint(timeline, name, roll))
+        miss_hint=lambda name: _design_common.collapsed_group_hint(timeline, name, roll),
+        hidden_hint=lambda name, hits: _design_common.hidden_twin_hint(timeline, name, hits))
 
 
 def _marker_facts(timeline, count):
@@ -552,8 +553,8 @@ def handler(action: str = "roll", feature: str = "", to: str = "before", end_fea
     # Timeline defines __len__, so an EMPTY one reads falsy - test it against None, never for truth.
     if timeline is None:
         return error(_design_common.no_timeline_reason(
-            design, "This design has no timeline (a direct-modelling design keeps no history), so "
-                    "there is no marker to move and nothing to group."))
+            "This design has no timeline (a direct-modelling design keeps no history), so "
+            "there is no marker to move and nothing to group."))
 
     feature = (feature or "").strip()
     if action == "roll":

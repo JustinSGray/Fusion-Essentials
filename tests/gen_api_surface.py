@@ -46,10 +46,8 @@ _MEASURED_FACTORY_RETURNS = {
     # measurement behind it - never a correction that merely looks right - and _apply_measured_returns
     # raises on a row the bindings have since fixed or dropped, so the table cannot outlive its defect.
     #
-    # Both rows below: classType() read off the returned object on Fusion 2705.0.108. The bindings
-    # annotate each as adsk.core.Point2D, which is the CENTER ARGUMENT's class, not the return.
-    "core.Arc2D.createByCenter": ("core.Arc2D", "Fusion 2705.0.108"),
-    "core.Circle2D.createByCenter": ("core.Circle2D", "Fusion 2705.0.108"),
+    # Empty since Fusion 2706.0.97 annotated Arc2D/Circle2D.createByCenter's returns correctly;
+    # the generator refuses a row the bindings have caught up with.
 }
 
 _EXTRA_CLASSES = (

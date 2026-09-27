@@ -10,15 +10,13 @@ Remove feature's timeline entity is the removed OCCURRENCE, so the delete goes t
 resolved by the same name).
 """
 
-import types
-
 import adsk.fusion
 import pytest
 
 import live_api_facts as _api_facts
-from conftest import (FakeApplication, FakeFeature, FakeFeatures, FakeOccurrence, FakeTimeline,
-                      FakeTimelineObject, FakeUserInterface, MakeComp, _NamedCollection,
-                      error_message, install, load_tool, make_design, payload)
+from conftest import (FakeFeature, FakeFeatures, FakeOccurrence, FakeTimeline, FakeTimelineObject,
+                      MakeComp, _NamedCollection, error_message, install, load_tool, make_design,
+                      payload)
 
 df = load_tool("design_delete_feature")
 
@@ -166,16 +164,58 @@ class TestAtIndexForm:
         assert df._find_object(tl, "Joint1@1")[0] is None
 
     def test_the_candidates_the_refusal_prints_resolve_back(self):
-        # the ambiguity error advertises '<component>/<name>' pairs; every one it prints must be a
-        # string this same tool can resolve, or the refusal names a target the user cannot act on
+        # the ambiguity error advertises '<component>/<name>@<index>' candidates; every one it
+        # prints, fed back verbatim, must resolve to its own object or the remedy is unusable
         objs = [_tl("Joint1", 4, comp="CompA"), _tl("Joint1", 7, comp="CompB")]
         _install(objs)
         msg = error_message(df.handler(feature="Joint1"))
-        for cand, want_index in (("CompA/Joint1", 4), ("CompB/Joint1", 7)):
-            assert cand in msg
+        cands = [c.strip("'") for c in msg.split("(")[1].split(")")[0].split(", ")]
+        assert cands == ["CompA/Joint1@4", "CompB/Joint1@7"]
+        for cand, want_index in zip(cands, (4, 7)):
             tl = _install([_tl("Joint1", 4, comp="CompA"), _tl("Joint1", 7, comp="CompB")])
             obj, err = df._find_object(tl, cand)
             assert err is None and obj.index == want_index
+
+    def test_a_digit_named_delete_whose_successor_renumbers_into_its_index_is_deleted(self):
+        # After a delete the next item takes the freed index, so an index-based census would count
+        # the survivor as the deleted name and report the delete as not done.
+        zero, nxt = _tl("0", 0, entity_type="Sketch"), _tl("BendLine", 1, entity_type="Sketch")
+        tl = _install([zero, nxt])
+        inner = zero.entity.deleteMe
+
+        def renumbering():
+            did = inner()
+            nxt.index = 0
+            return did
+        zero.entity.deleteMe = renumbering
+        out = df.handler(feature="0")
+        assert out.get("isError") is not True, error_message(out)
+        got = payload(out)
+        assert got["deleted"] is True and got["feature"] == "0"
+
+    def test_a_bare_number_hidden_in_a_collapsed_group_is_refused_naming_the_group(self, monkeypatch):
+        # a collapsed group's members are missing from the timeline walk (measured), so index 0's
+        # occurrence would be the only hit for "0" while the sketch named "0" sits in the group
+        bracket = _tl(" Bracket:1", 0, entity_type="Occurrence")
+        _install([bracket])
+        monkeypatch.setattr(df._design_common, "collapsed_group_holding",
+                            lambda timeline, want: "Imports" if want == "0" else None)
+        msg = error_message(df.handler(feature="0"))
+        assert "'0' matches Bracket:1@0 and also names" in msg
+        assert "collapsed timeline group 'Imports'" in msg
+        assert "design_edit_timeline(action='ungroup', feature='Imports')" in msg
+        assert bracket.entity._deletes == 0
+
+    def test_a_bare_number_hitting_by_name_alone_with_a_hidden_twin_says_matches_not_index(self, monkeypatch):
+        # "12" is no live index: the visible hit is the sketch named 12 at index 1, and the
+        # refusal must say so rather than call it index 12
+        twelve = _tl("12", 1, comp="Root")
+        _install([_tl(" Bracket:1", 0, entity_type="Occurrence"), twelve])
+        monkeypatch.setattr(df._design_common, "collapsed_group_holding",
+                            lambda timeline, want: "Imports" if want == "12" else None)
+        msg = error_message(df.handler(feature="12"))
+        assert "'12' matches Root/12@1 and also names an item inside the collapsed timeline group" in msg
+        assert "name one exactly as listed" in msg and twelve.entity._deletes == 0
 
     def test_resolves_through_the_shared_matcher_not_a_local_copy(self):
         # design_delete_feature, design_edit_timeline and _inputs.FeatureRef answer the SAME wire
@@ -203,8 +243,8 @@ class TestAtIndexForm:
 
 
 class TestQualifiedAndIndexForm:
-    """F039: 'Pipe4' names a feature in many components. A bare name several own is refused, naming
-    the '<component>/<name>' qualified forms - the address that actually picks one."""
+    """'Pipe4' names a feature in many components. A bare name several own is refused, listing each
+    '<component>/<name>@<index>' candidate - the address that picks exactly one."""
 
     def test_bare_name_in_two_components_refuses_naming_both_qualified_forms(self):
         a = _tl("Pipe4", 3, entity_type="ExtrudeFeature", comp="COOLING - cockpit side firewall")
@@ -416,16 +456,6 @@ class TestGuards:
         _install([], has_timeline=False)
         assert "no timeline" in error_message(df.handler(feature="X")).lower()
 
-    def test_an_open_form_edit_is_named_and_warns_off_deleting_bodies(self, monkeypatch):
-        # Deleting a Form's body while its edit is open takes the whole Form, so the direct-design
-        # remedy ("delete bodies directly") must not be what this refusal says.
-        install(df, make_design(design_type=0))
-        monkeypatch.setattr(df._common, "app", FakeApplication(user_interface=FakeUserInterface(
-            active_workspace=types.SimpleNamespace(id="TSplineEnvironment"))))
-        msg = error_message(df.handler(feature="Fillet2"))
-        assert "A Form edit is open" in msg and "Do not delete bodies" in msg
-        assert "directly instead" not in msg
-
     def test_missing_feature_errors(self):
         _install([_tl("Extrude1", 0)])
         msg = error_message(df.handler(feature="Ghost"))
@@ -433,11 +463,11 @@ class TestGuards:
         assert "Extrude1" in msg                            # what IS there
 
     def test_a_repeated_name_is_refused_with_the_qualified_candidates(self):
-        # two timeline objects carry the name - refuse, listing the '<component>/<name>' form
+        # two timeline objects carry the name - refuse, listing each one's full address
         _install([_tl("Joint1", 4, comp="CompA"), _tl("Joint1", 7, comp="CompB")])
         msg = error_message(df.handler(feature="Joint1"))
         assert "matches 2 timeline objects" in msg
-        assert "CompA/Joint1" in msg and "CompB/Joint1" in msg
+        assert "(CompA/Joint1@4, CompB/Joint1@7)" in msg and "exactly as listed" in msg
 
     def test_group_refused(self):
         _install([_tl("Group1", 2, is_group=True)])

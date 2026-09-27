@@ -437,6 +437,14 @@ def mode_apply(monkeypatch):
 
 
 class TestApplyTemplateGenerationMode:
+    def test_failed_validity_sync_refuses_before_template_apply(self, monkeypatch):
+        setup = _ApplySetup("Setup1", adds=1)
+        _wire_apply(monkeypatch, setup)
+        monkeypatch.setattr(ct, "sync_validity", lambda cam: False)
+        res = ct.handler(setup="Setup1", template_name="T", generate="generate")
+        assert res["isError"] is True and "checkValidity" in res["message"]
+        assert setup.applied == []
+
     @pytest.mark.parametrize("generate,member", [("skip", "SkipGeneration"),
                                                ("generate", "ForceGeneration")])
     def test_missing_selected_mode_is_rejected_before_apply(self, mode_apply, generate, member):

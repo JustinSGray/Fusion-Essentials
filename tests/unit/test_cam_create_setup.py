@@ -345,7 +345,7 @@ class TestAdditive:
         # only the description can, which is why it is compared and not merely published.
         _, cam, machine, _s = _additive(
             monkeypatch, setting=FakePrintSetting("Formlabs SLS", "FORMLABS_SLS"))
-        landed = FakeSetup("Setup1", machine=machine)
+        landed = FakeSetup("Setup1", machine=machine, operation_type=adsk.cam.OperationTypes.AdditiveOperation)
         landed.printSetting = FakePrintSetting("Formlabs SLS", "FORMLABS_SLS")
         landed.printSetting.description = "Generic Print Setting for Formlabs Fuse 1 machines."
         _swallowing_add(cam, landed)
@@ -384,13 +384,13 @@ class TestAdditive:
         # A swallowed machine assignment must not report created=true: the setup would print on a
         # printer nothing asked for.
         _, cam, _m, _s = _additive(monkeypatch)
-        _swallowing_add(cam, FakeSetup("Setup1", machine=None))
+        _swallowing_add(cam, FakeSetup("Setup1", machine=None, operation_type=adsk.cam.OperationTypes.AdditiveOperation))
         res = cs.handler(operation_type="additive", machine="EOS|M 290")
         assert res["isError"] is True and "Setup.machine reads" in res["message"]
 
     def test_a_print_setting_that_reads_back_as_another_is_an_error(self, monkeypatch):
         _, cam, machine, _s = _additive(monkeypatch)
-        landed = FakeSetup("Setup1", machine=machine)
+        landed = FakeSetup("Setup1", machine=machine, operation_type=adsk.cam.OperationTypes.AdditiveOperation)
         landed.printSetting = FakePrintSetting("ABS (Direct Drive)", "FFF")
         _swallowing_add(cam, landed)
         res = cs.handler(operation_type="additive", machine="EOS|M 290",
@@ -424,3 +424,47 @@ class TestAdditive:
         out = _payload(cs.handler(operation_type="additive", machine="EOS|M 290"))
         assert out["operation_count"] == 0
         assert "It is not empty" not in out["note"]
+
+
+class TestFlatPatternCutting:
+    def test_cutting_uses_flat_body_and_verifies_setup_models(self, monkeypatch):
+        folded = BRepBody("Folded", entity_token="folded")
+        flat = BRepBody("Flat", entity_token="flat")
+        flat.isSolid = True
+        comp = MakeComp(name="Blank", bodies=[folded], entity_token="root")
+        design = make_design(comp=comp)
+        comp.parentDesign = design
+        folded.parentComponent = comp
+        folded.isSheetMetal = True
+        folded.isSolid = True
+        comp.flatPattern = SimpleNamespace(foldedBody=folded, flatBody=flat)
+        landed = FakeSetup("Setup1", operation_type=adsk.cam.OperationTypes.JetOperation,
+                           models=[flat])
+        cam = SimpleNamespace(setups=FakeSetups(new_setup=landed))
+        monkeypatch.setattr(adsk.fusion, "BRepBody", BRepBody, raising=False)
+        monkeypatch.setattr(cs, "get_cam", lambda: (cam, None))
+        install(cs, design)
+        out = _payload(cs.handler(operation_type="cutting", flat_patterns=["Folded"],
+                                  name="Flat cut"))
+        assert cam.setups._added[-1].models == [flat]
+        assert out["flat_models_verified"] is True
+        assert out["flat_sources"] == [{"component": "Blank", "folded_body": "Folded",
+                                        "flat_body": "Flat"}]
+        assert out["operation_type"] == "cutting"
+
+    def test_cutting_refuses_missing_flat_before_setup_add(self, monkeypatch):
+        folded = BRepBody("Folded", entity_token="folded")
+        comp = MakeComp(name="Blank", bodies=[folded], entity_token="root")
+        design = make_design(comp=comp)
+        comp.parentDesign = design
+        folded.parentComponent = comp
+        folded.isSheetMetal = True
+        folded.isSolid = True
+        cam = SimpleNamespace(setups=FakeSetups())
+        monkeypatch.setattr(adsk.fusion, "BRepBody", BRepBody, raising=False)
+        monkeypatch.setattr(cs, "get_cam", lambda: (cam, None))
+        install(cs, design)
+        result = cs.handler(operation_type="cutting", flat_patterns=["Folded"])
+        assert result["isError"] is True
+        assert "sheet_create_flat_pattern" in result["message"]
+        assert cam.setups.count == 0

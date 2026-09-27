@@ -20,6 +20,9 @@ from ._common import named_with_remainder, ok, error, safe
 from . import _assert
 from . import _inputs
 from . import _outputs
+from . import _cam_common
+from . import _export
+from ._write_guard import active_document_handle
 from ._cam_common import (get_cam, library_assets, live_readiness, resolve_cam_node,
                           setups as cam_setups, operations_under, toolpath_present_tally,
                           quote_expression as _quote, unquote_expression as _unquote)
@@ -528,6 +531,133 @@ def _rollback_program(cam, program, prog_name, reused):
     return f" The just-created NC Program '{prog_name}' was removed."
 
 
+
+_FLAT_POST_WAIT_S = 30.0
+
+
+def _flat_path_ready(cam, ops):
+    """Return ready requested flat operations, or a named blocker."""
+    ready = 0
+    for op in ops:
+        facts = _cam_common.op_state_facts(op, cam)
+        if (_cam_common.op_is_suppressed(facts)
+                or facts.get("strategy") == "manual"):
+            continue
+        if (facts.get("operation_state") != 0 or facts.get("has_toolpath") is not True
+                or facts.get("is_toolpath_valid") is not True or facts.get("has_error")
+                or _cam_common.is_empty_toolpath(facts)
+                or facts.get("nonfinite_toolpath")):
+            return ready, f"operation '{safe(lambda op=op: op.name)}' has no verified current nonempty path"
+        ready += 1
+    return ready, None
+
+
+def _refresh_generate_flat_scope(cam, items):
+    """Refresh flat setups in the requested scope and await their own new paths."""
+    operations = _expand_ops(items)
+    direct_setups = []
+    for item in items or []:
+        if safe(lambda item=item: item.operationType) is None:
+            continue
+        expected_raw = safe(lambda item=item: item.allOperations)
+        expected = (len(expected_raw) if isinstance(expected_raw, (list, tuple))
+                    else _cam_common.counted(lambda raw=expected_raw: raw.count)
+                    if expected_raw is not None else None)
+        observed = operations_under(item)
+        if expected is None or len(observed) != expected:
+            return None, (f"Setup '{safe(lambda item=item: item.name)}' operations could not "
+                          "be read completely; no flat refresh or NC post was attempted.")
+        direct_setups.append(item)
+    setups, why = _cam_common.flat_setups_for_operations(operations)
+    if why:
+        return None, why + " No NC program was written."
+    flat_setups, refreshed = [], 0
+    known = {(safe(lambda setup=setup: setup.name) or "").lower() for setup in setups}
+    setups.extend(setup for setup in direct_setups
+                  if (safe(lambda setup=setup: setup.name) or "").lower() not in known)
+    for setup in setups:
+        count, merr = _cam_common.refresh_flat_setup_models(setup)
+        if merr:
+            return None, (f"Setup '{safe(lambda: setup.name)}': {merr} "
+                          f"{refreshed} flat model(s) were already refreshed; no NC file was posted.")
+        if count:
+            flat_setups.append(setup)
+            refreshed += count
+    if not flat_setups:
+        return {"flat_models_refreshed": 0, "flat_setups_regenerated": 0}, None
+
+    expected_document = active_document_handle()
+    if not expected_document:
+        return None, (f"{refreshed} flat model(s) were refreshed, but the active document handle "
+                      "did not read; no generation or post was attempted.")
+    started = time.monotonic()
+    futures, handles, requested = [], [], []
+    for setup in flat_setups:
+        name = safe(lambda setup=setup: setup.name)
+        selected = [op for op in operations if safe(lambda op=op: op.parentSetup.name) == name]
+        selected = [op for op in selected if safe(lambda op=op: op.isSuppressed) is not True
+                    and safe(lambda op=op: op.strategy) != "manual"]
+        if not selected:
+            continue
+        collection = adsk.core.ObjectCollection.create()
+        for op in selected:
+            collection.add(op)
+        try:
+            future = cam.generateToolpath(collection)
+        except Exception as exc:
+            return None, (f"Flat generation failed for '{name}': {exc}. "
+                          f"{refreshed} flat model(s) were refreshed; launched handles: {handles}. "
+                          "No NC file was posted.")
+        if not future:
+            return None, (f"Flat generation returned no future for '{name}'. "
+                          f"{refreshed} flat model(s) were refreshed; launched handles: {handles}. "
+                          "No NC file was posted.")
+        handle, _ = _cam_common.register_future(
+            future, f"selected operations in setup '{name}'", "flat_post", False)
+        futures.append(future)
+        handles.append(handle)
+        requested.extend(selected)
+
+    def probe():
+        if active_document_handle() != expected_document:
+            return True, ("document_changed", 0, None)
+        if all(safe(lambda f=f: f.isGenerationCompleted) is True for f in futures):
+            ready, blocker = _flat_path_ready(cam, requested)
+            return True, ("invalid" if blocker else "ready", ready, blocker)
+        return False, ("pending", 0, None)
+
+    remaining = _FLAT_POST_WAIT_S - (time.monotonic() - started)
+    settled, reading = (_export.pump_until(probe, remaining, 0.01)
+                        if remaining > 0 else (False, ("pending", 0, None)))
+    state, ready_count, blocker = reading
+    if state == "document_changed":
+        return None, (f"Active document changed during flat generation; handles {handles} "
+                      "remain pollable for Future progress with document-wide readiness. "
+                      "No NC file was posted.")
+    if state == "invalid":
+        return None, ("Flat generation finished, but requested " + blocker
+                      + f". Handles {handles} remain pollable for Future progress with "
+                      "document-wide readiness. Check cam_get(include=['operations']) "
+                      "for selected health. No NC file was posted.")
+    if not settled:
+        return None, (f"Flat generation did not complete with verified nonempty paths within "
+                      f"{_FLAT_POST_WAIT_S:g}s. {refreshed} flat model(s) were refreshed; "
+                      f"handles {handles} remain pollable for Future progress, with document-wide "
+                      "readiness. Check cam_get(include=['operations']) for selected health. "
+                      "No NC file was posted.")
+    if active_document_handle() != expected_document:
+        return None, (f"Active document changed after flat generation; handles {handles} "
+                      "remain pollable for Future progress with document-wide readiness. "
+                      "No NC file was posted.")
+    from .cam_get_status import _release
+    for handle in handles:
+        entry = _cam_common._GENERATIONS.get(handle)
+        if entry is not None:
+            _release(handle, entry, time.time() - entry["started_at"])
+    return {"flat_models_refreshed": refreshed,
+            "flat_setups_regenerated": len(futures),
+            "flat_operations_ready": ready_count}, None
+
 def handler(scope: str = "", post: str = "", post_scope: str = "local", output_folder: str = "",
             program_name: str = "", units: str = "document", program_comment: str = "",
             overwrite: bool = False, setups=None) -> dict:
@@ -587,18 +717,6 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
             return error(serr + " Omit 'scope' to post the whole document.")
         targets, kind = [node.obj], node.kind
 
-    # Up-front refusal: nothing valid to post. live_readiness is the one CAM health signal; the post
-    # omits invalid/empty operations, so zero valid ops -> no file. Applies to as-is too - a stale
-    # program still writes wrong G-code.
-    live, lerr = live_readiness()
-    if lerr:
-        return error(lerr)
-    live = live or {}
-    if not live.get("valid"):
-        return error("No valid toolpaths to post - every operation is out-of-date, errored, or "
-                     "ungenerated. Run cam_generate (in the Manufacture workspace) first. "
-                     f"({live.get('readiness', '')})")
-
     # OVERWRITE GUARD: reconfiguring an EXISTING program whose STORED operations differ from the
     # REQUESTED scope would clobber a program that may be machinist-curated. Each refusal names
     # every input that has to be omitted to reach as-is mode.
@@ -624,25 +742,47 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
                 "stored, or pass overwrite=true to reconfigure it.")
 
     if as_is:
-        # Post the program EXACTLY as stored: no operations/postConfiguration/parameter writes - just
-        # postProcess() against its own configuration.
-        program = existing
-        out_dir = _stored_str_param(program.parameters, _P_FOLDER)
+        out_dir = _stored_str_param(existing.parameters, _P_FOLDER)
         if not out_dir:
             return error(f"NC Program '{prog_name}' has no stored '{_P_FOLDER}' output folder to post "
                          "as-is against - configure it once with 'output_folder' and 'post'.")
-        post_label = (safe(lambda: program.postConfiguration.description)
-                     if safe(lambda: program.postConfiguration) else None)
-        applied, unresolved, unit_note, membership = {}, [], None, {}
+        post_label = (safe(lambda: existing.postConfiguration.description)
+                      if safe(lambda: existing.postConfiguration) else None)
+        stored = safe(lambda: existing.operations, _MISSING)
+        if stored is _MISSING:
+            return error(f"NC Program '{prog_name}' stored operations could not be read; "
+                         "no flat refresh or post was attempted.")
+        try:
+            refresh_items = list(stored) if stored is not None else []
+        except Exception:
+            return error(f"NC Program '{prog_name}' stored operations could not be enumerated; "
+                         "no flat refresh or post was attempted.")
     else:
-        # Resolve the post AFTER the cheap guards - a cloud/hub lookup is network-slow, so a bad
-        # output_folder/program_name/scope or an empty document fails fast without touching the network.
         post_config, post_label, perr = _resolve_post_config(cam, post, post_scope_key)
         if perr:
             return error(perr)
-
         out_dir = os.path.abspath(output_folder.strip())
+        refresh_items = _operations_collection(cam, targets)
+    flat_result, flat_error = _refresh_generate_flat_scope(cam, refresh_items)
+    if flat_error:
+        return error(flat_error)
 
+    # Check readiness AFTER flat generation; the prior document-wide valid count may have
+    # belonged to a different setup while the requested flat path was stale.
+    live, lerr = live_readiness()
+    if lerr:
+        return error(lerr)
+    live = live or {}
+    if not live.get("valid"):
+        return error("No valid toolpaths to post - every operation is out-of-date, errored, or "
+                     "ungenerated. Run cam_generate (in the Manufacture workspace) first. "
+                     f"({live.get('readiness', '')})")
+
+    if as_is:
+        # Post the program exactly as stored: no configuration writes.
+        program = existing
+        applied, unresolved, unit_note, membership = {}, [], None, {}
+    else:
         # UPDATE IN PLACE rather than delete+recreate: operations, postConfiguration and the output
         # parameters are all settable, so the program keeps its identity. ONE resolve of the scope
         # serves both the assignment and the membership read-back below.
@@ -700,6 +840,14 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         # postProcess(None) RAISES "Options must not be null" (live-verified, Fusion 2704.1.39) - the
         # API docstring's "Can be null" does not hold in this build; always pass a real options object.
         options = adsk.cam.NCProgramPostProcessOptions.create()
+        if flat_result["flat_setups_regenerated"]:
+            fail_mode = adsk.cam.PostProcessExecutionBehaviors.PostProcessExecutionBehavior_Fail
+            landed, _changed = _export.applied_pair(
+                options, "postProcessExecutionBehavior", fail_mode, fail_mode)
+            if landed is None:
+                return error("Flat paths were generated, but fail-on-post behavior did not read back; "
+                             "no NC file was posted."
+                             + _rollback_program(cam, program, prog_name, reused))
         posted = program.postProcess(options)
     except Exception as e:
         # Do not leave a just-created program behind a failed post - and say which way that went.
@@ -757,6 +905,8 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         # of its own, since a note that inlined it could not be bounded.
         "readiness": live.get("readiness", ""),
     }
+    if flat_result["flat_setups_regenerated"]:
+        result.update(flat_result)
     # The held/posted counts come off ONE builder on both arms, so what they mean cannot depend on
     # which arm posted; as-is compared no scope, so it carries counts and no membership verdict.
     if as_is:

@@ -550,8 +550,7 @@ _GROUP_MEMBER_NOTE = "index is null on these rows - address them by name."
 _NESTED_GROUP_NOTE = "This listing holds group row(s); group='{0}' lists what one stands for."
 
 
-def _slice_timeline(design, include_suppressed, group, with_params=False, max_rows=0,
-                    form_edit=None):
+def _slice_timeline(design, include_suppressed, group, with_params=False, max_rows=0):
     """The ordered parametric timeline, with healthy-row noise dropped (a normal row is
     {index,name,type}; a suppressed/errored row keeps its flags and stands out). with_params adds
     each row's own model parameters; max_rows pages it (0 = the default cap)."""
@@ -560,8 +559,7 @@ def _slice_timeline(design, include_suppressed, group, with_params=False, max_ro
     except Exception as e:
         from . import _design_common
         return None, error(_design_common.no_timeline_reason(
-            design, f"This design has no timeline (direct-modeling, or no history): {e}",
-            form_edit))
+            f"This design has no timeline (direct-modeling, or no history): {e}"))
     try:
         cap = max(1, int(max_rows)) if max_rows else _TIMELINE_MAX_ITEMS
     except Exception:
@@ -935,14 +933,17 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
     out = {}
     if want_default:
         health, _herr = _slice_health(design)      # cheap rollup; degrades to None on a direct design
+        has_timeline = safe(lambda: mode_full.get("has_timeline"))
         out = {
             # the headline: what kind of design, how big the build, what's in it. design_type lives
-            # ONCE here (not restated in a sub-dict). in_base_feature_edit only when TRUE.
+            # ONCE here (not restated in a sub-dict).
             "design_type": safe(lambda: mode_full.get("design_type")),
             "feature_count": safe(lambda: mode_full.get("timeline_feature_count")),
             # SCOPE: timeline-only (errored/warned features). Stale references show as is_out_of_date
-            # on tree nodes, and the doc-wide verdict is workspace_orient's is_healthy.
-            "timeline_healthy": safe(lambda: (health or {}).get("healthy")),
+            # on tree nodes, and the doc-wide verdict is workspace_orient's is_healthy. null (not
+            # true) when the timeline itself did not read - an open Form/base-feature edit too.
+            "timeline_healthy": (safe(lambda: (health or {}).get("healthy"))
+                                 if has_timeline else None),
             "contents": _fingerprint(design),      # bodies/sketches/components/joints/parameters
         }
         # for each PRESENT + non-obvious content class, name the tool that acts on it - the inbound
@@ -954,12 +955,6 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
             ptrs["cam"] = "cam_get for the machining setups/operations (this document has CAM data)"
         if ptrs:
             out["pointers"] = ptrs
-        if mode_full.get("in_base_feature_edit"):
-            out["in_base_feature_edit"] = True
-        if mode_full.get("in_form_edit"):
-            # The open edit hides the timeline, so no health was read from it.
-            out["in_form_edit"] = True
-            out["timeline_healthy"] = None
         # surface health DETAIL only when there's something wrong (else 'healthy' above says it all).
         if health and (health.get("error_count") or health.get("warning_count")):
             out["health"] = {k: v for k, v in health.items()
@@ -975,8 +970,7 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
             return terr
     if "timeline" in inc:
         out["timeline"], tlerr = _slice_timeline(design, include_suppressed, group,
-                                                 bool(timeline_params), max_results,
-                                                 (mode_full or {}).get("in_form_edit"))
+                                                 bool(timeline_params), max_results)
         if tlerr:
             return tlerr
     if "configurations" in inc:
@@ -1022,6 +1016,11 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
                        + " contents.occurrences_walk='unreadable': NEITHER root.allOccurrences nor "
                          "the component.occurrences fallback enumerated, so the occurrence count is "
                          "missing because it is UNKNOWN, not because the design holds none.").strip()
+    # An open Form or base-feature edit reads direct too, so a direct-reading orientation carries the
+    # same caveat design_set_mode's not-taken refusal and workspace_orient's verdict do.
+    if want_default and safe(lambda: mode_full.get("design_type")) == _inputs.MODE_DIRECT:
+        from . import _design_common
+        out["note"] = (out.get("note", "") + _design_common.OPEN_EDIT_CAVEAT).strip()
     return ok(out)
 
 

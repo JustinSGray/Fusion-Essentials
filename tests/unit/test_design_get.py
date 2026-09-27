@@ -16,9 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (FakeApplication, FakeOccurrence, FakeTimeline, FakeUserInterface,
-                      FakeUserParameters, MakeComp, MakeDesign, _NamedCollection, error_message,
-                      load_tool, make_design)
+from conftest import (FakeOccurrence, FakeTimeline, FakeUserParameters, MakeComp, MakeDesign,
+                      _NamedCollection, error_message, load_tool, make_design)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 "live"))
@@ -52,7 +51,7 @@ def stub_slices(monkeypatch):
     monkeypatch.setattr(dg._common, "design", lambda: object())   # a non-None design
     monkeypatch.setattr(dg, "_slice_mode", lambda d: (
         {"design_type": "parametric", "has_timeline": True, "timeline_feature_count": 4,
-         "in_base_feature_edit": False, "can": {"timeline_ops": True}}, None))
+         "can": {"timeline_ops": True}}, None))
     monkeypatch.setattr(dg, "_slice_health", lambda d: (
         {"healthy": True, "error_count": 0, "warning_count": 0, "errors": [], "warnings": []}, None))
     monkeypatch.setattr(dg, "_fingerprint", lambda d: {"bodies": 2, "sketches": 3})
@@ -62,7 +61,7 @@ def stub_slices(monkeypatch):
          "with_handles": with_handles, "max_children": max_children,
          "name_filter": name_filter}, None))
     monkeypatch.setattr(dg, "_slice_timeline", lambda d, include_suppressed, group,
-                        with_params=False, max_rows=0, form_edit=None: (
+                        with_params=False, max_rows=0: (
         {"count": 4, "timeline": [], "with_params": with_params, "max_rows": max_rows}, None))
     monkeypatch.setattr(dg, "_slice_configurations", lambda d: ({"table_name": "Configs"}, None))
     monkeypatch.setattr(dg, "_slice_attributes", lambda d, group, key: (
@@ -94,10 +93,9 @@ class TestDefaultSlice:
         assert "materials" not in out and "appearances" not in out   # the catalog is opt-in too
 
     def test_default_omits_noise_when_healthy(self, stub_slices):
-        # a healthy design carries no health DETAIL block + no in_base_feature_edit:false
+        # a healthy design carries no health DETAIL block
         out = _payload(dg.handler())
         assert "health" not in out                     # 'timeline_healthy: True' says it all
-        assert "in_base_feature_edit" not in out       # only present when True
 
     def test_default_emits_pointers_for_hidden_content(self, monkeypatch, stub_slices):
         # a design WITH parameters gets a pointers block naming param_get/param_set - the inbound
@@ -145,6 +143,25 @@ class TestDefaultSlice:
     def test_default_note_advertises_remaining_slices(self, stub_slices):
         out = _payload(dg.handler())
         assert "include=" in out["note"]               # un-named flags are invisible — must advertise
+
+
+# ── an open Form/base-feature edit reads direct too, and design.timeline raises there ────────────────
+
+class TestOpenEditCaveat:
+    def test_direct_reading_design_nulls_timeline_healthy_and_carries_the_caveat(self, monkeypatch,
+                                                                                 stub_slices):
+        # has_timeline False means the timeline never read - 'healthy' from 0 findings would be a
+        # fabricated verdict, not an observation.
+        monkeypatch.setattr(dg, "_slice_mode", lambda d: (
+            {"design_type": "direct", "has_timeline": False, "timeline_feature_count": None,
+             "can": {"timeline_ops": False}}, None))
+        out = _payload(dg.handler())
+        assert out["timeline_healthy"] is None
+        assert "Finish Form" in out["note"]
+
+    def test_parametric_reading_design_carries_no_caveat(self, stub_slices):
+        out = _payload(dg.handler())
+        assert "Finish Form" not in out["note"]
 
 
 # ── each include= adds exactly its slice ────────────────────────────────────────────────────────────
@@ -1970,7 +1987,7 @@ class TestRouterErrorPropagation:
 
     def test_timeline_slice_error_fails_the_read(self, monkeypatch, stub_slices):
         monkeypatch.setattr(dg, "_slice_timeline",
-                            lambda d, s, g, p=False, mr=0, fe=None: (
+                            lambda d, s, g, p=False, mr=0: (
                                 None, dg.error("direct-modeling design")))
         res = dg.handler(include=["timeline"])
         assert res["isError"] and "direct-modeling" in error_message(res)
@@ -1980,45 +1997,14 @@ class TestRouterErrorPropagation:
         res = dg.handler()
         assert res["isError"] and "mode read failed" in error_message(res)
 
-    def test_in_base_feature_edit_surfaces_only_when_true(self, monkeypatch, stub_slices):
-        monkeypatch.setattr(dg, "_slice_mode", lambda d: (
-            {"design_type": "parametric", "timeline_feature_count": 1,
-             "in_base_feature_edit": True}, None))
-        out = _payload(dg.handler())
-        assert out["in_base_feature_edit"] is True
-
-    def test_an_open_form_edit_is_named_and_its_timeline_health_is_null(self, monkeypatch,
-                                                                      stub_slices):
-        # the open edit hides the timeline, so the empty rollup it leaves is not a healthy one
-        monkeypatch.setattr(dg, "_slice_mode", lambda d: (
-            {"design_type": "direct", "timeline_feature_count": None, "in_form_edit": True}, None))
-        out = _payload(dg.handler())
-        assert out["in_form_edit"] is True and out["timeline_healthy"] is None
-
-    def test_the_timeline_slice_in_an_open_form_edit_names_the_edit(self, monkeypatch):
+    def test_the_timeline_slice_when_the_design_reads_direct_has_no_timeline(self):
         class _EditOpen(MakeDesign):
-            """Inside an open Form edit: designType reads direct and the timeline read RAISES."""
+            """A direct-reading design (e.g. inside an open Form edit) whose timeline read raises."""
             @property
             def timeline(self):
                 raise RuntimeError("3 : this is not a parametric design")
-        monkeypatch.setattr(dg._common, "app", FakeApplication(user_interface=FakeUserInterface(
-            active_workspace=SimpleNamespace(id="TSplineEnvironment"))))
         _slice, err = dg._slice_timeline(_EditOpen(design_type=0), True, "")
-        assert "A Form edit is open" in error_message(err)
-
-    def test_the_timeline_refusal_reuses_the_mode_slices_form_edit_read(self, monkeypatch):
-        monkeypatch.setattr(dg, "_slice_mode", lambda d: ({"in_form_edit": True}, None))
-        monkeypatch.setattr(dg._inputs, "in_form_edit",
-                            lambda d: pytest.fail("in_form_edit read twice"))
-
-        class _NoTimeline(MakeDesign):
-            """A design whose timeline read raises."""
-            @property
-            def timeline(self):
-                raise RuntimeError("3 : this is not a parametric design")
-        monkeypatch.setattr(dg._common, "design", lambda: _NoTimeline(design_type=0))
-        res = dg.handler(include=["mode", "timeline"])
-        assert "A Form edit is open" in error_message(res)
+        assert "This design has no timeline" in error_message(err)
 
 
 class TestUnwrap:

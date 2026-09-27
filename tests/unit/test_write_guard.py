@@ -43,6 +43,27 @@ def _decode(result):
     return json.loads(result["content"][0]["text"])
 
 
+class TestDrawingAutoDimensionCommand:
+    @pytest.fixture(autouse=True)
+    def active_command(self, monkeypatch):
+        monkeypatch.setattr(wg, "app", SimpleNamespace(
+            userInterface=SimpleNamespace(activeCommand="FusionDrawingAutoDimensionEditCommand")))
+        monkeypatch.setattr(wg, "_active_identity", lambda: ("Drawing", "urn:drawing"))
+
+    def test_write_refuses_before_handler_but_read_remains_available(self):
+        called = []
+        write = wg.wrap(lambda **kw: called.append("write") or _ok({"written": True}))
+        result = write()
+        payload = _decode(result)
+        assert result["isError"] is True and called == []
+        assert payload["blocked_by"] == ["active_drawing_auto_dimension_command"]
+        assert payload["active_command"] == "FusionDrawingAutoDimensionEditCommand"
+        assert "finish or cancel" in payload["note"].lower()
+        assert "auto_dimension='off'" in payload["note"]
+        read = wg.wrap_read(lambda **kw: _ok({"read": True}))
+        assert _decode(read())["read"] is True
+
+
 class TestActedOnStamp:
     @pytest.fixture(autouse=True)
     def healthy_scan(self, monkeypatch):

@@ -94,13 +94,14 @@ def _form(rig, **kw):
 
 class TestFormCreate:
     @pytest.mark.parametrize("workspace", ["FusionSolidEnvironment", "TSplineEnvironment"])
-    def test_add_is_never_called_in_a_direct_design_or_an_open_form_edit(self, rig, workspace):
+    def test_add_is_never_called_when_the_design_reads_direct(self, rig, workspace):
+        # the workspace cannot discriminate an open Form edit from a plain direct design (no public
+        # signal does), so the refusal is the same regardless of which workspace is active.
         rig.design.designType = 0
         rig.ui.activeWorkspace = types.SimpleNamespace(id=workspace)
         msg = error_message(fc.handler(primitive=_BOX))
         assert rig.forms._adds == 0
-        if workspace == "TSplineEnvironment":
-            assert "A Form edit is open" in msg and "Finish Form" in msg
+        assert "needs parametric mode" in msg
 
     @pytest.mark.parametrize("referenced,own_design,said", [
         (True, True, "places a component from another document"),

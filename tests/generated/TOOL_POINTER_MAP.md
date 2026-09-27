@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 196  |  **description breadcrumbs:** 300  |  **note/error breadcrumbs:** 631
+**Tools:** 207  |  **description breadcrumbs:** 307  |  **note/error breadcrumbs:** 663
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -17,11 +17,11 @@ close orphans, factor duplicated guards into shared helpers.
 **Read/Acquire (9)** - higher concern, a check-your-work tool nothing points to:
   `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `model_compute_holder`, `model_measure_continuity`, `model_measure_relation`, `sys_get_api_doc`
 
-**Edit (48)** - usually leaf actions, scan for genuine gaps:
-  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
+**Edit (52)** - usually leaf actions, scan for genuine gaps:
+  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
 
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
-- **54x** across 53 module(s): "No active design. Create or open a document first (see doc_new)."
+- **55x** across 54 module(s): "No active design. Create or open a document first (see doc_new)."
 - **24x** across 24 module(s): "No active design. Open or create a document first (see doc_new)."
 - **9x** across 3 module(s): "' with design_delete_feature."
 - **8x** across 8 module(s): "No active design with components."
@@ -36,12 +36,12 @@ close orphans, factor duplicated guards into shared helpers.
 - **4x** across 1 module(s): "setMotionData reported success on '"
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
-- `doc_new`  <- 87  (desc 0, note 87)
-- `find_geometry`  <- 52  (desc 14, note 38)
-- `design_get`  <- 50  (desc 10, note 40)
-- `design_delete_feature`  <- 40  (desc 16, note 24)
-- `view_screenshot`  <- 34  (desc 5, note 29)
-- `cam_get`  <- 32  (desc 15, note 17)
+- `doc_new`  <- 88  (desc 0, note 88)
+- `find_geometry`  <- 54  (desc 14, note 40)
+- `design_get`  <- 51  (desc 10, note 41)
+- `design_delete_feature`  <- 41  (desc 16, note 25)
+- `view_screenshot`  <- 36  (desc 5, note 31)
+- `cam_get`  <- 33  (desc 15, note 18)
 - `data_get`  <- 25  (desc 10, note 15)
 - `model_inspect`  <- 25  (desc 3, note 22)
 - `sketch_create`  <- 24  (desc 7, note 17)
@@ -382,6 +382,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ', but 'template_name' says '
 - ' - nothing was applied. Pass the url alone to apply '
 - ', or the name alone to search for '
+- CAM.checkValidity failed before template apply; nothing was applied.
 - Failed to apply template:
 - cam_edit_operation(operation=<name>, tool_scope='document', tool_index=<n>) assigns one per operation; cam_edit_tools lists this document's tools, and adds one when it holds none.
 - renumber it with cam_edit_tools(action='edit', tool=<index>, parameters={'tool_number': <n>}), or cam_post refuses the duplicate.
@@ -435,6 +436,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Operation created but toolpath generation errored:
 - Operation created; toolpath generation started (async) - poll cam_get_status(handle='
 - ' reads isAdditiveStrategy true, and this tool assigns no cutting tool to one, so nothing was created. Drop 'tool_scope', 'tool_library_url' and 'tool_index' and retry.
+- CAM.checkValidity failed before operation creation; nothing was created.
 - ' but Operation.tool reads back null - it carries no cutting tool and cannot generate. Assign one with cam_edit_operation(tool_scope/tool_library_url, tool_index), or remove it with cam_delete.
 - ' but Operation.tool reads
 - , which does not name the requested
@@ -459,14 +461,19 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Created operation '' in setup '' but Operation.tool reads , which does not name the requested  - it carries a tool this call did not ask for. Re-assign it with cam_edit_operation(tool_scope/tool_li...
 
 ### `cam_create_setup`
+- Cutting setup uses the flat bodies of the named folded sources. Use cam_create_operation(strategy='profile2d') for a cutting path.
 - No active design. Open or create a document first (see doc_new).
 - No bodies to machine. The root component holds no bodies - add geometry first, or pass 'models' = body handles/names (a body inside a sub-component is not in the default set).
 - Setup creation returned nothing.
 - setups.add returned a setup for '
 - ' but Setup.operationType reads back
 - , which is not the type this call asked for. Remove it with cam_delete and retry.
+- flat_patterns applies to operation_type='cutting', not '
+- Pass flat_patterns or models, not both; a cutting setup needs one model source.
+- operation_type='cutting' needs flat_patterns: folded sheet bodies with flat patterns.
 - setups.add returned '
 - ' but it does not appear when the setups are re-listed - the setup did not land.
+- ' remains, but its selected models did not read back as the requested flat bodies. Inspect cam_get(include=['setups']) before retrying.
 - setup(s) already answer to ''. Setup.name dedupes rather than refusing, so it would land as something like '1' - a name nothing asked for. Pick one no setup carries; cam_get lists them.
 - operation_type='additive' needs 'machine' - a printer. Without one setups.add raised '3 : Setup creation failed' and no setup landed. Pick one cam_get(include=['machines'], machine_type='additive')...
 - Machine '' reads isAdditiveSupported false, so an additive setup cannot be built on it (it supports: ). cam_get(include=['machines'], machine_type='additive') lists the printers.
@@ -476,6 +483,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - The additive setup landed but Setup.machine reads , not the requested  - it carries a printer this call did not ask for. Remove it with cam_delete and retry.
 - The additive setup landed but Setup.printSetting reads , not the requested  - it prints with a setting this call did not ask for. Remove it with cam_delete and retry.
 - The additive setup landed but Setup.printSetting is described , not  -  names several settings and the one that landed is not the one picked. Remove it with cam_delete and retry.
+- Cutting setup '' remains, but its selected models did not read back as the requested flat bodies. Inspect cam_get(include=['setups']) before retrying.
 - setups.add returned a setup for '' but Setup.operationType reads back , which is not the type this call asked for. Remove it with cam_delete and retry.
 
 ### `cam_delete`
@@ -756,6 +764,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `cam_generate`
 - Generation launch returned no future (nothing to generate?).
+- flat model(s) were already refreshed.
 - Omit 'target' to generate the whole document.
 - Failed to launch generation for
 - Pass skip_valid=false to force-regenerate it.
@@ -858,6 +867,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - requested operation(s) have no readable operationId, so whether reconfiguring would overwrite a machinist-curated program is unknown. Omit 'scope', 'setups', 'post', and 'output_folder' to post it ...
 - ' already exists and its stored operations differ from what 'scope' resolves to - reconfiguring would overwrite a program that may be machinist-curated. Omit 'scope', 'setups', 'post', and 'output_...
 - ' output folder to post as-is against - configure it once with 'output_folder' and 'post'.
+- ' stored operations could not be read; no flat refresh or post was attempted.
 - (the API returned null).
 - The NC Program has no '
 - ' parameter, so the output folder could not be set to '
@@ -865,6 +875,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Post processing raised:
 - ; check the post matches the machine/operations.)
 - Omit 'scope' to post the whole document.
+- ' stored operations could not be enumerated; no flat refresh or post was attempted.
+- Flat paths were generated, but fail-on-post behavior did not read back; no NC file was posted.
 - Post config not found for ''. Tried: . Provide a full .cps path, or a post name in the personal () or installed () post folder. post_scope=fusion resolves the same name against the posts this insta...
 - Provide 'post' - the post processor: for post_scope=local a full .cps path or a name in the personal/installed post folder; for cloud/hub/fusion the NAME of a post in that library.
 - The post's message names the PROGRAM NUMBER, and program_name '' is not a number - retry with a numeric program_name such as '1001'.
@@ -874,9 +886,13 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - The just-created NC Program '' was NOT removed - deleteMe raised (), so it remains in the document; remove it with cam_delete.
 - The just-created NC Program '' was NOT removed - deleteMe returned false, so it remains in the document; remove it with cam_delete.
 - deleteMe returned true for the just-created NC Program '' but it still resolves in ncPrograms - remove it with cam_delete.
-- No valid toolpaths to post - every operation is out-of-date, errored, or ungenerated. Run cam_generate (in the Manufacture workspace) first. ()
+- Active document changed during flat generation; handles  remain pollable for Future progress with document-wide readiness. No NC file was posted.
+- Flat generation finished, but requested . Handles  remain pollable for Future progress with document-wide readiness. Check cam_get(include=['operations']) for selected health. No NC file was posted.
+- Flat generation did not complete with verified nonempty paths within s.  flat model(s) were refreshed; handles  remain pollable for Future progress, with document-wide readiness. Check cam_get(incl...
+- Active document changed after flat generation; handles  remain pollable for Future progress with document-wide readiness. No NC file was posted.
 - NC Program '' already exists, but its stored operations cannot be compared with what 'scope' resolves to:  stored and  requested operation(s) have no readable operationId, so whether reconfiguring ...
 - NC Program '' already exists and its stored operations differ from what 'scope' resolves to - reconfiguring would overwrite a program that may be machinist-curated. Omit 'scope', 'setups', 'post', ...
+- No valid toolpaths to post - every operation is out-of-date, errored, or ungenerated. Run cam_generate (in the Manufacture workspace) first. ()
 - Program '' posted AS-IS from its stored configuration -  file(s), nothing reconfigured. 'readiness' carries its health.
 
 ### `cam_reorder`
@@ -938,6 +954,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - stock_faces names the STOCK's own analytic faces, so it takes no model geometry -
 - was passed beside it. Pass stock_faces alone, or drop it and select model faces with 'handles'.
 - '. Use mm, cm, or in.
+- CAM.checkValidity failed before selection; no selection or generation was attempted.
 - Selection applied but the operation reports 0 selections - the geometry was rejected. Check the geometry matches the strategy (edges for chain, the pocket floor face for pocket, bodies for silhouet...
 - chain_groups requires selection='chain' and replaces handles.
 - chain_groups must contain nonempty lists of edge handles.
@@ -946,6 +963,9 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - choices - cam_get(include=['operations'])). Nothing was changed.
 - ' already separates each reference; use handles here.
 - chain_groups did not resolve one edge per handle; refresh the handles.
+- ' has no readable owning setup; selection and generation were not attempted.
+- Setup model refresh failed:
+- Selection and generation were not attempted.
 - 'handles' cannot be checked for one chain - an edge's vertices did not read. Pass chain_groups, one list per contour. No heights or selections were changed.
 - chains that share no vertex (
 - ) - a flat list is taken as ONE connected chain. Pass chain_groups, one list per contour, to group them yourself. No heights or selections were changed.
@@ -1019,6 +1039,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - This operation carries no toolpath by construction - cam_get(include=['parameters'], operation=...) reads what it carries.
 - activate() ran but setup '' still reads isActive=false - the viewport still shows another setup's models, not this operation's part.
 - activate() ran but isActive cannot be read on setup '', so the activation is UNCONFIRMED - the viewport may still show another setup's models rather than this operation's part.
+- The setup's model box read, but the camera could not be measured against it, so the frame stayed on the plain fit (fitted_to='viewport').
 - Activated setup '' (the operation's own): the viewport renders only the ACTIVE setup's models, so the toolpath would otherwise sit beside another setup's part.
 - operation(s) did not read back isLightBulbOn=false during the hide - see hide_failures; their toolpaths may still be drawn.
 
@@ -1486,6 +1507,9 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - - refusing rather than dropping it. Export as stl to bake the unit into the file, or omit 'stl_units'.
 - ) applies to format=stl only, and this call asked for format=
 - - refusing rather than dropping it. Export as stl to choose binary or ASCII, or omit 'stl_binary'.
+- Flat-pattern options require format=dxf; omit them for other formats.
+- dxf_flat_units/dxf_bend_lines/dxf_bend_extents require dxf_flat_pattern.
+- dxf_flat_pattern cannot be combined with sketch/face export selectors or flags.
 - ') and split_by_component=true cannot be combined: the split writes one file per TOP-LEVEL occurrence and would not narrow to that target - refusing rather than dropping it. Omit 'target' to split ...
 - Provide 'file_path' - the local output path (a file, or a DIRECTORY when split_by_component=true). The format extension is appended if missing.
 - No active design to export. Open or create a document first (see doc_new).
@@ -1506,6 +1530,14 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Provide 'file_path' - the local .dxf output path.
 - Pass only one of 'dxf_sketch' or 'dxf_face' for format=dxf, not both.
 - format=dxf needs either 'dxf_sketch' (a sketch NAME) or 'dxf_face' (a find_geometry planar-face handle) to know what 2D geometry to write.
+- dxf_flat_pattern must belong to the active design; open its source document first.
+- dxf_flat_pattern has no readable flat pattern. Use sheet_create_flat_pattern first.
+- dxf_flat_pattern is not the component's flattened body. Select its folded source body.
+- Provide file_path for the flat-pattern DXF.
+- Developed blank exported. Coordinates use the flat export frame; bend layers are separate from cutting contours.
+- Flat-pattern DXF export failed:
+- , but its unit header could not be read:
+- did not land; no export was attempted.
 - format= cannot export : its ExportManager factory takes a COMPONENT and answers an occurrence or a body with '3 : invlid argument geometry'. Export the COMPONENT by its name (not '', an instance/bo...
 - Export one instance by its occurrence name/fullPathName, or pass a body handle from find_geometry (design_get(include=['tree']) lists the instances).
 - export reported success but . execute() returned true but produced nothing - treating this as a failure, not a false success. Check the target geometry and the output path are valid.
@@ -1617,8 +1649,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - 'target' must be one of:
 - Converting to DIRECT destroys the timeline and all design history (irreversible). Re-call with confirm_history_loss=true to proceed.
 - Re-run design_get(include=['mode']) to see the updated capability map.
-- Assignment did not take - design is still
-- . Nothing was converted and no history was discarded.
+- The assignment did not take - the design still reads
+- The assignment did not take: the design still reads direct, so a Form or base-feature edit is open.
 
 ### `design_set_name`
 - 'new_name' is required - a non-empty name to give the target.
@@ -1940,7 +1972,9 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Deleting sketch '' is NOT CONFIRMED: deleteMe answered  and sheet '' would not report its sketch count. Read drawing_get for sheet '' before drawing on it again
 
 ### `drawing_create`
-- Created as a CLOUD file (NOT opened). Reach it: doc_open(file_id, force_api_open=true), then drawing_export for the PDF - a drawing never reviewed in the Fusion UI opens and drives that way, so no ...
+- Created as a CLOUD file (NOT opened). Use doc_open(file_id, force_api_open=true), then drawing_export; no manual step is needed up front. If open fails or hangs, opening once in the Fusion UI is a ...
+- Flat drawing options require 'flat_pattern' in sheet_types; enable that sheet or omit the options.
+- bend_table_location requires a bend table; omit the location or enable bend_table.
 - creation_mode 'manual' requires template_file, which was empty.
 - This call stops here without creating anything. Pass the template's DataFile id/URL as template_file, or use creation_mode 'automatic'.
 - No active design to draw. Open or create a design first (see doc_new), then retry.
@@ -2166,7 +2200,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `form_get`
 - '. Use mm, cm, or in.
 - No active design. Open or create a document first (see doc_new).
-- A Form edit is open, which hides that Form and the timeline - ask the user to click Finish Form, then read again.
 - include=['cage'] reads one Form and the design holds
 - - name it with 'form'.
 
@@ -2790,17 +2823,27 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The names in 'model_parameters' are this datum's own model parameters - param_set one to an expression to drive the datum parametrically.
 
 ### `model_create_component`
+- . Model a constant-thickness solid, then use sheet_convert and verify isSheetMetal.
 - . Activate it (or it is active) then model into it with sketch_create / extrude; ground / joint it as an assembly part.
+- Empty sheet-metal component created
 - Empty component created
 - '. Use mm, cm, or in.
 - No active design. Create or open a document first (see doc_new).
+- sheet_metal=true has only been verified at root; omit parent and create a root sheet-metal component.
 - Could not access the target occurrences collection to create the component.
 - Component creation returned nothing.
 - Unknown rotate_axis '
 - Could not create component:
+- Sheet-metal occurrence '
+- ' was created, but its active rule did not read back. Inspect that occurrence with sheet_get(include=['components']) before modeling into it.
 - design intent was PART (one-component-only); promoted to HYBRID so multiple components are allowed while modeling stays enabled.
-- Empty component created. Activate it (or it is active) then model into it with sketch_create / extrude; ground / joint it as an assembly part.
+- Sheet-metal occurrence '' was created, but adopting existing rule '' failed: . It still carries rule ''; repair with sheet_edit_rule.
+- Sheet-metal occurrence '' now carries existing rule '', but its duplicate copy did not delete: . Repair with sheet_edit_rule or remove the stray rule.
+- Sheet-metal occurrence '' now carries existing rule '', but its duplicate copy did not delete (deleteMe=, design rule count , expected ). Repair with sheet_edit_rule.
+- Sheet-metal occurrence '' was created, but its active rule did not read back. Inspect that occurrence with sheet_get(include=['components']) before modeling into it.
 - ground_to_parent reads TRUE on this new occurrence - it is locked to its parent (the FIRST component of an empty design lands locked; the next one does not), so a joint drive displaces the OTHER me...
+- Another design rule named '' now exists; read sheet_get(include=['rules']) for its '#<n>' ref and resolve with sheet_edit_rule.
+- The design's prior sheet-metal rules could not be read, so adoption was skipped; read sheet_get(include=['rules']) to check for a duplicate.
 
 ### `model_draft`
 - Faces tapered to the pull direction. Pair with view_screenshot to view.
@@ -3574,6 +3617,180 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - addByTriangleMeshData returned a mesh body but the component's mesh body count did not increase ( before,  after) - the mesh body did not actually land.
 - Quality '' did NOT land: this build exposes no TriangleMeshQualityOptions member for it, so setQuality was never called and the tessellation ran at the calculator's default level of detail. 'qualit...
 - Tessellated the BRep body into a persistent MESH body.  Inspect it with model_inspect (mesh target), edit with mesh_reduce / mesh_remesh, or export it with mesh_export.
+
+### `sheet_convert`
+- No active design. Create or open a design first.
+- ' does not belong to body '
+- '. Re-find its broad face.
+- ' is not verified as an ordinary solid (isSheetMetal=
+- ' has no verified thickness at base_face '
+- ' thickness at base_face '
+- ' owning component could not be read.
+- ' is not verified as local to the active design; convert a body owned by this design.
+- ' name could not be read.
+- ' belongs to an already ruled sheet-metal component with active rule '
+- ' would be ignored. Use that active design rule or a different ordinary component.
+- cm but existing active rule '
+- cm. Conversion could change that shared rule; use an ordinary component and a design-local rule instead.
+- ' was not verified: API=
+- '. Inspect sheet_get.
+- ' isSheetMetal=True but its active rule thickness is
+- cm; measured blank was
+- cm. Inspect sheet_get.
+- Body isSheetMetal and its active rule read back. Re-read sheet_get rules after conversion; the source rule can be renamed or retained.
+- ' is in the library. Copy it with sheet_edit_rule first.
+- rule 'active' needs a component that already carries a sheet-metal rule; '
+- ' has none. Name one as 'design:<name>'.
+- . Read sheet_get(include=['components','rules']) before retrying.
+- body '' belongs to an already ruled sheet-metal component with active rule ''; requested rule '' would be ignored. Use that active design rule or a different ordinary component.
+- body '' measures  cm but existing active rule '' reads  cm. Conversion could change that shared rule; use an ordinary component and a design-local rule instead.
+
+### `sheet_create_flange`
+- No active design. Create or open a document first (see doc_new).
+- profile's component '
+- ' is not the active component '
+- ' - the flange body lands wherever is active. Activate it first with design_activate_component.
+- component body count could not be read before the flange; re-read its geometry.
+- Flange returned no feature; inspect the component before retrying.
+- ' remains, but its effect was not verified: bodies
+- ). Inspect it before retrying.
+- must be finite and between 0 and 180 (exclusive).
+- edges[0] belongs to an ordinary body. Use sheet_convert first.
+- Every edge must belong to the same sheet body.
+- edges' owning component could not be read.
+- edges must belong to the active design; edit the source document first.
+- body topology could not be read before the flange; re-read its geometry.
+- Flange returned no feature; inspect the body before retrying.
+- ' remains, but its effect was not verified: faces
+- ]'s body could not be read.
+- Flange '' remains, but its effect was not verified: faces ->, bend faces -> (want +), volume -> cm3, distance  cm (want ), angle  rad (want ), datum  (want ), position  (want ), flip  (want ). Insp...
+- profile's component '' is not the active component '' - the flange body lands wherever is active. Activate it first with design_activate_component.
+- Flange '' remains, but its effect was not verified: bodies ->, isSheetMetal=, thickness  cm (rule ''  cm), orientation  (want ). Inspect it before retrying.
+
+### `sheet_create_flat_pattern`
+- stationary_face must belong to the active design; edit the source document first.
+- stationary_face belongs to an ordinary body. Use sheet_convert first.
+- This component already has a flat pattern. Export it with design_export; do not recreate it.
+- Flat-pattern creation returned no pattern. Inspect the component before retrying.
+- A flat pattern may remain, but its source association and nonempty solid were not verified. Inspect the component before retrying.
+- Flat pattern created. Export the folded body's flat with design_export(format='dxf', dxf_flat_pattern=<body handle>).
+- Could not check this component's existing flat pattern:
+- Flat-pattern creation failed:
+- . Select a broad top or bottom face of the sheet.
+
+### `sheet_create_fold`
+- must be finite, nonzero and between -180 and 180.
+- bend_line and stationary_face must belong to the same local component.
+- stationary_face belongs to an ordinary body. Use sheet_convert first.
+- stationary_face must belong to the active design; edit the source document first.
+- Fold creation is unavailable in this Fusion build.
+- The sheet body's face count could not be read; re-read its geometry before folding.
+- Fold returned no feature; inspect the body before retrying.
+- ' remains, but its angle did not read back as
+- deg. Inspect or remove it with design_delete_feature.
+- ' remains, but changed body topology was not verified. Inspect it before retrying.
+- Fold created. Inspect the stationary side with view_screenshot; create the developed blank with sheet_create_flat_pattern.
+- bend_line was not accepted; choose a line across the sheet face.
+- Fold failed for bend_line=
+
+### `sheet_create_hem`
+- edge's body could not be read.
+- edge belongs to an ordinary body. Use sheet_convert first.
+- edge's owning component could not be read.
+- edge must belong to the active design; edit the source document first.
+- body topology could not be read before the hem; re-read its geometry.
+- Hem returned no feature; inspect the body before retrying.
+- ' remains, but its kind or changed geometry was not verified. Inspect it before retrying.
+- Hem landed. Next: sheet_create_flat_pattern, or another edge.
+- must be finite and between 0 (exclusive) and 360 (inclusive).
+- ' dimensions were not accepted; check them against the edge's own length.
+
+### `sheet_create_join_by_bend`
+- edge_one/edge_two's body could not be read.
+- edge_one/edge_two's body identity could not be read.
+- edge_one and edge_two are on the same body; pick a rim edge from each of the two sheets to join.
+- edge_one and edge_two must belong to the same component.
+- edge_one belongs to an ordinary body. Use sheet_convert first.
+- edge_two belongs to an ordinary body. Use sheet_convert first.
+- edge_one/edge_two must belong to the active design; edit the source document first.
+- body topology could not be read before the join; re-read its geometry.
+- Join by bend returned no feature; inspect the bodies before retrying.
+- ' remains, but the merge or its bend faces were not verified (bodies
+- ). Inspect it before retrying.
+- ' remains, but its bend radius override read back isOverridden=
+- cm, not the requested
+- cm. Inspect it before retrying.
+- Bodies joined by a bend. Next: sheet_create_flat_pattern.
+- bend_radius override (
+- mm) was not accepted.
+- Join by bend '' remains, but the merge or its bend faces were not verified (bodies  -> , bend faces  -> ). Inspect it before retrying.
+- Join by bend '' remains, but its bend radius override read back isOverridden=, bendRadius= cm, not the requested  cm. Inspect it before retrying.
+
+### `sheet_create_refold`
+- is not an UnfoldFeature. Read design_get(include=['timeline']).
+- '; no duplicate was created.
+- : body topology could not be read before refolding.
+- Refold returned no feature; inspect the timeline before retrying.
+- ' remains, but its unfold association or changed geometry was not verified. Inspect it before retrying.
+- Sheet refolded with the intervening edits. Inspect the bends with view_screenshot.
+- . Inspect the timeline before retrying.
+- Refold failed for unfold=
+
+### `sheet_create_rip`
+- Rip landed. A converted box may still refuse to develop (blended corners); build boxes from sheet_create_flange. Next: sheet_create_flat_pattern.
+- bodies in the component:
+- . Next: sheet_create_flat_pattern.
+- 's body could not be read.
+- belongs to an ordinary body. Use sheet_convert first.
+- 's owning component could not be read.
+- must belong to the active design; edit the source document first.
+- body topology could not be read before the rip; re-read its geometry.
+- Rip returned no feature; inspect the body before retrying.
+- ' remains, but its changed geometry was not verified. Inspect it before retrying.
+- ' remains, but the component's bodies read
+- cm3 after; inspect it before retrying.
+- gap is not given and the component's active sheet-metal rule has no readable gap; pass 'gap' explicitly.
+- ' selector was not accepted; pick a rim
+- point_one/point_two's body could not be read.
+- point_one and point_two must lie on the same body.
+
+### `sheet_create_unfold`
+- Pass bend_faces or all_bends=true, exactly one. Use find_geometry for bend-face handles.
+- stationary_face must belong to the active design; edit the source document first.
+- Every bend_face must belong to the stationary face's body.
+- stationary_face must belong to a sheet-metal body. Use sheet_convert first.
+- Body topology could not be read before unfolding; re-read its geometry.
+- Unfold returned no feature; inspect the body before retrying.
+- ' remains, but its changed geometry was not verified. Inspect it before retrying.
+- Bends unfolded. Add cuts, then pass this feature to sheet_create_refold.
+- ' bend faces could not be read; re-read its geometry.
+- ' has no bends to unfold.
+
+### `sheet_edit_rule`
+- No active design. Create or open a design first.
+- ' is a library rule; copy it with action='copy' before editing.
+- ' did not persist; actual is '
+- Design-local rule read back. Assign or convert a component separately.
+- action='copy' needs a nonempty 'name' for the design-local rule.
+- Design-local rules could not be read; no copy attempted.
+- ' already exists; choose another name or update it.
+- Design sheet-metal rule data is uninitialized. Create a root sheet-metal component with model_create_component(sheet_metal=true), then retry the copy.
+- ' was not verified. Read sheet_get(include=['rules']) to inspect any partial effect.
+- 'name' applies only to action='copy'; use the scoped rule ref for update.
+- action='update' needs thickness, bend_radius, gap, or k_factor.
+- could not be read. Applied so far:
+- . Read sheet_get(include=['rules']).
+- ' did not evaluate to
+- ' persists; k_factor=
+- did not read back (got '
+- Could not copy rule '
+- . Read sheet_get(include=['rules']) before retrying.
+
+### `sheet_get`
+- . Use rules, library_rules, components, features, or default.
+- ' must be an integer from 1 to 200.
+- No active design. Create or open a design first.
+- Component names may repeat; use a body handle from find_geometry for sheet_convert.
 
 ### `sketch_add_3d_line`
 - Line drawn in 3D. The end point's non-zero z places it off the sketch's x-y plane. View it from an iso angle with view_screenshot (a top view hides the out-of-plane component).
@@ -4368,7 +4585,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - design_get(include=['tree']) -  occurrence(s) () reference a component that could not be loaded; the tree marks each row unresolved:true. Their source file is not readable through the API - open th...
 - doc_update_xref() -  external reference(s) are OUT OF DATE (). Stale references show the wrong geometry (and miss newer features); refresh before relying on, machining, or inserting this part.
 - Attention () - see health + the fix_* pointer(s). These CAN be intentional on a fixture/CAM template (parked alternates, pinned refs) or a deliberate mid-history roll; confirm before treating as br...
-- A Form edit is open: it hides the timeline and the user parameters until the user clicks Finish Form, so their counts, timeline_rolled_back and is_healthy read null.
 - published NO compute state - neither the entity nor its timeline item answered one - so they are counted neither broken nor healthy and is_healthy makes no claim about them.
 - An UNRESOLVED reference means reading that occurrence's component RAISES: the source component is not loaded, and its file, project and hub are NOT readable through the API - open the browser tree ...
 - total_occurrences is null: NEITHER occurrence walk enumerated, so the design's occurrence count is unknown rather than zero.

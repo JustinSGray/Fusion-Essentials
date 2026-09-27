@@ -21,7 +21,7 @@ from . import _inputs
 app = adsk.core.Application.get()
 
 _OP_TYPES = {"milling": "MillingOperation", "turning": "TurningOperation",
-             "additive": "AdditiveOperation"}
+             "cutting": "JetOperation", "additive": "AdditiveOperation"}
 
 _OP_TYPE = _inputs.Choice("operation_type", options=list(_OP_TYPES), default="milling")
 
@@ -33,6 +33,45 @@ _ADDITIVE_KIND = "additive"      # the machine_kinds label an additive machine m
 # selection when the component's contents are replaced, and the setup stays valid.
 _MODELS = _inputs.TargetRefList("models", required=False,
                                 description="Omit = every root-component body.")
+_FLATS = _inputs.BodyRefList("flat_patterns", kind="solid", required=False,
+                            description="Folded sheet source bodies.")
+
+
+def _flat_models(design, references):
+    """Resolve folded source bodies to verified flat bodies for a cutting setup."""
+    sources, why = _FLATS.resolve(references)
+    if why:
+        return None, None, why
+    flat_bodies, rows, seen = [], [], set()
+    root = safe(lambda: design.rootComponent)
+    for body in sources:
+        comp = safe(lambda body=body: body.parentComponent)
+        label = safe(lambda body=body: body.name) or "?"
+        if comp is None or _common.same_component(
+                safe(lambda comp=comp: comp.parentDesign.rootComponent), root) is not True:
+            return None, None, f"flat_patterns body '{label}' is not local to the active design."
+        if safe(lambda body=body: body.isSheetMetal) is not True:
+            return None, None, f"flat_patterns body '{label}' is not verified sheet metal."
+        flat = safe(lambda comp=comp: comp.flatPattern)
+        if flat is None:
+            return None, None, (f"flat_patterns body '{label}' has no flat pattern. "
+                                "Use sheet_create_flat_pattern first.")
+        source = safe(lambda flat=flat: flat.foldedBody)
+        source_key, body_key = _common.native_identity(source), _common.native_identity(body)
+        if source_key is None or source_key != body_key:
+            return None, None, f"flat_patterns body '{label}' is not the source of its component flat pattern."
+        if body_key in seen:
+            return None, None, f"flat_patterns repeats body '{label}'; list each folded source once."
+        seen.add(body_key)
+        developed = safe(lambda flat=flat: flat.flatBody)
+        if developed is None or safe(lambda developed=developed: developed.isSolid) is not True:
+            return None, None, f"flat_patterns body '{label}' has no verified solid flat body."
+        if _common.native_identity(developed) is None:
+            return None, None, f"flat_patterns body '{label}' flat identity could not be read."
+        flat_bodies.append(developed)
+        rows.append({"component": safe(lambda comp=comp: comp.name), "folded_body": label,
+                     "flat_body": safe(lambda developed=developed: developed.name)})
+    return flat_bodies, rows, None
 
 
 def setup_name_clash(cam, want, current=""):
@@ -189,12 +228,19 @@ def _additive_readback(setup, m_label, s_name, s_desc):
 
 
 def handler(operation_type: str = "milling", models=None, name: str = "",
-            machine: str = "", print_setting: str = "",
+            machine: str = "", print_setting: str = "", flat_patterns=None,
             print_setting_description: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
     op_key, oerr = _OP_TYPE.resolve(operation_type)
     if oerr:
         return error(oerr)
+    if flat_patterns not in (None, "", []):
+        if op_key != "cutting":
+            return error(f"flat_patterns applies to operation_type='cutting', not '{op_key}'.")
+        if models not in (None, "", []):
+            return error("Pass flat_patterns or models, not both; a cutting setup needs one model source.")
+    elif op_key == "cutting":
+        return error("operation_type='cutting' needs flat_patterns: folded sheet bodies with flat patterns.")
     ferr = _additive_fields(op_key, machine, print_setting, print_setting_description)
     if ferr:
         return error(ferr)
@@ -212,8 +258,13 @@ def handler(operation_type: str = "milling", models=None, name: str = "",
         return error(aerr)
     m_obj, m_label, setting, s_name = additive
 
-    # Resolve the models: explicit BodyRefList (handles/names), else all root bodies.
-    if models not in (None, "", []):
+    # A cutting setup consumes each folded source body's native flat body.
+    flat_rows = None
+    if op_key == "cutting":
+        body_list, flat_rows, merr = _flat_models(design, flat_patterns)
+        if merr:
+            return error(merr)
+    elif models not in (None, "", []):
         body_list, merr = _MODELS.resolve(models)
         if merr:
             return error(merr)
@@ -253,6 +304,19 @@ def handler(operation_type: str = "milling", models=None, name: str = "",
             return error(f"setups.add returned '{new_name}' but it does not appear when the setups "
                          "are re-listed - the setup did not land.")
 
+    if flat_rows is not None:
+        landed_collection = safe(lambda: setup.models)
+        landed_models = (list(landed_collection) if isinstance(landed_collection, (list, tuple))
+                         else list(_common.iter_collection(landed_collection))
+                         if landed_collection is not None else [])
+        requested_keys = [_common.native_identity(b) for b in body_list]
+        landed_keys = [_common.native_identity(b) for b in landed_models]
+        if (len(landed_keys) != len(requested_keys) or None in landed_keys
+                or set(landed_keys) != set(requested_keys)):
+            return error(f"Cutting setup '{new_name}' remains, but its selected models did not "
+                         "read back as the requested flat bodies. Inspect cam_get(include=['setups']) "
+                         "before retrying.")
+
     kind = _operation_type_landed(setup, op_key)
     if kind is False:
         return error(f"setups.add returned a setup for '{op_key}' but Setup.operationType reads "
@@ -268,6 +332,11 @@ def handler(operation_type: str = "milling", models=None, name: str = "",
     "operation_count": safe(lambda: setup.allOperations.count, 0),   # total incl. foldered ops
     "note": _ADDITIVE_NOTE if op_key == _ADDITIVE else _SUBTRACTIVE_NOTE,
     }
+    if flat_rows is not None:
+        result["flat_sources"] = flat_rows
+        result["flat_models_verified"] = True
+        result["note"] = ("Cutting setup uses the flat bodies of the named folded sources. "
+                          "Use cam_create_operation(strategy='profile2d') for a cutting path.")
     if op_key == _ADDITIVE and (result["operation_count"] or 0) > 0:
         # Said only where the count READ above zero: the platform seeds this arm, and the sentence
         # would otherwise call a setup non-empty on a count of 0.
@@ -286,15 +355,13 @@ def handler(operation_type: str = "milling", models=None, name: str = "",
     return ok(result)
 
 
-TOOL_DESCRIPTION = (
-    "Create a CAM (Manufacture) setup - milling, turning, or additive on a printer from "
-    "cam_get(include=['machines']) - then add toolpaths with cam_create_operation."
-)
+TOOL_DESCRIPTION = ("Create a CAM setup. Cutting uses flat_patterns; add paths with cam_create_operation.")
 
 tool = (
     Tool.create_simple(name="cam_create_setup", description=TOOL_DESCRIPTION)
     .add_input_property(_OP_TYPE.name, _OP_TYPE.schema())
     .add_input_property(_MODELS.name, _MODELS.schema())
+    .add_input_property(*_FLATS.as_property())
     .add_input_property("name", {"type": "string"})
     .add_input_property("machine", {"type": "string",
             "description": "Required for additive."})

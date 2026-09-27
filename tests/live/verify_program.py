@@ -30,6 +30,10 @@ from verify_acts_model import (
     _DETAILS, _DETAILS_FB, _RESIZE, _RESIZE_FB, _SOLIDS, _SOLIDS_FB)
 from verify_acts_motion import _MOTION, _VISE
 from verify_acts_sketch import _SKELETON, _SKETCHWORK
+from verify_acts_sheet import (_SHEET, _SHEET_CAM_READ, _SHEET_DRAWING,
+                               _SHEET_CLEANUP, _SHEET_SELECTED, _SHEET_POSITIONS,
+                               _SHEET_CAM_REFRESH, _SHEET_CAM_RESTORE)
+from verify_acts_sheet_flange import _SHEET_FLANGE
 from verify_core import CLOUD_LINK_CRASH_REVIEW, CLOUD_TIER, _DWELL, _PLANE_VIEW, _SKETCH_PLANE
 from verify_layout import (
     _CHUNK_OF, _COMPONENTS, _PATTERNED, _PLACED_BOX, _SLOTS, _framed, _place_points, _place_slots,
@@ -191,6 +195,15 @@ _ACT_PROGRAM = [
     ("ACT 11b2 - CLOUD: LINK GUARD REVIEW", None, _CLOUD_LINK, []),
     ("ACT 11c - CLOUD: THE DRAWING", None, _CLOUD_DRAWING, []),
     ("ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE", None, _CLOUD_CAM_PERSISTENCE, []),
+    ("ACT 12 - SHEET METAL COUPON", None, _SHEET, []),
+    ("ACT 12b - SHEET METAL LASER OUTPUT", None, _SHEET_CAM_READ, []),
+    ("ACT 12b1 - SHEET METAL SOURCE UPDATE", None, _SHEET_CAM_REFRESH, []),
+    ("ACT 12b2 - SHEET METAL CAM RESTORE", None, _SHEET_CAM_RESTORE, []),
+    ("ACT 12c - SHEET METAL DRAWING", None, _SHEET_DRAWING, []),
+    ("ACT 12d - SHEET METAL CLEANUP", None, _SHEET_CLEANUP, []),
+    ("ACT 12e - SHEET METAL SELECTED BEND", None, _SHEET_SELECTED, []),
+    ("ACT 12f - SHEET METAL FOLD POSITIONS", None, _SHEET_POSITIONS, []),
+    ("ACT 12g - SHEET METAL FLANGE FAMILY", None, _SHEET_FLANGE, []),
     ("FINALE", None, _FINALE, None),
 ]
 
@@ -201,7 +214,16 @@ _ACT_PROGRAM = [
 # constraints and dimensions stay behind the curves they close, which the hoist would carry away.
 _SKETCH_PHASE, _ACT_PROGRAM = _sketches_first(
     _ACT_PROGRAM, after=("ACT 0 - OVERTURE", "ACT 1 - SKETCH + PARAMETERS", "ACT 1b - SKETCH TOOLS",
-                         "ACT 7 - THE VISE", "ACT 8b - THE HUB"))
+                         "ACT 7 - THE VISE", "ACT 8b - THE HUB",
+                         "ACT 12 - SHEET METAL COUPON",
+                          "ACT 12b - SHEET METAL LASER OUTPUT",
+                          "ACT 12b1 - SHEET METAL SOURCE UPDATE",
+                          "ACT 12b2 - SHEET METAL CAM RESTORE",
+                          "ACT 12c - SHEET METAL DRAWING",
+                          "ACT 12d - SHEET METAL CLEANUP",
+                          "ACT 12e - SHEET METAL SELECTED BEND",
+                          "ACT 12f - SHEET METAL FOLD POSITIONS",
+                          "ACT 12g - SHEET METAL FLANGE FAMILY"))
 _ACT_PROGRAM = (_ACT_PROGRAM[:3]
                 + [("ACT 1c - EVERY OTHER SKETCH", None, _SKETCH_PHASE, [])]
                 + _ACT_PROGRAM[3:])
@@ -259,6 +281,7 @@ ACTS = [(name, pre, _framed(_placed(narr, _SLOTS)), _framed(fb) if fb is not Non
 # thing one row at a time through verify_core.Needs; the probe per capability name lives in
 # verify_core.CAPABILITY_PROBES.
 ACT_NEEDS = {
+    "ACT 12c - SHEET METAL DRAWING": CLOUD_TIER,
     "ACT 11a - CLOUD: THE DATA MODEL": CLOUD_TIER,
     "ACT 11b - CLOUD: THE SAVED DOCUMENT": CLOUD_TIER,
     "ACT 11b2 - CLOUD: LINK GUARD REVIEW": CLOUD_LINK_CRASH_REVIEW,
@@ -277,6 +300,9 @@ ACT_NEEDS = {
 # leaves several generating gets each certified in turn. An act the capability tier held back polls
 # nothing, because nothing in it launched.
 POLL_AFTER = {
+    "ACT 12b - SHEET METAL LASER OUTPUT": {"narrative": "SM Sweep Laser Setup", "fallback": []},
+    "ACT 12b1 - SHEET METAL SOURCE UPDATE": {"narrative": "SM Sweep Laser Setup", "fallback": []},
+    "ACT 12 - SHEET METAL COUPON": {"narrative": "SM Sweep Laser Setup", "fallback": []},
     "ACT 10a - CAM: JOB + GENERATE": {"narrative": CAM_SETUP, "fallback": "Setup1"},
     # 10b ends on the Setup2 launch, so its boundary certifies that generation before the next act's
     # CAM writes start - a write landing while a generation free-runs is what parks the process. The
@@ -339,6 +365,19 @@ STEPS = [s for _, _, narr, fb in ACTS for s in (list(narr) + list(fb or []))
 
 # STORY: each covered tool's ledger shot-list note - the receipt doubles as the demo's shot list.
 STORY = {
+    "sheet_get": "read scoped rules, sheet body ownership and flat presence on the coupon",
+    "sheet_edit_rule": "copy a library rule locally, then change K and read its numeric settings",
+    "sheet_convert": "convert the 1.5 mm blank and check body state plus applied rule thickness",
+    "sheet_create_fold": "fold the intended interior line 90 deg and measure formed height",
+    "sheet_create_flat_pattern": "create one flat, read its source and nonempty volume",
+    "sheet_create_flange": ("add native edge flanges off two rim edges and an inner-height one, "
+                            "each landed bend-face growth checked and the bbox growth independently "
+                            "read; a curved-face edge refused"),
+    "sheet_create_hem": ("close a flat hem on a rim edge with its grown bend faces and volume; "
+                         "a rope hem missing its dimensions refused naming them"),
+    "sheet_create_rip": ("split a filleted, shelled corner by face and by edge, each a landed "
+                         "volume drop; the same edge's two vertices refused"),
+    "sheet_create_join_by_bend": "bridge two plates' rim edges into one body with a new bend",
     "doc_new": "open the one document the whole story lives in",
     "workspace_orient": ("orient: read the empty design before building; and the entitlement block "
                          "as the CAM job opens - exactly the four sentinel strategies, each "

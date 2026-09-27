@@ -1478,3 +1478,83 @@ class TestMembershipReadBack:
         assert data["membership_verified"] is True
         assert "membership_note" not in data and "Membership read-back:" not in data["note"]
 
+
+
+def test_flat_post_timeout_keeps_future_and_refuses_post(monkeypatch):
+    op = _Op("Laser")
+    setup = FakeSetup("Sheet", ops=[op])
+    cam = types.SimpleNamespace(generateToolpath=lambda selected: types.SimpleNamespace(
+        isGenerationCompleted=False, numberOfOperations=1))
+    monkeypatch.setattr(cp._cam_common, "refresh_flat_setup_models", lambda _: (1, None))
+    monkeypatch.setattr(cp._cam_common, "register_future", lambda *a, **k: ("gen-flat", 1))
+    monkeypatch.setattr(cp, "active_document_handle", lambda: "coupon-doc")
+    times = iter((0.0, 31.0))
+    monkeypatch.setattr(cp.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(cp.adsk.core.ObjectCollection, "create", staticmethod(_make_object_collection))
+    out, reason = cp._refresh_generate_flat_scope(cam, [op])
+    assert out is None and "No NC file was posted" in reason
+    assert "gen-flat" in reason
+
+
+def test_flat_post_rejects_failed_selected_op_without_waiting(monkeypatch):
+    good, bad = _Op("Perimeter"), _Op("Slot")
+    setup = FakeSetup("Sheet", ops=[good, bad])
+    launches = []
+    cam = types.SimpleNamespace(generateToolpath=lambda selected: launches.append(list(selected)) or
+                                types.SimpleNamespace(isGenerationCompleted=True,
+                                                      numberOfOperations=2))
+    monkeypatch.setattr(cp._cam_common, "refresh_flat_setup_models", lambda _: (1, None))
+    monkeypatch.setattr(cp._cam_common, "register_future", lambda *a, **k: ("gen-flat", 2))
+    monkeypatch.setattr(cp, "active_document_handle", lambda: "coupon-doc")
+    monkeypatch.setattr(cp.adsk.core.ObjectCollection, "create", staticmethod(_make_object_collection))
+    setup.operationType = cp.adsk.cam.OperationTypes.JetOperation
+    facts = lambda op, cam: {"name": op.name, "strategy": "profile2d",
+                             "operation_state": 0 if op.name == "Perimeter" else 1,
+                             "has_toolpath": op.name == "Perimeter",
+                             "is_toolpath_valid": op.name == "Perimeter",
+                             "has_error": op.name == "Slot", "is_suppressed": False,
+                             "nonfinite_toolpath": False}
+    monkeypatch.setattr(cp._cam_common, "op_state_facts", facts)
+    monkeypatch.setattr(cp._cam_common, "is_empty_toolpath", lambda _: False)
+    monkeypatch.setattr(cp.time, "sleep", lambda _: (_ for _ in ()).throw(AssertionError("late wait")))
+    out, reason = cp._refresh_generate_flat_scope(cam, [setup])
+    assert out is None and "Slot" in reason and "No NC file was posted" in reason
+    assert launches == [[good, bad]]
+
+
+def test_successful_flat_post_generation_releases_hidden_future(monkeypatch):
+    op = _Op("Laser")
+    setup = FakeSetup("Sheet", ops=[op])
+    cam = types.SimpleNamespace(generateToolpath=lambda selected: types.SimpleNamespace(
+        isGenerationCompleted=True, numberOfOperations=1))
+    monkeypatch.setattr(cp._cam_common, "refresh_flat_setup_models", lambda _: (1, None))
+    monkeypatch.setattr(cp, "active_document_handle", lambda: "coupon-doc")
+    monkeypatch.setattr(cp.adsk.core.ObjectCollection, "create", staticmethod(_make_object_collection))
+    monkeypatch.setattr(cp._cam_common, "op_state_facts", lambda op, cam: {
+        "name": op.name, "strategy": "profile2d", "operation_state": 0,
+        "has_toolpath": True, "is_toolpath_valid": True, "has_error": False,
+        "is_suppressed": False, "nonfinite_toolpath": False})
+    monkeypatch.setattr(cp._cam_common, "is_empty_toolpath", lambda _: False)
+    def register(*args, **kwargs):
+        cp._cam_common._GENERATIONS["gen-flat"] = {
+            "target": "selected flat operation", "started_at": cp.time.time()}
+        return "gen-flat", 1
+    monkeypatch.setattr(cp._cam_common, "register_future", register)
+    try:
+        out, reason = cp._refresh_generate_flat_scope(cam, [op])
+        assert reason is None and out["flat_operations_ready"] == 1
+        assert "gen-flat" not in cp._cam_common._GENERATIONS
+    finally:
+        cp._cam_common._GENERATIONS.pop("gen-flat", None)
+
+
+def test_flat_post_direct_milling_setup_reaches_model_refresh(monkeypatch):
+    setup = FakeSetup("Flat Mill", ops=[], models=[])
+    refreshed = []
+    monkeypatch.setattr(cp._cam_common, "refresh_flat_setup_models",
+                        lambda target: refreshed.append(target) or (1, None))
+    monkeypatch.setattr(cp, "active_document_handle", lambda: "coupon-doc")
+    result, reason = cp._refresh_generate_flat_scope(types.SimpleNamespace(), [setup])
+    assert reason is None
+    assert refreshed == [setup]
+    assert result["flat_models_refreshed"] == 1

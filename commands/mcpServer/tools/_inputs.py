@@ -14,7 +14,6 @@ from . import _common
 from . import _geom     # owning_bodies - the ONE identity-keyed owning-body walk
 from . import _joints   # the JointOrigin walk (all_joint_origins / find_joint_origins_by_name / proxy)
 from ._export import find_component as _find_component   # the one design-wide by-name component resolve
-from ._export import pump_until as _pump_until
 
 MAP_BLURB = (
     "the typed reference kinds (table above); resolve_inputs/apply_to_tool (wire and resolve "
@@ -1265,36 +1264,87 @@ def _owner_component_name(obj):
     return _common.safe(lambda: comp.name) if comp is not None else None
 
 
+def _ascii_int(text):
+    """The non-negative integer an ASCII-decimal string spells, else None."""
+    s = text.strip()
+    return int(s) if s.isascii() and s.isdecimal() else None
+
+
+def _parse_address(want):
+    """(base, index) for a '<base>@<index>' address, base being '[<component>/]<name>' as a refusal
+    prints it, else (None, None)."""
+    base, at, idx = want.rpartition("@")
+    i = _ascii_int(idx) if at and base.strip() else None
+    return (base.strip(), i) if i is not None else (None, None)
+
+
+def _index_of(obj):
+    """A timeline object's own index, or None when it does not read."""
+    return _common.safe(lambda: obj.index)
+
+
+def _address_key(obj):
+    """'[<component>/]<name>' for a timeline object, stripped and lower-cased - the base its
+    candidate prints."""
+    comp = (_owner_component_name(obj) or "").strip().lower()
+    name = _name_key(obj)
+    return f"{comp}/{name}" if comp else name
+
+
+def _owner_matches(obj, comp):
+    """Whether `comp` names the object's owning component (case-insensitive)."""
+    return (_owner_component_name(obj) or "").strip().lower() == comp.lower()
+
+
 def _match_timeline_objects(objs, want):
-    """Every timeline object `want` names: the 'name@index' pair (the object whose OWN .index is
-    that number, confirmed by name), a '<component>/<feature>' pair (the owning component plus the
-    name), a bare INTEGER (the object's own .index, as design_get's timeline slice publishes it) -
-    else an EXACT case-insensitive name match, never a substring."""
+    """Every timeline object `want` names - a bare integer's index hit and its literal-name twins."""
     # MEASURED: Fusion names an occurrence-create timeline object with a LEADING SPACE
     # (' InsProbe:1'), invisible in every listing an agent reads, so both sides are STRIPPED and
     # two objects differing only by whitespace are one ambiguity.
-    base, at, idx = want.rpartition("@")
-    if at and base.strip() and idx.strip().isdigit():
-        i = int(idx.strip())
-        low = base.strip().lower()
-        return [o for o in objs
-                if _common.safe(lambda o=o: o.index) == i and _name_key(o) == low]
-    # A qualified or numeric form that names nothing falls through to the exact name: a feature
-    # literally named 'A/B' or '12' stays addressable.
+    base, i = _parse_address(want)
+    if base is not None:
+        # An address is read back whole, exactly as a refusal prints it (a component named 'X/Y'
+        # round-trips); a feature literally named 'Rev@2' keeps its whole name.
+        low, whole = base.lower(), want.strip().lower()
+        hits = [o for o in objs if _index_of(o) == i and low in (_name_key(o), _address_key(o))]
+        return hits + [o for o in objs if _name_key(o) == whole and o not in hits]
     comp, feat = _split_qualified(want)
     if comp is not None:
-        clow, flow = comp.lower(), feat.lower()
-        hits = [o for o in objs if _name_key(o) == flow
-                and (_owner_component_name(o) or "").strip().lower() == clow]
+        flow = feat.lower()
+        hits = [o for o in objs if _name_key(o) == flow and _owner_matches(o, comp)]
         if hits:
             return hits
     stripped = want.strip()
-    if stripped.isdigit():
-        hits = [o for o in objs if _common.safe(lambda o=o: o.index) == int(stripped)]
-        if hits:
-            return hits
-    low = want.strip().lower()
-    return [o for o in objs if _name_key(o) == low]
+    low = stripped.lower()
+    by_name = [o for o in objs if _name_key(o) == low]
+    n = _ascii_int(stripped)
+    if n is not None:
+        # A bare number is an index AND may be a feature's literal name (a DXF import named "0"):
+        # both are returned, so the caller refuses the collision instead of picking the index.
+        by_index = [o for o in objs if _index_of(o) == n]
+        if by_index:
+            return by_index + [o for o in by_name if o not in by_index]
+    return by_name
+
+
+def candidate_address(obj):
+    """The address a refusal prints for a timeline object, '[<component>/]<name>@<index>', or None."""
+    name = (_common.safe(lambda: obj.name) or "").strip()
+    index = _index_of(obj)
+    if not name or not isinstance(index, int) or isinstance(index, bool):
+        return None
+    comp = (_owner_component_name(obj) or "").strip()
+    return f"{comp}/{name}@{index}" if comp else f"{name}@{index}"
+
+
+def _candidates_listed(hits):
+    """The refusal's candidate list: every readable address, plus a count of the unreadable rows."""
+    addresses = [candidate_address(o) for o in hits]
+    readable = [a for a in addresses if a]
+    unread = len(addresses) - len(readable)
+    parts = ([_common.named_with_remainder(readable)] if readable else []) + (
+        [f"{unread} whose name or index does not read"] if unread else [])
+    return " and ".join(parts)
 
 
 def _name_key(obj):
@@ -1319,40 +1369,49 @@ def _near_name_components(objs, want):
     return out
 
 
-def _index_mismatch(objs, want):
-    """The refusal for a 'name@index' pair whose halves name different objects - what sits at that
-    index, and the index the name is at now - or None when `want` is not that form, or its name is
-    nowhere in `objs` (a plain miss)."""
-    base, at, idx = want.rpartition("@")
-    if not (at and base.strip() and idx.strip().isdigit()):
+def _address_miss(objs, want):
+    """The refusal for a '<base>@<index>' address whose halves disagree: what sits at that index,
+    and where the base is now; None when `want` is not an address or nothing carries the base."""
+    base, i = _parse_address(want)
+    if base is None:
         return None
-    i, name = int(idx.strip()), base.strip()
-    named = [str(_common.safe(lambda o=o: o.index))
-             for o in objs if _name_key(o) == name.lower()]
+    low = base.lower()
+    named = [o for o in objs if low in (_name_key(o), _address_key(o))]
     if not named:
         return None
-    at_i = [o for o in objs if _common.safe(lambda o=o: o.index) == i]
-    seat = (f"index {i} is '{_common.safe(lambda: at_i[0].name)}'" if at_i
-            else f"no timeline item reads index {i}")
-    return (f"'{want}': {seat}, and '{name}' is at index "
-            f"{_common.named_with_remainder(named)}. Re-read design_get(include=['timeline']) for "
-            "the current indices.")
+    at_i = [o for o in objs if _index_of(o) == i]
+    seated = candidate_address(at_i[0]) if at_i else None
+    if seated:
+        seat = f"index {i} is '{seated.rpartition('@')[0]}'"
+    elif at_i:
+        seat = f"the item at index {i} does not read its name"
+    else:
+        seat = f"no timeline item reads index {i}"
+    where = _common.named_with_remainder([str(_index_of(o)) for o in named])
+    return (f"'{want}': {seat}, and '{base}' is at index {where}. Re-read "
+            "design_get(include=['timeline']) for the current addresses.")
 
 
-def resolve_timeline_object(objs, want, label, miss_hint=None):
-    """(timeline object, error) - the ONE object `want` names out of `objs`: a miss on a QUALIFIED
-    '<component>/<feature>' names the pair; a bare-name miss lists components holding a near name,
-    else a sample of what IS there; a name several objects carry is refused with the qualified
-    candidates. `miss_hint(want)` is consulted on a MISS only, before either fallback."""
+def resolve_timeline_object(objs, want, label, miss_hint=None, hidden_hint=None):
+    """(timeline object, error): the one object `want` names, else a refusal."""
     hits = _match_timeline_objects(objs, want)
+    # MEASURED: a collapsed group's members are absent from the timeline walk, so a bare integer
+    # can hit an index while the object literally named that number sits hidden in a group.
+    if hits and _ascii_int(want) is not None and hidden_hint is not None:
+        hidden = hidden_hint(want, hits)
+        if hidden:
+            return None, f"{label}: {hidden}"
     if not hits:
-        stale = _index_mismatch(objs, want)
+        stale = _address_miss(objs, want)
         if stale:
             return None, f"{label}: {stale}"
-        hinted = miss_hint(want) if miss_hint is not None else None
-        if hinted:
-            return None, f"{label}: {hinted}"
-        comp, feat = _split_qualified(want)
+        base, _i = _parse_address(want)
+        # A printed address names a collapsed member, or misses, by its base - not by '<base>@<i>'.
+        for asked in ([want, base] if base is not None else [want]):
+            hinted = miss_hint(asked) if miss_hint is not None else None
+            if hinted:
+                return None, f"{label}: {hinted}"
+        comp, feat = _split_qualified(want if base is None else base)
         if comp is not None:
             return None, (f"{label}: no feature named '{feat}' in component '{comp}'. Use "
                           "design_get(include=['timeline']) for the full list.")
@@ -1366,10 +1425,8 @@ def resolve_timeline_object(objs, want, label, miss_hint=None):
                       f"{sample or '(none)'}. Use design_get(include=['timeline']) for the full "
                       "list.")
     if len(hits) > 1:
-        cands = _common.named_with_remainder(
-            [f"{_owner_component_name(o) or '?'}/{_common.safe(lambda o=o: o.name)}" for o in hits])
-        return None, (f"{label}: '{want}' matches {len(hits)} timeline objects ({cands}) - name "
-                      "one with the '<component>/<name>' form, or its timeline index.")
+        return None, (f"{label}: '{want}' matches {len(hits)} timeline objects "
+                      f"({_candidates_listed(hits)}) - name one exactly as listed.")
     return hits[0], None
 
 
@@ -1395,13 +1452,18 @@ class FeatureRef(InputKind):
             # _design_common imports this module, so its refusal is bound at call time.
             from . import _design_common
             return None, _design_common.no_timeline_reason(
-                des, "This design has no timeline, so it has no features to name. Act on the "
-                     "bodies instead.")
-        return _timeline_objects(timeline), None
+                "This design has no timeline, so it has no features to name. Act on the "
+                "bodies instead.")
+        return (_timeline_objects(timeline), timeline), None
 
-    def _find_one(self, objs, want, label):
+    def _find_one(self, walked, want, label):
         """(timeline object, error) - the ONE object `want` names, or a refusal."""
-        return resolve_timeline_object(objs, want, label)
+        objs, timeline = walked
+        from . import _design_common
+        return resolve_timeline_object(
+            objs, want, label,
+            miss_hint=lambda name: _design_common.collapsed_group_hint(timeline, name),
+            hidden_hint=lambda name, hits: _design_common.hidden_twin_hint(timeline, name, hits))
 
     def _entity_of(self, obj, want, label):
         """((entity, timeline name), error) for one resolved timeline object."""
@@ -1541,7 +1603,6 @@ class SectionRef(InputKind):
 
 MODE_PARAMETRIC = "parametric"
 MODE_DIRECT = "direct"
-MODE_BASE_FEATURE = "base_feature"
 
 
 def current_design_type(design) -> str:
@@ -1570,43 +1631,6 @@ def current_design_type(design) -> str:
     return "unknown"
 
 
-def _in_base_feature_scope(design) -> bool:
-    """Is an OPEN base-feature edit scope in effect? True only where activeEditObject reads as a
-    BaseFeature - the public API exposes no scope flag, so an unknown answers False and the guard
-    fails CLOSED rather than letting an unscoped mutation through."""
-    if design is None:
-        return False
-    edit_obj = _common.safe(lambda: design.activeEditObject)
-    if edit_obj is None:
-        return False
-    bf_type = _common.safe(lambda: adsk.fusion.BaseFeature)
-    if bf_type is not None and isinstance(edit_obj, bf_type):
-        return True
-    return False
-
-
-_FORM_WORKSPACE = "TSplineEnvironment"
-_FORM_SWITCH_S = 0.25
-_FORM_SWITCH_PUMPS = 10
-_FORM_PUMP_SLEEP_S = 0.002
-
-
-def in_form_edit(design) -> bool:
-    """Is a Form edit open? True when designType reads direct AND the Form workspace is active."""
-    # MEASURED: an opened edit reads designType direct at once, the Form workspace ~3 pumps (~15 ms)
-    # later, and the workspace read lags an exit; an open base-feature scope also reads direct. So
-    # designType gates, a scope is excluded, and a direct read pumps a bounded few times.
-    if current_design_type(design) != MODE_DIRECT or _in_base_feature_scope(design):
-        return False
-    probes = []
-
-    def probe():
-        on = _common.safe(lambda: _common.app.userInterface.activeWorkspace.id) == _FORM_WORKSPACE
-        probes.append(on)
-        return on or len(probes) > _FORM_SWITCH_PUMPS, on
-    return bool(_pump_until(probe, _FORM_SWITCH_S, _FORM_PUMP_SLEEP_S)[1])
-
-
 class ModeGuard:
     """A declarative precondition - not an InputKind: 'this op needs <mode>'. check(design) runs
     BEFORE mutating and returns (ok, error_result_or_None), the error DERIVED from self.requires so
@@ -1620,30 +1644,17 @@ class ModeGuard:
     def check(self, design):
         """(ok: bool, error_result | None) - run before any mutation, so a rejection leaves
         nothing half-applied."""
-        if self.requires == MODE_BASE_FEATURE:
-            if _in_base_feature_scope(design):
-                return True, None
-            return False, self._err("no base-feature scope")
         actual = current_design_type(design)
         if actual == self.requires:
             return True, None
-        return False, self._err(actual, design)
+        return False, self._err(actual)
 
-    def _err(self, actual, design=None):
+    def _err(self, actual):
         # Text DERIVED from self.requires -> structurally cannot point the wrong way.
-        if self.requires == MODE_BASE_FEATURE:
-            head = ("This needs a BASE-FEATURE edit scope (the mesh/base-feature insert must run "
-                    "inside BaseFeature.startEdit()/finishEdit()), but none is open.")
-        elif design is not None and in_form_edit(design):
-            return _common.error(f"This needs {self.requires} mode. A Form edit is open - ask the "
-                                 "user to click Finish Form, then retry.")
-        else:
-            head = f"This needs {self.requires} mode but the design is in {actual} mode."
+        head = f"This needs {self.requires} mode but the design is in {actual} mode."
         return _common.error(f"{head} {self.why} {self.fix_hint}".strip())
 
     def contract_note(self) -> str:
-        if self.requires == MODE_BASE_FEATURE:
-            return "Requires a base-feature edit scope."
         return f"Requires {self.requires} mode."
 
 
@@ -2330,6 +2341,57 @@ class Choice(InputKind):
         if v not in [o.lower() for o in self.options]:
             return None, f"'{self.name}' must be one of: {', '.join(self.options)} (got '{raw}')."
         return v, None
+
+
+class SheetMetalRuleRef(InputKind):
+    """A rule in an explicit design or library scope, selected by exact name."""
+
+    MAP_HINT = "a sheet-metal rule as 'design:<name>' or 'library:<name>'; refuses scope ambiguity"
+
+    def contract_note(self) -> str:
+        return "A scoped rule from sheet_get(include=['rules'] or ['library_rules'])."
+
+    def resolve(self, raw):
+        from ._sheet_common import matching_rules
+        value = (raw or "").strip() if isinstance(raw, str) else ""
+        if ":" not in value:
+            return None, (f"'{self.name}' needs 'design:<name>' or 'library:<name>' from "
+                          "sheet_get; got '%s'." % raw)
+        scope, rest = (part.strip() for part in value.split(":", 1))
+        scope = scope.lower()
+        if scope not in ("design", "library") or not rest:
+            return None, f"'{self.name}' has invalid scoped rule '{raw}'. Use 'design:<name>' or 'library:<name>'."
+        design = _common.design()
+        if design is None:
+            return None, "No active design to resolve a sheet-metal rule against."
+        # The LITERAL text is looked up first - a unique rule named e.g. 'Gauge #16' stays unsuffixed
+        # (rule_ref_and_index), so its own name must win before '#<n>' is read as an ordinal.
+        name, ordinal = rest, None
+        hits = matching_rules(design, scope, rest)
+        if hits is None:
+            return None, f"'{self.name}': {scope} sheet-metal rules could not be read."
+        if not hits and "#" in rest:
+            base, _, tail = rest.rpartition("#")
+            if base and tail.isdigit() and int(tail) >= 1:
+                base_hits = matching_rules(design, scope, base)
+                if base_hits is None:
+                    return None, f"'{self.name}': {scope} sheet-metal rules could not be read."
+                # Only a name shared by two or more rules is a duplicate set an ordinal selects from -
+                # a lone rule's '#<n>' tail is either a literal miss or an out-of-range ordinal, judged below.
+                if len(base_hits) >= 2:
+                    name, ordinal, hits = base, int(tail), base_hits
+        if not hits:
+            return None, (f"'{self.name}': no {scope} sheet-metal rule named '{name}'. "
+                          "Read sheet_get(include=['rules','library_rules']).")
+        if ordinal is not None:
+            if ordinal > len(hits):
+                return None, f"'{self.name}': '{rest}' is out of range; {scope}:{name} has {len(hits)} rule(s)."
+            return (hits[ordinal - 1], scope), None
+        if len(hits) != 1:
+            refs = ", ".join(f"{scope}:{name}#{i + 1}" for i in range(len(hits)))
+            return None, (f"'{self.name}': {len(hits)} {scope} rules named '{name}'; "
+                          f"select a unique name ({refs}).")
+        return (hits[0], scope), None
 
 
 # ── occurrence reference (an assembly instance, by its entityToken handle or a path/name) ─────────
@@ -3208,6 +3270,36 @@ def resolve_sketch_entity(design, raw, component="", scope_input="component"):
         return None, (f"'{raw}': sketch '{name}' has no '{ref}'. "
                       "sketch_get(include_entities=true) lists its entity ids.")
     return ent, None
+
+
+class SketchLineRef(InputKind):
+    """An exact sketch line from sketch_get, optionally scoped to a component."""
+
+    MAP_HINT = "a sketch line as '<sketch>/line:<index>' from sketch_get, scoped by component"
+
+    def __init__(self, name, scope_input="component", **kw):
+        super().__init__(name, **kw)
+        self.scope_input = scope_input
+
+    def contract_note(self) -> str:
+        return "An exact '<sketch>/line:<index>' from sketch_get(include_entities=true)."
+
+    def resolve(self, raw, component=""):
+        if raw in (None, "", []):
+            return (None, f"'{self.name}' needs a sketch line reference.") if self.required else (self.default, None)
+        parsed = sketch_entity_ref(raw)
+        if parsed is None or not parsed[1].lower().startswith("line:"):
+            return None, f"'{self.name}' needs '<sketch>/line:<index>' from sketch_get; got '{raw}'."
+        design = _common.design()
+        if design is None:
+            return None, "No active design to resolve the sketch line against."
+        ent, err = resolve_sketch_entity(design, raw, component,
+                                         self.scope_input or "component")
+        if err:
+            return None, err
+        if not isinstance(ent, adsk.fusion.SketchLine):
+            return None, f"'{self.name}' reference '{raw}' did not resolve to a SketchLine."
+        return ent, None
 
 
 def _single_path(ent):

@@ -48,7 +48,7 @@ _FAMILY_PREFIXES = [
     ("cam_", "cam"), ("assembly_", "assembly"), ("joint_", "joint"), ("design_", "design"),
     ("doc_", "doc"), ("data_", "data"), ("drawing_", "drawing"), ("param_", "param"), ("pmi_", "pmi"),
     ("view_", "view"), ("find_", "find"), ("workspace_", "workspace"), ("appearance_", "appearance"),
-    ("save_", "save"), ("sys_", "sys"),
+    ("save_", "save"), ("sheet_", "sheet"), ("sys_", "sys"),
 ]
 
 

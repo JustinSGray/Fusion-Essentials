@@ -106,6 +106,8 @@ _FIT_WIDEN_NO_MODEL = ("The setup's stock box read, but its model bodies did not
                       "stayed on the plain fit (fitted_to='model').")
 _FIT_WIDEN_UNMEASURABLE = ("The stock box could not be measured against the model's, so the frame "
                           "stayed on the plain fit (fitted_to='model').")
+_FIT_MODEL_UNMEASURABLE = ("The setup's model box read, but the camera could not be measured "
+                          "against it, so the frame stayed on the plain fit (fitted_to='viewport').")
 
 
 def _box_center_diagonal(box):
@@ -118,18 +120,43 @@ def _box_center_diagonal(box):
     return (cx, cy, cz), math.sqrt(dx * dx + dy * dy + dz * dz)
 
 
+def _frame_model_box(vp, box):
+    """(fitted_to, note, camera_target_cm, isSmoothTransition error) - frames box's centre, confirmed by reading the camera back."""
+    center, diag = _box_center_diagonal(box)
+    cam = vp.camera
+    eye, target = safe(lambda: cam.eye), safe(lambda: cam.target)
+    if center is None or not diag or eye is None or target is None:
+        return "viewport", _FIT_MODEL_UNMEASURABLE, None, None
+    cam.eye = adsk.core.Point3D.create(eye.x + (center[0] - target.x),
+                                       eye.y + (center[1] - target.y),
+                                       eye.z + (center[2] - target.z))
+    cam.target = adsk.core.Point3D.create(*center)
+    cam.viewExtents = diag
+    read_back, widen_error = _view_common.apply_camera(vp, cam, fit=False)
+    landed = safe(lambda: (read_back.target.x, read_back.target.y, read_back.target.z))
+    tol = _view_common._EYE_TARGET_TOLERANCE_CM
+    if landed is None or any(abs(landed[i] - center[i]) > tol for i in range(3)):
+        return "viewport", _FIT_MODEL_UNMEASURABLE, None, widen_error
+    return "model", None, [round(v, 6) for v in landed], widen_error
+
+
 def _fit_operation(setup):
-    """Fit onto the setup's models (isFitView), then widen to the union with its stock box.
-    Returns (fitted_to, union box or None, note or None, isSmoothTransition error or None); any
-    API refusal to assign the camera raises into the handler's error path."""
+    """(fitted_to, box, note, isSmoothTransition error, camera_target_cm) - fits then frames the model or model+stock box, whichever reads."""
     vp = app.activeViewport
     _, smooth_error = _view_common.apply_camera(vp, vp.camera, fit=True)
     stock_box = setup_stock_box(setup) if setup is not None else None
     if stock_box is None:
-        return "model", None, None, smooth_error
+        # A cutting setup's models are the FLAT body, not whatever isFitView just framed (the
+        # folded body) - so the model box is framed directly rather than assumed to be on screen.
+        model_box = setup_model_box(setup) if setup is not None else None
+        if model_box is None:
+            return "viewport", None, None, smooth_error, None
+        fitted_to, frame_note, camera_target_cm, widen_error = _frame_model_box(vp, model_box)
+        box = model_box if fitted_to == "model" else None
+        return fitted_to, box, frame_note, (smooth_error or widen_error), camera_target_cm
     model_box = setup_model_box(setup)
     if model_box is None:
-        return "model", None, _FIT_WIDEN_NO_MODEL, smooth_error
+        return "model", None, _FIT_WIDEN_NO_MODEL, smooth_error, None
     box = _geom.union_box([model_box, stock_box])
     center, diag = _box_center_diagonal(box)
     _, model_diag = _box_center_diagonal(model_box)
@@ -138,14 +165,14 @@ def _fit_operation(setup):
     extents = safe(lambda: cam.viewExtents)
     if (center is None or not diag or not model_diag
             or eye is None or target is None or extents is None):
-        return "model", None, _FIT_WIDEN_UNMEASURABLE, smooth_error
+        return "model", None, _FIT_WIDEN_UNMEASURABLE, smooth_error, None
     cam.eye = adsk.core.Point3D.create(eye.x + (center[0] - target.x),
                                        eye.y + (center[1] - target.y),
                                        eye.z + (center[2] - target.z))
     cam.target = adsk.core.Point3D.create(*center)
     cam.viewExtents = extents * (diag / model_diag)
     _, widen_error = _view_common.apply_camera(vp, cam, fit=False)
-    return "model+stock", box, None, (smooth_error or widen_error)
+    return "model+stock", box, None, (smooth_error or widen_error), None
 
 
 def handler(action: str = "", operation: str = "", folder: str = "", fit: bool = False) -> dict:
@@ -327,9 +354,11 @@ def handler(action: str = "", operation: str = "", folder: str = "", fit: bool =
     fit_box = None
     fit_note = None
     smooth_error = None
+    camera_target_cm = None
     if fit:
         # raises on an API refusal to assign the camera
-        fitted_to, fit_box, fit_note, smooth_error = _fit_operation(owning_setup(onode))
+        fitted_to, fit_box, fit_note, smooth_error, camera_target_cm = _fit_operation(
+            owning_setup(onode))
         fitted = True
     app.activeViewport.refresh()
     note = ("Toolpath shown. Toolpaths render in the Manufacture workspace; pair with "
@@ -341,6 +370,8 @@ def handler(action: str = "", operation: str = "", folder: str = "", fit: bool =
             lo, hi = fit_box.minPoint, fit_box.maxPoint
             out["fit_box_cm"] = {"min": [round(lo.x, 3), round(lo.y, 3), round(lo.z, 3)],
                                  "max": [round(hi.x, 3), round(hi.y, 3), round(hi.z, 3)]}
+        if camera_target_cm is not None:
+            out["camera_target_cm"] = camera_target_cm
         if fit_note:
             note += " " + fit_note
     if activated:

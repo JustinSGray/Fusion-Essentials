@@ -34,6 +34,7 @@ only - the call did not fail, the effect was not read); the `called` number is t
 steps still needing an effect read. The layer-by-layer quality-system map lives in ONE place:
 `py -3 tests/check_all.py --help`.
 
+> The live sheet-metal drawing check also requires `pypdf` (`py -3 -m pip install pypdf`).
 > Requires `pytest` (`py -3 -m pip install pytest`). Config lives in
 > `pytest.ini` at the repo root — it sets `testpaths`/`pythonpath` so no env
 > vars are needed.

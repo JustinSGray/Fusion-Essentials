@@ -4,7 +4,7 @@ _Auto-generated from the live registry by `tests/gen_posture.py`. Do not edit by
 
 Every tool declares a write= kind (read / write / destructive); the MCP readOnlyHint / destructiveHint annotations derive from it. That machine-checked fact decides which tools are safe to auto-run under Claude Code. This file maps every tool to a posture bucket and emits ready-to-paste `settings.json` presets. Rules target the MCP wire name `mcp__fusion-essentials__<tool>`.
 
-**Tools:** 196  |  read: 34  |  write: 142  |  destructive: 19  |  script-hatch: 1
+**Tools:** 207  |  read: 35  |  write: 152  |  destructive: 19  |  script-hatch: 1
 
 ## Posture buckets
 
@@ -37,7 +37,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 
 ## Every tool by bucket
 
-### read - safe to auto-allow (34)
+### read - safe to auto-allow (35)
 
 - `mcp__fusion-essentials__assembly_get`
 - `mcp__fusion-essentials__assembly_inspect_interference`
@@ -63,6 +63,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__model_measure_relation`
 - `mcp__fusion-essentials__param_get`
 - `mcp__fusion-essentials__pmi_get`
+- `mcp__fusion-essentials__sheet_get`
 - `mcp__fusion-essentials__sketch_get`
 - `mcp__fusion-essentials__sys_capability_map`
 - `mcp__fusion-essentials__sys_find_tool`
@@ -74,7 +75,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__view_screenshot_multi`
 - `mcp__fusion-essentials__workspace_orient`
 
-### write - ask (142)
+### write - ask (152)
 
 - `mcp__fusion-essentials__appearance_set`
 - `mcp__fusion-essentials__assembly_capture_position`
@@ -188,6 +189,16 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__pmi_create`
 - `mcp__fusion-essentials__pmi_edit`
 - `mcp__fusion-essentials__save_as_mesh`
+- `mcp__fusion-essentials__sheet_convert`
+- `mcp__fusion-essentials__sheet_create_flange`
+- `mcp__fusion-essentials__sheet_create_flat_pattern`
+- `mcp__fusion-essentials__sheet_create_fold`
+- `mcp__fusion-essentials__sheet_create_hem`
+- `mcp__fusion-essentials__sheet_create_join_by_bend`
+- `mcp__fusion-essentials__sheet_create_refold`
+- `mcp__fusion-essentials__sheet_create_rip`
+- `mcp__fusion-essentials__sheet_create_unfold`
+- `mcp__fusion-essentials__sheet_edit_rule`
 - `mcp__fusion-essentials__sketch_add_3d_line`
 - `mcp__fusion-essentials__sketch_add_3d_spline`
 - `mcp__fusion-essentials__sketch_add_geometry`
@@ -277,6 +288,7 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__model_measure_relation",
       "mcp__fusion-essentials__param_get",
       "mcp__fusion-essentials__pmi_get",
+      "mcp__fusion-essentials__sheet_get",
       "mcp__fusion-essentials__sketch_get",
       "mcp__fusion-essentials__sys_capability_map",
       "mcp__fusion-essentials__sys_find_tool",
@@ -401,6 +413,16 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__pmi_create",
       "mcp__fusion-essentials__pmi_edit",
       "mcp__fusion-essentials__save_as_mesh",
+      "mcp__fusion-essentials__sheet_convert",
+      "mcp__fusion-essentials__sheet_create_flange",
+      "mcp__fusion-essentials__sheet_create_flat_pattern",
+      "mcp__fusion-essentials__sheet_create_fold",
+      "mcp__fusion-essentials__sheet_create_hem",
+      "mcp__fusion-essentials__sheet_create_join_by_bend",
+      "mcp__fusion-essentials__sheet_create_refold",
+      "mcp__fusion-essentials__sheet_create_rip",
+      "mcp__fusion-essentials__sheet_create_unfold",
+      "mcp__fusion-essentials__sheet_edit_rule",
       "mcp__fusion-essentials__sketch_add_3d_line",
       "mcp__fusion-essentials__sketch_add_3d_spline",
       "mcp__fusion-essentials__sketch_add_geometry",
@@ -490,6 +512,7 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__model_measure_relation",
       "mcp__fusion-essentials__param_get",
       "mcp__fusion-essentials__pmi_get",
+      "mcp__fusion-essentials__sheet_get",
       "mcp__fusion-essentials__sketch_get",
       "mcp__fusion-essentials__sys_capability_map",
       "mcp__fusion-essentials__sys_find_tool",
@@ -586,6 +609,16 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__pmi_create",
       "mcp__fusion-essentials__pmi_edit",
       "mcp__fusion-essentials__save_as_mesh",
+      "mcp__fusion-essentials__sheet_convert",
+      "mcp__fusion-essentials__sheet_create_flange",
+      "mcp__fusion-essentials__sheet_create_flat_pattern",
+      "mcp__fusion-essentials__sheet_create_fold",
+      "mcp__fusion-essentials__sheet_create_hem",
+      "mcp__fusion-essentials__sheet_create_join_by_bend",
+      "mcp__fusion-essentials__sheet_create_refold",
+      "mcp__fusion-essentials__sheet_create_rip",
+      "mcp__fusion-essentials__sheet_create_unfold",
+      "mcp__fusion-essentials__sheet_edit_rule",
       "mcp__fusion-essentials__sketch_add_3d_line",
       "mcp__fusion-essentials__sketch_add_3d_spline",
       "mcp__fusion-essentials__sketch_add_geometry",

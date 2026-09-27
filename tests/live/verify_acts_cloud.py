@@ -477,7 +477,7 @@ def _known_file_listing(path, file_path, recursive):
     return check
 
 
-def _known_child_excluded(p, polls=12):
+def _known_child_excluded(p, polls=_SETTLE_POLLS):
     """The parent folder's immediate listing, re-read until the moved file has left it (the cloud
     listing lags the move by seconds, measured), is empty while its known child holds the upload."""
     call = facade("call")

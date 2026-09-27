@@ -270,6 +270,215 @@ _SCRATCH_DOCUMENT = [
 ]
 
 
+def _dxf_layer_sketch(p):
+    """Parks the first DXF-imported sketch's name ('0', its layer) for the numeric-reference rows."""
+    names = [c.get("name") for c in (p.get("created") or []) if c.get("name")]
+    _RECALL["dxf_sketch"] = names[0] if names else None
+    return _imported_sketches(p)
+
+
+def _timeline_rows(p):
+    return (p.get("timeline") or {}).get("timeline") or []
+
+
+def _numref_shape(p):
+    """design_get: the occurrence sits at index 0, the digit-named sketch once at index 1 inside it."""
+    rows = _timeline_rows(p)
+    name = _RECALL.get("dxf_sketch")
+    seat = [r for r in rows if r.get("index") == 0]
+    sk = [r for r in rows if r.get("name") == name]
+    ok = (isinstance(name, str) and name.isascii() and name.isdecimal() and len(seat) == 1
+          and seat[0].get("type") == "Occurrence" and len(sk) == 1 and sk[0].get("index") == 1
+          and bool(sk[0].get("component")))
+    if ok:
+        _RECALL["numref_seat"] = seat[0].get("name")
+        _RECALL["numref_sketch_at"] = f"{sk[0]['component']}/{name}@1"
+        _RECALL["numref_count"] = (p.get("timeline") or {}).get("count")
+    return _measured("an occurrence at index 0 and a digit-named sketch at index 1",
+                     {"name": name, "seat": [r.get("name") for r in seat], "sketch": sk[:1]}, ok)
+
+
+def _numref_bare_delete(c):
+    """design_delete_feature args: the imported sketch's bare digit name, also timeline index 0."""
+    return {"feature": _RECALL["dxf_sketch"]}
+
+
+def _numref_listed_delete(c):
+    """design_delete_feature args: the sketch's candidate exactly as the refusal lists it."""
+    return {"feature": _RECALL["numref_sketch_at"]}
+
+
+def _numref_untouched(p):
+    """design_get after the refusal: the count and the occurrence at index 0 both hold."""
+    rows = _timeline_rows(p)
+    count = (p.get("timeline") or {}).get("count")
+    seat = [r.get("name") for r in rows if r.get("index") == 0]
+    return _measured("timeline untouched by the refusal",
+                     {"count": count, "before": _RECALL.get("numref_count"), "seat": seat},
+                     _num(count) and count == _RECALL["numref_count"]
+                     and seat == [_RECALL["numref_seat"]])
+
+
+def _numref_sketch_deleted(p):
+    """The listed candidate deleted exactly the sketch at index 1 and nothing else."""
+    return _measured("the digit-named sketch alone deleted",
+                     {"feature": p.get("feature"), "index": p.get("index"), "also": p.get("also_deleted")},
+                     p.get("deleted") is True and p.get("feature") == _RECALL["dxf_sketch"]
+                     and p.get("index") == 1 and p.get("also_deleted") == [])
+
+
+def _numref_occurrence_kept(p):
+    """design_get(tree, timeline) after the delete: the occurrence node stands, the sketch is gone, count -1."""
+    rows = _timeline_rows(p)
+    count = (p.get("timeline") or {}).get("count")
+    seat = [r.get("name") for r in rows if r.get("index") == 0]
+    nodes = [n.get("name") for n in ((p.get("tree") or {}).get("children") or [])]
+    return _measured("the occurrence kept, the sketch gone, count -1",
+                     {"count": count, "before": _RECALL.get("numref_count"), "seat": seat, "nodes": nodes},
+                     _num(count) and count == _RECALL["numref_count"] - 1
+                     and seat == [_RECALL["numref_seat"]]
+                     and not any(r.get("name") == _RECALL["dxf_sketch"] for r in rows)
+                     and nodes == [_RECALL["numref_seat"].strip()])
+
+
+def _numref_grouped(p):
+    """design_get while NumRefG is collapsed: the occurrence at 0, one group row over 2 unlisted members."""
+    rows = _timeline_rows(p)
+    name = _RECALL.get("dxf_sketch")
+    seat = [r.get("name") for r in rows if r.get("index") == 0]
+    group = [r for r in rows if r.get("name") == "NumRefG"]
+    ok = (seat == [_RECALL["numref_seat"]] and len(group) == 1
+          and group[0].get("is_collapsed") is True and group[0].get("member_count") == 2
+          and not any(r.get("name") == name for r in rows))
+    if ok:
+        _RECALL["numref_grouped_count"] = (p.get("timeline") or {}).get("count")
+    return _measured("NumRefG collapsed over the digit-named sketch and its sibling",
+                     {"seat": seat, "group": group[:1],
+                      "sketch_rows": [r for r in rows if r.get("name") == name]}, ok)
+
+
+def _numref_untouched_grouped(p):
+    """design_get after the hidden-twin refusal: the grouped count and the occurrence at 0 hold."""
+    rows = _timeline_rows(p)
+    count = (p.get("timeline") or {}).get("count")
+    seat = [r.get("name") for r in rows if r.get("index") == 0]
+    return _measured("timeline untouched by the hidden-twin refusal",
+                     {"count": count, "before": _RECALL.get("numref_grouped_count"), "seat": seat},
+                     _num(count) and count == _RECALL["numref_grouped_count"]
+                     and seat == [_RECALL["numref_seat"]])
+
+
+def _numref_ungrouped(p):
+    """design_get after the ungroup: the count and the sketch's index-1 seat are back, no group row."""
+    rows = _timeline_rows(p)
+    count = (p.get("timeline") or {}).get("count")
+    name = _RECALL.get("dxf_sketch")
+    sk = [r for r in rows if r.get("name") == name]
+    return _measured("the digit-named sketch back at index 1 with no group row",
+                     {"count": count, "before": _RECALL.get("numref_count"), "sketch": sk[:1]},
+                     _num(count) and count == _RECALL["numref_count"] and len(sk) == 1
+                     and sk[0].get("index") == 1
+                     and not any(r.get("name") == "NumRefG" for r in rows))
+
+
+def _numref_first_shape(p):
+    """design_get: the digit-named sketch is the FIRST timeline item, one item follows it."""
+    rows = _timeline_rows(p)
+    name = _RECALL.get("dxf_sketch")
+    ok = (len(rows) == 2 and rows[0].get("name") == name and rows[0].get("index") == 0
+          and rows[1].get("index") == 1)
+    if ok:
+        _RECALL["numref_successor"] = rows[1].get("name")
+    return _measured("the digit-named sketch at index 0 with one successor",
+                     {"rows": [(r.get("index"), r.get("name")) for r in rows]}, ok)
+
+
+def _numref_first_deleted(p):
+    """A delete whose successor renumbers into the freed index still reports the delete."""
+    return _measured("the index-0 sketch deleted and reported so",
+                     {"deleted": p.get("deleted"), "feature": p.get("feature"), "index": p.get("index")},
+                     p.get("deleted") is True and p.get("feature") == _RECALL["dxf_sketch"]
+                     and p.get("index") == 0)
+
+
+def _numref_successor_moved_up(p):
+    """design_get after it: the successor now reads index 0 and no digit-named row remains."""
+    rows = _timeline_rows(p)
+    return _measured("the successor at index 0, the sketch gone",
+                     {"rows": [(r.get("index"), r.get("name")) for r in rows]},
+                     len(rows) == 1 and rows[0].get("index") == 0
+                     and rows[0].get("name") == _RECALL.get("numref_successor"))
+
+
+# A sketch's DXF lands on layer '0' and the import names the sketch after the layer, so the bare
+# token '0' also names timeline index 0; two scratch shapes, each in its own document.
+_NUMERIC_REFERENCE = [
+    ("doc_new", {}, _new_document, None),
+    ("doc_get", {}, _scratch_opened_beside_it, ("numref_doc", _home_address)),
+    ("sketch_create", {"plane": "xy", "name": "Seed"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [{"kind": "circle", "cx": 0, "cy": 0, "radius": 5}],
+                             "sketch_name": "Seed"}, "ok", None),
+    ("design_export", {"format": "dxf", "file_path": EXPORT_DIR + "/numref_seed",
+                       "dxf_sketch": "Seed"}, _exported_bytes, None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "story_doc", "the story document")},
+     _activated(), None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "numref_doc", "the numeric-reference document"),
+                             "save_changes": False}, _document_closed, None),
+    # shape 1: an occurrence at index 0, the sketch '0' at index 1 inside it
+    ("doc_new", {}, _new_document, None),
+    ("doc_get", {}, _scratch_opened_beside_it, ("numref_doc", _home_address)),
+    ("model_create_component", {"name": "NumRefBracket", "activate": True}, _made_component, None),
+    ("doc_insert_import", {"file_path": EXPORT_DIR + "/numref_seed.dxf", "format": "dxf",
+                           "plane": "xy"}, _dxf_layer_sketch, None),
+    ("sketch_create", {"plane": "xy", "name": "NumRefSecond"}, "ok", None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_shape, None),
+    # the sketch and its sibling collapsed into a group: the bare "0" still hits index 0, and the
+    # refusal names the group and the ungroup call instead of taking the occurrence
+    ("design_edit_timeline",
+     lambda c: {"action": "group", "name": "NumRefG", "feature": _RECALL["numref_sketch_at"],
+                "end_feature": "NumRefBracket/NumRefSecond"},
+     lambda p: p.get("grouped") is True and p.get("group") == "NumRefG", None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_grouped, None),
+    # the hidden-twin refusal and a listed address's group miss, through the shared kind
+    ("form_get", {"form": "0", "include": ["cage"]},
+     _refused("'0' matches NumRefBracket:1@0 and also names an item inside the collapsed timeline "
+              "group 'NumRefG'", "design_edit_timeline(action='ungroup', feature='NumRefG')"), None),
+    ("form_get", {"form": "NumRefBracket/0@1", "include": ["cage"]},
+     _refused("'NumRefBracket/0' is inside the collapsed timeline group 'NumRefG'",
+              "design_edit_timeline(action='ungroup', feature='NumRefG')"), None),
+    ("design_delete_feature", _numref_bare_delete,
+     _refused("'0' matches NumRefBracket:1@0 and also names an item inside the collapsed timeline "
+              "group 'NumRefG'", "design_edit_timeline(action='ungroup', feature='NumRefG')"), None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_untouched_grouped, None),
+    ("design_edit_timeline", {"action": "ungroup", "feature": "NumRefG"},
+     lambda p: p.get("ungrouped") is True, None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_ungrouped, None),
+    ("design_delete_feature", _numref_bare_delete,
+     _refused("matches 2 timeline objects", "(NumRefBracket:1@0, NumRefBracket/0@1)",
+              "exactly as listed"), None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_untouched, None),
+    ("design_delete_feature", _numref_listed_delete, _numref_sketch_deleted, None),
+    ("design_get", {"include": ["tree", "timeline"], "max_results": 2000}, _numref_occurrence_kept, None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "story_doc", "the story document")},
+     _activated(), None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "numref_doc", "the numeric-reference document"),
+                             "save_changes": False}, _document_closed, None),
+    # shape 2: the sketch '0' at index 0 with one successor
+    ("doc_new", {}, _new_document, None),
+    ("doc_get", {}, _scratch_opened_beside_it, ("numref_doc", _home_address)),
+    ("doc_insert_import", {"file_path": EXPORT_DIR + "/numref_seed.dxf", "format": "dxf",
+                           "plane": "xy"}, _dxf_layer_sketch, None),
+    ("sketch_create", {"plane": "xy", "name": "After"}, "ok", None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_first_shape, None),
+    ("design_delete_feature", _numref_bare_delete, _numref_first_deleted, None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_successor_moved_up, None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "story_doc", "the story document")},
+     _activated(), None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "numref_doc", "the numeric-reference document"),
+                             "save_changes": False}, _document_closed, None),
+    ("doc_get", {}, _scratch_gone_story_active, None),
+]
+
 # --- ACT 0: OVERTURE - orient, then open the one document the whole story lives in -------------
 _OVERTURE = [
     ("doc_new", {}, _new_document, None),
@@ -370,7 +579,7 @@ _OVERTURE = [
      "refused", None),
     # a tier-R member names the member and the reason, with nothing written.
     ("sys_set_preferences", {"member": "network.proxyHost", "value": "127.0.0.1"}, "refused", None),
-] + _SCRATCH_DOCUMENT
+] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE
 
 # --- THE SHOWCASE: the finished fixture photographed, renamed, exported and read back -----------
 # It runs BEFORE the machining acts so the sweep ends on the CAM job and its post, which is the

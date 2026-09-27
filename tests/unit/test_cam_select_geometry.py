@@ -383,7 +383,7 @@ def _bore_op(name="Bore1", **kw):
 
 
 def _install(monkeypatch, cam, entities):
-    monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+    monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
     # patch the geometry-handle resolver to hand back fake entities (resolver has its own tests)
     cg._inputs.GeometryHandleList.resolve = lambda self, raw: (entities, None)
     return cam
@@ -392,7 +392,7 @@ def _install(monkeypatch, cam, entities):
 def _install_bodies(monkeypatch, cam, bodies):
     # The stub takes the kind's own (raw, component) signature: the handler passes the scope
     # through, so a one-argument stand-in would hide the wiring instead of standing in for it.
-    monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+    monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
     cg._inputs.BodyRefList.resolve = lambda self, raw, component="": (list(bodies), None)
     return cam
 
@@ -414,14 +414,14 @@ class TestGuards:
         assert res["isError"] is True and "selection" in res["message"].lower()
 
     def test_no_cam(self, monkeypatch):
-        monkeypatch.setattr(cg, "get_cam", lambda: (None, "no CAM data"))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (None, "no CAM data"))
         res = cg.handler(operation="X", selection="chain", handles=["h"])
         assert res["isError"] is True and "cam" in res["message"].lower()
 
     def test_pocket_recognition_refuses_before_cam_or_native_resolution(self, monkeypatch):
         touched = []
         monkeypatch.setattr(cg, "get_cam",
-                            lambda: touched.append("get_cam") or (None, "unexpected CAM read"))
+                            lambda **_: touched.append("get_cam") or (None, "unexpected CAM read"))
         monkeypatch.setattr(cg, "_resolve_geometry",
                             lambda *args: touched.append("resolve_geometry") or ([], None))
         res = cg.handler(operation="Adaptive1", selection="pocket_recognition",
@@ -442,7 +442,7 @@ class TestGuards:
         # setup paths, never silently target whichever setup's op the walk met first.
         cam = make_cam(SharedSetup("Setup1", ops=[SharedOp("Drill1")]),
                        SharedSetup("Setup2", ops=[SharedOp("Drill1")]))
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         cg._inputs.GeometryHandleList.resolve = lambda self, raw: ([_Face(0.3)], None)
         res = cg.handler(operation="Drill1", selection="holes", handles=["a"])
         assert res["isError"] is True and "ambiguous" in res["message"].lower()
@@ -450,7 +450,7 @@ class TestGuards:
 
     def test_handle_resolve_error_propagates(self, monkeypatch):
         cam = _CAM([_Setup([_curve_op()])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         cg._inputs.GeometryHandleList.resolve = lambda self, raw: (None, "bad handle")
         res = cg.handler(operation="2D Contour1", selection="chain", handles=["h"])
         assert res["isError"] is True and "bad handle" in res["message"]
@@ -536,7 +536,7 @@ class TestHandleKindRequirement:
     def test_chain_refuses_a_face_handle_naming_the_type_it_got(self, monkeypatch):
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         self._resolves_to(monkeypatch, _Face())
         res = cg.handler(operation="2D Contour1", selection="chain", handles=["h"], generate=False)
         assert res["isError"] is True
@@ -546,7 +546,7 @@ class TestHandleKindRequirement:
     def test_pocket_refuses_an_edge_handle_naming_the_type_it_got(self, monkeypatch):
         op = _curve_op(name="2D Pocket1")
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         self._resolves_to(monkeypatch, _Edge())
         res = cg.handler(operation="2D Pocket1", selection="pocket", handles=["h"], generate=False)
         assert res["isError"] is True
@@ -559,7 +559,7 @@ class TestHandleKindRequirement:
         # through would be assigned into the operation's surface parameter as the wrong type.
         op = _geodesic_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         self._resolves_to(monkeypatch, _Edge())
         res = cg.handler(operation="Geodesic1", selection="surfaces", handles=["h"], generate=False)
         assert res["isError"] is True
@@ -570,7 +570,7 @@ class TestHandleKindRequirement:
         # the refusal above must come from the require=, not from this fixture refusing everything.
         op = _geodesic_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         face = _Face()
         self._resolves_to(monkeypatch, face)
         out = _payload(cg.handler(operation="Geodesic1", selection="surfaces", handles=["h"],
@@ -583,7 +583,7 @@ class TestHandleKindRequirement:
         # everything this fixture hands it.
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         self._resolves_to(monkeypatch, _Edge())
         out = _payload(cg.handler(operation="2D Contour1", selection="chain", handles=["h"],
                                   generate=False))
@@ -651,7 +651,7 @@ class TestBodySelectionComponentScope:
     def _run(self, monkeypatch, **kw):
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="silhouette", generate=False, **kw)
         return op, res
 
@@ -684,7 +684,7 @@ class TestBodySelectionComponentScope:
         install(cg, design)
         op = _curve_op(name="Adaptive1")
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="Adaptive1", selection="pocket_recognition", bodies=["Body1"],
                          component="Bracket", allow_pocket_recognition=True, generate=False)
         assert res["isError"] is False
@@ -864,7 +864,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(MakeComp("Root", sketches=[sk])))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         out = _payload(cg.handler(operation="2D Contour1", selection="sketch",
                                   sketches=["Pocket Outline"], generate=False))
         sel = _selection_of(op)
@@ -879,7 +879,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(root, sub))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="sketch", sketches=["Sketch1"],
                          generate=False)
         assert res["isError"] is True
@@ -905,7 +905,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(root, sub))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         out = _payload(cg.handler(operation="2D Contour1", selection="sketch", sketches=["Sketch1"],
                                   component="Bracket", generate=False))
         assert _selection_of(op).inputGeometry == [mine]
@@ -920,7 +920,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(root, sub))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         _payload(cg.handler(operation="2D Contour1", selection="sketch",
                             sketches=["Inner", "Outer"], component="Bracket", generate=False))
         assert _selection_of(op).inputGeometry == [a_mine, b_mine]
@@ -931,7 +931,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(MakeComp("Carrier", sketches=[make_sketch("Outline")])))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="sketch", sketches=["Outline"],
                          component="Ghost", generate=False)
         assert res["isError"] is True
@@ -947,7 +947,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(root, sub))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="sketch", sketches=["Outline"],
                          component="Bracket", generate=False)
         assert res["isError"] is True
@@ -972,7 +972,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(MakeComp("Root", sketches=[make_sketch("Outline")])))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="sketch", sketches=["Ghost"],
                          generate=False)
         assert res["isError"] is True and "Ghost" in res["message"] and "Outline" in res["message"]
@@ -981,7 +981,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(MakeComp("Root", sketches=[make_sketch("Outline")])))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="sketch", generate=False)
         assert res["isError"] is True and "sketches" in res["message"]
 
@@ -994,7 +994,7 @@ class TestSketchScope:
         install(cg, _sketch_design(MakeComp("Root", sketches=[make_sketch("Outline")])))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         if prepare is not None:
             pv = op.parameters.itemByName("contours").value
             real_make = pv._cs._make
@@ -1026,7 +1026,7 @@ class TestSketchScope:
         install(cg, _sketch_design(MakeComp("Root", sketches=[make_sketch("Outline")])))
         op = _curve_op(name="Engrave FE Text Outline1")
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         out = _payload(cg.handler(operation="Engrave FE Text Outline1", selection="sketch",
                                   sketches=["Outline"]))
         assert out["launched"] is True
@@ -1045,7 +1045,7 @@ class TestSelectedIdentityIsPublished:
         install(cg, _sketch_design(*comps))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         return _payload(cg.handler(operation="2D Contour1", selection="sketch", sketches=names,
                                    generate=False))
 
@@ -1074,7 +1074,7 @@ class TestSelectedIdentityIsPublished:
         install(cg, design)
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         out = _payload(cg.handler(operation="2D Contour1", selection="silhouette",
                                   bodies=["Body1"], component="Bracket", generate=False))
         assert out["selected"] == "'Bracket:1:Body1'"
@@ -1371,7 +1371,7 @@ class TestTurningObjectSets:
     def test_chamfer_refuses_a_face_handle_before_the_parameter_raises(self, monkeypatch):
         op = _turn_chamfer_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         import adsk.fusion
         adsk.fusion.BRepFace = BRepFace
         adsk.fusion.BRepEdge = BRepEdge
@@ -1386,7 +1386,7 @@ class TestTurningObjectSets:
         # rather than a wrong pick - so the required type refuses it while nothing has been written.
         op = _groove_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         import adsk.fusion
         adsk.fusion.BRepFace = BRepFace
         adsk.fusion.BRepEdge = BRepEdge
@@ -1400,7 +1400,7 @@ class TestTurningObjectSets:
     def test_thread_refuses_an_edge_handle(self, monkeypatch):
         op = _turn_thread_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         import adsk.fusion
         adsk.fusion.BRepFace = BRepFace
         adsk.fusion.BRepEdge = BRepEdge
@@ -2117,6 +2117,36 @@ class TestHeightReadBack:
 # ── generation: launch-and-return (it runs in the background on its own) ─────
 
 class TestGenerate:
+    def test_flat_setup_refresh_precedes_silhouette_application(self, monkeypatch):
+        op = _curve_op()
+        cam = _CAM([_Setup([op])], future=_Future(complete=False))
+        _install_bodies(monkeypatch, cam, [])
+        events = []
+        monkeypatch.setattr(cg, "sync_validity",
+                            lambda cam: events.append("sync") or True)
+        monkeypatch.setattr(cg, "refresh_flat_setup_models",
+                            lambda setup: (events.append("refresh") or 1, None))
+        pv = op.parameters.itemByName("contours").value
+        apply = pv.applyCurveSelections
+        def tracked_apply(selections):
+            events.append("selection")
+            return apply(selections)
+        monkeypatch.setattr(pv, "applyCurveSelections", tracked_apply)
+        out = _payload(cg.handler(operation="2D Contour1", selection="silhouette",
+                                  generate=True))
+        assert events == ["sync", "refresh", "selection"]
+        assert out["flat_models_refreshed"] == 1 and out["launched"] is True
+
+    def test_failed_validity_sync_refuses_before_selection(self, monkeypatch):
+        op = _curve_op()
+        cam = _CAM([_Setup([op])])
+        _install_bodies(monkeypatch, cam, [])
+        monkeypatch.setattr(cg, "sync_validity", lambda cam: False)
+        res = cg.handler(operation="2D Contour1", selection="silhouette", generate=True)
+        assert res["isError"] is True and "checkValidity" in res["message"]
+        assert op.parameters.itemByName("contours").value.applied == 0
+        assert cam.generated == []
+
     def test_returns_immediately_without_pumping_while_future_incomplete(self, monkeypatch):
         # The handler LAUNCHES generation and returns - it must never pump adsk.doEvents waiting on
         # the future (that blocks Fusion's UI for the whole compute; cam_get_status owns the pump).

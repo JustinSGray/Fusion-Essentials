@@ -15,8 +15,8 @@ from ._common import CM_TO_UNIT, named_with_remainder, ok, error, safe, scale, s
 from ._cam_common import (MACHINE_MODE_MEMBERS, PARAM_READ, SWARF_CONTOURS_PARAM, avoid_groups,
                           choice_quoting, enumeration_remedy, expression_error, get_cam,
                           group_record, machine_mode_value, matched_quoting, offset_mm_per_unit,
-                          owning_setup, resolve_cam_node, register_future,
-                          strategy_generation_allowed, unquote_expression)
+                          owning_setup, refresh_flat_setup_models, resolve_cam_node, register_future,
+                          strategy_generation_allowed, sync_validity, unquote_expression)
 from . import _inputs
 from . import _sketch_detail
 
@@ -221,7 +221,9 @@ _KNOB_SELECTIONS = {"is_open": (_CHAIN,), "reverted": (_CHAIN,),
 # The geometry inputs the body/sketch kinds resolve through, one instance each for the schema and
 # the resolver. Both take scope_input because Fusion's own defaults make those names shared - it
 # numbers sketches per component from 1 and names every component's first body 'Body1'.
-BODIES = _inputs.BodyRefList("bodies", scope_input="component")
+BODIES = _inputs.BodyRefList(
+    "bodies", scope_input="component",
+    description="Omit to use setup models (including flat bodies); named bodies select design bodies.")
 SKETCHES = _inputs.SketchRefList("sketches", scope_input="component", required=True)
 
 
@@ -1434,6 +1436,8 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
     cam, cerr = get_cam()
     if cerr:
         return error(cerr)
+    if generate and not sync_validity(cam):
+        return error("CAM.checkValidity failed before selection; no selection or generation was attempted.")
     node, oerr = resolve_cam_node(cam, operation, kinds=("operation",), label="operation")
     if oerr:
         return error(oerr)
@@ -1520,6 +1524,26 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
     if applied:
         result["heights_set"] = applied
 
+    flat_refreshed = 0
+    allowed = None
+    if generate:
+        strategy = safe(lambda: op.strategy)
+        allowed = strategy_generation_allowed(strategy)
+        if allowed is not False:
+            setup_obj = owning_setup(node)
+            if setup_obj is None:
+                return error(_retained(applied,
+                             f"Operation '{result['operation'] or operation}' has no readable "
+                             "owning setup; selection and generation were not attempted."))
+            flat_refreshed, ferr = refresh_flat_setup_models(setup_obj)
+            if ferr:
+                return error(_retained(applied, f"Setup model refresh failed: {ferr} "
+                             "Selection and generation were not attempted."))
+            if flat_refreshed:
+                result["flat_models_refreshed"] = flat_refreshed
+    refresh_effect = (f" {flat_refreshed} flat setup model(s) were refreshed."
+                      if flat_refreshed else "")
+
     # ── apply the selection ──
     # 'quoted' names every parameter this call WRAPPED to match what it already stored - the mode
     # engage below appends to the same list. Absent means each request was written as it was sent.
@@ -1527,7 +1551,7 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
     if selection == _PROBE and probing_type is not None:
         perr = _apply_probing_type(op, probing_type, extra)
         if perr:
-            return error(_retained(applied, perr))
+            return error(_retained(applied, perr) + refresh_effect)
     if selection == _SURFACE_GROUP:
         offsets = {k: knobs.get(k) for k in _OFFSET_KNOBS_KEYS}
         count, aerr = _apply_surface_group(op, entities, machine_over_holes,
@@ -1547,13 +1571,14 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
                                     explicit_groups=explicit_groups,
                                     require_resolved=flat_chain)
     if aerr:
-        return error(_retained(applied, aerr))
+        return error(_retained(applied, aerr) + refresh_effect)
     if not record.get("selections"):
         return error(_retained(applied,
                      "Selection applied but the operation reports 0 selections - the geometry was "
                      "rejected. Check the geometry matches the strategy (edges for chain, the pocket "
                      "floor face for pocket, bodies for silhouette/pocket_recognition, whole sketches "
-                     "for sketch, cylinder faces for holes, the surface set's faces for surfaces)."))
+                     "for sketch, cylinder faces for holes, the surface set's faces for surfaces).")
+                     + refresh_effect)
     result.update(record)
     result.update(extra)
     # Bounded through the shared capped-list renderer: this list is as long as the selection, and a
@@ -1574,8 +1599,6 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
     op_name = result["operation"] or operation
     # The entitlement pre-flight, before the launch and on the same seam cam_generate excludes on.
     # `is False`, not a falsiness test: None is the flag that would not read.
-    strategy = safe(lambda: op.strategy)
-    allowed = strategy_generation_allowed(strategy)
     if allowed is False:
         result["launched"] = False
         result["entitlement_blocked"] = {"operation": op_name, "strategy": strategy}
@@ -1600,8 +1623,7 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
 
 
 TOOL_DESCRIPTION = (
-    "Select the machining geometry on a CAM operation; 'selection' picks the family and fixes "
-    "which input carries it. Native pocket recognition requires allow_pocket_recognition=true."
+    "Select CAM geometry. Pocket recognition requires allow_pocket_recognition=true."
 )
 
 tool = (

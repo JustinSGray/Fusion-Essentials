@@ -16,7 +16,8 @@ from ..mcp_primitives.registry import register
 from ._common import apply_rename, counted, named_with_remainder, ok, error, read_flag, safe
 from ._cam_common import (CREATE_DEDUPE, _MANUAL_NC_STRATEGY, _length_capped, capability_entitled,
                           choice_expressions, get_cam, find_setup, operation_nodes,
-                          operation_name_clash, register_future, setups, setups_sharing_models,
+                          operation_name_clash, refresh_flat_setup_models, register_future, setups, setups_sharing_models,
+                          sync_validity,
                           unquote_expression, walk_cam_tree)
 # _read_tool_number is the one tool_number read; _tp is the one tool-parameter value read.
 from .cam_edit_tools import _read_tool_number, _tp
@@ -482,6 +483,14 @@ def handler(setup: str = "", strategy: str = "", tool_library_url: str = "",
     if chosen is not None and chosen["allowed"] is False:
         return error(_blocked_strategy_message(strategy, setup, rows))
 
+    flat_refreshed = 0
+    if generate:
+        if not sync_validity(cam):
+            return error("CAM.checkValidity failed before operation creation; nothing was created.")
+        flat_refreshed, ferr = refresh_flat_setup_models(target)
+        if ferr:
+            return error(f"Setup '{setup}': {ferr}")
+
     # createInput can raise on an invalid strategy despite the check (be safe), so guard the mutation.
     try:
         opin = target.operations.createInput(strategy)
@@ -589,6 +598,8 @@ def handler(setup: str = "", strategy: str = "", tool_library_url: str = "",
                 _CORNER_NEXT if strategy == _CORNER else
                 "No toolpath yet: cam_select_geometry for its geometry, then cam_generate."),
     }
+    if flat_refreshed:
+        result["flat_models_refreshed"] = flat_refreshed
     if mode_note:
         # The read-back is published only when it DISAGREED: absent = generationMode read back
         # SkipGeneration; present = what it read back instead, or why the assignment raised.

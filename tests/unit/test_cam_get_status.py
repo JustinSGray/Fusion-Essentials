@@ -17,6 +17,7 @@ import pytest
 from conftest import FakeCAMParameter, FakeCAMParameters, FakeMachine, load_tool, make_cam
 from conftest import FakeSetup as SharedSetup, FakeCAMFolder as SharedFolder
 from conftest import FakeOperation as SharedOp
+from conftest import FakeApplication, FakeFusionDocument, FakeProducts
 
 st = load_tool("cam_get_status")
 
@@ -102,6 +103,13 @@ class TestCollectOpHealth:
                                       _op("b", error="bad geometry"), _op("c")])
         assert out["warnings"] == [{"name": "a", "warning": "Spindle too fast"}]
         assert out["errors"] == [{"name": "b", "error": "bad geometry"}]
+
+    def test_a_suppressed_ops_stale_error_is_not_reported(self):
+        # MEASURED on 2706: suppressing a faulted op keeps hasError True - readiness must not call
+        # a user-suppressed op errored.
+        out = st._collect_op_health([_op("Off1", error="Top height below bottom height",
+                                          state=2, suppressed=True)])
+        assert out["errors"] == []
 
     def test_empty_toolpath_read_from_the_state_flags(self):
         # an op that GENERATED and produced no toolpath: state IsValid, isToolpathValid true,
@@ -2130,3 +2138,60 @@ class TestOneHandleOverSeveralFutures:
         out = _payload(st.handler(handle="gen1"))
         assert out["completed"] is True
         assert out["operations_total"] == 5 and out["operations_completed"] == 5
+
+
+class TestValiditySyncOnReads:
+    """cam_get_status obtains the CAM product through get_cam(sync=True) before reading state, on
+    the by-name, document AND scoped-handle paths alike - checkValidity is MEASURED safe to call
+    mid-generation (_cam_common.sync_validity's own comment)."""
+
+    def _wire(self, monkeypatch, cam):
+        """The REAL get_cam over `cam`, pinned per test so only THIS path's own sync mutates it."""
+        monkeypatch.setattr(st._cam_common, "_VALIDITY_SYNCED", [True])
+        monkeypatch.setattr(st._cam_common, "app", FakeApplication(
+            active_document=FakeFusionDocument(products=FakeProducts(cam=cam))))
+        monkeypatch.setattr(adsk.cam.CAM, "cast", lambda x: x if x is cam else None)
+        monkeypatch.setattr(adsk.cam.Operation, "cast", staticmethod(lambda x: x))
+        return cam
+
+    def test_a_named_target_read_sees_the_state_the_sync_flipped(self, monkeypatch):
+        # Without the sync this reads state 0 (valid); the flip lands because _status_live
+        # obtains the product through get_cam(sync=True) before reading it.
+        op = SharedOp("Drill1", operation_state=0)
+        cam = self._wire(monkeypatch, make_cam(SharedSetup("S1", ops=[op]),
+                         check_validity=lambda: setattr(op, "_operation_state", 1)))
+        out = _payload(st.handler(target="S1", include_operations=False))
+        assert cam.check_validity_calls == [True]
+        assert out["live_states"]["out_of_date"] == 1
+        assert out["validity_synced"] is True
+
+    def test_a_raising_sync_yields_validity_synced_false_never_a_raise(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("checkValidity is not available on this build")
+        cam = self._wire(monkeypatch, make_cam(SharedSetup("S1", ops=[SharedOp("Face1")]),
+                                               check_validity=_boom))
+        out = _payload(st.handler(target="S1", include_operations=False))
+        assert out["validity_synced"] is False
+        assert "Validity not synced this call." in out["readiness"]
+        assert "checkValidity raised" in out["live_states"]["validity_not_synced"]
+
+    def test_the_scoped_handle_path_also_syncs_validity(self, monkeypatch):
+        # checkValidity is MEASURED safe mid-generation (_cam_common.sync_validity's own comment) -
+        # a scoped handle syncs like every other read, so the same design change the by-name test
+        # above catches is caught here too.
+        st._GENERATIONS.clear()
+        st._RELEASED.clear()
+        monkeypatch.setattr(st, "_active_identity", lambda: ("Doc", "urn:doc"))
+        monkeypatch.setattr(st, "document_key", lambda: "urn:doc")
+        op = SharedOp("Drill1", operation_state=0)
+        cam = self._wire(monkeypatch, make_cam(SharedSetup("S1", ops=[op]),
+                         check_validity=lambda: setattr(op, "_operation_state", 1)))
+        st._GENERATIONS["gen1"] = {
+            "future": SimpleNamespace(isGenerationCompleted=True, numberOfOperations=1,
+                                      numberOfCompleted=1),
+            "target": "setup 'S1'", "scope": "setup", "target_name": "S1",
+            "started_at": 0.0, "total": 1, "doc_name": "Doc", "doc_urn": "urn:doc",
+            "doc_key": "urn:doc"}
+        out = _payload(st.handler(handle="gen1", include_operations=False))
+        assert cam.check_validity_calls == [True]
+        assert out["live_states"]["out_of_date"] == 1

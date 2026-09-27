@@ -51,9 +51,9 @@ def _project():
     return config["project"]
 
 
-def _run_steps(steps, ctx):
+def _run_steps(steps, ctx, stop_on_failure=False):
     """tool_verify.run_steps with a per-step printed line - same engine, same vocabulary."""
-    return run_steps(steps, ctx,
+    return run_steps(steps, ctx, stop_on_failure=stop_on_failure,
                      on_result=lambda tool, status, note:
                      print(f"  {status:18} {tool:26} {note}", flush=True))
 
@@ -385,6 +385,28 @@ def get_only():
     return _report(rows, "get-only")
 
 
+def auto_dimension_guard():
+    """Verify write refusals with an operator holding the Auto Dimensions chooser open."""
+    before_health = health_gate()
+    command = "FusionDrawingAutoDimensionEditCommand"
+    failed, before = call("drawing_get", {})
+    if failed or not isinstance(before, dict) or before.get("active_command_id") != command:
+        sys.exit("Open Auto Dimensions on an owned scratch drawing before --auto-dimension-guard.")
+    path = os.path.join(OUT_DIR, "refused_" + str(time.time_ns()) + ".pdf")
+    refusal = _refused(command, "Finish or cancel", "auto_dimension='off'")
+    rows = _run_steps([
+        ("drawing_export", {"format": "pdf", "file_path": path}, refusal, None),
+        ("drawing_edit_sheet", {"action": "add", "new_name": "RefusedGuardSheet"}, refusal, None),
+        ("sys_reload_addin", {}, refusal, None),
+        ("drawing_get", {}, lambda p: p.get("active_command_id") == command
+         and p.get("sheet_count") == before.get("sheet_count")
+         and health_gate()["attestation"]["load_id"] == before_health["attestation"]["load_id"]
+         and not os.path.exists(path), None),
+    ], {}, stop_on_failure=True)
+    print("Leave the chooser for the operator to cancel; no automatic UI recovery is attempted.")
+    return _report(rows, "auto-dimension-guard")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
@@ -392,5 +414,9 @@ if __name__ == "__main__":
     g.add_argument("--run", action="store_true")
     g.add_argument("--get-only", action="store_true", dest="get_only",
                    help="read-only drawing_get beats against the ACTIVE drawing (no staging)")
+    g.add_argument("--auto-dimension-guard", action="store_true",
+                   help="operator-present refusal checks with Auto Dimensions already open")
     args = ap.parse_args()
+    if args.auto_dimension_guard:
+        sys.exit(auto_dimension_guard())
     sys.exit(stage() if args.stage else (get_only() if args.get_only else run()))

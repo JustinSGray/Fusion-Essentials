@@ -113,7 +113,7 @@ def _collect_op_health(ops, labels=None):
     for i, o in enumerate(ops or []):
         facts = _cam_common.op_state_facts(o, cam)
         name = labels[i] if i < len(labels) else facts["name"]
-        if facts["has_error"]:
+        if facts["has_error"] and not _cam_common.op_is_suppressed(facts):
             out["errors"].append({"name": name, "error": (safe(lambda o=o: o.error) or "").strip()})
         if _cam_common.counts_as_warning(facts):
             out["warnings"].append({"name": name,
@@ -495,8 +495,11 @@ def _scope_state(cam, target: str):
     owner = _cam_common.owning_setup(node)
     tally["setups_blocked"] = _cam_common.blocked_setup_records([owner] if owner is not None else [])
     warning_sample = (tally.get("samples") or {}).get("warning")
-    tally["readiness"] = _cam_common.readiness_verdict(tally, ops, warning_sample,
-                                                       tally["setups_blocked"])
+    tally["readiness"] = _cam_common.with_validity_clause(_cam_common.readiness_verdict(
+        tally, ops, warning_sample, tally["setups_blocked"]))
+    miss = _cam_common.validity_sync_miss()
+    if miss:
+        tally["validity_not_synced"] = miss     # absent = this call's sync ran
     return tally, f"{kind} '{node.name or want}'", (lambda: nodes), None
 
 
@@ -524,6 +527,7 @@ def _status_live(target: str, include_operations: bool) -> dict:
     "operations_total": live.get("total"),
     "live_states": live,           # valid/out_of_date/errored/generating/suppressed (+ setup/program for document)
     "readiness": live.get("readiness", ""),
+    "validity_synced": _cam_common.validity_synced(),
     }
 
     if not completed:

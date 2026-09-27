@@ -21,8 +21,7 @@ import pytest
 
 from conftest import FakeTimeline as _SharedTimeline
 from conftest import FakeTimelineObject as _SharedTimelineObject
-from conftest import (FakeApplication, FakeUserInterface, _NamedCollection, error_message,
-                      load_tool, make_design, payload)
+from conftest import _NamedCollection, error_message, load_tool, make_design, payload
 
 et = load_tool("design_edit_timeline")
 
@@ -415,6 +414,16 @@ class TestRollToFeature:
         assert "'CascadeG'" in msg
         assert "design_edit_timeline(action='ungroup', feature='CascadeG')" in msg
         assert members[1].isSuppressed is False
+
+    def test_a_bare_number_whose_twin_hides_in_a_collapsed_group_is_refused_unsuppressed(self, wire):
+        # index 0 is visible; a member literally named "0" sits in a collapsed group, absent from
+        # the walk - the bare "0" must refuse naming both, and suppress nothing.
+        seat = FakeTimelineObject("Extrude1", 0)
+        group = FakeTimelineGroup("Imports", 1, members=[FakeTimelineObject("0", 2)], collapsed=True)
+        wire(FakeTimeline([seat, group], groups=[group]))
+        msg = error_message(et.handler(action="suppress", feature="0", suppressed=True))
+        assert "'0' matches Extrude1@0 and also names" in msg
+        assert "collapsed timeline group 'Imports'" in msg and seat.isSuppressed is False
 
     def test_a_genuinely_absent_name_still_lists_the_timeline(self, wire):
         members = [FakeTimelineObject("Sketch1", 0)]
@@ -1150,14 +1159,6 @@ class TestGuards:
     def test_direct_modelling_design_has_no_timeline(self, wire):
         wire(None)
         assert "no timeline" in error_message(et.handler(action="roll", to="end"))
-
-    def test_an_open_form_edit_is_named_not_called_direct(self, monkeypatch):
-        design = make_design(design_type=0)
-        monkeypatch.setattr(et._common, "design", lambda: design)
-        monkeypatch.setattr(et._common, "app", FakeApplication(user_interface=FakeUserInterface(
-            active_workspace=types.SimpleNamespace(id="TSplineEnvironment"))))
-        msg = error_message(et.handler(action="suppress", feature="Form1"))
-        assert "A Form edit is open" in msg and "direct-modelling" not in msg
 
     def test_unknown_action_is_refused(self, wire):
         wire(_timeline())

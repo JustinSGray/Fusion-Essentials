@@ -2,7 +2,7 @@
 
 _Auto-generated from the live registry by `tests/gen_manifest.py`. Do not edit by hand — re-run the generator after adding/renaming a tool or kind. `--check` fails the suite if this is stale. This is the batch form of the `sys_find_tool` live lookup: the one place to see what already exists before building it._
 
-**Tools:** 196  |  **Input-kinds:** 24  |  write-status: `·` read · `✎` write · `⚠` destructive
+**Tools:** 207  |  **Input-kinds:** 26  |  write-status: `·` read · `✎` write · `⚠` destructive
 
 ## Input kinds — reference EXISTING geometry/structure with these (don't hand-roll a name/index)
 
@@ -29,6 +29,8 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | `ProfileRef` | A reference to a sketch PROFILE - a stable 'handle' (entityToken, order-stable across rebuilds) |
 | `ProfileRefList` | An ORDERED list of profile references - for loft, where profile ORDER is load-bearing (the loft |
 | `SectionRef` | A reference to one SectionAnalysis by its generated name from view_section cut/list. |
+| `SheetMetalRuleRef` | A rule in an explicit design or library scope, selected by exact name. |
+| `SketchLineRef` | An exact sketch line from sketch_get, optionally scoped to a component. |
 | `SketchRefList` | A LIST of SKETCHES by name - the reference an operation taking WHOLE sketches needs (a CAM |
 | `SurfaceRef` | The FACE/PLANE a sketch entity is constrained or dimensioned to. Schema and resolution come |
 | `TargetRef` | A reference to a THING to measure/colour, resolved from any of several shapes: |
@@ -168,7 +170,7 @@ Produces: entity_refs -> sketch_constrain/sketch_dimension. |
 | · | `cam_compare_operations` | Compare two CAM operations by name: which parameters and which geometry selections differ, with the value on each side. |
 | ✎ | `cam_create_machine` | Create a MACHINE in the LOCAL machine library from a Fusion machine template, so cam_edit_setup(machine=...) can assign it by name. |
 | ✎ | `cam_create_operation` | Create a CAM milling operation in a setup, with a cutting tool from cam_edit_tools |
-| ✎ | `cam_create_setup` | Create a CAM (Manufacture) setup - milling, turning, or additive on a printer from cam_get(include=['machines']) - then add toolpaths with cam_create_operation. |
+| ✎ | `cam_create_setup` | Create a CAM setup |
 | ⚠ | `cam_delete` | Delete a CAM setup, operation, folder, pattern or NC program by name (design_delete_* do not reach CAM data). |
 | ⚠ | `cam_delete_machine` | Delete a machine from the LOCAL machine library by name; 'confirm_name' must match the resolved name exactly |
 | ⚠ | `cam_delete_template` | Delete a template from the LOCAL toolpath template library by name, or by the 'template_url' cam_get(include=['templates']) lists; 'confirm_name' must match the... |
@@ -191,7 +193,7 @@ Produces: passed. |
 | ✎ | `cam_post` | Create (or reuse) an NC Program and post it to a G-code / NC file on disk - the final CAM step |
 | ✎ | `cam_reorder` | Reorder a CAM item in the machining sequence: move 'entity' before or after 'reference' (both are names from cam_get / cam_edit_folders) |
 | ✎ | `cam_save_template` | Bundle some of a setup's operations into a NEW toolpath template. |
-| ✎ | `cam_select_geometry` | Select the machining geometry on a CAM operation; 'selection' picks the family and fixes which input carries it |
+| ✎ | `cam_select_geometry` | Select CAM geometry |
 | ✎ | `cam_set_nc_comment` | Set an NC program's COMMENT, its listing NAME (what cam_post addresses) and its program NUMBER (nc_program_name, what the post emits). |
 | ✎ | `cam_show_toolpath` | Show or hide CAM toolpaths to inspect one operation's path at a time |
 
@@ -286,7 +288,7 @@ Produces: file_path, size_bytes. |
 |---|---|---|
 | ✎ | `drawing_add_sketch` | Draw 2D geometry on a NEW sketch on a sheet of the active 2D drawing document.
 Produces: sketch_name, curves_landed. |
-| ✎ | `drawing_create` | Create a 2D drawing from the active design |
+| ✎ | `drawing_create` | Create a cloud drawing; doc_open file_id, then drawing_export, no UI step by default |
 | ⚠ | `drawing_delete_sketch` | Delete a drawing sketch by exact name from a sheet of the active 2D drawing document.
 Produces: sketch_count. |
 | ✎ | `drawing_dimension` | Auto-dimension one view on a named sheet of the active drawing - the API's route to dimensions.
@@ -355,6 +357,22 @@ Produces: handle -> jo... |
 | | Tool | Summary |
 |---|---|---|
 | ✎ | `save_as_mesh` | Tessellate a BRep solid/surface into a persistent MESH body beside it in the design - the inverse of mesh_to_brep. |
+
+### sheet
+
+| | Tool | Summary |
+|---|---|---|
+| ✎ | `sheet_convert` | Convert a uniform solid to sheet metal by a design rule, or rule='active' in a ruled component (preview API). |
+| ✎ | `sheet_create_flange` | Add a native flange to a sheet body: an edge flange along rim edges, or a base flange from a closed profile |
+| ✎ | `sheet_create_flat_pattern` | Create a developed blank from a sheet body's broad stationary face; one flat pattern per component. |
+| ✎ | `sheet_create_fold` | Fold a sheet body along one sketch line |
+| ✎ | `sheet_create_hem` | Hem a sheet body's rim edge: flat, open, rolled, rope, teardrop or double, each with its own dimensions |
+| ✎ | `sheet_create_join_by_bend` | Join two sheet bodies with a bend between two rim edges (the preview API merges them into one body) |
+| ✎ | `sheet_create_refold` | Refold one explicit unfold feature after adding flat-state edits |
+| ✎ | `sheet_create_rip` | Rip a sheet body by a face, along an edge or between two vertices (gap from the rule unless given) |
+| ✎ | `sheet_create_unfold` | Unfold a sheet body's bends for cross-bend machining features, then sheet_create_refold |
+| ✎ | `sheet_edit_rule` | Copy a scoped sheet-metal rule into this design, or edit a design-local rule. |
+| · | `sheet_get` | Read sheet-metal rule counts; include rules, library_rules, components or features for detail. |
 
 ### sys
 

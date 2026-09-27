@@ -134,6 +134,7 @@ are predictable: `<family>_<verb>`, so the family prefix tells you the area —
 | `pmi_` | model-based annotations (notes, leaders, GD&T) | `pmi_get`, `pmi_create`, `pmi_edit` |
 | `appearance_` / `mesh_` / `surface_` | colour, mesh bodies, surface modelling | `appearance_set`, `mesh_export`, `surface_thicken` |
 | `form_` | T-spline form bodies | `form_create`, `form_get` |
+| `sheet_` | sheet metal: rules, convert, flange, hem, rip, join, fold, flat pattern (fold, unfold, refold and join-by-bend ride Fusion's preview API, which Autodesk may change) | `sheet_convert`, `sheet_create_flange`, `sheet_create_flat_pattern` |
 | `drawing_` / `workspace_` / `save_` | 2D drawings, orientation, save-as-mesh | `drawing_create`, `workspace_orient`, `save_as_mesh` |
 
 Tool definitions expose `readOnlyHint` and, for destructive tools, `destructiveHint` annotations.

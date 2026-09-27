@@ -48,7 +48,10 @@ def all_forms(design):
 def resolve_form(design, kind, raw):
     """(FormFeature, error): a timeline index through `kind`, else the one Form `raw` names."""
     want = (raw or "").strip() if isinstance(raw, str) else raw
-    if isinstance(want, int) or (isinstance(want, str) and want.isdigit()):
+    # An index, or the '[<component>/]<name>@<index>' address a refusal lists, goes through the kind.
+    addressed = isinstance(want, str) and (_inputs._ascii_int(want) is not None
+                                           or _inputs._parse_address(want)[0] is not None)
+    if isinstance(want, int) or addressed:
         got, err = kind.resolve(str(want))
         if err or got is None:
             return None, err
@@ -215,13 +218,14 @@ def create_form(design, comp, text, name):
                       "then" + remove)
     if state == "unread":
         return None, (raised + " The design type did not read after it, so whether the Form edit "
-                      f"is open is unknown; '{label}' was left in place. If workspace_orient "
-                      "reports in_form_edit, ask the user to click Finish Form; then" + remove)
+                      f"is open is unknown; '{label}' was left in place. If the design still reads "
+                      "direct (workspace_orient design.mode), ask the user to click Finish Form; "
+                      "then" + remove)
     if state != "closed":
         return None, (f"'{label}' was {'not loaded' if load_error else 'loaded'}, but its edit did "
-                      f"not confirm closed ({detail}), so nothing was verified or deleted. If "
-                      "workspace_orient reports in_form_edit, ask the user to click Finish Form; "
-                      "then" + remove)
+                      f"not confirm closed ({detail}), so nothing was verified or deleted. If the "
+                      "design still reads direct (workspace_orient design.mode), ask the user to "
+                      "click Finish Form; then" + remove)
     if load_error:
         return None, (f"Fusion refused the cage: {load_error}."
                       + (retire(design, ff, label, count) or " The Form made for it was removed."))

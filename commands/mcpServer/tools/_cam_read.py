@@ -14,10 +14,10 @@ from ._cam_common import (EMPTY_TOOLPATH_REMEDY, _MANUAL_NC_STRATEGY, _SETUP_BLO
                           _segment, _setup_node, _walk_children, blocked_setup_records, clamp_rows,
                           counts_as_warning, first_line, get_cam, is_additive_setup,
                           is_empty_toolpath, machine_label, machine_limits, machine_spindle_max,
-                          op_primary_state, op_state_facts, operations_under, ready_verdict,
-                          resolve_cam_node, setup_blockers, setups, spindle_check, stock_mode_name,
-                          time_reading, toolpath_present_tally, validity_basis,
-                          validity_sync_miss, with_validity_clause)
+                          op_is_suppressed, op_primary_state, op_state_facts, operations_under,
+                          ready_verdict, resolve_cam_node, setup_blockers, setups, spindle_check,
+                          stock_mode_name, time_reading, toolpath_present_tally, validity_basis,
+                          validity_sync_miss, validity_synced, with_validity_clause)
 
 MAP_BLURB = (
     "the per-slice READ cores behind cam_get(include=[...]) - get_cam_setups_handler, "
@@ -240,7 +240,8 @@ def get_cam_setups_handler(setup: str = "", units: str = "mm") -> dict:
     except Exception as e:
         return error(f"Could not read setups: {e}")
 
-    out = {"setup_count": len(setups), "setups": setups, "truncated": setups_truncated}
+    out = {"setup_count": len(setups), "setups": setups, "truncated": setups_truncated,
+           "validity_synced": validity_synced()}
     if any(r.get("stock_mode") == _PREVIOUS_SETUP_MODE for r in setups):
         out["note"] = _REST_STOCK_NOTE
     return ok(out)
@@ -454,8 +455,11 @@ def _operations_summary(op_records, setup_blocked=None) -> dict:
             exceptions.append({"name": r.get("name"), "blocked_by": blocked})
 
     basis = validity_basis()
+    synced = validity_synced()
+    # 'checked' says the sync for THIS call actually ran, over the bare workspace-gate name.
+    reported_basis = "checked" if basis == "manufacture_verified" and synced else basis
     summary = {"states": states, "active_count": active_total, "exceptions": exceptions,
-               "validity_basis": basis}
+               "validity_basis": reported_basis, "validity_synced": synced}
     if over_spindle:
         summary["spindle_over_machine_max_count"] = over_spindle   # active rows only; absent = none
     if empty_toolpaths:
@@ -854,8 +858,14 @@ def _op_time_block(cam, ops, args, factor, additive=False) -> tuple:
 
 
 def _errored_op_names(ops) -> list:
-    """The operations of a setup reading hasError true - present-and-empty when none do."""
-    return [safe(lambda o=o: o.name) for o in ops if safe(lambda o=o: o.hasError, False)]
+    """The names of a setup's operations reading hasError true and not suppressed."""
+    names = []
+    for o in ops or []:
+        facts = {"is_suppressed": safe(lambda o=o: o.isSuppressed, False),
+                 "operation_state": safe(lambda o=o: o.operationState)}
+        if safe(lambda o=o: o.hasError, False) and not op_is_suppressed(facts):
+            names.append(safe(lambda o=o: o.name))
+    return names
 
 
 def _per_operation_only(label, ops, suppressed, block, exc) -> dict:
@@ -994,6 +1004,7 @@ def get_machining_time_handler(setup: str = "", units: str = "mm", operation=Non
         "total_machining_time_hms": _hms(grand),
         "setups": results,
         "units": unit,
+        "validity_synced": validity_synced(),
     "note": _TIME_NOTE + (_TOTAL_UNAVAILABLE_NOTE if unavailable else ""),
     "assumptions": {"feed_scale_percent": feed_scale,
             "rapid_feed_cm_per_s": rapid_feed,

@@ -385,11 +385,27 @@ def wrap_read(handler):
     return stamped
 
 
+def _auto_dimension_command_refusal():
+    """Refuse writes while Fusion's drawing Auto Dimension editor is active."""
+    command = "FusionDrawingAutoDimensionEditCommand"
+    payload = {
+        "blocked_by": ["active_drawing_auto_dimension_command"],
+        "active_command": command,
+        "note": ("Finish or cancel the active Auto Dimension command in Fusion, then retry. "
+                 "For future drawing_create calls, use auto_dimension='off'. "
+                 "Refused WITHOUT writing."),
+    }
+    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
+            "isError": True, "message": f"active_command: {command}; finish or cancel it in Fusion"}
+
+
 def wrap(handler):
     """Wrap a WRITE handler with the expect_document guard + acted_on stamp. Returns a new callable with
     the same call shape. expect_document is consumed here (popped from kwargs) - the handler never sees
     it."""
     def guarded(**kwargs):
+        if _common.safe(lambda: app.userInterface.activeCommand) == "FusionDrawingAutoDimensionEditCommand":
+            return _auto_dimension_command_refusal()
         expect = kwargs.pop("expect_document", None)
         name, urn = _active_identity()
         if expect:

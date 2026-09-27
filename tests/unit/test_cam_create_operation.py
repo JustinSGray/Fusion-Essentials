@@ -581,6 +581,14 @@ class TestCreate:
         # not generated -> no toolpath yet
         assert len(cam.generated) == 0
 
+    def test_failed_validity_sync_refuses_before_create(self, monkeypatch):
+        cam = _install(monkeypatch)
+        monkeypatch.setattr(cco, "sync_validity", lambda cam: False)
+        res = cco.handler(setup="Setup1", strategy="adaptive",
+                          tool_library_url="u", tool_index=1, generate=True)
+        assert res["isError"] is True and "checkValidity" in res["message"]
+        assert cam.setups.item(0).operations.count == 0 and cam.generated == []
+
     def test_create_then_generate(self, monkeypatch):
         cam = _install(monkeypatch)
         out = _payload(cco.handler(setup="Setup1", strategy="adaptive",

@@ -11,31 +11,27 @@ from . import _inputs
 from ._common import timeline_health as _timeline_health
 
 MAP_BLURB = (
-    "DESIGN MODE: get_mode_handler - the 'mode' slice (can{} agreeing with ModeGuards); "
-    "health_handler - the timeline error/warning rollup; run_in_base_feature/"
-    "base_feature_run_wrapper - a mutation in an always-finished base-feature scope; "
+    "MODE: get_mode_handler - the 'mode' slice; health_handler - the error/warning rollup; "
+    "run_in_base_feature/base_feature_run_wrapper - a mutation in an always-finished "
+    "base-feature scope; "
     "timeline_census/timeline_item_key/census_caveat - the census a delete or suppress diffs; "
-    "collapsed_group_hint - a grouped member's miss; no_timeline_reason")
+    "collapsed_group_hint/hidden_twin_hint - a grouped member's miss or hidden twin; "
+    "no_timeline_reason")
 
 # A delete or suppress reply appends this when its before/after census could not be diffed.
 CENSUS_UNREAD = ("The timeline could not be listed the same way before and after this call, so "
                  "what else it changed is not named - design_get(include=['timeline']) lists what "
                  "is there now.")
-
-# MEASURED: deleting a Form's body while its edit is open deletes the whole Form and strips the
-# B-Rep from every later Form, all still reading healthy.
-FORM_EDIT_OPEN = ("A Form edit is open, which hides the timeline. Ask the user to click Finish "
-                  "Form. Do not delete bodies while it is open.")
-# The mode read and design_set_mode's refusal while an open Form edit makes the design read direct.
-FORM_EDIT_OPEN_MODE = ("A Form edit is open, so the design reads direct until it ends - ask the "
-                       "user to click Finish Form, then retry.")
+# An open Form or base-feature edit reads direct too and nothing else discriminates it, so the
+# direct-mode remedy (delete bodies directly) is warned off: in a Form edit it deletes the Form.
+OPEN_EDIT_CAVEAT = (" An open Form or base-feature edit also reads direct and nothing else "
+                    "discriminates it: if a Form edit is open, ask the user to click Finish Form; "
+                    "a base-feature scope closes with model_base_feature(action='finish').")
 
 
-def no_timeline_reason(design, direct_text, form_edit=None):
-    """The no-timeline refusal: FORM_EDIT_OPEN when form_edit (read here if None), else direct_text."""
-    if form_edit is None:
-        form_edit = _inputs.in_form_edit(design)
-    return FORM_EDIT_OPEN if form_edit else direct_text
+def no_timeline_reason(direct_text):
+    """The no-timeline refusal text: direct_text plus the open-edit caveat."""
+    return direct_text + OPEN_EDIT_CAVEAT
 
 
 def health_handler() -> dict:
@@ -106,6 +102,16 @@ def collapsed_group_holding(timeline, want):
     return None
 
 
+def hidden_twin_hint(timeline, want, visible):
+    """The refusal for a bare integer with visible hits that also names a member of a collapsed group."""
+    holder = collapsed_group_holding(timeline, want)
+    if not holder:
+        return None
+    return (f"'{want}' matches {_inputs._candidates_listed(visible)} and also names an item inside "
+            f"the collapsed timeline group '{holder}' - name one exactly as listed, or run "
+            f"design_edit_timeline(action='ungroup', feature='{holder}') and retry.")
+
+
 def collapsed_group_hint(timeline, want, roll=False):
     """The miss sentence for a collapsed group's member (target the group for a roll, else ungroup)."""
     holder = collapsed_group_holding(timeline, want)
@@ -172,20 +178,18 @@ def get_mode_handler() -> dict:
         return error("No active design. Create or open a document first (see doc_new).")
     mode = _inputs.current_design_type(design)
     tl_count = _timeline_feature_count(design)
-    form_edit = _inputs.in_form_edit(design)
     can = _capability_map(mode)
+    note = ("Capability map is keyed by mode requirement; call design_set_mode to convert, or "
+            "model_base_feature to open a base-feature scope.")
+    if mode == _inputs.MODE_DIRECT:
+        note += OPEN_EDIT_CAVEAT
     return ok({
         "design_type": mode,
         "has_timeline": tl_count is not None,
         "timeline_feature_count": tl_count,
     "base_feature_count": _base_feature_count(design),
-    "in_base_feature_edit": _inputs._in_base_feature_scope(design),
-    "in_form_edit": form_edit,
-    # The open edit is what reads direct, so no capability is keyed off that read.
-    "can": {k: None for k in can} if form_edit else can,
-    "note": (FORM_EDIT_OPEN_MODE if form_edit else
-             "Capability map is keyed by mode requirement; call design_set_mode to convert, or "
-             "model_base_feature to open a base-feature scope."),
+    "can": can,
+    "note": note,
     })
 
 

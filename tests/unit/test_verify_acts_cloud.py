@@ -28,6 +28,40 @@ def _step(narrative, tool, nth=0):
     return hits[nth]
 
 
+class TestMovedFileListingSettle:
+    def test_parent_listing_lags_beyond_twelve_reads_then_excludes_child(self, monkeypatch):
+        lineage = "urn:moved-file"
+        monkeypatch.setitem(acts._RECALL, "cloud_file", lineage)
+        stale = {"folder": acts.RUN_PATH, "recursive": False,
+                 "files": [{"id": lineage}], "file_count": 1,
+                 "truncated": False, "time_truncated": False, "folders_unreadable": False}
+        empty = dict(stale, files=[], file_count=0)
+        calls = []
+
+        def reread(tool, arguments):
+            calls.append((tool, arguments))
+            return False, stale if len(calls) <= 13 else empty
+
+        monkeypatch.setattr(acts, "facade", lambda name: reread)
+        monkeypatch.setattr(acts.time, "sleep", lambda _: None)
+        assert acts._known_child_excluded(stale) is True
+        assert len(calls) == 14
+        assert all(tool == "data_get" and args == {
+            "project": acts.PROJECT, "folder": acts.RUN_PATH, "recursive": False}
+            for tool, args in calls)
+
+    def test_parent_listing_still_present_at_bound_fails(self, monkeypatch):
+        lineage = "urn:moved-file"
+        monkeypatch.setitem(acts._RECALL, "cloud_file", lineage)
+        stale = {"folder": acts.RUN_PATH, "recursive": False,
+                 "files": [{"id": lineage}], "file_count": 1,
+                 "truncated": False, "time_truncated": False, "folders_unreadable": False}
+        monkeypatch.setattr(acts, "facade", lambda name: lambda *args: (False, stale))
+        monkeypatch.setattr(acts.time, "sleep", lambda _: None)
+        with pytest.raises(AssertionError, match="run folder excludes"):
+            acts._known_child_excluded(stale, polls=3)
+
+
 class TestTheDeleteReceipt:
     """How the tier proves its folders are gone. MEASURED on a real project: a project-wide
     folder-tree read is over its 20-folder fetch budget at any depth that would reach these paths

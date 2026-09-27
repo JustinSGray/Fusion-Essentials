@@ -338,6 +338,34 @@ class TestInputMapping:
         assert gp.isFlatPatternSheetGenerated is False
         assert gp.isAnimationSheetGenerated is False
 
+    def test_default_disables_auto_dimension_and_explicit_default_remains_available(self, install):
+        dm = install()
+        out = _payload(dc.handler())
+        assert _gp(dm).isAutoDimensionEnabled is False
+        assert out["settings_requested"]["auto_dimension"] == "off"
+        assert dc.tool.input_schema["properties"]["auto_dimension"]["default"] == "off"
+        dm = install()
+        _payload(dc.handler(auto_dimension="default"))
+        assert _gp(dm).isAutoDimensionEnabled is True
+
+    def test_unreadable_auto_dimension_disable_refuses_before_create(self, install):
+        dm = install()
+
+        class IgnoredDisable:
+            @property
+            def isAutoDimensionEnabled(self):
+                return True
+
+            @isAutoDimensionEnabled.setter
+            def isAutoDimensionEnabled(self, value):
+                pass
+
+        dm._input.automationPreferences.globalPreferences = IgnoredDisable()
+        out = dc.handler()
+        assert out["isError"] is True
+        assert "auto_dimension='off'" in out["message"]
+        assert dm._created_with is None
+
     def test_auto_dimension_off_disables_it(self, install):
         dm = install()
         dc.handler(auto_dimension="off")
@@ -691,11 +719,11 @@ class TestTheRouteToTheDrawing:
         # the open actually failing - not an instruction the agent follows before trying
         install()
         note = _payload(dc.handler())["note"]
-        head, _, tail = note.partition("If that open instead fails or hangs")
+        head, _, tail = note.partition("If open fails or hangs")
         assert tail, note
         assert "workaround" not in head            # nothing to work around until the open fails
-        assert "never reviewed in the Fusion UI opens and drives that way" in head
-        assert "opening the document once in the Fusion UI is the known workaround" in tail
+        assert "doc_open(file_id, force_api_open=true)" in head
+        assert "opening once in the Fusion UI is a workaround" in tail
 
 
 # ── parts list, template, custom size, hole annotations, per-view drafting display ──────────────────
@@ -1050,3 +1078,54 @@ class TestSchema:
         # the shared expect_document wording alone does not say.
         desc = dc.tool.input_schema["properties"]["expect_document"]["description"]
         assert "session:" in desc and "doc_get" in desc
+
+
+class TestFlatPreferences:
+    def test_flat_preferences_are_read_back(self, install):
+        dm = install()
+        out = _payload(dc.handler(sheet_types=["flat_pattern"], flat_isometric=True,
+                                  bend_table=False))
+        node = dm._input.automationPreferences.flatPatternPreferences.orthogonalViewSheetPreferences
+        assert node.isFoldedModelIsometricViewAdded is True
+        assert node.isBendTableIncluded is False
+        assert out["flat_settings_applied"] == {"isFoldedModelIsometricViewAdded": True,
+                                               "isBendTableIncluded": False}
+
+    def test_flat_options_refuse_without_flat_sheet(self, install):
+        install()
+        result = dc.handler(sheet_types=["component"], bend_table=True)
+        assert result["isError"] is True
+        assert "flat_pattern" in str(result)
+
+    def test_location_refuses_disabled_table(self, install):
+        install()
+        result = dc.handler(sheet_types=["flat_pattern"], bend_table=False, bend_table_location="bottom_right")
+        assert result["isError"] is True
+        assert "enable bend_table" in str(result)
+
+    def test_ignored_flat_assignment_refuses_create(self, install):
+        dm = install()
+        class IgnoredPreference:
+            """Unmeasured preference shape whose setter drops a requested change."""
+            @property
+            def isBendTableIncluded(self):
+                return False
+            @isBendTableIncluded.setter
+            def isBendTableIncluded(self, value):
+                pass
+        dm._input.automationPreferences.flatPatternPreferences.orthogonalViewSheetPreferences = IgnoredPreference()
+        result = dc.handler(sheet_types=["flat_pattern"], bend_table=True)
+        assert result["isError"] is True
+        assert "No drawing created" in str(result)
+
+    def test_flat_options_require_explicit_sheet_selection(self, install):
+        dm = install()
+        result = dc.handler(bend_table=True)
+        assert result["isError"] is True and "flat_pattern" in str(result)
+        assert dm._created_with is None
+
+    def test_location_requires_enabled_table(self, install):
+        dm = install()
+        result = dc.handler(sheet_types=["flat_pattern"], bend_table_location="bottom_right")
+        assert result["isError"] is True and "enable bend_table" in str(result)
+        assert dm._created_with is None
