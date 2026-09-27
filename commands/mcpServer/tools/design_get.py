@@ -4,7 +4,7 @@
 """RICH READ: design_get - the active design's structure by zoom level (see CLAUDE.md "Reads are
 RICH"). Default: a cheap orientation slice (design type, feature count, timeline health, content
 fingerprint). include=['tree'|'timeline'|'mode'|'configurations'|'materials'|'appearances'|
-'attributes'] pulls one deeper slice at a time via a thin router over _slice_*() helpers. Read-only.
+'attributes'|'definition'] pulls one deeper slice at a time via _slice_*() helpers. Read-only.
 """
 
 import json
@@ -28,7 +28,9 @@ app = adsk.core.Application.get()
 
 # The deeper slices an agent can opt into (the default returns NONE of these in full - only summaries).
 _SLICES = ("mode", "tree", "timeline", "configurations", "materials", "appearances", "attributes",
-           "metadata")
+           "metadata", "definition")
+_FEATURE = _inputs.FeatureRef("feature", description="Hole/Thread.")
+_DEFINITION_UNREAD = object()
 
 # The orientation slice's name in include=: any deep include omits that slice unless 'default' rides
 # beside it, so a deep read carries what was asked for and not the default again.
@@ -904,11 +906,87 @@ def _has_cam(design):
 
 # ── the router ─────────────────────────────────────────────────────────────────────────────────────
 
+def _definition_identity(feature):
+    """The definition's feature identity and owning component as read, without timeline movement."""
+    return {"feature": safe(lambda: feature.name),
+            "component": safe(lambda: feature.parentComponent.name),
+            "type": safe(lambda: feature.objectType.rsplit("::", 1)[-1]),
+            "timeline_index": _common.counted(lambda: feature.timelineObject.index)}
+
+
+def _definition_thread_info(info):
+    """The actual thread standard, designation, class and internal flag, independently nullable."""
+    return {"thread_type": safe(lambda: info.threadType),
+            "designation": safe(lambda: info.threadDesignation),
+            "thread_class": safe(lambda: info.threadClass),
+            "internal": _common.read_flag(lambda: info.isInternal)}
+
+
+def _definition_thread(feature, factor):
+    """One thread's native definition, with full-length numeric extents marked inapplicable."""
+    full = _common.read_flag(lambda: feature.isFullLength)
+    applicable = None if full is None else not full
+    return {**_definition_identity(feature),
+            "thread_info": _definition_thread_info(safe(lambda: feature.threadInfo)),
+            "modeled": _common.read_flag(lambda: feature.isModeled),
+            "right_handed": _common.read_flag(lambda: feature.isRightHanded),
+            "full_length": full, "length_applicable": applicable, "offset_applicable": applicable,
+            "length": (_common.measured(lambda: feature.threadLength.value, factor)
+                       if full is not True else None),
+            "offset": (_common.measured(lambda: feature.threadOffset.value, factor)
+                       if full is not True else None)}
+
+
+def _slice_definition(feature, units):
+    """Read one typed Hole or Thread definition and a Hole's actual hidden child thread."""
+    values, refusal = _inputs.resolve_inputs([_FEATURE, _inputs.UNITS],
+                                            {"feature": feature, "units": units})
+    if refusal:
+        return None, refusal
+    if values["feature"] is None:
+        return None, error("include=['definition'] requires 'feature'; use include=['timeline'] to find it.")
+    entity, label = values["feature"]
+    kind = safe(lambda: entity.objectType)
+    if kind not in ("adsk::fusion::HoleFeature", "adsk::fusion::ThreadFeature"):
+        return None, error(f"'{label}' has unsupported definition type {kind!r}; this slice reads "
+                           "HoleFeature and ThreadFeature. Use include=['timeline'] or model_inspect.")
+    factor = 1 / _common.scale(values["units"])
+    if kind == "adsk::fusion::ThreadFeature":
+        out = _definition_thread(entity, factor)
+    else:
+        extent = safe(lambda: entity.extentDefinition)
+        extent_type = safe(lambda: extent.objectType)
+        extent_kind = {"adsk::fusion::AllExtentDefinition": "through",
+                       "adsk::fusion::DistanceExtentDefinition": "blind"}.get(
+                           extent_type, "unsupported" if extent_type is not None else None)
+        tap = safe(lambda: entity.tappedHoleInfo, _DEFINITION_UNREAD)
+        child = safe(lambda: entity.thread, _DEFINITION_UNREAD)
+        out = {**_definition_identity(entity), "extent": extent_kind, "extent_type": extent_type,
+               "depth_applicable": (extent_kind == "blind"
+                                    if extent_kind in ("blind", "through") else None),
+               "depth": (_common.measured(lambda: extent.distance.value, factor)
+                         if extent_kind == "blind" else None),
+               "diameter_parameter": (_common.measured(lambda: entity.holeDiameter.value, factor)
+                                      if tap is None else None),
+               "diameter_parameter_applicable": None if tap is _DEFINITION_UNREAD else tap is None,
+               "tapped": None if tap is _DEFINITION_UNREAD else tap is not None,
+               "tapped_hole_info": (_definition_thread_info(tap)
+                                    if tap is not _DEFINITION_UNREAD and tap is not None else None),
+               "thread_present": None if child is _DEFINITION_UNREAD else child is not None,
+               "thread": (_definition_thread(child, factor)
+                          if child is not _DEFINITION_UNREAD and child is not None else None)}
+    out["units"] = (units or "mm").strip().lower()
+    out["note"] = ("tapped=false or thread_present=false means absent; applicable=false means "
+                   "inapplicable. Other null fields are unknown. Measure tapped bore geometry "
+                   "with find_geometry/model_inspect; full-length threads imply no numeric length.")
+    return out, None
+
 def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: bool = False,
             tree_handles: bool = False,
             include_suppressed: bool = True, group: str = "", timeline_params: bool = False,
             library: str = "", name_filter: str = "", max_results: int = 0,
-            attribute_group: str = "", attribute_key: str = "") -> dict:
+            attribute_group: str = "", attribute_key: str = "", feature: str = "",
+            units: str = "mm") -> dict:
     """See TOOL_DESCRIPTION."""
     design = _common.design()
     if not design:
@@ -918,6 +996,8 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
     bad = [s for s in inc if s not in _SLICES and s not in _DEFAULT_NAMES]
     if bad:
         return error(f"Unknown include {bad}. Valid: {', '.join(_SLICES + _DEFAULT_NAMES)}.")
+    if feature not in (None, "") and "definition" not in inc:
+        return error("'feature' scopes include=['definition']; include that slice to read its definition.")
 
     deep = [s for s in inc if s in _SLICES]
     want_default = not deep or any(s in _DEFAULT_NAMES for s in inc)
@@ -997,17 +1077,21 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
         out["metadata"], mderr = _slice_metadata(design, name_filter, max_results, component)
         if mderr:
             return mderr
+    if "definition" in inc:
+        out["definition"], derr = _slice_definition(feature, units)
+        if derr:
+            return derr
 
     # advertise the slices NOT yet pulled (load-bearing: an un-named flag is invisible to the agent).
     remaining = [s for s in _SLICES if s not in inc]
     if want_default and remaining:
-        out["note"] = ("Orientation slice. Pull deeper with include=" + str(remaining) +
+        out["note"] = ("'default' keeps overview; include=" + str(remaining) +
                        ". 'max_depth'/'component'/'name_filter'/'max_results'/'tree_bodies'/"
                        "'tree_handles' scope the tree; "
                        "'group'/'include_suppressed'/'timeline_params' the timeline; "
                        "'library'/'name_filter'/'max_results' the catalog; 'attribute_group' "
                        "(required)/'attribute_key' the attributes; 'component'/'name_filter'/"
-                       "'max_results' the metadata rows.")
+                       "'max_results' the metadata; 'feature'/'units' the definition.")
     # A census nothing could be read from leaves 'occurrences' out of contents entirely, which reads
     # exactly like a design holding no placed instance. The marker beside it is what tells the two
     # apart, so the unreadable one is stated in words as well.
@@ -1034,37 +1118,33 @@ def _normalize_include(include):
 
 
 TOOL_DESCRIPTION = (
-    "Read the active design: modelling mode, contents and timeline health by default; 'include' "
-    "pulls one deeper slice."
+    "Design mode, contents, timeline health; include selects detail."
 )
 
 tool = (
     Tool.create_simple(name="design_get", description=TOOL_DESCRIPTION)
     .add_input_property("include", {"type": "array",
-            "items": {"type": "string", "enum": list(_SLICES + _DEFAULT_NAMES)},
-            "description": "'default' keeps the orientation slice beside a deeper one."})
+            "items": {"type": "string", "enum": list(_SLICES + _DEFAULT_NAMES)}})
     .add_input_property("max_depth", {"type": "integer",
-            "description": f"include=tree. Max {_TREE_MAX_DEPTH}."})
+            "description": f"Max {_TREE_MAX_DEPTH}."})
     .add_input_property("component", {"type": "string",
-            "description": "Tree/metadata root: a component or occurrence."})
+            "description": "Component/occurrence."})
     .add_input_property("tree_bodies", {"type": "boolean"})
-    .add_input_property("tree_handles", {"type": "boolean",
-            "description": "Adds each node's handle + full_path."})
-    .add_input_property("include_suppressed", {"type": "boolean",
-            "description": "include=timeline."})
+    .add_input_property("tree_handles", {"type": "boolean"})
+    .add_input_property("include_suppressed", {"type": "boolean"})
     .add_input_property("group", {"type": "string"})
-    .add_input_property("timeline_params", {"type": "boolean",
-            "description": "Adds each row's own model parameters."})
+    .add_input_property("timeline_params", {"type": "boolean"})
     .add_input_property("library", {"type": "string",
-            "description": "One catalog library, by exact name or id from the census."})
+            "description": "Exact library name/id."})
     .add_input_property("name_filter", {"type": "string",
-            "description": "Catalog entries or tree TOP-LEVEL nodes containing this."})
+            "description": "Contains: catalog entries/tree TOP-LEVEL nodes."})
     .add_input_property("max_results", {"type": "integer",
-            "description": f"Catalog 50 (max 200); tree children per level "
-                           f"{_TREE_CHILDREN_DEFAULT}; timeline {_TIMELINE_MAX_ITEMS}; "
-                           f"metadata {_METADATA_MAX_ROWS}."})
+            "description": f"Catalog 50 (max 200); tree {_TREE_CHILDREN_DEFAULT}/level; "
+                           f"timeline {_TIMELINE_MAX_ITEMS}; metadata {_METADATA_MAX_ROWS}."})
     .add_input_property("attribute_group", {"type": "string"})
     .add_input_property("attribute_key", {"type": "string"})
+    .add_input_property(*_FEATURE.as_property())
+    .add_input_property(*_inputs.UNITS.as_property())
     .strict_schema()
 )
 item = Item.create_tool_item(tool=tool, write="read", handler=handler, run_on_main_thread=True)

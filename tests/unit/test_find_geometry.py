@@ -223,6 +223,34 @@ def _payload(result):
     return json.loads(result["content"][0]["text"])
 
 
+@pytest.mark.parametrize("units, factor", [("in", 1 / 2.54), ("mm", 10)])
+def test_acquired_geometry_retains_close_tolerance_precision(units, factor):
+    radii = [0.312125 * 2.54, 0.88575 * 2.54]
+    center = (1.23456789, 2.34567891, 3.45678912)
+    faces = [FakeFace("cyl" + str(i), _CylGeo(r), center) for i, r in enumerate(radii)]
+    edges = [FakeEdge("circle", _circle(radii[0], center), center),
+             FakeEdge("ellipse", _EllipseGeo(*radii, center), center)]
+    plane = FakeFace("plane", _PlaneGeo(center, (1, 0, 0), (0, 1, 0), (0, 0, 1)), center)
+    vertex = _Vertex(_Pt(*center))
+    vertex.entityToken = "vertex"
+    _install([], root_bodies=[FakeBody(faces=faces + [plane], edges=edges, vertices=[vertex])])
+    result = _payload(fg.handler(units=units))
+    cylinders = [r for r in result["matches"] if r["kind"] == "cylinder_face"]
+    assert [r["radius"] for r in cylinders] == [round(r * factor, 6) for r in radii]
+    assert abs(2 * cylinders[1]["radius"] / (factor * 2.54) - 1.7715) < 0.000002
+    expected_position = [round(v * factor, 6) for v in center]
+    assert all(r["position"] == expected_position for r in result["matches"])
+    planar = next(r for r in result["matches"] if r["kind"] == "planar_face")
+    assert planar["frame"]["origin"] == expected_position
+    ellipse = next(r for r in result["matches"] if r["kind"] == "ellipse_edge")
+    assert (ellipse["major_radius"], ellipse["minor_radius"]) == tuple(round(r * factor, 6) for r in radii)
+    verts = _payload(fg.handler(kind="vertex", units=units))["matches"]
+    assert verts[0]["position"] == expected_position
+    other = _payload(fg.handler(units="cm"))["matches"]
+    assert [r["handle"] for r in result["matches"]] == [r["handle"] for r in other]
+    assert cylinders[0]["handle"] == fg._inputs.make_handle(faces[0], "cylinder_face", center)
+
+
 _WALK_RAISE = "2 : InternalValidationError : occ"
 
 
@@ -370,9 +398,9 @@ class TestFind:
         assert filtered["matches"] == []
 
     @pytest.mark.parametrize(("units", "within", "outside", "display"), [
-        ("mm", 2.55524, 2.554, 2.682),
-        ("cm", 0.255524, 0.2554, 0.268),
-        ("in", 0.1006, 0.1005511811023622, 0.106),
+        ("mm", 2.55524, 2.554, 2.68224),
+        ("cm", 0.255524, 0.2554, 0.268224),
+        ("in", 0.1006, 0.1005511811023622, 0.1056),
     ])
     @pytest.mark.parametrize("kind", ["cylinder_face", "circular_edge"])
     def test_radius_filter_compares_the_unrounded_measurement(

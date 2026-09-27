@@ -33,6 +33,9 @@ _EXTENTS = ("blind", "through")
 _FACE = _inputs.GeometryHandle("face", require="planar_face", required=True,
     description="Drilled into, normal to it.")
 _TARGET_BODIES = _inputs.BodyRefList("target_bodies", required=False)
+_THREAD_EXTENT = _inputs.Choice("thread_extent", ("full", "partial"))
+_THREAD_LENGTH = _inputs.Distance("thread_length", allow_negative=False)
+_THREAD_OFFSET = _inputs.Distance("thread_offset", allow_zero=True, allow_negative=False)
 
 _PLACEMENTS = ("sketch_points", "center", "on_edge", "plane_offsets")
 
@@ -371,7 +374,8 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             point: list = None, offset_edge_one: str = "", offset_one: str = "",
             offset_edge_two: str = "", offset_two: str = "",
             modeled: bool = False, tip_angle: str = "", thread_type: str = "",
-            target_bodies=None) -> dict:
+            target_bodies=None, thread_class: str = "", thread_extent: str = "",
+            thread_length=None, thread_offset=None) -> dict:
     """See TOOL_DESCRIPTION."""
     hole_type = (hole_type or "simple").strip().lower()
     if hole_type not in _TYPES:
@@ -436,6 +440,25 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
 
     if modeled and not tap:
         return error("'modeled' (a real helical thread) only applies to a tapped hole; pass 'tap' too.")
+    thread_class = (thread_class or "").strip()
+    thread_extent, terr = _THREAD_EXTENT.resolve(thread_extent or None)
+    if terr:
+        return error(terr)
+    if not tap and (thread_class or thread_extent or thread_length is not None or thread_offset is not None):
+        return error("'thread_class', 'thread_extent', 'thread_length' and 'thread_offset' require 'tap'.")
+    if thread_extent != "partial" and (thread_length is not None or thread_offset is not None):
+        return error("'thread_length' and 'thread_offset' require thread_extent='partial'.")
+    if thread_extent == "partial" and thread_length is None:
+        return error("thread_extent='partial' requires 'thread_length'.")
+    factor, uerr = _inputs.UNITS.resolve(units)
+    if uerr:
+        return error(uerr)
+    length_cm, lerr = _THREAD_LENGTH.resolve_scaled(thread_length, factor)
+    offset_cm, oerr = _THREAD_OFFSET.resolve_scaled(thread_offset, factor)
+    if lerr or oerr:
+        return error(lerr or oerr)
+    if thread_extent == "partial" and offset_cm is None:
+        offset_cm = 0.0
 
     extent = (extent or "blind").strip().lower()
     if extent not in _EXTENTS:
@@ -461,6 +484,29 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
     active = _target_component(design)
     if not active:
         return error("No target component.")
+
+    dimensions = {"diameter": diameter}
+    if extent == "blind":
+        dimensions["depth"] = depth
+    if hole_type == "counterbore":
+        dimensions.update(cbore_diameter=cbore_diameter, cbore_depth=cbore_depth)
+    elif hole_type == "countersink":
+        dimensions["csink_diameter"] = csink_diameter
+    if placement == "plane_offsets":
+        dimensions["offset_one"] = offset_one
+        if offset_two:
+            dimensions["offset_two"] = offset_two
+    for field, expression in dimensions.items():
+        # Keep original strings for creation: unitless strings use document units, not 'units'.
+        if _inputs.looks_like_expression(expression):
+            try:
+                _, evaluated, refusal = _inputs.length_value_input(expression, factor, design, field)
+                if refusal or evaluated is None or not math.isfinite(evaluated):
+                    return error(f"Invalid {field}={expression!r}. Use a decimal length such as "
+                                 f"'0.3125 in' or an existing parameter expression. {refusal or 'Value is unreadable.'}")
+            except Exception as exc:
+                return error(f"Could not validate {field}={expression!r}: {exc}. Use a decimal "
+                             "length such as '0.3125 in' or an existing parameter expression.")
 
     # every placement mode below takes this as its planarEntity.
     face_ent, ferr = _resolve_face(design, face)   # _FACE.resolve returns (entity, error)
@@ -516,7 +562,7 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
     thread_info = None
     if tap:
         thread_info, carried_by, terr = _threads.resolve_thread_info(
-            comp, tap.strip(), internal=True, thread_type=thread_type)
+            comp, tap.strip(), internal=True, thread_type=thread_type, thread_class=thread_class)
         if terr:
             return error(terr)
     clearance_info = None
@@ -534,10 +580,6 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
                              csink_diameter, csink_angle)
     if berr:
         return error(berr)
-
-    factor = _common.scale(units)
-    if factor is None:
-        return error(f"Unknown units '{units}'. Use mm, cm, or in.")
 
     sketch = None
     sketch_pts = []
@@ -695,6 +737,16 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             return _abandon(f"Fusion refused to tap the hole to '{tap}' (setToTappedHole returned "
                             "false), so nothing was drilled.")
         try:
+            if thread_extent == "full":
+                hin.isFullLength = True
+            elif thread_extent == "partial":
+                # Hole creation changes real-valued thread inputs; explicit cm expressions retain them.
+                if hin.setLengthAndOffset(adsk.core.ValueInput.createByString(f"{length_cm:.15g} cm"),
+                                          adsk.core.ValueInput.createByString(f"{offset_cm:.15g} cm")) is not True:
+                    return _abandon("Fusion refused thread_length/thread_offset (setLengthAndOffset).")
+        except Exception as e:
+            return _abandon(f"Could not set thread_extent='{thread_extent}': {e}")
+        try:
             # isModeled only takes effect after setToTappedHole.
             hin.isModeled = bool(modeled)
         except Exception as e:
@@ -820,7 +872,40 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             return error(f"The hole was tapped '{got_tap}', not the requested '{tap.strip()}'. "
                          f"Remove '{name}' with design_delete_feature.")
         result["tapped"] = got_tap
+        result["note"] += (f" The tap definition governs bore size; diameter={diameter!r} is unused. "
+                           "Measure the bore with find_geometry/model_inspect.")
         result["thread_type"] = safe(lambda: feature.tappedHoleInfo.threadType)
+        child = safe(lambda: feature.thread)
+        full = _common.read_flag(lambda: child.isFullLength)
+        actual_class = safe(lambda: child.threadInfo.threadClass)
+        actual_length = (_common.measured(lambda: child.threadLength.value, places=9)
+                         if full is not True else None)
+        actual_offset = (_common.measured(lambda: child.threadOffset.value, places=9)
+                         if full is not True else None)
+        applicable = None if full is None else not full
+        result.update({"thread_class": actual_class, "thread_full_length": full,
+                       "thread_length": _common.measured(lambda: actual_length, 1 / factor),
+                       "thread_offset": _common.measured(lambda: actual_offset, 1 / factor),
+                       "thread_length_applicable": applicable, "thread_offset_applicable": applicable,
+                       "units": units})
+        mismatch = []
+        if thread_class and (not isinstance(actual_class, str)
+                             or actual_class.casefold() != thread_class.casefold()):
+            mismatch.append(f"thread_class='{thread_class}' (read {actual_class!r})")
+        if thread_extent and full is not (thread_extent == "full"):
+            mismatch.append(f"thread_extent='{thread_extent}' (full_length read {full!r})")
+        if thread_extent == "partial":
+            for label, actual, wanted in (("thread_length", actual_length, length_cm),
+                                           ("thread_offset", actual_offset, offset_cm)):
+                if actual is None or abs(actual - wanted) > _common.EXTENT_MATCH_TOL_CM:
+                    mismatch.append(f"{label} (expected {wanted:g} cm, read {actual!r})")
+        if mismatch:
+            refusal = error(f"Hole '{name}' landed, but thread controls did not verify: "
+                            f"{'; '.join(mismatch)}. Inspect design_get(include=['definition']); "
+                            "remove the feature with design_delete_feature if unwanted.")
+            refusal["details"] = result
+            refusal["content"].extend(ok({"details": result})["content"])
+            return refusal
         if len(carried_by) > 1:
             result["thread_type_alternatives"] = carried_by
         got_modeled = safe(lambda: feature.thread.isModeled)
@@ -850,32 +935,35 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
 
 
 TOOL_DESCRIPTION = (
-    "Drill holes with the Hole feature, so it carries hole and thread metadata; several 'points' "
-    "make ONE patterned feature."
+    "Drill a Hole feature; multiple points share one feature."
 )
 
 tool = (
     Tool.create_simple(name="model_hole", description=TOOL_DESCRIPTION)
     .add_input_property("hole_type", {"type": "string", "enum": list(_TYPES)})
-    .add_input_property("diameter", {"type": "string", "description": "e.g. '8 mm'."})
+    .add_input_property("diameter", {"type": "string"})
     .add_input_property("face", _FACE.schema())
     .add_input_property("points", {"type": "array", "items": {"type": "array", "items": {"type": "number"}},
-            "description": "Positions in 'units', in the frame 'points_space' names."})
+            "description": "In 'units' and 'points_space'."})
     .add_input_property(*_POINTS_SPACE.as_property())
     .add_input_property(*_inputs.UNITS.as_property())
     .add_input_property("extent", {"type": "string", "enum": list(_EXTENTS),
             "description": "'blind' needs 'depth'."})
-    .add_input_property("depth", {"type": "string", "description": "e.g. '10 mm'."})
+    .add_input_property("depth", {"type": "string"})
     .add_input_property("cbore_diameter", {"type": "string"})
     .add_input_property("cbore_depth", {"type": "string"})
     .add_input_property("csink_diameter", {"type": "string"})
-    .add_input_property("csink_angle", {"type": "string", "description": "e.g. '90 deg'."})
+    .add_input_property("csink_angle", {"type": "string"})
     .add_input_property("tap", {"type": "string", "description": "e.g. 'M5x0.8'."})
     .add_input_property("thread_type", {"type": "string",
             "description": "When several standards carry 'tap'."})
+    .add_input_property("thread_class", {"type": "string"})
+    .add_input_property(*_THREAD_EXTENT.as_property())
+    .add_input_property(*_THREAD_LENGTH.as_property())
+    .add_input_property(*_THREAD_OFFSET.as_property())
     .add_input_property("modeled", {"type": "boolean",
             "description": "Default cosmetic; true cuts the helix."})
-    .add_input_property("tip_angle", {"type": "string", "description": "e.g. '118 deg'."})
+    .add_input_property("tip_angle", {"type": "string"})
     .add_input_property("fastener", {"type": "string",
             "description": "e.g. 'M6 Socket Head Cap Screw'; overrides 'diameter'."})
     .add_input_property("fit", {"type": "string", "enum": list(_FITS)})
@@ -887,9 +975,9 @@ tool = (
     .add_input_property("point", {"type": "array", "items": {"type": "number"},
             "description": "Approximate [x,y,z] in the frame of the component owning 'face'."})
     .add_input_property(*_OFFSET_EDGE_ONE.as_property())
-    .add_input_property("offset_one", {"type": "string", "description": "e.g. '10 mm'."})
+    .add_input_property("offset_one", {"type": "string"})
     .add_input_property(*_OFFSET_EDGE_TWO.as_property(brief=True))
-    .add_input_property("offset_two", {"type": "string", "description": "e.g. '10 mm'."})
+    .add_input_property("offset_two", {"type": "string"})
     .strict_schema()
 )
 item = Item.create_tool_item(tool=tool, write="write", handler=handler, run_on_main_thread=True,

@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -302,6 +303,12 @@ def executor_login(env, creds=CREDENTIALS):
 
 
 def launch(prompt, run_dir, model, deny=(), tool_search=False):
+    """Run the executor from a disposable directory outside the repository."""
+    with tempfile.TemporaryDirectory(prefix="fusion-eval-") as cwd:
+        return _launch(prompt, run_dir, model, deny, tool_search, cwd)
+
+
+def _launch(prompt, run_dir, model, deny, tool_search, cwd):
     """Spawn the executor and return its end reason, call times, and exit code."""
     exe = shutil.which("claude")
     if not exe:
@@ -309,8 +316,6 @@ def launch(prompt, run_dir, model, deny=(), tool_search=False):
     allowed, disallowed = ALLOWED, ",".join(DENIED + tuple(deny))
     login = executor_login(os.environ)
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    cwd = os.path.join(run_dir, "scratch")
-    os.makedirs(cwd, exist_ok=True)
     mcp_config = os.path.join(run_dir, "mcp.json")
     with open(mcp_config, "w", encoding="utf-8") as fh:
         json.dump({"mcpServers": {"fusion-essentials": {"type": "http", "url": harness.MCP}}}, fh)

@@ -132,6 +132,30 @@ class TestPlacementFrame:
             ("sketch_add_geometry", self._POINTS, "ok", None)], None)]
         assert verify_layout._place_slots(program) == {}
 
+    def test_definition_scratch_queries_stay_with_local_stock_in_composed_act(self):
+        rows = next(rows for name, _pre, rows, _fallback in tool_verify.ACTS
+                    if name == "ACT 5 - DETAILS")
+        context = {"def_doc": "scratch-document"}
+        top_index = next(i for i, step in enumerate(rows)
+                         if step[3] and step[3][0] == "hf_top")
+        stock_step = rows[top_index - 2]
+        assert stock_step[0] == "sketch_add_geometry"
+        stock = stock_step[1](context)
+        assert stock["expect_document"] == "scratch-document"
+        assert stock["geometry"] == [
+            {"kind": "rectangle", "x1": 200, "y1": 0, "x2": 260, "y2": 40}]
+        queries = [args(context) if callable(args) else args
+                   for tool, args, _check, _save in rows if tool == "find_geometry"]
+        targets = {"DefinitionBench", "TapControlBench", "HoleFeedback", "DefinitionPost"}
+        positions = [(q["target"], q["nearest_to"]) for q in queries
+                     if q.get("target") in targets and "nearest_to" in q]
+        assert positions == [
+            ("DefinitionBench", [12.5, 12.5, 30]),
+            ("DefinitionBench", [5, 17, 20]), ("DefinitionBench", [17, 5, 20]),
+            ("TapControlBench", [130, 12.5, 30]), ("TapControlBench", [110, 10, 15]),
+            ("HoleFeedback", [230, 20, 30]), ("HoleFeedback", [215, 30, 20]),
+            ("HoleFeedback", [245, 30, 20]), ("DefinitionPost", [70, 0, 12.5])]
+
 
 class TestSketchView:
     def test_a_hand_frame_written_before_the_planes_were_known_is_rewritten(self, monkeypatch):

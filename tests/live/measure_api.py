@@ -4,16 +4,17 @@
 """Live API measurement: every API fact the unit-test fakes need, measured from LIVE Fusion.
 
 The unit suite proves tool logic against fakes. This tool is where the fakes' API facts COME
-FROM: each measurement row checks a claim against a running Fusion, and a fully-PASSING run
-generates ``tests/live_api_facts.py`` - enum values, behavior flags, and the version stamp -
-which conftest imports to populate the mock adsk modules and the shared fakes. The mocks are fed
-by measurement, not by hand; VERIFIED_API_FACTS.md is the human-readable ledger of the same run.
+FROM: each measurement row checks a claim against a running Fusion, and a run where every row
+lands PASS or CARRIED (a gated row's last entitled measurement, dated) generates
+``tests/live_api_facts.py`` - enum values, behavior flags, and the version stamp - which conftest
+imports to populate the mock adsk modules and the shared fakes. The mocks are fed by measurement,
+not by hand; VERIFIED_API_FACTS.md is the human-readable ledger of the same run.
 
 Run:  py -3 tests/live/measure_api.py          (Fusion running + add-in enabled +
                                                 allow_execute_api_script on)
       py -3 tests/live/measure_api.py --check  (no measuring: exit 1 when the stamp does not
                                                 match the installed Fusion or any row is
-                                                not PASS)
+                                                neither PASS nor CARRIED)
       py -3 tests/live/measure_api.py --json   (also archive results to tests/live/results/)
 
 ROWS are DATA: id, claim, encoded_in (the fake carrying the claim), a script body, and an
@@ -3867,6 +3868,13 @@ ROWS = [
                        "segment, value, tolerance and display-settings fakes; "
                        "_pmi.walk_annotations, _pmi.build_segments and _pmi.annotation_record "
                        "read these types live"),
+        "entitlement": "design_manufacturing_extension",
+        "owns_shapes": [
+            "PMIAnnotations", "PMILeaderLineNotes", "PMILeaderLineNoteInput", "PMILeaderLineNote",
+            "PMIHoleThreadNotes", "PMIHoleThreadNoteInput", "PMIHoleThreadNote", "PMISegmentVector",
+            "PMITextSegment", "PMISymbolSegment", "PMILineBreakSegment", "PMIGeometricValue",
+            "PMIGeometricValueTolerance", "PMIDisplaySettings",
+        ],
         "body": """
     tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
     try:
@@ -7223,6 +7231,7 @@ ROWS = [
                        "make surface_target='swarf' the one settable role here; and _apply_curve's "
                        "no-curve-parameter refusal, which is what a chain/face selection meets on "
                        "this strategy and which hands back the surface set instead"),
+        "entitlement": "design_manufacturing_extension",
         "needs": "cam",
         "body": """
     cam, setup = cam_measure_setup()
@@ -7286,6 +7295,7 @@ ROWS = [
                        "morph/project chain reaches the drive curves rather than the boundary; "
                        "tests/unit/test_cam_select_geometry.py's operation fakes, which name the "
                        "parameters each strategy carries"),
+        "entitlement": "design_manufacturing_extension",
         "needs": "cam",
         "body": """
     cam, setup = cam_measure_setup()
@@ -8170,12 +8180,16 @@ ROWS = [
         emit(False, "cam-flat-check-validity-needs-flat-recompute: baseline generation did not"
              " complete in 60s - inconclusive")
         return
-    # The first generation on a setup bound right after the round-trip lands NoToolpath (3);
-    # the next one lands a path (measured), so one retry is allowed before the baseline read.
-    if op.operationState == 3 and not _generate(op):
-        emit(False, "cam-flat-check-validity-needs-flat-recompute: baseline regeneration did not"
-             " complete in 60s - inconclusive")
-        return
+    # A setup bound right after the round-trip lands NoToolpath (3) on its first generation or
+    # two (one on a warmed session, two on a freshly launched one - measured), and the next one
+    # lands a path; up to three retries are allowed before the baseline read, and reported.
+    retries = 0
+    while op.operationState == 3 and retries < 3:
+        retries += 1
+        if not _generate(op):
+            emit(False, "cam-flat-check-validity-needs-flat-recompute: baseline regeneration "
+                 + str(retries) + " did not complete in 60s - inconclusive")
+            return
     baseline_state = op.operationState
 
     # (a) a check before the flat recomputed leaves the op valid
@@ -9051,10 +9065,91 @@ def _ledger_projection(text):
     return projection
 
 
-def write_api_facts(facts, fusion_version, stamp_date, shapes=None):
-    """Generate tests/live_api_facts.py from a fully-PASSING run: 'enums.*' keys become ENUMS,
-    'not_enums.*' NOT_ENUMS, 'behavior.*' BEHAVIOR, dumped shapes SHAPES. conftest imports the
-    module to populate the mocks; the fake-shape lint checks SHARED fakes against SHAPES."""
+_ENTITLEMENTS = {"design_manufacturing_extension": "the Design/Manufacturing Extension"}
+
+_EXTENSION_REQUIRED_TEXT = "Manufacturing or Design Extension is required"
+_GEN_ALLOWED_EQ_RE = re.compile(r"isGenerationAllowed=(\S+)")
+_GEN_ALLOWED_LISTED_RE = re.compile(r"isGenerationAllowed is not True for ([\w=,\s]+?) -")
+_CARRIED_LABEL_RE = re.compile(r"^CARRIED: needs .+; measured (\S+) on (.+)$")
+
+
+def _listed_all_false(segment):
+    """True when every name=value pair in an isGenerationAllowed listing reads False."""
+    values = [pair.split("=", 1)[1] for pair in segment.split(",") if "=" in pair]
+    return bool(values) and all(v.strip() == "False" for v in values)
+
+
+def _entitlement_refusal(detail):
+    """True only for the measured Design/Manufacturing Extension refusal texts."""
+    if _EXTENSION_REQUIRED_TEXT in detail:
+        return True
+    m = _GEN_ALLOWED_EQ_RE.search(detail)
+    if m:
+        return m.group(1).rstrip(",") == "False"
+    m = _GEN_ALLOWED_LISTED_RE.search(detail)
+    return m is not None and _listed_all_false(m.group(1))
+
+
+def _carry_entitlements(results):
+    """Results with each gated refusal CARRIED under its standing row's entitled date and build."""
+    if not os.path.exists(LEDGER):
+        return results, {}
+    with open(LEDGER, encoding="utf-8") as fh:
+        old_text = fh.read()
+    old_cells = {proj[1]: proj[0] for proj in _ledger_projection(old_text)}
+    stamp = _STAMP_RE.search(old_text)
+    stamp_build, stamp_date = (stamp.group(1), stamp.group(2)) if stamp else (None, None)
+    carried, refusals = [], {}
+    for row, status, detail in results:
+        date_build = None
+        if row.get("entitlement") and status != "PASS" and _entitlement_refusal(detail):
+            old_cell = old_cells.get(row["id"])
+            if old_cell == "PASS" and stamp:
+                date_build = (stamp_date, stamp_build)
+            elif old_cell:
+                m = _CARRIED_LABEL_RE.match(old_cell)
+                if m:
+                    date_build = (m.group(1), m.group(2))
+        if date_build:
+            refusals[row["id"]] = detail
+            status = "CARRIED"
+            detail = "needs {0}; measured {1} on {2}".format(
+                _ENTITLEMENTS[row["entitlement"]], *date_build)
+        carried.append((row, status, detail))
+    return carried, refusals
+
+
+def _load_standing_facts_module():
+    """The standing tests/live_api_facts.py, loaded by path."""
+    spec = importlib.util.spec_from_file_location("_fe_measure_standing_facts", FACTS)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _resolve_carried_shapes(carried):
+    """Carried rows' owned SHAPES from the standing module; ValueError names a missing one."""
+    owned = [(row, name) for row, _detail in carried for name in row.get("owns_shapes", [])]
+    if not owned:
+        return {}
+    try:
+        shapes = _load_standing_facts_module().SHAPES
+    except (OSError, SyntaxError, AttributeError) as exc:
+        raise ValueError(
+            "carried row {0} needs tests/live_api_facts.py, which failed to load: {1}".format(
+                owned[0][0]["id"], exc))
+    extra = {}
+    for row, name in owned:
+        if name not in shapes:
+            raise ValueError(
+                "carried row {0} owns {1}, which tests/live_api_facts.py lacks - "
+                "nothing to copy forward".format(row["id"], name))
+        extra[name] = list(shapes[name])
+    return extra
+
+
+def write_api_facts(facts, fusion_version, stamp_date, shapes=None, carried=()):
+    """Generate tests/live_api_facts.py from a PASSING-or-CARRIED run's shapes."""
     enums, behavior, not_enums = {}, {}, set()
     for key, value in facts.items():
         if key.startswith("enums."):
@@ -9066,7 +9161,8 @@ def write_api_facts(facts, fusion_version, stamp_date, shapes=None):
             behavior[key[len("behavior."):]] = value
     lines = [
         "# GENERATED by tests/live/measure_api.py against live Fusion - DO NOT EDIT.",
-        "# Regenerate: py -3 tests/live/measure_api.py (a fully-PASSING run rewrites this file).",
+        "# Regenerate: py -3 tests/live/measure_api.py (a run with every row PASS or CARRIED "
+        "rewrites this file).",
         '"""Measured adsk API facts. conftest populates the mock adsk modules and the shared fakes',
         'from these values, so the mocks carry measured data, not hand-typed claims. Each value is',
         'owned by the measurement row of the same name in tests/live/VERIFIED_API_FACTS.md."""',
@@ -9106,8 +9202,11 @@ def write_api_facts(facts, fusion_version, stamp_date, shapes=None):
         "",
         "# Live public attribute membership per adsk type (dir() of a real object) - the",
         "# fake-shape lint requires every SHARED fake attribute to exist here.",
-        "SHAPES = {",
     ]
+    for row, detail in carried:
+        lines.append("# CARRIED {0}: {1} - owns {2}".format(
+            row["id"], detail, ", ".join(row.get("owns_shapes", [])) or "(none)"))
+    lines.append("SHAPES = {")
     for tname in sorted(shapes or {}):
         lines.append('    "{0}": ['.format(tname))
         attrs = sorted(shapes[tname])
@@ -9138,9 +9237,11 @@ def write_ledger(results, fusion_version, stamp_date, source_hash, attestation):
         "no tool reads children. Each such cell says so in its own words, so the",
         "'encoded in' text is what tells you which kind of row you are reading.",
         "",
-        "A non-PASS row means the CLAIM no longer holds: update the fakes and their consumers, then",
-        "re-run to refresh the stamp. `--check` fails when the stamp differs from the installed",
-        "Fusion or any row is not PASS.",
+        "A row that is neither PASS nor CARRIED means the CLAIM no longer holds: update the fakes",
+        "and their consumers, then re-run to refresh the stamp. CARRIED means the row is gated by a",
+        "lapsed entitlement and stands on its last entitled measurement, whose date and build its",
+        "cell names. `--check` fails when the stamp differs from the installed Fusion or any row is",
+        "neither PASS nor CARRIED.",
         "",
         "Stamp: Fusion {0} | verified {1} | source {2}".format(
             fusion_version, stamp_date, source_hash),
@@ -9158,7 +9259,7 @@ def write_ledger(results, fusion_version, stamp_date, source_hash, attestation):
 
 
 def check():
-    """Stamp-vs-installed-Fusion gate; measures nothing. Exit 0 = current, 1 = stale or non-PASS."""
+    """Stamp gate; measures nothing. Exit 0 = current with every row PASS or CARRIED."""
     if not os.path.exists(LEDGER):
         print("VERIFIED_API_FACTS.md does not exist - run measure_api.py once against live Fusion.")
         return 1
@@ -9181,12 +9282,13 @@ def check():
     ] + [
         "non-PASS row: " + ln
         for ln in table_lines
-        if not ln.startswith("| PASS ")
+        if not ln.startswith(("| PASS ", "| CARRIED: "))
     ]
     health = health_gate()
     current_attestation = _current_attestation(health)
     live = _fusion_version(health)
-    if _ledger_projection(text) != [_ledger_fields(row) for row in ROWS]:
+    if ([cells[1:] for cells in _ledger_projection(text)]
+            != [_ledger_fields(row)[1:] for row in ROWS]):
         problems.append("ledger rows do not match the current ROWS registry (id/claim/source/order)")
     if live != stamped_version:
         problems.append("stamp is Fusion {0} (verified {1}) but the installed Fusion is {2} - "
@@ -9206,8 +9308,10 @@ def check():
                   + ", ".join(runtime_differences))
     else:
         detail = "exact loaded implementation/schema identity matches the historical run"
-    print("contracts current: Fusion {0}, verified {1}, all rows PASS; {2}".format(
-        live, stamped_date, detail))
+    carried_ids = [proj[1] for proj in _ledger_projection(text) if proj[0].startswith("CARRIED: ")]
+    status_note = "all rows PASS" if not carried_ids else "PASS except CARRIED: " + ", ".join(carried_ids)
+    print("contracts current: Fusion {0}, verified {1}, {2}; {3}".format(
+        live, stamped_date, status_note, detail))
     return 0
 
 
@@ -9322,6 +9426,14 @@ def run_measurements(write_json, only=None):
         print("Measurement evidence NOT published: " + identity_problem + " during the run.")
         return 1
     stamp_date = time.strftime("%Y-%m-%d")
+    # A gated row's entitlement refusal becomes CARRIED here, before the rewrite gate reads
+    # statuses - so a lapsed extension is not read as a fresh platform regression.
+    results, carried_refusals = _carry_entitlements(results)
+    for row, status, detail in results:
+        if status == "CARRIED":
+            print("  {0:6} {1:28} {2}".format("CARRIED", row["id"], detail[:90]))
+    carried = [(r, d) for r, s, d in results if s == "CARRIED"]
+    write_failed = False
     # The ledger and live_api_facts.py describe ONE run and are written on the same condition:
     # a partial or failing run leaves both at the last complete run, so the stamp never claims
     # rows a dead script channel prevented from executing.
@@ -9331,19 +9443,28 @@ def run_measurements(write_json, only=None):
         # all-PASS gate cannot see the difference between "skipped" and "absent".
         print("\n{0} and live_api_facts.py NOT rewritten - this was a --only run of {1} row(s). "
               "Run the full sweep to republish.".format(os.path.basename(LEDGER), len(results)))
-    elif all(s == "PASS" for _, s, _ in results):
-        write_ledger(results, fusion_version, stamp_date, source_hash, pinned_attestation)
-        print("\nwrote {0} (stamp: Fusion {1}, {2})".format(LEDGER, fusion_version, stamp_date))
-        print("wrote {0} ({1} enum families, {2} not-an-enum families, {3} behavior flags, "
-              "{4} shaped types)".format(
-                  write_api_facts(facts, fusion_version, stamp_date, shapes),
-                  sum(1 for k in facts if k.startswith("enums.")) and len(
-                      {k.rsplit(".", 1)[0] for k in facts if k.startswith("enums.")}),
-                  sum(1 for k in facts if k.startswith("not_enums.")),
-                  sum(1 for k in facts if k.startswith("behavior.")),
-                  len(shapes)))
+    elif all(s in ("PASS", "CARRIED") for _, s, _ in results):
+        try:
+            extra_shapes = _resolve_carried_shapes(carried)
+        except ValueError as exc:
+            write_failed = True
+            print("\n{0} and live_api_facts.py NOT rewritten - {1}".format(
+                os.path.basename(LEDGER), exc))
+        else:
+            for name, attrs in extra_shapes.items():
+                shapes.setdefault(name, attrs)
+            write_ledger(results, fusion_version, stamp_date, source_hash, pinned_attestation)
+            print("\nwrote {0} (stamp: Fusion {1}, {2})".format(LEDGER, fusion_version, stamp_date))
+            print("wrote {0} ({1} enum families, {2} not-an-enum families, {3} behavior flags, "
+                  "{4} shaped types)".format(
+                      write_api_facts(facts, fusion_version, stamp_date, shapes, carried=carried),
+                      sum(1 for k in facts if k.startswith("enums.")) and len(
+                          {k.rsplit(".", 1)[0] for k in facts if k.startswith("enums.")}),
+                      sum(1 for k in facts if k.startswith("not_enums.")),
+                      sum(1 for k in facts if k.startswith("behavior.")),
+                      len(shapes)))
     else:
-        failed = [r["id"] for r, s, _ in results if s != "PASS"]
+        failed = [r["id"] for r, s, _ in results if s not in ("PASS", "CARRIED")]
         print("\n{0} and live_api_facts.py NOT rewritten - {1} non-PASS row(s): {2}".format(
             os.path.basename(LEDGER), len(failed), ", ".join(failed[:12])
             + (", ..." if len(failed) > 12 else "")))
@@ -9351,12 +9472,17 @@ def run_measurements(write_json, only=None):
         results_dir = os.path.join(os.path.dirname(LEDGER), "results")
         os.makedirs(results_dir, exist_ok=True)
         path = os.path.join(results_dir, "contracts-{0}.json".format(time.strftime("%Y%m%d-%H%M%S")))
+        rows_out = []
+        for r, s, d in results:
+            row_out = {"id": r["id"], "status": s, "detail": d}
+            if r["id"] in carried_refusals:
+                row_out["refusal"] = carried_refusals[r["id"]]
+            rows_out.append(row_out)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"fusion_version": fusion_version, "date": stamp_date,
-                       "rows": [{"id": r["id"], "status": s, "detail": d}
-                                for r, s, d in results]}, fh, indent=2)
+            json.dump({"fusion_version": fusion_version, "date": stamp_date, "rows": rows_out},
+                      fh, indent=2)
         print("wrote {0}".format(path))
-    return 1 if any(s != "PASS" for _, s, _ in results) else 0
+    return 1 if write_failed or any(s not in ("PASS", "CARRIED") for _, s, _ in results) else 0
 
 
 if __name__ == "__main__":

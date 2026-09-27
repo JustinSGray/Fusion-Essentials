@@ -389,6 +389,209 @@ def _radius_filtered_handle(ctx, filtered_key, index):
     return {"target": filtered[index], "units": "mm"}
 
 
+def _precision_geometry(kind, units):
+    """Check analytic radii and positions without rounding away the journal's tolerance span."""
+    def check(p):
+        rows = sorted(p.get("matches") or [], key=lambda row: row.get("radius", 0))
+        factor = 25.4 if units == "mm" else 1.0
+        count = 2 if kind == "cylinder_face" else 4
+        radii = [0.312125, 0.88575] if count == 2 else [0.312125] * 2 + [0.88575] * 2
+        good = len(rows) == p.get("match_count") == count and p.get("units") == units
+        for row, radius in zip(rows, radii):
+            position = row.get("position") or []
+            cx = 0.123456 if radius == 0.312125 else 3.654321
+            good = (good and row.get("kind") == kind
+                    and _near(row.get("radius"), radius * factor, 0.000001)
+                    and len(position) == 3
+                    and _near(position[0], _px("PrecisionBench", (cx + 100) * 25.4)
+                              * factor / 25.4, 0.000001)
+                    and _near(position[1], _py("PrecisionBench", 0.234567 * 25.4)
+                              * factor / 25.4, 0.000001))
+            if radius == 0.88575:
+                diameter = 2 * row.get("radius", 0) / factor
+                good = good and 1.7714 <= diameter <= 1.7716
+        return _measured("close-tolerance acquired " + kind + " in " + units,
+                         [{k: row.get(k) for k in ("radius", "position", "handle")} for row in rows], good)
+    return check
+
+
+def _precision_planes(units):
+    """Check the four planar caps and their world frames against their analytic heights."""
+    def check(p):
+        rows = p.get("matches") or []
+        factor = 1 if units == "mm" else 1 / 25.4
+        return _measured("precise planar cap frames in " + units, rows,
+                         len(rows) == p.get("match_count") == 4
+                         and all(row.get("kind") == "planar_face" and row.get("frame")
+                                 and _near(row["frame"]["origin"][2], row["position"][2], 0.000001)
+                                 and any(_near(row["frame"]["origin"][2], z * factor, 0.000001)
+                                         for z in (0, 10)) for row in rows)
+                         and sum(_near(row["frame"]["origin"][2], 10 * factor, 0.000001)
+                                 for row in rows) == 2)
+    return check
+
+
+def _precision_ellipse(units):
+    """Check both analytic ellipse edges, including precise radii and world centers."""
+    def check(p):
+        rows = sorted(p.get("matches") or [], key=lambda row: (row.get("position") or [0, 0, 0])[2])
+        factor = 1 if units == "mm" else 1 / 25.4
+        center = [_px("PrecisionEllipseBench", 2700 + 0.123456 * 25.4),
+                  _py("PrecisionEllipseBench", 0.234567 * 25.4)]
+        good = len(rows) == p.get("match_count") == 2 and p.get("units") == units
+        for row, z in zip(rows, (0, 10.123456)):
+            position = row.get("position") or []
+            good = (good and row.get("kind") == "ellipse_edge" and bool(row.get("handle"))
+                    and _near(row.get("major_radius"), 0.88575 * 25.4 * factor, 0.000001)
+                    and _near(row.get("minor_radius"), 0.312125 * 25.4 * factor, 0.000001)
+                    and len(position) == 3
+                    and all(_near(actual, expected * factor, 0.000001)
+                            for actual, expected in zip(position, [*center, z])))
+        return _measured("precise ellipse radii and centers in " + units, rows, good)
+    return check
+
+
+def _precision_vertex_points():
+    """The eight independently authored box corners in world millimetres."""
+    return [[_px("PrecisionVertexBench", 2800 + x * 25.4),
+             _py("PrecisionVertexBench", y * 25.4), z]
+            for x in (0.123456, 0.765432) for y in (0.234567, 0.876543)
+            for z in (0, 10.123456)]
+
+
+def _precision_vertices(units):
+    """Check all fractional-coordinate vertices against the authored corner set."""
+    def check(p):
+        rows = p.get("matches") or []
+        factor = 1 if units == "mm" else 1 / 25.4
+        expected = sorted(_precision_vertex_points())
+        good = (len(rows) == p.get("match_count") == 8 and p.get("units") == units
+                and all(row.get("kind") == "vertex" and row.get("handle")
+                        and len(row.get("position") or []) == 3 for row in rows))
+        if good:
+            actual = sorted(row["position"] for row in rows)
+            good = all(_near(a, e * factor, 0.000001)
+                       for point, wanted in zip(actual, expected) for a, e in zip(point, wanted))
+        return _measured("precise fractional vertices in " + units, rows, good)
+    return check
+
+
+def _precision_vertex_bounds(p):
+    """Independently confirm the vertex coupon's world bounds through model_inspect."""
+    points = _precision_vertex_points()
+    low, high = p.get("min_point") or {}, p.get("max_point") or {}
+    return _measured("independent fractional vertex bounds", p,
+                     all(_near(bound.get(axis), choose(q[i] for q in points), 0.000001)
+                         for bound, choose in ((low, min), (high, max))
+                         for i, axis in enumerate("xyz")))
+
+
+def _precision_edge_gap(height, units):
+    """Check actual cap-edge spacing and the measured endpoints in the requested units."""
+    def check(p):
+        expected = height if units == "mm" else height / 25.4
+        a, b = p.get("closest_point_on_a") or {}, p.get("closest_point_on_b") or {}
+        zs = [a.get("z"), b.get("z")]
+        return _measured("independent cap-edge spacing in " + units, p,
+                         p.get("mode") == "distance" and p.get("units") == units
+                         and all(str(p.get(key, "")).startswith("edge '") for key in ("a", "b"))
+                         and _near(p.get("distance"), expected, 0.000001)
+                         and all(_near(a.get(axis), b.get(axis), 0.000001) for axis in ("x", "y"))
+                         and all(isinstance(z, (int, float)) and not isinstance(z, bool) for z in zs)
+                         and _near(min(zs), 0, 0.000001) and _near(max(zs), expected, 0.000001))
+    return check
+
+
+def _precision_rows():
+    """Cross-check cylinder, ellipse and vertex acquisitions in inches and mm."""
+    rows = [("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("model_create_component", {"name": "PrecisionBench", "activate": True,
+                                         "x": 2540}, _made_component, None)]
+    for name, radius, cx in (("PrecisionLug", 0.312125, 0.123456),
+                             ("PrecisionJournal", 0.88575, 3.654321)):
+        rows += [
+            ("sketch_create", {"plane": "xy", "name": name}, "ok", None),
+            ("sketch_add_geometry", {"sketch_name": name, "units": "in", "geometry": [
+                {"kind": "circle", "cx": cx, "cy": 0.234567, "radius": radius}]}, "ok", None),
+            ("model_extrude", {"sketch_name": name, "distance": 10, "operation": "new"},
+             _extruded, None),
+        ]
+    for units in ("in", "mm"):
+        rows.append(("find_geometry", {"target": "PrecisionBench", "kind": "planar_face",
+                                       "units": units}, _precision_planes(units), None))
+        for kind in ("cylinder_face", "circular_edge"):
+            key = "precision_" + kind + "_" + units
+            rows.append(("find_geometry", {"target": "PrecisionBench", "kind": kind,
+                                           "units": units}, _precision_geometry(kind, units),
+                         (key, lambda p: [r["handle"] for r in sorted(
+                             p["matches"], key=lambda row: row["radius"])])))
+            for index, radius in enumerate([0.312125, 0.88575] if kind == "cylinder_face"
+                                            else [0.312125] * 2 + [0.88575] * 2):
+                rows.append(("model_inspect", lambda c, key=key, index=index: {
+                    "target": _ctx_get(c, key, "the precise acquired handles")[index], "units": "mm"},
+                    lambda p, radius=radius: _measured(
+                        "independent acquired face or owning-body diameter",
+                        {"x": p.get("x"), "y": p.get("y"), "z": p.get("z")},
+                        _near(p.get("x"), radius * 50.8, 0.000002)
+                        and _near(p.get("y"), radius * 50.8, 0.000002)
+                        and _near(p.get("z"), 10, 0.000002)), None))
+            if kind == "circular_edge":
+                for first in (0, 2):
+                    rows.append(("model_measure_between", lambda c, key=key, first=first, units=units: {
+                        "a": _ctx_get(c, key, "the precise cap-edge handles")[first],
+                        "b": _ctx_get(c, key, "the precise cap-edge handles")[first + 1],
+                        "units": units}, _precision_edge_gap(10, units), None))
+    rows += [
+        ("design_activate_component", {"occurrence": "root"}, "ok", None),
+        ("model_create_component", {"name": "PrecisionEllipseBench", "activate": True,
+                                     "x": 2700}, _made_component, None),
+        ("sketch_create", {"plane": "xy", "name": "PrecisionEllipse"}, "ok", None),
+        ("sketch_add_geometry", {"sketch_name": "PrecisionEllipse", "units": "in", "geometry": [
+            {"kind": "ellipse", "cx": 0.123456, "cy": 0.234567,
+             "radius": 0.88575, "minor": 0.312125}]}, "ok", None),
+        ("model_extrude", {"sketch_name": "PrecisionEllipse", "distance": 10.123456,
+                           "operation": "new"}, _extruded, None),
+    ]
+    for units in ("in", "mm"):
+        key = "precision_ellipse_" + units
+        rows.append(("find_geometry", {"target": "PrecisionEllipseBench", "kind": "ellipse_edge",
+                                       "units": units}, _precision_ellipse(units),
+                     (key, lambda p: [r["handle"] for r in sorted(
+                         p["matches"], key=lambda row: row["position"][2])])))
+        for index in (0, 1):
+            rows.append(("model_inspect", lambda c, key=key, index=index: {
+                "target": _ctx_get(c, key, "the precise ellipse handles")[index], "units": "mm"},
+                lambda p: _measured("independent ellipse owning-body extent", p,
+                    _near(p.get("x"), 0.88575 * 50.8, 0.000002)
+                    and _near(p.get("y"), 0.312125 * 50.8, 0.000002)
+                    and _near(p.get("z"), 10.123456, 0.000001)
+                    and _near((p.get("center") or {}).get("z"), 10.123456 / 2, 0.000001)), None))
+        rows.append(("model_measure_between", lambda c, key=key, units=units: {
+            "a": _ctx_get(c, key, "the precise ellipse cap-edge handles")[0],
+            "b": _ctx_get(c, key, "the precise ellipse cap-edge handles")[1],
+            "units": units}, _precision_edge_gap(10.123456, units), None))
+    rows += [
+        ("design_activate_component", {"occurrence": "root"}, "ok", None),
+        ("model_create_component", {"name": "PrecisionVertexBench", "activate": True,
+                                     "x": 2800}, _made_component, None),
+        ("sketch_create", {"plane": "xy", "name": "PrecisionVertices"}, "ok", None),
+        ("sketch_add_geometry", {"sketch_name": "PrecisionVertices", "units": "in", "geometry": [
+            {"kind": "rectangle", "x1": 0.123456, "y1": 0.234567,
+             "x2": 0.765432, "y2": 0.876543}]}, "ok", None),
+        ("model_extrude", {"sketch_name": "PrecisionVertices", "distance": 10.123456,
+                           "operation": "new"}, _extruded, None),
+        ("model_inspect", {"target": "PrecisionVertexBench", "units": "mm"},
+         _precision_vertex_bounds, None),
+    ]
+    for units in ("in", "mm"):
+        rows.append(("find_geometry", {"target": "PrecisionVertexBench", "kind": "vertex",
+                                       "units": units}, _precision_vertices(units), None))
+    return rows
+
+
+_PRECISION_READS = _precision_rows()
+
+
 def _interference_pin(ctx, args):
     """Add the exact owned-document pin to one interference-fixture write."""
     return {**args, "expect_document": _ctx_get(
@@ -1200,6 +1403,680 @@ def _revolve_participant_rows():
 
 
 _REVOLVE_PARTICIPANTS = _revolve_participant_rows()
+
+
+def _hole_definition(extent, units, tapped=False):
+    """Check native hole extent and hidden child independently of the drilling response."""
+    def check(p):
+        row = p.get("definition") or {}
+        thread = row.get("thread") or {}
+        factor = 1 if units == "mm" else 1 / 25.4
+        good = (row.get("type") == "HoleFeature" and row.get("component") == "DefinitionBench"
+                and row.get("units") == units and row.get("extent") == extent
+                and row.get("tapped") is tapped and row.get("thread_present") is tapped
+                and row.get("depth_applicable") is (extent == "blind"))
+        if tapped:
+            info, child_info = row.get("tapped_hole_info") or {}, thread.get("thread_info") or {}
+            full = thread.get("full_length")
+            length, offset = thread.get("length"), thread.get("offset")
+            numeric = (length is None and offset is None if full is True else
+                       isinstance(length, (int, float)) and length > 0
+                       and isinstance(offset, (int, float)) and offset >= 0)
+            good = (good and _near(row.get("depth"), 22.225 * factor, 0.000001)
+                    and row.get("diameter_parameter_applicable") is False
+                    and row.get("diameter_parameter") is None
+                    and info.get("designation") == "3/8-16 UNC"
+                    and all(isinstance(info.get(key), str) and bool(info[key])
+                            and child_info.get(key) == info[key]
+                            for key in ("designation", "thread_type", "thread_class"))
+                    and thread.get("type") == "ThreadFeature" and isinstance(full, bool)
+                    and thread.get("length_applicable") is (not full)
+                    and thread.get("offset_applicable") is (not full)
+                    and isinstance(thread.get("modeled"), bool) and numeric)
+            if units == "in":
+                prior = (_RECALL.get("def_tap_mm") or {}).get("thread") or {}
+                good = (good and child_info == prior.get("thread_info")
+                        and all(thread.get(key) == prior.get(key) for key in
+                                ("full_length", "modeled", "length_applicable", "offset_applicable"))
+                        and all(thread.get(key) is None if prior.get(key) is None else
+                                _near(thread.get(key), prior[key] / 25.4, 0.000001)
+                                for key in ("length", "offset")))
+        else:
+            good = (good and row.get("depth") is None and row.get("thread") is None
+                    and _near(row.get("diameter_parameter"), 4 * factor, 0.000001)
+                    and row.get("diameter_parameter_applicable") is True)
+        return _measured("hole definition and actual child in " + units, row, good)
+    return check
+
+
+def _thread_definition(full, units):
+    """Check standalone full/partial thread metadata without inferring full-thread length."""
+    def check(p):
+        row = p.get("definition") or {}
+        info = row.get("thread_info") or {}
+        factor = 1 if units == "mm" else 1 / 25.4
+        lengths = (row.get("length") is None and row.get("offset") is None if full else
+                   _near(row.get("length"), 12 * factor, 0.000001)
+                   and _near(row.get("offset"), 2 * factor, 0.000001))
+        return _measured("standalone thread definition in " + units, row,
+                         row.get("type") == "ThreadFeature" and row.get("component") == "DefinitionPost"
+                         and row.get("units") == units and row.get("modeled") is False
+                         and row.get("full_length") is full
+                         and row.get("length_applicable") is (not full)
+                         and row.get("offset_applicable") is (not full) and lengths
+                         and info.get("designation") == "M10x1.5" and info.get("thread_class") == "6g"
+                         and info.get("thread_type") == "ISO Metric profile"
+                         and info.get("internal") is False)
+    return check
+
+
+def _definition_doc_state(p):
+    """The active document identity and readable modified flag for a paired read check."""
+    modified = (p.get("active") or {}).get("is_modified")
+    if not isinstance(modified, bool):
+        raise AssertionError("document modified state did not read")
+    return {"document_handle": _home_address(p), "is_modified": modified}
+
+
+def _tapped_created_ref(key, component="DefinitionBench"):
+    """Retain the actual creation disclosure and return its scoped feature reference."""
+    def capture(p):
+        _RECALL[key] = p
+        return component + "/" + p["feature"]
+    return capture
+
+
+def _tapped_control_definition(key, full=None, extent="blind", modeled=False, component="DefinitionBench"):
+    """Compare the tapped-hole disclosure with its independent native definition reader."""
+    def check(p):
+        row, made = p.get("definition") or {}, _RECALL.get(key) or {}
+        child = row.get("thread") or {}
+        info = child.get("thread_info") or {}
+        mapping = {"thread_full_length": "full_length", "thread_length_applicable": "length_applicable",
+                   "thread_offset_applicable": "offset_applicable", "modeled": "modeled"}
+        good = (row.get("type") == "HoleFeature" and row.get("component") == component
+                and row.get("extent") == extent and row.get("depth_applicable") is (extent == "blind")
+                and (_near(row.get("depth"), 22.225, 0.000001) if extent == "blind" else row.get("depth") is None)
+                and row.get("tapped") is True and row.get("thread_present") is True
+                and row.get("diameter_parameter") is None
+                and row.get("diameter_parameter_applicable") is False
+                and row.get("tapped_hole_info") == info and info.get("internal") is True
+                and row.get("feature") == made.get("feature")
+                and row.get("units") == made.get("units") == "mm"
+                and info.get("designation") == made.get("tapped") == "3/8-16 UNC"
+                and info.get("thread_type") == made.get("thread_type") == "ANSI Unified Screw Threads"
+                and isinstance(info.get("thread_class"), str) and bool(info["thread_class"])
+                and info.get("thread_class") == made.get("thread_class")
+                and isinstance(child.get("full_length"), bool) and child.get("modeled") is modeled
+                and all(key in made and made[key] == child.get(value) for key, value in mapping.items())
+                and all(key in made and (made[key] is None if child.get(value) is None else
+                        _near(made[key], child[value], 0.000001))
+                        for key, value in (("thread_length", "length"), ("thread_offset", "offset"))))
+        if full is not None:
+            good = (good and info.get("thread_class") == "2B" and child.get("full_length") is full
+                    and child.get("length_applicable") is (not full)
+                    and child.get("offset_applicable") is (not full)
+                    and (child.get("length") is None and child.get("offset") is None if full else
+                         _near(child.get("length"), 12, 0.000001)
+                         and _near(child.get("offset"), 2, 0.000001)))
+        return _measured("tapped controls and actual creation disclosure", row, good)
+    return check
+
+
+def _tapped_geometry(p):
+    """Capture the complete coupon face/edge measurements without transient handles."""
+    matches = p.get("matches") or []
+    if not matches or p.get("match_count") != len(matches) or p.get("returned") != len(matches):
+        raise AssertionError("tapped coupon geometry acquisition was empty or capped")
+    return [{key: value for key, value in row.items() if key != "handle"} for row in matches]
+
+
+def _tapped_control_rows():
+    """Exercise explicit and omitted tapped controls on the existing definition coupon."""
+    rows = [("design_get", lambda c: {"include": ["definition"], "units": "mm",
+             "feature": _ctx_get(c, "def_tap", "default tap")},
+             _tapped_control_definition("def_tap_created"), None)]
+    for extra, refusal in (({}, _refused("thread_length")),
+                           ({"thread_length": 40, "thread_offset": 2}, _refused("THREAD_OVER_EXTENT"))):
+        rows.append(("design_get", {"include": ["timeline"], "max_results": 1000}, "ok",
+                     ("def_rejected_timeline", _recall("def_rejected_timeline", lambda p: p["timeline"]))))
+        rows.append(("find_geometry", {"target": "DefinitionBench", "max_results": 1000}, "ok",
+                     ("def_rejected_geometry", _recall("def_rejected_geometry", _tapped_geometry))))
+        rows.append(("model_hole", lambda c, extra=extra: _combine_pin(c, "def_doc", {
+            "face": _ctx_get(c, "def_top", "top face"), "points_space": "world", "points": [[5, 17, 30]],
+            "diameter": "0.3125 in", "extent": "blind", "depth": "0.875 in", "tap": "3/8-16 UNC",
+            "thread_type": "ANSI Unified Screw Threads", "thread_class": "2B", "thread_extent": "partial",
+            **extra}), refusal, None))
+        rows.append(("design_get", {"include": ["timeline"], "max_results": 1000},
+                     lambda p: _measured("invalid partial preserves timeline", p.get("timeline"),
+                         bool(_RECALL.get("def_rejected_timeline"))
+                         and p.get("timeline") == _RECALL["def_rejected_timeline"]), None))
+        rows.append(("find_geometry", {"target": "DefinitionBench", "max_results": 1000},
+                     lambda p: _measured("invalid partial preserves coupon geometry", p.get("match_count"),
+                         _tapped_geometry(p) == _RECALL.get("def_rejected_geometry")), None))
+    for full, point in ((True, [5, 17, 30]), (False, [17, 5, 30])):
+        key = "def_control_full" if full else "def_control_partial"
+        rows.append(("model_hole", lambda c, full=full, point=point: _combine_pin(c, "def_doc", {
+            "face": _ctx_get(c, "def_top", "top face"), "points_space": "world", "points": [point],
+            "diameter": "0.3125 in", "extent": "blind", "depth": "0.875 in", "tap": "3/8-16 UNC",
+            "thread_type": "ANSI Unified Screw Threads", "thread_class": "2B",
+            "thread_extent": "full" if full else "partial",
+            **({} if full else {"thread_length": 12, "thread_offset": 2})}),
+            _drilled(1), (key, _tapped_created_ref(key))))
+        rows.append(("design_get", lambda c, key=key: {"include": ["definition"], "units": "mm",
+                     "feature": _ctx_get(c, key, "controlled tap")},
+                     _tapped_control_definition(key, full), None))
+        rows.append(("find_geometry", {"target": "DefinitionBench", "kind": "cylinder_face",
+                     "nearest_to": [point[0], point[1], 20], "max_results": 1},
+                     lambda p, point=point: _measured("controlled tap bore location", p.get("matches"),
+                         _matched(1, "cylinder_face")(p)
+                         and _near(p["matches"][0]["position"][0], point[0], 0.000001)
+                         and _near(p["matches"][0]["position"][1], point[1], 0.000001)
+                         and p["matches"][0].get("radius", 0) > 0), None))
+    def write(name, args):
+        rows.append((name, lambda c, args=args: _combine_pin(c, "def_doc", args), "ok", None))
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "TapControlBench", "activate": True})
+    write("sketch_create", {"plane": "xy", "name": "TapControlStock"})
+    write("sketch_add_geometry", {"sketch_name": "TapControlStock", "geometry": [
+        {"kind": "rectangle", "x1": 100, "y1": 0, "x2": 160, "y2": 25}]})
+    write("model_extrude", {"sketch_name": "TapControlStock", "distance": 30})
+    rows.append(("find_geometry", {"target": "TapControlBench", "kind": "planar_face",
+                 "nearest_to": [130, 12.5, 30], "max_results": 1},
+                 _face_up_at(130, 12.5, 30, 0.000001), _fg("def_control_top")))
+    for extent, modeled, x in (("through", False, 110), ("blind", False, 130), ("blind", True, 150)):
+        full = extent == "through"
+        key = "def_control_through" if full else "def_control_modeled" if modeled else "def_control_cosmetic"
+        rows.append(("model_inspect", _combine_inspect("TapControlBench"), "ok",
+                     ("def_control_volume", _recall("def_control_volume", lambda p: p["mass"]["volume"]))))
+        rows.append(("model_hole", lambda c, extent=extent, modeled=modeled, x=x, full=full: _combine_pin(
+            c, "def_doc", {"face": _ctx_get(c, "def_control_top", "control stock top"),
+                "points_space": "world", "points": [[x, 10, 30]], "diameter": "0.3125 in",
+                "extent": extent, "tap": "3/8-16 UNC", "thread_type": "ANSI Unified Screw Threads",
+                "thread_class": "2B", "thread_extent": "full" if full else "partial", "modeled": modeled,
+                **({} if full else {"depth": "0.875 in", "thread_length": 12, "thread_offset": 2})}),
+            _drilled(1), (key, _tapped_created_ref(key, "TapControlBench"))))
+        rows.append(("design_get", lambda c, key=key: {"include": ["definition"], "units": "mm",
+                     "feature": _ctx_get(c, key, "controlled tap")},
+                     _tapped_control_definition(key, full, extent, modeled, "TapControlBench"), None))
+        rows.append(("model_inspect", _combine_inspect("TapControlBench"),
+                     lambda p, modeled=modeled: _measured("tap material removal and modeled helix excess", {
+                         "mass": p.get("mass"), "before": _RECALL.get("def_control_volume"),
+                         "cosmetic_removed": _RECALL.get("def_control_cosmetic_removed")},
+                         p.get("units") == "mm" and isinstance(_RECALL.get("def_control_volume"), (int, float))
+                         and isinstance((p.get("mass") or {}).get("volume"), (int, float))
+                         and 0 < p["mass"]["volume"] < _RECALL["def_control_volume"] - 1
+                         and (not modeled or isinstance(_RECALL.get("def_control_cosmetic_removed"), (int, float))
+                              and _RECALL["def_control_volume"] - p["mass"]["volume"]
+                                  > _RECALL["def_control_cosmetic_removed"] + 1)),
+                     ("def_control_cosmetic_removed", _recall("def_control_cosmetic_removed",
+                         lambda p: _RECALL["def_control_volume"] - p["mass"]["volume"]))
+                     if not full and not modeled else None))
+        if full:
+            rows.append(("find_geometry", {"target": "TapControlBench", "kind": "cylinder_face",
+                         "nearest_to": [110, 10, 15], "max_results": 1},
+                         _matched(1, "cylinder_face"), _fg("def_control_bore")))
+            rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "def_control_bore", "through tap bore")},
+                         lambda p: _measured("through tap crosses stock", p,
+                             _near(p.get("z"), 30, 0.000001)
+                             and _near((p.get("center") or {}).get("x"), 110, 0.000001)
+                             and _near((p.get("center") or {}).get("y"), 10, 0.000001)
+                             and p.get("x", 0) > 0 and _near(p.get("x"), p.get("y"), 0.000001)), None))
+    return rows
+
+
+def _hole_feedback_rows():
+    """Check expression refusals, live parameter links, and tap-controlled bore geometry."""
+    rows = []
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(
+            c, "def_doc", args(c) if callable(args) else args), check, save))
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "HoleFeedback", "activate": True})
+    write("sketch_create", {"plane": "xy", "name": "HoleFeedbackStock"})
+    write("sketch_add_geometry", {"sketch_name": "HoleFeedbackStock", "geometry": [
+        {"kind": "rectangle", "x1": 200, "y1": 0, "x2": 260, "y2": 40}]})
+    write("model_extrude", {"sketch_name": "HoleFeedbackStock", "distance": 30})
+    rows.append(("find_geometry", lambda c: {"target": "HoleFeedback", "kind": "planar_face",
+                 "nearest_to": [230, 20, 30], "max_results": 1}, _face_up_at(230, 20, 30, .000001), _fg("hf_top")))
+    for field, value in (("diameter", "5/16 in"), ("depth", "MissingHoleDepth/2")):
+        for tool, args, key, extract in (
+                ("design_get", {"include": ["timeline"], "max_results": 1000}, "hf_timeline", lambda p: p["timeline"]),
+                ("sketch_get", {"component": "HoleFeedback", "max_results": 1000}, "hf_sketches", lambda p: p),
+                ("find_geometry", {"target": "HoleFeedback", "max_results": 1000}, "hf_geometry", _tapped_geometry)):
+            rows.append((tool, args, "ok", (key, _recall(key, extract))))
+        write("model_hole", lambda c, field=field, value=value: {
+            "face": _ctx_get(c, "hf_top", "stock top"), "points_space": "world", "points": [[230, 10, 30]],
+            "diameter": "4 mm", "extent": "blind", "depth": "12 mm", field: value},
+            _refused(field, value, "0.3125 in"))
+        for tool, args, key, extract in (
+                ("design_get", {"include": ["timeline"], "max_results": 1000}, "hf_timeline", lambda p: p["timeline"]),
+                ("sketch_get", {"component": "HoleFeedback", "max_results": 1000}, "hf_sketches", lambda p: p),
+                ("find_geometry", {"target": "HoleFeedback", "max_results": 1000}, "hf_geometry", _tapped_geometry)):
+            rows.append((tool, args, lambda p, key=key, extract=extract: _measured(
+                "invalid hole preserves " + key, extract(p), bool(_RECALL.get(key))
+                and extract(p) == _RECALL[key]), None))
+    write("param_add", {"name": "FeedbackDia", "expression": "4 mm"}, _param_added("FeedbackDia", 4))
+    write("param_add", {"name": "FeedbackDepth", "expression": "12 mm"}, _param_added("FeedbackDepth", 12))
+    write("model_hole", lambda c: {"face": _ctx_get(c, "hf_top", "stock top"), "points_space": "world",
+        "points": [[210, 10, 30]], "diameter": "FeedbackDia", "depth": "FeedbackDepth", "extent": "blind"},
+        _drilled(1), ("hf_ordinary", _tapped_created_ref("hf_ordinary", "HoleFeedback")))
+    rows.append(("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 1000},
+        lambda p: _measured("hole preserves both parameter expressions", p.get("timeline"), any(
+            row.get("name") == (_RECALL.get("hf_ordinary") or {}).get("feature")
+            and row.get("component") == "HoleFeedback"
+            and {"FeedbackDia", "FeedbackDepth"}.issubset({q.get("expression") for q in row.get("params") or []})
+            for row in (p.get("timeline") or {}).get("timeline") or [])), None))
+    for diameter in (4, 6):
+        if diameter == 6:
+            write("param_set", {"name": "FeedbackDia", "expression": "6 mm"}, _param_set_to("FeedbackDia", 6))
+        rows.append(("design_get", lambda c: {"include": ["definition"], "feature": _ctx_get(c, "hf_ordinary", "hole")},
+            lambda p, diameter=diameter: _measured("ordinary diameter remains applicable", p.get("definition"),
+                (p.get("definition") or {}).get("diameter_parameter_applicable") is True
+                and _near((p.get("definition") or {}).get("diameter_parameter"), diameter, .000001)
+                and _near((p.get("definition") or {}).get("depth"), 12, .000001)), None))
+        rows.append(("find_geometry", {"target": "HoleFeedback", "kind": "cylinder_face", "radius": diameter/2},
+            lambda p, diameter=diameter: _matched(1, "cylinder_face")(p)
+            and _measured("parameter drives actual hole radius", p["matches"],
+                _near(p["matches"][0].get("radius"), diameter/2, .000001)
+                and _near(p["matches"][0]["position"][0], 210, .000001)), None))
+    rows.append(("workspace_orient", {}, lambda p: _measured(
+        "numeric-string hole requires disclosed millimeter document units", p.get("design"),
+        (p.get("design") or {}).get("units") == "mm"), None))
+    write("model_hole", lambda c: {"face": _ctx_get(c, "hf_top", "stock top"), "points_space": "world",
+        "points": [[250/25.4, 10/25.4, 30/25.4]], "units": "in", "diameter": "5",
+        "depth": "12 mm", "extent": "blind"}, _drilled(1),
+        ("hf_unitless", lambda p: "HoleFeedback/" + p["feature"]))
+    rows.append(("design_get", lambda c: {"include": ["definition"], "units": "mm",
+                 "feature": _ctx_get(c, "hf_unitless", "numeric-string hole")},
+        lambda p: _measured("numeric-string diameter uses document units", p.get("definition"),
+            (p.get("definition") or {}).get("diameter_parameter_applicable") is True
+            and _near((p.get("definition") or {}).get("diameter_parameter"), 5, .000001)
+            and _near((p.get("definition") or {}).get("depth"), 12, .000001)), None))
+    rows.append(("find_geometry", {"target": "HoleFeedback", "kind": "cylinder_face", "radius": 2.5},
+        lambda p: _matched(1, "cylinder_face")(p) and _measured("numeric-string hole actual bore", p["matches"],
+            _near(p["matches"][0].get("radius"), 2.5, .000001)
+            and _near(p["matches"][0]["position"][0], 250, .000001)
+            and _near(p["matches"][0]["position"][1], 10, .000001)), None))
+    for index, diameter in enumerate(("0.3125 in", "10 mm")):
+        key, x = "hf_tap_" + str(index), 215 + 30*index
+        write("model_hole", lambda c, diameter=diameter, x=x: {
+            "face": _ctx_get(c, "hf_top", "stock top"), "points_space": "world", "points": [[x, 30, 30]],
+            "diameter": diameter, "extent": "blind", "depth": "0.875 in", "tap": "3/8-16 UNC",
+            "thread_type": "ANSI Unified Screw Threads", "thread_class": "2B", "thread_extent": "full"},
+            lambda p, diameter=diameter: _drilled(1)(p) and _measured("writer discloses unused diameter", p.get("note"),
+                ("diameter=" + repr(diameter) + " is unused") in p.get("note", "")),
+            (key, _tapped_created_ref(key, "HoleFeedback")))
+        rows.append(("design_get", {"include": ["timeline"], "max_results": 1000}, "ok",
+                     ("hf_read_timeline", _recall("hf_read_timeline", lambda p: p["timeline"]))))
+        rows.append(("doc_get", {}, _home_document,
+                     ("hf_read_doc", _recall("hf_read_doc", _definition_doc_state))))
+        rows.append(("design_get", lambda c, key=key: {"include": ["definition"], "units": "mm",
+                     "feature": _ctx_get(c, key, "tap")},
+                     _tapped_control_definition(key, True, "blind", False, "HoleFeedback"), None))
+        rows.append(("design_get", {"include": ["timeline"], "max_results": 1000},
+            lambda p: _measured("diameter read preserves marker and timeline", p.get("timeline"),
+                bool(_RECALL.get("hf_read_timeline")) and p.get("timeline") == _RECALL["hf_read_timeline"]), None))
+        rows.append(("doc_get", {}, lambda p: _measured("diameter read preserves document state", p.get("active"),
+            _definition_doc_state(p) == _RECALL.get("hf_read_doc")), None))
+        rows.append(("find_geometry", lambda c, x=x: {"target": "HoleFeedback", "kind": "cylinder_face",
+                     "nearest_to": [x, 30, 20], "max_results": 1},
+            lambda p, index=index, x=x: _matched(1, "cylinder_face")(p) and _measured(
+                "tap bore ignores nominal diameter input", p["matches"],
+                _near(p["matches"][0].get("radius"), 7.9756/2, .0001)
+                and _near(p["matches"][0]["position"][0], x, .000001)
+                and (index == 0 or _near(p["matches"][0].get("radius"), _RECALL.get("hf_tap_radius"), .000001))),
+            ("hf_tap_radius", _recall("hf_tap_radius", lambda p: p["matches"][0]["radius"])) if index == 0 else None))
+    return rows
+
+
+def _definition_rows():
+    """Build a bounded Hole/Thread read coupon in an owned scratch document."""
+    rows = [("doc_get", {}, _home_document, ("def_story", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "def_story", "story")},
+             _new_document, ("def_doc", lambda p: p["document_handle"]))]
+    def write(name, args, save=None):
+        rows.append((name, lambda c, args=args: _combine_pin(
+            c, "def_doc", args(c) if callable(args) else args), "ok", save))
+    def read(key, check, units):
+        rows.append(("design_get", lambda c, key=key, units=units: {
+            "include": ["definition"], "feature": _ctx_get(c, key, "created feature"), "units": units},
+            check, (key + "_mm", _recall(key + "_mm", lambda p: p["definition"]))
+            if units == "mm" else None))
+    def state(before):
+        if before:
+            rows.append(("doc_get", {}, _home_document,
+                         ("def_active", _recall("def_active", _definition_doc_state))))
+            rows.append(("design_get", {"include": ["timeline"]}, "ok",
+                         ("def_timeline", _recall("def_timeline", lambda p: {
+                             key: p["timeline"][key] for key in ("marker_position", "count")}))))
+        else:
+            rows.append(("design_get", {"include": ["timeline"]},
+                         lambda p: _measured("definition read preserves timeline", p.get("timeline"),
+                             all((p.get("timeline") or {}).get(key) == value for key, value in
+                                 (_RECALL.get("def_timeline") or {}).items())
+                             and bool(_RECALL.get("def_timeline"))), None))
+            rows.append(("doc_get", {}, lambda p: _measured("definition read preserves document state",
+                         _definition_doc_state(p), _definition_doc_state(p) == _RECALL.get("def_active")), None))
+    write("model_create_component", {"name": "DefinitionBench", "activate": True})
+    write("sketch_create", {"plane": "xy", "name": "DefinitionBlock"})
+    write("sketch_add_geometry", {"sketch_name": "DefinitionBlock", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 25, "y2": 25}]})
+    write("model_extrude", {"sketch_name": "DefinitionBlock", "distance": 30})
+    rows.append(("find_geometry", {"target": "DefinitionBench", "kind": "planar_face",
+                                   "nearest_to": [12.5, 12.5, 30], "max_results": 1},
+                 _matched(1, "planar_face"), _fg("def_top")))
+    for key, point, extra in (("def_through", [5, 5, 30], {"diameter": "4 mm", "extent": "through"}),
+                              ("def_tap", [17, 17, 30], {"tap": "3/8-16 UNC", "diameter": "0.3125 in", "extent": "blind",
+                                                          "depth": "0.875 in"})):
+        write("model_hole", lambda c, point=point, extra=extra: {
+            "face": _ctx_get(c, "def_top", "top face"), "points_space": "world", "points": [point],
+            **extra}, (key, _tapped_created_ref("def_tap_created") if key == "def_tap" else
+                        lambda p: "DefinitionBench/" + p["feature"]))
+        state(True)
+        for units in ("mm", "in"):
+            read(key, _hole_definition(extra["extent"], units, key == "def_tap"), units)
+        state(False)
+    rows.append(("find_geometry", {"target": "DefinitionBench", "kind": "cylinder_face", "radius": 2},
+                 _matched(1, "cylinder_face"), _fg("def_bore")))
+    rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "def_bore", "through bore")},
+                 lambda p: _measured("independent through-hole diameter/depth", p,
+                                     _near(p.get("x"), 4, 0.00001) and _near(p.get("y"), 4, 0.00001)
+                                     and _near(p.get("z"), 30, 0.00001)), None))
+    rows += _tapped_control_rows()
+    rows += _hole_feedback_rows()
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "DefinitionPost", "activate": True})
+    write("sketch_create", {"plane": "xy", "name": "DefinitionPostS"})
+    write("sketch_add_geometry", {"sketch_name": "DefinitionPostS", "geometry": [
+        {"kind": "circle", "cx": 50, "cy": 0, "radius": 5}]})
+    write("model_extrude", {"sketch_name": "DefinitionPostS", "distance": 25})
+    rows.append(("find_geometry", {"target": "DefinitionPost", "kind": "cylinder_face"},
+                 _matched(1, "cylinder_face"), _fg("def_post")))
+    for full in (True, False):
+        if not full:
+            write("sketch_create", {"plane": "xy", "name": "DefinitionPartialS"})
+            write("sketch_add_geometry", {"sketch_name": "DefinitionPartialS", "geometry": [
+                {"kind": "circle", "cx": 70, "cy": 0, "radius": 5}]})
+            write("model_extrude", {"sketch_name": "DefinitionPartialS", "distance": 25})
+            rows.append(("find_geometry", {"target": "DefinitionPost", "kind": "cylinder_face",
+                                           "nearest_to": [70, 0, 12.5], "max_results": 1},
+                         _matched(1, "cylinder_face"), _fg("def_post")))
+        write("model_thread", lambda c, full=full: {
+            "faces": [_ctx_get(c, "def_post", "post cylinder")], "designation": "M10x1.5",
+            "thread_type": "ISO Metric profile", "thread_class": "6g",
+            **({} if full else {"length": 12, "offset": 2})},
+            ("def_thread", lambda p: "DefinitionPost/" + p["feature"]))
+        rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "def_post", "threaded cylinder")},
+                     lambda p, full=full: _measured("capture threaded cylinder before definition reads", p,
+                         all(isinstance(p.get(key), (int, float)) and math.isfinite(p[key]) and p[key] > 0
+                             for key in ("x", "y"))
+                         and _near(p.get("z"), 25, 0.00001)
+                         and _near((p.get("center") or {}).get("x"), 50 if full else 70, 0.00001)),
+                     ("def_thread_shape", _recall("def_thread_shape", lambda p: {
+                         key: p[key] for key in ("kind", "units", "x", "y", "z", "min_point", "max_point", "center")}))))
+        state(True)
+        for units in ("mm", "in"):
+            read("def_thread", _thread_definition(full, units), units)
+        state(False)
+        rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "def_post", "threaded cylinder")},
+                     lambda p, full=full: _measured("definition reads preserve threaded cylinder geometry", p,
+                                         bool(_RECALL.get("def_thread_shape"))
+                                         and all(p.get(key) == value for key, value in
+                                                 (_RECALL.get("def_thread_shape") or {}).items())
+                                         and _near(p.get("z"), 25, 0.00001)
+                                         and _near((p.get("center") or {}).get("x"),
+                                                   50 if full else 70, 0.00001)), None))
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "def_story", "story"),
+                                        "expect_document": _ctx_get(c, "def_doc", "coupon")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "def_doc", "coupon"), "save_changes": False,
+                                     "expect_document": _ctx_get(c, "def_story", "story")}, _document_closed, None)]
+    return rows
+
+
+_DEFINITION_READS = _definition_rows()
+
+
+def _extrude_edit_landed(p):
+    """Require the existing feature, requested definition and restored marker to survive an edit."""
+    return _measured("existing Extrude edit", p,
+                     p.get("edited") is True and p.get("same_feature") is True
+                     and p.get("definition_matches") is True and p.get("geometry_changed") is True
+                     and p.get("marker_restored") is True
+                     and p.get("marker_before") == p.get("marker_after")
+                     and p.get("other_components_unchanged") is True
+                     and p.get("linked_scope_verified_at_edit") is True
+                     and p.get("new_timeline_errors") == [])
+
+
+def _extrude_edit_mass(volume, center_axis=None, center=None):
+    """Read the solid volume and optional mass centroid independently of the editor."""
+    def check(p):
+        mass = p.get("mass") or {}
+        centroid = mass.get("center_of_mass")
+        coordinate = (centroid["xyz".index(center_axis)]
+                      if center_axis in ("x", "y", "z")
+                      and isinstance(centroid, list) and len(centroid) == 3 else None)
+        want = center
+        if center_axis in ("x", "y"):
+            want = _ee_shift(center, 0.0)[0] if center_axis == "x" else _ee_shift(0.0, center)[1]
+        return _measured("edited Extrude material", {"volume": mass.get("volume"), "center": centroid},
+                         _near(mass.get("volume"), volume, 0.005)
+                         and (center_axis is None or _near(coordinate, want, 0.005)))
+    return check
+
+
+def _ee_shift(x, y):
+    """(x, y) moved to where the extrusion story's block landed, the ee_at recall of its origin."""
+    at = _RECALL.get("ee_at")
+    if not isinstance(at, dict) or not all(
+            isinstance(at.get(axis), (int, float)) and not isinstance(at.get(axis), bool)
+            and math.isfinite(at[axis]) for axis in ("x", "y")):
+        raise AssertionError("ee_at baseline requires finite numeric x and y")
+    return x + at["x"], y + at["y"]
+
+
+def _extrude_edit_roof(p):
+    """Check the unaffected roof's six direct planar areas and world centroids."""
+    rows = p.get("matches") or []
+    expected = [[area, *_ee_shift(x, y), z] for area, x, y, z in (
+        [100, -5, 5, 32.5], [100, 35, 5, 32.5], [200, 15, -5, 32.5], [200, 15, 15, 32.5],
+        [800, 15, 5, 30], [800, 15, 5, 35])]
+    actual = [[row.get("area"), *(row.get("position") or [])] for row in rows]
+    good = (p.get("units") == "mm" and p.get("match_count") == len(rows) == 6
+            and all(row.get("kind") == "planar_face" for row in rows)
+            and all(len(row) == 4 and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                                          and math.isfinite(v) for v in row) for row in actual))
+    return _measured("unaffected roof planar area/centroid set", actual,
+                     good and all(_near(v, want, 0.00001) for row, wanted in zip(sorted(actual), expected)
+                                  for v, want in zip(row, wanted)))
+
+
+def _extrude_edit_history(p):
+    """The complete timeline row identities and marker stay where the earlier read placed them."""
+    timeline = p.get("timeline") or {}
+    before = _RECALL.get("ee_history") or {}
+    fields = lambda t: [(r.get("index"), r.get("name"), r.get("type"), r.get("component"))
+                        for r in t.get("timeline") or []]
+    return _measured("edit preserves timeline rows and parked marker", timeline,
+                     timeline.get("marker_position") == before.get("marker_position")
+                     and fields(timeline) == fields(before) and bool(fields(before)))
+
+
+def _extrude_edit_rows():
+    """Build a bounded definition-edit bench in an owned scratch document."""
+    rows = [
+        ("doc_get", {}, _home_document, ("ee_story", _recall("ee_story", _home_address))),
+        ("doc_new", lambda c: {"expect_document": _ctx_get(c, "ee_story", "story")},
+         _new_document, ("ee_doc", _recall("ee_doc", lambda p: p["document_handle"]))),
+    ]
+
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: _combine_pin(
+            c, "ee_doc", args(c) if callable(args) else args), check, save))
+
+    def rectangle(name, low, high, plane="xy"):
+        write("sketch_create", {"name": name, "plane": plane})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [{
+            "kind": "rectangle", "x1": low[0], "y1": low[1], "x2": high[0], "y2": high[1]}]})
+
+    def inspect(target, check):
+        rows.append(("model_inspect", lambda c, target=target: _combine_inspect(target), check, None))
+
+    def placed(label, low, high, volume):
+        # the layout moves this story's geometry as a block; the EditOriginal extrude's min point
+        # (authored at the origin, recalled as ee_at) is where the block landed
+        def check(p):
+            dx, dy = _ee_shift(0.0, 0.0)
+            return _combine_body(label, (low[0] + dx, low[1] + dy, low[2]),
+                                 (high[0] + dx, high[1] + dy, high[2]), volume)(p)
+        return check
+
+    def edit(key, args):
+        write("model_edit_extrude", lambda c, key=key, args=args: {
+            "feature": _ctx_get(c, key, "existing Extrude"), **args}, _extrude_edit_landed)
+        if key == "ee_scope":
+            rows.append(("find_geometry", {"target": "EditProfile:Body1", "kind": "planar_face",
+                          "units": "mm", "max_results": 6}, _extrude_edit_roof, None))
+            inspect("EditProfile:Body2", _extrude_edit_mass(482))
+
+    write("model_create_component", {"name": "EditProfile", "activate": True}, _made_component)
+    write("model_construction", {"kind": "plane", "plane": "xy", "offset": 30, "name": "EditRoof"})
+    rectangle("EditRoofS", (-5, -5), (35, 15), "EditRoof")
+    write("model_extrude", {"sketch_name": "EditRoofS", "distance": 5}, _extruded)
+    rows.append(("find_geometry", lambda c: {"target": "EditProfile:Body1", "kind": "planar_face",
+                 "nearest_to": [25, 5, 30], "max_results": 1}, _matched(1, "planar_face"), _fg("ee_roof")))
+    rectangle("EditOriginal", (0, 0), (10, 10))
+    rectangle("EditShifted", (20, 0), (30, 10))
+    write("model_extrude", {"sketch_name": "EditOriginal", "distance": 10}, _extruded,
+          ("ee_profile", _recall("ee_profile", lambda p: "EditProfile/" + p["feature"])))
+    rows.append(("model_inspect", lambda c: _combine_inspect("EditProfile:Body2"), "ok",
+                 ("ee_at", _recall("ee_at", lambda p: p["min_point"]))))
+    write("sketch_create", {"name": "EditTrailing", "plane": "xy"})
+    write("design_edit_timeline", lambda c: {"action": "roll", "feature": _ctx_get(c, "ee_profile", "Extrude"),
+                                             "to": "after"})
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100}, "ok",
+                 ("ee_history", _recall("ee_history", lambda p: p["timeline"]))))
+    edit("ee_profile", {"action": "profile", "profile": {"sketch": "EditShifted", "profile_index": 0}})
+    inspect("EditProfile:Body2", placed("shifted equal-volume extrusion", (20, 0, 0), (30, 10, 10), 1000))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100}, _extrude_edit_history, None))
+    write("design_edit_timeline", {"action": "roll", "to": "end"})
+    for args, low, high, volume in [
+        ({"extent": "symmetric", "distance": 8}, (20, 0, -8), (30, 10, 8), 1600),
+        ({"extent": "two_side", "distance": 12, "distance2": 8}, (20, 0, -8), (30, 10, 12), 2000),
+    ]:
+        edit("ee_profile", {"action": "extent", **args})
+        inspect("EditProfile:Body2", placed(args["extent"], low, high, volume))
+    write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_profile", "Extrude"),
+          "action": "extent", "extent": "to_face", "to_object": _ctx_get(c, "ee_roof", "roof")},
+          _extrude_edit_landed)
+    inspect("EditProfile:Body2", placed("to-face replacement", (20, 0, 0), (30, 10, 30), 3000))
+    edit("ee_profile", {"action": "extent", "extent": "distance", "distance": 5})
+    inspect("EditProfile:Body2", placed("distance replacement", (20, 0, 0), (30, 10, 5), 500))
+    rectangle("EditDependentCut", (21, 1), (24, 4))
+    write("model_extrude", {"sketch_name": "EditDependentCut", "distance": 2, "operation": "cut",
+                            "target_bodies": ["EditProfile:Body2"]}, _extruded,
+          ("ee_dependent", _recall("ee_dependent", lambda p: p["feature"])))
+    write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_profile", "Extrude"),
+          "action": "profile", "profile": {"sketch": "EditOriginal", "profile_index": 0}},
+          _refused("definition landed", "downstream"))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 lambda p: any(r.get("name") == _RECALL.get("ee_dependent")
+                               and r.get("health") in ("warning", "error")
+                               for r in (p.get("timeline") or {}).get("timeline") or []), None))
+    inspect("EditProfile:Body2", placed("landed edit with failed dependent", (0, 0, 0), (10, 10, 5), 500))
+    edit("ee_profile", {"action": "profile", "profile": {"sketch": "EditShifted", "profile_index": 0}})
+    inspect("EditProfile:Body2", placed("dependent cut restored", (20, 0, 0), (30, 10, 5), 482))
+
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "EditScope", "activate": True}, _made_component)
+    rectangle("EditStock", (0, 0), (10, 10))
+    write("model_extrude", {"sketch_name": "EditStock", "distance": 10, "symmetric": True}, _extruded)
+    for name, z, depth in (("EditUpper", 0, 20), ("EditHidden", 40, 10)):
+        if z:
+            write("model_construction", {"kind": "plane", "plane": "xy", "offset": z, "name": name})
+        rectangle(name + "S", (0, 0), (10, 10), name if z else "xy")
+        write("model_extrude", {"sketch_name": name + "S", "distance": depth}, _extruded)
+    write("view_set", {"action": "hide", "target": "EditScope:Body3"})
+    rows.append(("find_geometry", lambda c: {"target": "EditScope:Body3", "kind": "planar_face",
+                 "nearest_to": [7.5, 2.5, 40], "max_results": 1}, _matched(1, "planar_face"), _fg("ee_scope_roof")))
+    rectangle("EditPocketA", (1, 1), (4, 4))
+    rectangle("EditPocketB", (6, 1), (9, 4))
+    write("model_extrude", {"sketch_name": "EditPocketA", "distance": 2}, _extruded,
+          ("ee_scope", _recall("ee_scope", lambda p: "EditScope/" + p["feature"])))
+    for op, volume in (("join", 3000), ("cut", 1982), ("intersect", 18)):
+        edit("ee_scope", {"action": "operation", "operation": op,
+                          **({"target_bodies": ["EditScope:Body1"]} if op != "join" else {})})
+        inspect("EditScope:Body1", _extrude_edit_mass(volume))
+    edit("ee_scope", {"action": "operation", "operation": "new"})
+    inspect("EditScope:1", _extrude_edit_mass(5018))
+    edit("ee_scope", {"action": "operation", "operation": "cut", "target_bodies": ["EditScope:Body1"]})
+    edit("ee_scope", {"action": "profile", "profile": {"sketch": "EditPocketB", "profile_index": 0}})
+    inspect("EditScope:Body1", _extrude_edit_mass(1982, "x", (10000 - 18 * 7.5) / 1982))
+    inspect("EditScope:Body2", _extrude_edit_mass(2000))
+    edit("ee_scope", {"action": "extent", "extent": "through_all", "direction": "positive"})
+    inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", -450 / 1910))
+    inspect("EditScope:Body2", _extrude_edit_mass(2000))
+    edit("ee_scope", {"action": "participants", "target_bodies": ["EditScope:Body2"]})
+    inspect("EditScope:Body1", _extrude_edit_mass(2000))
+    inspect("EditScope:Body2", _extrude_edit_mass(1820))
+    inspect("EditScope:Body3", _extrude_edit_mass(1000))
+    edit("ee_scope", {"action": "participants", "target_bodies": ["EditScope:Body1"]})
+    edit("ee_scope", {"action": "extent", "extent": "through_all", "direction": "negative"})
+    inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", 450 / 1910))
+    write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_scope", "Extrude"),
+          "action": "extent", "extent": "through_all", "direction": "both"},
+          _refused("Two-sided through_all", "participant assignment is unsupported", "separate one-sided"))
+    rows.append(("find_geometry", {"target": "EditProfile:Body1", "kind": "planar_face",
+                                   "units": "mm", "max_results": 6}, _extrude_edit_roof, None))
+    inspect("EditProfile:Body2", _extrude_edit_mass(482))
+    inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", 450 / 1910))
+    inspect("EditScope:Body2", _extrude_edit_mass(2000))
+    inspect("EditScope:Body3", _extrude_edit_mass(1000))
+    write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_scope", "Extrude"),
+          "action": "extent", "extent": "to_face", "to_object": _ctx_get(c, "ee_scope_roof", "roof")},
+          _extrude_edit_landed)
+    rows.append(("find_geometry", {"target": "EditProfile:Body1", "kind": "planar_face",
+                          "units": "mm", "max_results": 6}, _extrude_edit_roof, None))
+    inspect("EditProfile:Body2", _extrude_edit_mass(482))
+    inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", -450 / 1910))
+    inspect("EditScope:Body2", _extrude_edit_mass(2000))
+    edit("ee_scope", {"action": "operation", "operation": "intersect", "target_bodies": ["EditScope:Body1"]})
+    inspect("EditScope:Body1", _extrude_edit_mass(90))
+    edit("ee_scope", {"action": "participants", "target_bodies": ["EditScope:Body2"]})
+    inspect("EditScope:Body1", _extrude_edit_mass(2000))
+    inspect("EditScope:Body2", _extrude_edit_mass(180))
+    inspect("EditScope:Body3", _extrude_edit_mass(1000))
+    rectangle("EditLate", (1, 1), (4, 4))
+    write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_scope", "Extrude"),
+          "action": "profile", "profile": {"sketch": "EditLate", "profile_index": 0}},
+          _refused("must precede"))
+    inspect("EditScope:Body2", _extrude_edit_mass(180))
+    write("model_extrude", {"sketch_name": "EditPocketA", "operation": "cut",
+                            "extent": "through_all", "symmetric": True,
+                            "target_bodies": ["EditScope:Body1"]}, _extruded,
+          ("ee_both_source", lambda p: "EditScope/" + p["feature"]))
+    for after_refusal in (False, True):
+        if after_refusal:
+            write("model_edit_extrude", lambda c: {
+                "feature": _ctx_get(c, "ee_both_source", "existing two-sided through cut"),
+                "action": "participants", "target_bodies": ["EditScope:Body2"]},
+                _refused("Two-sided through_all", "participant assignment is unsupported", "separate one-sided"))
+        inspect("EditScope:Body1", _extrude_edit_mass(1820, "z", 0))
+        inspect("EditScope:Body2", _extrude_edit_mass(180))
+        inspect("EditScope:Body3", _extrude_edit_mass(1000))
+        rows.append(("find_geometry", {"target": "EditProfile:Body1", "kind": "planar_face",
+                                       "units": "mm", "max_results": 6}, _extrude_edit_roof, None))
+    rows += [
+        ("doc_activate", lambda c: {"name": _ctx_get(c, "ee_story", "story"),
+                                    "expect_document": _ctx_get(c, "ee_doc", "scratch")}, "ok", None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "ee_doc", "scratch"), "save_changes": False,
+                                 "expect_document": _ctx_get(c, "ee_story", "story")}, _document_closed, None),
+    ]
+    return rows
+
+
+_EXTRUDE_EDITS = _extrude_edit_rows()
 
 # --- ACT 2: SOLIDS - the parts turn solid, each part its own color (mirrors scenario S2) -------
 # The hero solids ride on ACT 1's parametric sketches; the multi-body feature tools that have no
@@ -2140,6 +3017,7 @@ _SOLIDS = [
     ("find_geometry", {"target": "RadiusFilterBench", "kind": "circular_edge",
                        "radius": 0.1005511811023622, "units": "in"},
      _matched(0, "circular_edge"), None),
+    *_PRECISION_READS,
     # AS_SURFACE OVER A CLOSED ELLIPSE: the sketch also holds the ellipse's two construction axes.
     # The extrude must land a surface wall, read off the feature AND off the body's own flag. Each
     # of these three benches sits out at x 1410..1540 through its component placement.
@@ -2213,6 +3091,7 @@ _SOLIDS = [
 
 
 _DETAILS = [
+    *_DEFINITION_READS,
     # THE HOLES AS THE MACHINE SEES THEM, read FIRST: the chamfers below break two of these rims,
     # and a broken rim is a hole of a different shape, so the recognizer's grouping is read while
     # the drilled pattern is still as model_hole left it. The saved handles drive the CAM act's
@@ -2307,6 +3186,7 @@ _DETAILS = [
                 and abs((p["max_point"]["z"] - p["min_point"]["z"]) - 20) < 0.05
                 and abs(abs(p["max_point"]["z"]) - abs(p["min_point"]["z"])) > 3), None),
     # back to the shell cameo's component, so every step after this lands where it did before.
+    *_EXTRUDE_EDITS,
     ("design_activate_component", {"occurrence": "ShellCap:1"}, "ok", None),
     # THE WartPlane ROW carries the offset_from predicate - the sweep's only offset-plane call, so
     # it is where 'offset_from' gets read once against a real resolved origin plane: the payload

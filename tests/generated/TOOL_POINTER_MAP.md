@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 208  |  **description breadcrumbs:** 311  |  **note/error breadcrumbs:** 667
+**Tools:** 210  |  **description breadcrumbs:** 316  |  **note/error breadcrumbs:** 678
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -17,8 +17,8 @@ close orphans, factor duplicated guards into shared helpers.
 **Read/Acquire (9)** - higher concern, a check-your-work tool nothing points to:
   `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `model_compute_holder`, `model_measure_continuity`, `model_measure_relation`, `sys_get_api_doc`
 
-**Edit (53)** - usually leaf actions, scan for genuine gaps:
-  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
+**Edit (54)** - usually leaf actions, scan for genuine gaps:
+  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_edit_extrude`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
 
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
 - **55x** across 54 module(s): "No active design. Create or open a document first (see doc_new)."
@@ -37,16 +37,16 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
-- `find_geometry`  <- 54  (desc 14, note 40)
-- `design_get`  <- 51  (desc 10, note 41)
+- `find_geometry`  <- 55  (desc 14, note 41)
+- `design_get`  <- 54  (desc 11, note 43)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 5, note 31)
 - `cam_get`  <- 33  (desc 15, note 18)
 - `data_get`  <- 25  (desc 10, note 15)
+- `doc_open`  <- 25  (desc 5, note 20)
 - `model_inspect`  <- 25  (desc 3, note 22)
-- `doc_open`  <- 24  (desc 5, note 19)
 - `sketch_create`  <- 24  (desc 7, note 17)
-- `sketch_get`  <- 23  (desc 5, note 18)
+- `sketch_get`  <- 24  (desc 6, note 18)
 - `assembly_get`  <- 21  (desc 4, note 17)
 
 ## The detected guidance surface
@@ -1557,22 +1557,28 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `design_get`
 - . 'max_depth'/'component'/'name_filter'/'max_results'/'tree_bodies'/'tree_handles' scope the tree; 'group'/'include_suppressed'/'timeline_params' the timeline; 'library'/'name_filter'/'max_results'...
-- Orientation slice. Pull deeper with include=
+- 'default' keeps overview; include=
 - contents.occurrences_walk='unreadable': NEITHER root.allOccurrences nor the component.occurrences fallback enumerated, so the occurrence count is missing because it is UNKNOWN, not because the desi...
 - No active design. Open or create a document first (see doc_new).
+- 'feature' scopes include=['definition']; include that slice to read its definition.
 - Component/occurrence not found: '
 - Could not read root occurrences:
 - This design has no timeline (direct-modeling, or no history):
 - Could not read the timeline:
 - The active design is not a Configured Design (it has no configuration table) - e.g. a design with Variant A/Variant B style options.
 - include=['attributes'] needs 'attribute_group' - the group to read (the same group design_edit_timeline(action='set_attribute') wrote with). Leave 'attribute_key' empty to get every key in that group.
+- tapped=false or thread_present=false means absent; applicable=false means inapplicable. Other null fields are unknown. Measure tapped bore geometry with find_geometry/model_inspect; full-length thr...
+- include=['definition'] requires 'feature'; use include=['timeline'] to find it.
+- ' has unsupported definition type
+- ; this slice reads HoleFeature and ThreadFeature. Use include=['timeline'] or model_inspect.
 - Light nodes: name, component, body_count, child_count. Narrow: name_filter, component=<name>, max_depth, max_results. tree_handles=true adds handle/full_path/source ids. children_truncated = a leve...
 - lists at most  (per_body_truncated past that); one component has no narrower scope, so read the rest with model_inspect(target='<body>').
 - Bodies directly in the root component (not occurrences). A root body can't be jointed - model_create_component then move it in to joint it.
 - Each params[].value is in Fusion internal units (cm / radians) - params[].expression carries the authored unit. Full records: param_get(include_model_parameters=true).
 - A group is ONE row here, carrying member_count and is_collapsed; a COLLAPSED group's members are not listed, though summary.states counts them (an exception from one carries index null - address it...
 - part_number and description are writable with design_set_metadata; id and revision_id are reads only - no tool here writes them.
-- Orientation slice. Pull deeper with include=. 'max_depth'/'component'/'name_filter'/'max_results'/'tree_bodies'/'tree_handles' scope the tree; 'group'/'include_suppressed'/'timeline_params' the tim...
+- '' has unsupported definition type ; this slice reads HoleFeature and ThreadFeature. Use include=['timeline'] or model_inspect.
+- 'default' keeps overview; include=. 'max_depth'/'component'/'name_filter'/'max_results'/'tree_bodies'/'tree_handles' scope the tree; 'group'/'include_suppressed'/'timeline_params' the timeline; 'li...
 
 ### `design_move_occurrence`
 - '. A move keeps the part's WORLD position (measured) - it changes where the instance sits in the browser tree, not where the geometry is. Every path beneath it changed too, so re-read with design_g...
@@ -2079,6 +2085,47 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Setting the view did not take - AutoDimensionInput.view reads back null after assigning view index , so the dimensioning would run on no view.
 - autoDimension returned true for view index  with strategy '', but the sheet's dimension count reads  after the call ( before), so no added dimension is confirmed.
 
+### `drawing_edit_revisions`
+- beside 'sheet' - it does not take
+- The active document is not a drawing, so it has no revision table. Open the drawing (doc_open by file_id) and make it active, then retry.
+- ' holds no revision table yet - action='add' creates one.
+- The revision table's rows did not read - nothing changed.
+- Sheet.getRevisionTable() raised:
+- setRevisionVisibility returned false for row
+- Fusion accepted the visibility change but row
+- already reads visible=
+- setRevisionVisibility raised on row
+- action='add' needs 'rows' as one or more '
+- The revision table's rows did not read back after the add (table_created=
+- The revision table (table_created=
+- before) - the requested row(s) do not read back as asked:
+- The existing revision table's rows did not read - refusing to add without a reliable census.
+- Sheet.revisionTableInput() did not read on '
+- ' - nothing was added.
+- Sheet.addRevisionTable returned nothing - no revision table was added.
+- RevisionTableRow.create() returned nothing for rows[
+- ] - nothing was added.
+- Could not configure the revision table input:
+- Sheet.addRevisionTable raised:
+- ] - the table now reads
+- addRevision refused rows[
+- ); the table now reads
+- addRevision raised on rows[
+- . The table now reads
+- action='update' needs 'row' - a '
+- RevisionTableRow.create() returned nothing - nothing was updated.
+- updateRevisionRow returned false for row
+- The revision table's rows did not read back after the update - unverified.
+- Fusion accepted the update but row
+- updateRevisionRow raised on row
+- deleteRow returned false for row
+- The revision table's rows did not read back after deleting row
+- Fusion accepted the delete but the table reads
+- ) removed and every other row unchanged.
+- deleteRow raised on row
+- Fusion accepted the delete but row
+- The table sits in the sheet's top-right corner; no API moves or deletes it. drawing_export's PDF shows it, doc_save persists the drawing.
+
 ### `drawing_edit_sheet`
 - The active document is not a drawing, so it has no sheets. Open the drawing (doc_open by file_id) and make it active, then retry.
 - Provide 'sheet_size' - the preset size to give the sheet.
@@ -2154,7 +2201,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - '=' is a format= option, but this call asked for format= - the  export options carry no such setting. Drop '', or export with format=.
 
 ### `drawing_get`
-- collection_index is 1-based; export_index is unknown - the PDF shows page order. Width/height are mm. include=['views'] adds index/type, ['curves'] curve points (view=N scopes one), ['tables'] cust...
+- collection_index is 1-based; export_index is unknown - the PDF shows page order. Width/height are mm. include= adds views/curves (view=N scopes one)/tables/revisions. Dimension values, symbol text,...
 - Unknown include value(s):
 - The active document is not a 2D drawing. Activate the drawing document first (doc_activate), then read it.
 - 'view' must be a 0-based view index (got
@@ -2898,6 +2945,24 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - faces_compared is 0 - no requested face's normal or area could be compared across the add, so faces_moved counts nothing; the volume and face-count deltas are what this result rests on.
 - 'faces_drafted' is null - the count could not be read off the feature, so how many faces the draft took is UNKNOWN here;  face(s) were requested.
 
+### `model_edit_extrude`
+- Definition changed on the same Extrude. Use param_get/param_set for numeric edits.
+- Linked replay may leave mass properties stale. Use design_recompute before mass inspection; it can reset uncaptured joint poses.
+- Later timeline items remain unevaluated at the restored marker.
+- ' has unreadable timeline identity; nothing was edited.
+- ; roll after it with design_edit_timeline.
+- 'target_bodies' repeats one body; list each participant once.
+- 's body geometry could not be read; nothing was edited.
+- The design's component census could not be read; nothing was edited.
+- Other component geometry could not be read; nothing was edited.
+- ' already uses profile '
+- '; nothing was edited.
+- The feature was not deleted; inspect design_get(include=['timeline']). Observed edit state is in 'details'.
+- An operand does not belong to '
+- ' is not native to its owning component.
+- Two-sided through_all with cut/intersect participant assignment is unsupported. Use separate one-sided features or the Fusion UI.
+- Editing '':  The feature was not deleted; inspect design_get(include=['timeline']). Observed edit state is in 'details'.
+
 ### `model_emboss`
 - Profile stamped onto the face(s). 'mode' ECHOES the sign of the depth requested; the call is refused when the body's measured volume moves the other way, so the mode reported here is also the direc...
 - No active design. Create or open a document first (see doc_new).
@@ -3031,11 +3096,13 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - A counterbore hole needs 'cbore_diameter' and 'cbore_depth'.
 - A countersink hole needs 'csink_diameter' and 'csink_angle' (e.g. '90 deg').
 - 'modeled' (a real helical thread) only applies to a tapped hole; pass 'tap' too.
+- 'thread_class', 'thread_extent', 'thread_length' and 'thread_offset' require 'tap'.
+- 'thread_length' and 'thread_offset' require thread_extent='partial'.
+- thread_extent='partial' requires 'thread_length'.
 - '. Use 'blind' (with 'depth') or 'through'.
 - A blind hole needs 'depth' (e.g. '10 mm'). For a hole through the body use extent='through'.
 - Could not resolve 'face' to a planar face. Pass a find_geometry face handle.
 - This component does not support hole features.
-- '. Use mm, cm, or in.
 - hole point(s) cut NOTHING - the feature created
 - The hole was created through the host component
 - with design_delete_feature, then retry with 'face' taken from find_geometry on the instance you mean.
@@ -3048,6 +3115,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' with design_delete_feature.
 - The hole was tapped '
 - ', not the requested '
+- ' landed, but thread controls did not verify:
+- . Inspect design_get(include=['definition']); remove the feature with design_delete_feature if unwanted.
 - placement='center' needs 'edge' - a find_geometry handle at the circular/elliptical edge to center the hole on.
 - Could not resolve 'offset_edge_one' to an edge.
 - Fusion refused to centre the hole on that edge, so nothing was placed. Check that 'edge' is a circular/elliptical edge ON 'face'.
@@ -3058,6 +3127,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - placement='plane_offsets' needs 'point' - an approximate [x, y, z] hole location (picks the solution when several are possible).
 - placement='plane_offsets' needs 'offset_edge_one' and 'offset_one'.
 - placement='plane_offsets': 'offset_edge_two' and 'offset_two' must be given together.
+- . Use a decimal length such as '0.3125 in' or an existing parameter expression.
 - Could not resolve 'offset_edge_two' to an edge.
 - Could not position the hole at the edge's center:
 - is not available on this Fusion version.
@@ -3077,6 +3147,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Fusion rejected the through-all hole extent (setAllExtent returned false), so nothing was drilled. Retry with extent='blind' and a depth that clears the body.
 - The hole was created through the host component, but . Remove  with design_delete_feature, then retry with 'face' taken from find_geometry on the instance you mean.
 - 'scoped_to_bodies' lists the configured participant bodies; Fusion does not expose a readback for this input. The face only locates the hole.
+- Hole '' landed, but thread controls did not verify: . Inspect design_get(include=['definition']); remove the feature with design_delete_feature if unwanted.
 - A modeled thread was requested, but the hole's thread feature could not be read back, so there is no proof the helix was cut. Remove '' with design_delete_feature.
 - Clearance hole drilled + TAGGED for  ( fit). Diameter set from the standard clearance table (the API tags the fastener but doesn't auto-size on this version).
 

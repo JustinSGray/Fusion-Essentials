@@ -292,10 +292,21 @@ def _texts(sketch, f):
 _CV_POINT_CAP = 64
 
 
-def _projected(curve) -> dict:
-    """{'reference': True} for a curve Fusion projected in from model geometry, else {} - MEASURED:
-    isReference reads True on a projected copy and False on a drawn one."""
-    return {"reference": True} if _common.read_flag(lambda: curve.isReference) else {}
+def _curve_state(curve) -> dict:
+    """The curve's independent fixed/reference/linked flags, null when unreadable."""
+    return {"fixed": _common.read_flag(lambda: curve.isFixed),
+            "reference": _common.read_flag(lambda: curve.isReference),
+            "linked": _common.read_flag(lambda: curve.isLinked)}
+
+
+def _curve_state_counts(sketch):
+    """Uncapped curve-only state totals, null per flag when its census is incomplete."""
+    curves = safe(lambda: list(sketch.sketchCurves))
+    states = [_curve_state(curve) for curve in curves] if curves is not None else None
+    return {f"{key}_curve_count": (sum(state[key] is True for state in states)
+                                  if states is not None
+                                  and all(state[key] is not None for state in states) else None)
+            for key in ("fixed", "reference", "linked")}
 
 
 def _entities(sketch, f):
@@ -310,7 +321,7 @@ def _entities(sketch, f):
         ln = lines.item(i)
         con = bool(safe(lambda ln=ln: ln.isConstruction, False))
         construction += 1 if con else 0
-        rec = {"id": f"line:{i}", "type": "line", "construction": con, **_projected(ln)}
+        rec = {"id": f"line:{i}", "type": "line", "construction": con, **_curve_state(ln)}
         rec.update(_line_geo(ln, f))
         out.append(rec)
 
@@ -320,7 +331,7 @@ def _entities(sketch, f):
         con = bool(safe(lambda a=a: a.isConstruction, False))
         construction += 1 if con else 0
         c = safe(lambda: a.centerSketchPoint.geometry)
-        out.append({"id": f"arc:{i}", "type": "arc", "construction": con, **_projected(a),
+        out.append({"id": f"arc:{i}", "type": "arc", "construction": con, **_curve_state(a),
         "center": _xy(c, f),
         "radius": _round(safe(lambda: a.radius), f)})
 
@@ -330,7 +341,7 @@ def _entities(sketch, f):
         con = bool(safe(lambda cc=cc: cc.isConstruction, False))
         construction += 1 if con else 0
         c = safe(lambda: cc.centerSketchPoint.geometry)
-        out.append({"id": f"circle:{i}", "type": "circle", "construction": con, **_projected(cc),
+        out.append({"id": f"circle:{i}", "type": "circle", "construction": con, **_curve_state(cc),
         "center": _xy(c, f),
         "radius": _round(safe(lambda: cc.radius), f)})
 
@@ -340,7 +351,7 @@ def _entities(sketch, f):
         con = bool(safe(lambda el=el: el.isConstruction, False))
         construction += 1 if con else 0
         c = safe(lambda: el.centerSketchPoint.geometry)
-        out.append({"id": f"ellipse:{i}", "type": "ellipse", "construction": con, **_projected(el),
+        out.append({"id": f"ellipse:{i}", "type": "ellipse", "construction": con, **_curve_state(el),
         "center": _xy(c, f),
         "major_radius": _round(safe(lambda: el.majorAxisRadius), f),
         "minor_radius": _round(safe(lambda: el.minorAxisRadius), f)})
@@ -352,7 +363,7 @@ def _entities(sketch, f):
         construction += 1 if con else 0
         c = safe(lambda: ea.centerSketchPoint.geometry)
         out.append({"id": f"elliptical_arc:{i}", "type": "elliptical_arc", "construction": con,
-        **_projected(ea), "center": _xy(c, f),
+        **_curve_state(ea), "center": _xy(c, f),
         "major_radius": _round(safe(lambda: ea.majorAxisRadius), f),
         "minor_radius": _round(safe(lambda: ea.minorAxisRadius), f)})
 
@@ -363,7 +374,7 @@ def _entities(sketch, f):
         construction += 1 if con else 0
         # A conic is shaped by an APEX and a rho, not by a centre and a radius.
         apex = safe(lambda: cn.apexSketchPoint.geometry)
-        out.append({"id": f"conic:{i}", "type": "conic", "construction": con, **_projected(cn),
+        out.append({"id": f"conic:{i}", "type": "conic", "construction": con, **_curve_state(cn),
         "apex": _xy(apex, f), "rho": _round(safe(lambda: cn.rhoValue), 1.0)})
 
     splines = safe(lambda: curves.sketchFittedSplines)
@@ -372,7 +383,7 @@ def _entities(sketch, f):
         con = bool(safe(lambda sp=sp: sp.isConstruction, False))
         construction += 1 if con else 0
         fit_pts = safe(lambda sp=sp: sp.fitPoints)
-        out.append({"id": f"spline:{i}", "type": "spline", "construction": con, **_projected(sp),
+        out.append({"id": f"spline:{i}", "type": "spline", "construction": con, **_curve_state(sp),
         "is_closed": safe(lambda sp=sp: bool(sp.isClosed)),
         "fit_point_count": safe(lambda fit_pts=fit_pts: fit_pts.count) if fit_pts is not None else None})
 
@@ -390,7 +401,7 @@ def _entities(sketch, f):
         # empty read publishes unknown rather than a 0 a caller would compare against.
         described = bool(ctrl_pts)
         # SketchControlPointSpline has no isClosed (live-verified).
-        rec = {"id": f"cv_spline:{i}", "type": "cv_spline", "construction": con, **_projected(cv),
+        rec = {"id": f"cv_spline:{i}", "type": "cv_spline", "construction": con, **_curve_state(cv),
                "degree": safe(lambda cv=cv: cv.degree),
                "control_point_count": len(ctrl_pts) if described else None,
                "control_points": ([_xy(safe(lambda p=p: p.geometry), f)
@@ -406,7 +417,7 @@ def _entities(sketch, f):
         construction += 1 if con else 0
         # SketchFixedSpline exposes no isClosed/fitPoints/degree (live-verified).
         out.append({"id": f"fixed_spline:{i}", "type": "fixed_spline", "construction": con,
-                    **_projected(fx)})
+                    **_curve_state(fx)})
 
     pts = safe(lambda: sketch.sketchPoints)
     origin = safe(lambda: sketch.originPoint)
@@ -782,6 +793,8 @@ def _sketch_summary(sketch) -> dict:
     "point_count": safe(lambda: sketch.sketchPoints.count, 0),
     "profile_count": safe(lambda: sketch.profiles.count, 0),
     "is_visible": safe(lambda: sketch.isVisible),
+    "constraint_count": _common.counted(lambda: sketch.geometricConstraints.count),
+    **_curve_state_counts(sketch),
     }
     # While compute is deferred the profile_count above is the pre-deferral one, and no read of
     # this sketch resumes compute.
@@ -998,7 +1011,7 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
     "texts": safe(lambda: sketch.sketchTexts.count, 0),
     }
     fully = safe(lambda: sketch.isFullyConstrained)
-    constraint_count = safe(lambda: sketch.geometricConstraints.count, 0)
+    constraint_count = _common.counted(lambda: sketch.geometricConstraints.count)
     dim_count = safe(lambda: sketch.sketchDimensions.count, 0)
 
     profiles = _profiles(sketch, f)
@@ -1012,6 +1025,7 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
         "is_fully_constrained": bool(fully) if fully is not None else None,
         "counts": counts,
         "constraint_count": constraint_count,
+        **_curve_state_counts(sketch),
         "dimension_count": dim_count,
         "profile_count": safe(lambda: sketch.profiles.count, 0),
         "units": unit,
@@ -1059,7 +1073,7 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
                  "driving=false only measures. A 'text:<i>' id is what "
                  "sketch_set_text(index=<i>) edits and sketch_delete_entity removes.")
     if any(e.get("reference") for e in entities):
-        note += (" reference:true marks a curve PROJECTED in from model geometry, not drawn here.")
+        note += (" reference:true marks reference geometry; linked:true marks an external or API-driven link.")
     if any("?" in c.get("entities", []) for c in constraints):
         note += (" A constraint entity of '?' has no id in this payload - nothing listed in "
                  "'entities' matches it.")
@@ -1076,5 +1090,3 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
         "note": note,
     })
     return ok(out)
-
-

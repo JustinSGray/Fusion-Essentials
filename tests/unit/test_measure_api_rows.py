@@ -27,6 +27,21 @@ def _run_body(row_id):
                 if isinstance(n, ast.FunctionDef) and n.name == "run")
 
 
+def _dumped_shape_labels(row):
+    """A row's dump_shape("Label", ...) labels, direct or via a (label, object) tuple literal."""
+    tree = ast.parse(measure_api._compose(row))
+    labels = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "dump_shape" and node.args
+                and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
+            labels.add(node.args[0].value)
+        elif (isinstance(node, ast.Tuple) and len(node.elts) == 2
+              and isinstance(node.elts[0], ast.Constant) and isinstance(node.elts[0].value, str)):
+            labels.add(node.elts[0].value)
+    return labels
+
+
 class TestRowRegistry:
     def test_every_row_composes_into_compilable_python(self):
         broken = []
@@ -62,6 +77,24 @@ class TestRowRegistry:
                 if not str(row.get("claim", "")).strip()
                 or not str(row.get("encoded_in", "")).strip()]
         assert not thin, "rows with an empty claim or encoded_in: " + ", ".join(thin)
+
+    def test_gated_rows_name_a_known_entitlement_and_their_owned_shapes_match_the_body(self):
+        offenders = []
+        for row in measure_api.ROWS:
+            entitlement = row.get("entitlement")
+            if entitlement is None:
+                continue
+            if entitlement not in measure_api._ENTITLEMENTS:
+                offenders.append(f"{row['id']}: unknown entitlement {entitlement!r}")
+                continue
+            dumped, owned = _dumped_shape_labels(row), set(row.get("owns_shapes", []))
+            if dumped != owned:
+                offenders.append(f"{row['id']}: body dumps {sorted(dumped)}, "
+                                 f"owns_shapes declares {sorted(owned)}")
+        assert not offenders, offenders
+        gated = {row["id"] for row in measure_api.ROWS if row.get("entitlement")}
+        assert gated == {"shape-dump-pmi-world", "cam-advanced-swarf-surface-set-editable",
+                         "cam-curves-parameter-carriers"}
 
 
 class TestWireChecksPinTheScratch:

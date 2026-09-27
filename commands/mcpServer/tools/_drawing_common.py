@@ -16,9 +16,10 @@ from ._common import safe
 MAP_BLURB = (
     "active_drawing(_document); SHEET_SIZE_MAP/DIMENSION_STRATEGIES/ORIENTATION_MEMBERS/"
     "NO_PORTRAIT; sheet_units/SHEET_EXTENT_UNIT/DOCUMENT_UNIT/coordinate_unit/"
-    "extent_in_coordinates/coordinates_to_extent - 3 units; enum_value/*_label; "
+    "extent_in_coordinates/coordinates_to_extent; enum_value/*_label; "
     "resolve_sheet/sheet_listing/sheet_facts/view_at; view_curve/typed_curve/curve_point/"
-    "curve_row; listed/as_index/sheet_xy - raw input; palette_parts/palette_list - GD&T"
+    "curve_row; listed/as_index/sheet_xy; palette_parts/palette_list; "
+    "revision_rows - its row census"
 )
 
 # Sheet.width/height are MILLIMETRES on every drawing, ISO and ASME alike (an ASME B sheet, 17 x 11
@@ -410,6 +411,7 @@ def sheet_facts(sheet):
         "views": _common.counted(lambda: sheet.views.count),
         "sketches": _common.counted(lambda: sheet.sketches.count),
         "custom_tables": _common.counted(lambda: sheet.customTables.count),
+        "bend_tables": _common.counted(lambda: sheet.bendTables.count),
     }
 
 
@@ -437,3 +439,20 @@ def resolve_sheet(dwg, name):
         return None, ("Sheet name '%s' matches %d sheets (%s) - address one exactly."
                       % (name, len(hits), ", ".join(n for _, n in hits)))
     return hits[0][0], None
+
+
+_REVISION_FIELDS = ("rev", "description", "date", "approved", "zone", "sht")
+
+
+def revision_rows(table):
+    """The revision census read as a sequence: each row's own .index, its texts, isVisible; None if unreadable."""
+    seq = safe(lambda: list(table.revisionTableRows))
+    if seq is None:
+        return None
+    out = []
+    for r in seq:
+        row = {"index": safe(lambda r=r: r.index), "visible": _common.read_flag(lambda r=r: r.isVisible)}
+        for field in _REVISION_FIELDS:
+            row[field] = safe(lambda r=r, f=field: getattr(r, f))
+        out.append(row)
+    return out

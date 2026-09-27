@@ -10,7 +10,7 @@ sketch geometry and user parameters, never bodies.
 from verify_core import (
     EXPORT_DIR, SVG96_PATH, SVG_PATH, _ctx_get, _datum_plane, _dim_measures, _extruded,
     _made_component, _param_added, _param_favorited, _params_listed, _refused, _svg96_extent,
-    _watch_all)
+    _watch_all, _measured, _RECALL, _recall)
 from verify_layout import _px, _py
 
 
@@ -29,6 +29,26 @@ def _radial_state(payload, radii, dimension_values):
             and sorted(round(d.get("value"), 4) for d in dimensions)
             == sorted(dimension_values)
             and all(d.get("name") and d.get("driving") is True for d in dimensions))
+
+
+def _mixed_curve_state(fixed):
+    """Check projected and authored curves independently, with uncapped state totals."""
+    def check(p):
+        curves = {e.get("id"): e for e in p.get("entities", []) if e.get("type") == "line"}
+        projected, authored = curves.get("line:0", {}), curves.get("line:1", {})
+        totals = {key: p.get(key + "_curve_count") for key in ("fixed", "reference", "linked")}
+        return _measured("mixed projected/authored curve states",
+                         {"curves": curves, "totals": totals,
+                          "constraint_objects": p.get("constraint_count")},
+                         len(curves) == 2 and p.get("truncated") is False
+                         and projected.get("reference") is True and projected.get("linked") is True
+                         and isinstance(projected.get("fixed"), bool)
+                         and authored.get("fixed") is fixed
+                         and authored.get("reference") is False and authored.get("linked") is False
+                         and p.get("constraint_count") == 0
+                         and all(totals[key] == sum(e[key] for e in curves.values())
+                                 for key in totals))
+    return check
 
 
 def _first_radial_cleanup_args(ctx):
@@ -1260,4 +1280,24 @@ _SKETCHWORK = [
                    and abs((e.get("start") or {}).get("x", 0) - _px("ProjMaster", 1910)) < 0.01
                    and abs((e.get("end") or {}).get("x", 0) - _px("ProjMaster", 1960)) < 0.01
                    for e in (p.get("entities") or [])), None),
+    ("sketch_add_geometry", {"sketch_name": "ProjTargetRoot", "geometry": [
+        {"kind": "line", "x1": 1900, "y1": 40, "x2": 1950, "y2": 43}]}, "ok", None),
+    ("sketch_get", {"sketch_name": "ProjTargetRoot", "include_entities": True},
+     _mixed_curve_state(False), None),
+    ("sketch_constrain", {"sketch_name": "ProjTargetRoot", "constraints": [
+        {"constraint": "fix", "entity_one": "line:1"}]}, "ok", None),
+    ("sketch_get", {"sketch_name": "ProjTargetRoot", "include_entities": True},
+     _mixed_curve_state(True), ("mixed_curve_fixed", _recall("mixed_curve_fixed", lambda p: {
+         key: p[key] for key in ("fixed_curve_count", "reference_curve_count", "linked_curve_count")}))),
+    ("sketch_get", {"max_results": 1000},
+     lambda p: any(row.get("name") == "ProjTargetRoot"
+                   and all(row.get(key) == value for key, value in
+                           _ctx_get(_RECALL, "mixed_curve_fixed", "the fixed curve census").items())
+                   and row.get("reference_curve_count") == 1 and row.get("linked_curve_count") == 1
+                   and row.get("constraint_count") == 0
+                   for row in p.get("sketches", [])), None),
+    ("sketch_constrain", {"sketch_name": "ProjTargetRoot", "constraints": [
+        {"constraint": "unfix", "entity_one": "line:1"}]}, "ok", None),
+    ("sketch_get", {"sketch_name": "ProjTargetRoot", "include_entities": True},
+     _mixed_curve_state(False), None),
 ]

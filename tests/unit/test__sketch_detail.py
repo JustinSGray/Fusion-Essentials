@@ -583,23 +583,76 @@ class TestProjectedCurves:
         out = _payload(sd.handler(sketch_name="Pr", include_entities=True))
         by = {e["id"]: e for e in out["entities"] if e["type"] == "line"}
         assert by["line:0"]["reference"] is True
-        assert "reference" not in by["line:1"]
-        assert "reference:true marks a curve PROJECTED in from model geometry" in out["note"]
+        assert by["line:1"]["reference"] is False
+        assert "reference:true marks reference geometry" in out["note"]
 
     def test_a_sketch_of_drawn_curves_carries_neither_the_flag_nor_its_sentence(self):
         s = FakeSketch("Dr", lines=[_RefLine("d", False)])
         _install(s)
         out = _payload(sd.handler(sketch_name="Dr", include_entities=True))
-        assert all("reference" not in e for e in out["entities"])
+        assert all(e["reference"] is False for e in out["entities"] if e["type"] == "line")
         assert "PROJECTED" not in out["note"]
 
-    def test_an_unreadable_reference_flag_publishes_nothing(self):
-        # read_flag answers None when the property raises; None is not True, so no key is emitted -
-        # a coerced False would claim the curve was drawn here.
+    def test_an_unreadable_reference_flag_publishes_unknown(self):
         s = FakeSketch("Un", lines=[FakeLine("t", 0, 0, 1, 0)])
         _install(s)
         out = _payload(sd.handler(sketch_name="Un", include_entities=True))
-        assert "reference" not in out["entities"][0]
+        assert out["entities"][0]["reference"] is None
+
+
+def test_curve_state_counts_ignore_points_text_and_the_xray_cap():
+    lines = [FakeLine(str(i), i, 0, i, 1) for i in range(201)]
+    splines = [FakeFixedSpline(), FakeFixedSpline(), FakeFixedSpline()]
+    for curve in lines + splines:
+        curve.isFixed, curve.isReference, curve.isLinked = False, False, False
+    for curve in [lines[-1]] + splines:
+        curve.isFixed, curve.isReference, curve.isLinked = True, True, True
+    s = FakeSketch("State", lines=lines, splines=[splines[0]], cv_splines=[splines[1]],
+                   fixed_splines=[splines[2]], points=[FakeSketchPoint("p", 0, 0)],
+                   texts=[_sketch_text()])
+    _install(s)
+    for result in (sd._sketch_summary(s), _payload(sd.handler(sketch_name="State")),
+                   _payload(sd.handler(sketch_name="State", include_entities=True))):
+        assert result["fixed_curve_count"] == 4
+        assert result["reference_curve_count"] == 4
+        assert result["linked_curve_count"] == 4
+        assert result["constraint_count"] == 0
+    result = _payload(sd.handler(sketch_name="State", include_entities=True))
+    assert result["truncated"] is True
+    assert not any(e.get("fixed") for e in result["entities"])
+
+
+def test_curve_state_failure_is_independent_per_flag_and_census():
+    class BrokenFixed(FakeLine):
+        @property
+        def isFixed(self):
+            raise RuntimeError("unreadable fixed state")
+
+    curve = BrokenFixed("broken", 0, 0, 1, 0)
+    curve.isReference, curve.isLinked = True, False
+    s = FakeSketch("State", lines=[curve])
+    _install(s)
+    result = _payload(sd.handler(sketch_name="State", include_entities=True))
+    assert {k: result["entities"][0][k] for k in ("fixed", "reference", "linked")} == {
+        "fixed": None, "reference": True, "linked": False}
+    assert result["fixed_curve_count"] is None
+    assert result["reference_curve_count"] == 1
+    assert result["linked_curve_count"] == 0
+
+
+@pytest.mark.parametrize("failure", ["collection", "item"])
+def test_incomplete_curve_census_never_reports_zero(failure):
+    class BrokenCurves:
+        def __iter__(self):
+            if failure == "item":
+                yield SimpleNamespace(isFixed=False, isReference=False, isLinked=False)
+            raise RuntimeError("unreadable curves")
+
+    s = FakeSketch("State")
+    s.sketchCurves = BrokenCurves()
+    result = sd._sketch_summary(s)
+    assert all(result[k] is None for k in
+               ("fixed_curve_count", "reference_curve_count", "linked_curve_count"))
 
 
 # ── arc + point geometry records ────────────────────────────────────────────

@@ -147,7 +147,7 @@ def _plane_frame(g, inv_k):
         if x is None or y is None or n is None:
             return None
         o = plane.origin
-        return {"origin": [round(o.x * inv_k, 3), round(o.y * inv_k, 3), round(o.z * inv_k, 3)],
+        return {"origin": [round(o.x * inv_k, 6), round(o.y * inv_k, 6), round(o.z * inv_k, 6)],
                 "x_world": x, "y_world": y, "normal": n}
     return safe(build)
 
@@ -165,7 +165,7 @@ def _face_record(face, inv_k):
     # Composite handle: token + a kind+position locator in cm, so a stale token re-resolves by geometry.
     handle = _inputs.make_handle(face, kind, (c.x, c.y, c.z)) if c else safe(lambda: face.entityToken)
     rec = {"handle": handle, "kind": kind,
-            "position": [round(c.x * inv_k, 3), round(c.y * inv_k, 3), round(c.z * inv_k, 3)] if c else None,
+            "position": [round(c.x * inv_k, 6), round(c.y * inv_k, 6), round(c.z * inv_k, 6)] if c else None,
             "area": _common.measured(lambda: face.area, inv_k * inv_k, 3)}
     # Outward normal at the reported position (constant for planar, sampled at that point for curved).
     nrm = _geom.evaluator_normal_at(face, c, decimals=4)
@@ -176,7 +176,7 @@ def _face_record(face, inv_k):
     radius_value = None
     if kind == "cylinder_face":
         radius_value = _radius_value(g, inv_k)
-        rec["radius"] = round(radius_value, 3) if radius_value is not None else None
+        rec["radius"] = round(radius_value, 6) if radius_value is not None else None
         ax = safe(lambda: g.axis)
         if ax:
             rec["axis"] = [round(ax.x, 3), round(ax.y, 3), round(ax.z, 3)]
@@ -191,20 +191,20 @@ def _edge_record(edge, inv_k):
     # the display 'position' may carry below.
     handle = _inputs.make_handle(edge, kind, (pt.x, pt.y, pt.z)) if pt else safe(lambda: edge.entityToken)
     rec = {"handle": handle, "kind": kind,
-            "position": [round(pt.x * inv_k, 3), round(pt.y * inv_k, 3), round(pt.z * inv_k, 3)] if pt else None,
+            "position": [round(pt.x * inv_k, 6), round(pt.y * inv_k, 6), round(pt.z * inv_k, 6)] if pt else None,
             "length": _common.measured(lambda: edge.length, inv_k, 3)}
     radius_value = None
     if kind in ("circular_edge", "arc_edge"):
         radius_value = _radius_value(g, inv_k)
-        rec["radius"] = round(radius_value, 3) if radius_value is not None else None
+        rec["radius"] = round(radius_value, 6) if radius_value is not None else None
     elif kind in ("ellipse_edge", "elliptical_arc_edge"):
         # Two radii, so the single-value 'radius' filter selects no elliptical edge.
-        rec["major_radius"] = _common.measured(lambda: g.majorRadius, inv_k, 3)
-        rec["minor_radius"] = _common.measured(lambda: g.minorRadius, inv_k, 3)
+        rec["major_radius"] = _common.measured(lambda: g.majorRadius, inv_k, 6)
+        rec["minor_radius"] = _common.measured(lambda: g.minorRadius, inv_k, 6)
     if kind in _CENTERED_EDGES:
         ctr = safe(lambda: g.center)
         if ctr:
-            rec["position"] = [round(ctr.x * inv_k, 3), round(ctr.y * inv_k, 3), round(ctr.z * inv_k, 3)]
+            rec["position"] = [round(ctr.x * inv_k, 6), round(ctr.y * inv_k, 6), round(ctr.z * inv_k, 6)]
     if kind == "line_edge":
         d = _geom.unit_vector_between(safe(lambda: g.startPoint), safe(lambda: g.endPoint), decimals=4)
         if d is not None:
@@ -276,8 +276,8 @@ def handler(target: str = "", kind: str = "", radius: float = None,
                 p = safe(lambda v=v: v.geometry)
                 vh = _inputs.make_handle(v, "vertex", (p.x, p.y, p.z)) if p else safe(lambda v=v: v.entityToken)
                 recs.append({"handle": vh, "kind": "vertex",
-        "position": [round(p.x * inv_k, 3), round(p.y * inv_k, 3),
-                                             round(p.z * inv_k, 3)] if p else None})
+        "position": [round(p.x * inv_k, 6), round(p.y * inv_k, 6),
+                                             round(p.z * inv_k, 6)] if p else None})
         for rec in recs:
             rec["occurrence"] = occ_path
             if hidden:
@@ -314,15 +314,14 @@ def handler(target: str = "", kind: str = "", radius: float = None,
 
 
 TOOL_DESCRIPTION = (
-    "Scan a part's faces/edges/vertices and return the short-lived handles other tools consume, "
-    "each with kind, world position and shape data.\n"
+    "Find short-lived handles with kind, world position and shape.\n"
     + _outputs.produces_block(RETURNS)
 )
 
 find_tool = (
     Tool.create_simple(name="find_geometry", description=TOOL_DESCRIPTION)
     .add_input_property("target", {"type": "string", "description":
-            "Occurrence/component/body; a shared name scans every match. '' = whole design."})
+            "Occurrence/component/body; shared names match all. Empty = design."})
     .add_input_property(*_inputs.Choice("kind",
         ["cylinder_face", "planar_face", "cone_face", "sphere_face", "torus_face", "nurbs_face",
          "circular_edge", "line_edge", "arc_edge", "ellipse_edge", "elliptical_arc_edge",
@@ -330,7 +329,7 @@ find_tool = (
     .add_input_property("radius", {"type": "number",
             "description": "In 'units', 5% tolerance."})
     .add_input_property("nearest_to", {"type": "array", "items": {"type": "number"},
-            "description": "[x,y,z] world point in 'units' to sort by."})
+            "description": "Sort by world [x,y,z] in 'units'."})
     .add_input_property(*_inputs.UNITS.as_property())
     .add_input_property("max_results", {"type": "integer", "description":
             f"Max {_MAX_RESULTS_CEILING}."})

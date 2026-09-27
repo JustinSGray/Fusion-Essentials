@@ -57,6 +57,7 @@ def install_drawing(monkeypatch, **families):
         setattr(ns, name, members)
     ns.DrawingDocument = types.SimpleNamespace(
         cast=lambda doc: doc if isinstance(doc, FakeDrawingDocument) else None)
+    ns.RevisionTableRow = types.SimpleNamespace(create=lambda: _RevisionRow())
     monkeypatch.setattr(sys.modules["adsk"], "drawing", ns, raising=False)
     monkeypatch.setitem(sys.modules, "adsk.drawing", ns)
     return ns
@@ -284,10 +285,88 @@ class _CustomTable:
         return self._cells.get((r, c), "")
 
 
-def _bend_tables():
-    """Sheet.bendTables as measured: present, but carrying NO .count - a different shape from
-    customTables, which every 'tables' read must not assume."""
-    return types.SimpleNamespace()
+class _RevisionRow:
+    """One RevisionTable row bag: five settable texts plus sht/index/isVisible; no live SHAPES dump."""
+
+    def __init__(self, rev="", description="", date="", approved="", zone="", sht="", index=0,
+                visible=True):
+        self.rev, self.description, self.date = rev, description, date
+        self.approved, self.zone, self.sht = approved, zone, sht
+        self.index, self.isVisible = index, visible
+
+
+_TODAY_FAKE = "9/27/2026"     # an empty date cell reads Fusion's own locale-formatted today
+
+
+def _fill_date(row):
+    """`row`, its date cell defaulted to today's stand-in when the caller sent none."""
+    if not row.date:
+        row.date = _TODAY_FAKE
+    return row
+
+
+class _RevisionTable:
+    """A title row and a header row before the data rows; doAutoPopulateSheet fills sht."""
+
+    def __init__(self, rows, add_ok=True, header_rows=2, add_fails_at=None):
+        self._rows = list(rows)
+        self._add_ok = add_ok
+        self._header_rows = header_rows
+        self._add_fails_at = add_fails_at
+        self._add_calls = 0
+        self.calls = []
+
+    @property
+    def rowCount(self):
+        return sum(1 for r in self._rows if r.isVisible)
+
+    @property
+    def revisionTableRows(self):
+        # measured: a RevisionTableRowVector - len()/[i] work, no .count or .item at all.
+        return list(self._rows)
+
+    def addRevision(self, row):
+        self.calls.append(("addRevision", row))
+        allowed = self._add_ok and (self._add_fails_at is None
+                                    or self._add_calls < self._add_fails_at)
+        self._add_calls += 1
+        if not allowed:
+            return False
+        _fill_date(row)
+        row.index = len(self._rows)
+        self._rows.append(row)
+        return True
+
+    def updateRevisionRow(self, index, row):
+        self.calls.append(("updateRevisionRow", index))
+        if not 0 <= index < len(self._rows):
+            return False
+        if index < self._header_rows:
+            return True
+        target = self._rows[index]
+        for field in ("rev", "description", "date", "approved", "zone"):
+            value = getattr(row, field)
+            if value:                  # measured: an empty text leaves the cell unchanged
+                setattr(target, field, value)
+        return True
+
+    def deleteRow(self, index):
+        self.calls.append(("deleteRow", index))
+        if not 0 <= index < len(self._rows):
+            return False
+        if index < self._header_rows:
+            return True
+        del self._rows[index]
+        for i, r in enumerate(self._rows):
+            r.index = i
+        return True
+
+    def setRevisionVisibility(self, index, visible):
+        self.calls.append(("setRevisionVisibility", index, visible))
+        if not 0 <= index < len(self._rows):
+            return False
+        self._rows[index].isVisible = bool(visible)
+        return True
 
 
 @fusion_fake(live_type="Sheet", facts=("shape-dump-drawing-world",))
@@ -302,7 +381,8 @@ class FakeSheet:
                  rename_lands=True, size_raises=None, size_ignored=False,
                  orientation_raises=None, orientation_ignored=False, delete_ok=True,
                  tidy_ok=True, auto_dimension_ok=True, auto_dimension_input=None,
-                 modifies=True, copy_result="ok"):
+                 modifies=True, copy_result="ok", revision_table=None, revision_add_ok=True,
+                 revision_create_result="ok", revision_omit_title=False):
         self._name = name
         self._size = size
         self._orientation = orientation
@@ -333,8 +413,12 @@ class FakeSheet:
         tables = (custom_tables if isinstance(custom_tables, (list, tuple))
                  else [_CustomTable() for _ in range(custom_tables)])
         self.customTables = _NamedCollection(list(tables))
-        self.bendTables = _bend_tables()
+        self.bendTables = _NamedCollection([])
         self.images = FakeImages(self) if images is None else images
+        self._revision_table = revision_table
+        self._revision_add_ok = revision_add_ok
+        self._revision_create_result = revision_create_result
+        self._revision_omit_title = revision_omit_title
 
     @property
     def name(self):
@@ -428,6 +512,31 @@ class FakeSheet:
         if self._modifies and self._document is not None:
             self._document.isModified = True
         return self._auto_ok
+
+    def revisionTableInput(self):
+        return types.SimpleNamespace(revisionTableRows=[], doAutoPopulateSheet=False,
+                                     doAutoUpdateZone=False)
+
+    def addRevisionTable(self, table_input):
+        # measured: a new table lists a title row and a header row before the data rows;
+        # doAutoPopulateSheet fills sht.
+        if self._revision_create_result == "null":
+            return None
+        rows = list(getattr(table_input, "revisionTableRows", None) or [])
+        for r in rows:
+            r.sht = self._name
+            _fill_date(r)
+        header = _RevisionRow(rev="Rev", description="Description", date="Date",
+                              approved="Approved", zone="Zone", sht="Sheet Name")
+        title = [] if self._revision_omit_title else [_RevisionRow(zone="Revision History")]
+        all_rows = title + [header] + rows
+        for i, r in enumerate(all_rows):
+            r.index = i
+        self._revision_table = _RevisionTable(all_rows, add_ok=self._revision_add_ok)
+        return self._revision_table
+
+    def getRevisionTable(self):
+        return self._revision_table
 
 
 @fusion_fake(live_type="Sheets", facts=("shape-dump-drawing-world",))

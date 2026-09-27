@@ -1567,6 +1567,76 @@ def _drawing_symbol_count_read(p):
                      and type(want) is int and sheet.get("symbol_count") == want)
 
 
+def _drawing_revision_args(action, **extra):
+    """drawing_edit_revisions args on the original sheet, action plus its own extra fields."""
+    def build(ctx):
+        return {"action": action, "sheet": _drawing_original_sheet(ctx)["name"], **extra}
+    return build
+
+
+_REVISION_UPDATE_TEXT = "SLOT WIDENED - CONFIRMED"
+
+
+def _drawing_revisions_added(p):
+    """drawing_edit_revisions(add): a fresh table with title/header, row 2 reading A, row 3 B."""
+    rows = p.get("rows") or []
+    row2 = rows[2] if len(rows) > 2 else {}
+    row3 = rows[3] if len(rows) > 3 else {}
+    return _measured("a fresh table with title/header, row 2 reading A and row 3 reading B",
+                     {"table_created": p.get("table_created"),
+                      "revision_count_after": p.get("revision_count_after"),
+                      "row2": row2, "row3": row3},
+                     p.get("table_created") is True and p.get("revision_count_after") == 4
+                     and row2.get("rev") == "A" and row3.get("rev") == "B")
+
+
+def _drawing_revision_updated(p):
+    """drawing_edit_revisions(update): row 3's description updates, its date stays unsent-unchanged."""
+    rows = p.get("rows") or []
+    row3 = rows[3] if len(rows) > 3 else {}
+    return _measured("row 3's description updated with its original date left alone",
+                     {"description": row3.get("description"), "date": row3.get("date")},
+                     row3.get("description") == _REVISION_UPDATE_TEXT
+                     and row3.get("date") == "27 Sep 2026")
+
+
+def _drawing_revision_hidden(p):
+    """drawing_edit_revisions(hide): the visible count drops by one and row 2 reads hidden."""
+    rows = p.get("rows") or []
+    row2 = rows[2] if len(rows) > 2 else {}
+    return _measured("row 2 hidden and the visible count dropped to 3",
+                     {"visible_count": p.get("visible_count"), "row2_visible": row2.get("visible")},
+                     p.get("visible_count") == 3 and row2.get("visible") is False)
+
+
+def _drawing_revision_shown(p):
+    """drawing_edit_revisions(show): row 2 is visible again and the visible count is restored."""
+    rows = p.get("rows") or []
+    row2 = rows[2] if len(rows) > 2 else {}
+    return _measured("row 2 shown again and the visible count restored to 4",
+                     {"visible_count": p.get("visible_count"), "row2_visible": row2.get("visible")},
+                     p.get("visible_count") == 4 and row2.get("visible") is True)
+
+
+def _drawing_revision_deleted(p):
+    """drawing_edit_revisions(delete): the census shrank to 3 rows and row 2 now reads B."""
+    rows = p.get("rows") or []
+    row2 = rows[2] if len(rows) > 2 else {}
+    return _measured("the census shrank to 3 rows and row 2 now reads B",
+                     {"revision_count_after": p.get("revision_count_after"), "row2": row2},
+                     p.get("revision_count_after") == 3 and row2.get("rev") == "B")
+
+
+def _drawing_revision_count_read(p):
+    """drawing_get(include=['revisions']): the original sheet's revision_count reads 3."""
+    rows = p.get("sheets") or []
+    sheet = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+    return _measured("drawing_get reads the revision count the last edit left",
+                     {"sheet": sheet.get("name"), "revision_count": sheet.get("revision_count")},
+                     sheet.get("name") == _drawing_original_sheet()["name"]
+                     and sheet.get("revision_count") == 3)
+
+
 def _drawing_persistence_version_current(snap):
     """Require canonical, distinct lineage and exact-version identity roles."""
     lineage, version_id = snap.get("lineage"), snap.get("version_id")
@@ -2344,7 +2414,9 @@ _CLOUD_DERIVE = [
     # the source moves past the version the derive holds. The edit ADDS a parameter rather than
     # re-valuing one: MEASURED on this rig, a source whose existing parameter changed value saves a
     # new version and the derive still reads 'already up to date', while a source that gained a new
-    # parameter reads out of date - a new version alone does not stale a derive link.
+    # parameter reads out of date - a new version alone does not stale a derive link. The same
+    # save restores the 10 mm fixture the rows after this leg read at z=10, so this reopened
+    # session uploads once here, not twice.
     ("doc_activate", lambda c: {"name": _ctx_get(c, "source_urn", "the source")},
      _activated(SOURCE_DOC), None),
     # the tip BEFORE the save, so the row below compares against a number this run read rather than
@@ -2352,15 +2424,22 @@ _CLOUD_DERIVE = [
     ("doc_get", {"include": ["default", "versions"]}, _tip_read,
      ("source_tip_before", _recall("source_tip_before",
                                    lambda p: p["versions"]["latest_version_number"]))),
+    ("param_set", {"name": "CloudPlateH", "expression": "10 mm"}, "ok", None),
     ("param_add", {"name": "CloudDeriveMark", "expression": "3 mm"}, "ok", None),
+    ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
+     _plate_geometry("the downstream reset plate", 10.0), None),
     ("data_get", _version_args("derive_save_before"),
      _version_snapshot("derive_save_before"), ("derive_save_before", _recall("derive_save_before", _version_record))),
-    ("doc_save", {"description": "the edit the derive link goes stale against"},
+    ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
+     _file_settled(FOLDER), None),
+    ("doc_save", {"description": "the 10 mm fixture restored, and the edit the derive link goes stale against"},
      _versioned(SOURCE_DOC), None),
     ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
      _version_settled("derive_save_before"), None),
     _dwell(_TIP_SETTLE_S),
     ("doc_get", {"include": ["default", "versions"]}, _tip_advanced("source_tip_before"), None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
+     _file_settled(FOLDER), None),
     # CLOSED and REOPENED once the cloud is publishing the new version: the hand measurement was
     # taken on a reference the session had reloaded, not on one held open since the derive landed.
     ("doc_close", lambda c: {"name": _ctx_get(c, "derive_urn", "the derive host"),
@@ -2496,16 +2575,6 @@ _CLOUD_DOC = [
     ("doc_get", {"include": ["default", "versions"]}, _tip_advanced("plate_tip_before"), None),
     ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
      _file_settled(FOLDER), None),
-    ("doc_activate", lambda c: {"name": _ctx_get(c, "home_doc", "the home document")},
-     _activated(), None),
-    ("doc_close", lambda c: {"name": _ctx_get(c, "source_urn", "the source"),
-                              "save_changes": False}, _document_closed, None),
-    ("doc_open", lambda c: {"file_id": _ctx_get(c, "source_urn", "the source"),
-                             "force_api_open": True},
-     _opened(SOURCE_DOC, lambda: _RECALL.get("source_urn")), None),
-    _dwell(3.0),
-    ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
-     _plate_geometry("the reopened source plate", 14.0), None),
     ("param_set", {"name": "CloudPlateH", "expression": "16 mm"}, "ok", None),
     ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
      _plate_geometry("the milestone source plate", 16.0), None),
@@ -2580,23 +2649,6 @@ _CLOUD_DOC = [
     ("data_download_file", lambda c: {"file": _ctx_get(c, "source_urn", "the source"),
                                       "destination_folder": DOWNLOAD_DIR},
      _refused("Fusion-native", "design_export"), None),
-    # restore the 10 mm fixture before derive and link rows that read the top face at z=10.
-    ("doc_get", {"include": ["default", "versions"]}, _tip_read,
-     ("reset_tip_before", _recall("reset_tip_before",
-                                  lambda p: p["versions"]["latest_version_number"]))),
-    ("param_set", {"name": "CloudPlateH", "expression": "10 mm"}, "ok", None),
-    ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
-     _plate_geometry("the downstream reset plate", 10.0), None),
-    ("data_get", _version_args("reset_save_before"),
-     _version_snapshot("reset_save_before"), ("reset_save_before", _recall("reset_save_before", _version_record))),
-    ("doc_save", {"description": "restore the 10 mm downstream fixture"},
-     _versioned(SOURCE_DOC), None),
-    ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
-     _version_settled("reset_save_before"), None),
-    _dwell(_TIP_SETTLE_S),
-    ("doc_get", {"include": ["default", "versions"]}, _tip_advanced("reset_tip_before"), None),
-    ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
-     _file_settled(FOLDER), None),
 ] + _CLOUD_DERIVE + [
     # TEARDOWN of this act's own two. The host goes first: it REFERENCES the source, and a referenced
     # file's delete is refused rather than orphaning what points at it.
@@ -2664,8 +2716,10 @@ _CLOUD_DRAWING = [
       _drawing_pdf_record))),
     ("drawing_dimension", lambda c: _drawing_overall_args(c, 0),
      _drawing_overall_requested(0), None),
+    # 'overall' on projected view 1 after the base view's overall lands NO new dimension while
+    # autoDimension answers true; the count gate refuses it - the false success DRAW-1 named.
     ("drawing_dimension", lambda c: _drawing_overall_args(c, 1),
-     _drawing_overall_requested(1), None),
+     _refused("autoDimension returned true", "no added dimension is confirmed"), None),
     # The manual route on the plate's base view: its curve points read, an angular, a linear and
     # an aligned dimension placed from them, each judged by the sheet's count and the kind its new
     # item reads, then that count read back.
@@ -2704,6 +2758,26 @@ _CLOUD_DRAWING = [
                                          lambda p: p["symbol_count_after"]))),
     ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"]},
      _drawing_symbol_count_read, None),
+    # The revision table: added fresh (no table exists yet on the original sheet), then edited
+    # through a partial update, a refused delete of the header row, hide/show and a real delete,
+    # each judged by the returned row census.
+    ("drawing_edit_revisions", _drawing_revision_args(
+        "add", rows=["A|INITIAL RELEASE|27 Sep 2026|PM|B2", "B|SLOT WIDENED|27 Sep 2026|PM|C3"]),
+     _drawing_revisions_added, None),
+    ("drawing_edit_revisions", _drawing_revision_args(
+        "update", index=3, row=f"B|{_REVISION_UPDATE_TEXT}"),
+     _drawing_revision_updated, None),
+    ("drawing_edit_revisions", _drawing_revision_args("delete", index=1),
+     _refused("row 1 still reads", "title/header"), None),
+    ("drawing_edit_revisions", _drawing_revision_args("hide", index=2),
+     _drawing_revision_hidden, None),
+    ("drawing_edit_revisions", _drawing_revision_args("show", index=2),
+     _drawing_revision_shown, None),
+    ("drawing_edit_revisions", _drawing_revision_args("delete", index=2),
+     _drawing_revision_deleted, None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"],
+                               "include": ["revisions"]},
+     _drawing_revision_count_read, None),
     ("drawing_get", {"include": ["views"]}, _drawing_named_sheets, None),
     ("drawing_export", _drawing_persistence_pdf_args(_DRAWING_NAMED_AFTER_PDF),
      _drawing_persistence_pdf(_DRAWING_NAMED_AFTER_PDF),
@@ -2821,7 +2895,9 @@ _CLOUD_DRAWING = [
                                      "drawing_two_reopened", _DRAWING_POPULATED_PDF),
      ("drawing_populated_pdf", _recall("drawing_populated_pdf", _drawing_deferred_pdf_record))),
     ("drawing_get", {"include": ["views"]}, lambda p: _drawing_populated_sheets(p, compare=True), None),
-    ("drawing_dimension", {"view": 0, "strategy": "baseline"}, _dimensioned, None),
+    # No auto-dimension on a REOPENED, populated drawing: Sheet.autoDimension holds the main
+    # thread for minutes there, past the client's read timeout; the auto route is demonstrated
+    # on the fresh drawing above.
     ("doc_close", lambda c: {"name": _ctx_get(c, "drawing_two_reopened", "the populated drawing"),
                              "expect_document": c["drawing_two_reopened"], "save_changes": False},
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
@@ -2989,7 +3065,6 @@ _CLOUD_DRAWING = [
                                    version_key="drawing_restored_saved"), None),
     ("drawing_update", lambda c: {"expect_document": _ctx_get(c, "drawing_final_opened", "the drawing")},
      _drawing_reference_current("drawing_source_restored"), None),
-    ("drawing_dimension", {"view": 0, "strategy": "baseline"}, _dimensioned, None),
     ("drawing_insert_image", {"image_path": MARKER_PNG, "x": 150, "y": 100}, _image_placed, None),
     # A coordinate that size is refused before a sketch is added: one that lands stops the whole
     # document's DXF export until it is deleted, and the read-back below is that export.

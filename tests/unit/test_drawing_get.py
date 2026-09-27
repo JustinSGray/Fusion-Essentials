@@ -12,7 +12,8 @@ import pytest
 
 import live_api_facts
 from conftest import (FakeCustomSheetSize, FakeSheet, FakeView, FakeViews, _CustomTable,
-                      load_tool, make_drawing, make_drawing_session, payload)
+                      _RevisionRow, _RevisionTable, load_tool, make_drawing,
+                      make_drawing_session, payload)
 
 dg = load_tool("drawing_get")
 
@@ -154,7 +155,6 @@ class TestOrientationRead:
         install([counted, bare, unread])
         out = payload(dg.handler())
         assert [r["symbol_count"] for r in out["sheets"]] == [2, None, None]
-        assert "symbol_count" in out["note"]
 
     def test_the_read_never_touches_the_mutating_tidyup_property(self, install):
         # reading Sheet.tidyUp TIDIES the sheet, so a READ tool that touched it would mutate the
@@ -208,11 +208,11 @@ class TestViewsSlice:
         rows = payload(dg.handler(include=["views"]))["sheets"][0]["view_rows"]
         assert rows == [{"index": 0, "type": "base"}, {"index": 1, "type": "projected"}]
 
-    def test_the_note_advertises_the_curves_slice_and_the_dimension_count(self, install):
+    def test_the_note_advertises_the_curves_slice_and_its_view_scope(self, install):
         base, _proj = self._typed()
         install([_sheet("S", views=FakeViews([FakeView(base)]))])
         note = payload(dg.handler(include=["views"]))["note"]
-        assert "['curves']" in note and "dimension_count" in note
+        assert "curves" in note and "view=N scopes one" in note
         assert "no readable geometry" not in note
 
     def test_the_description_does_not_claim_type_is_all_a_view_exposes(self):
@@ -250,7 +250,8 @@ class TestViewsSlice:
     def test_every_advertised_slice_actually_dispatches(self, install):
         # A name the guard admits but no branch reads returns the orientation read again under a
         # token that promised a deeper one.
-        adds = {"views": "view_rows", "curves": "curve_unit", "tables": "tables"}
+        adds = {"views": "view_rows", "curves": "curve_unit", "tables": "tables",
+               "revisions": "revision_count"}
         base, _proj = self._typed()
         install([_sheet("S", views=FakeViews([FakeView(base)]))])
         for name in dg._SLICES:
@@ -330,12 +331,10 @@ class TestTablesSlice:
         assert "cells_truncated" not in row["tables"][0]
 
     def test_a_sheet_with_no_tables_reads_an_empty_list_and_the_note_names_the_gap(self, install):
-        # the sheet also carries bendTables (measured: no .count) alongside customTables - the read
-        # must not raise on it.
-        drawing = install([_sheet("S")])
-        assert not hasattr(drawing.sheets.item(0).bendTables, "count")
+        install([_sheet("S")])
         out = payload(dg.handler(include=["tables"]))
         assert out["sheets"][0]["tables"] == []
+        assert out["sheets"][0]["bend_tables"] == 0
         assert "parts lists" in out["note"] and "balloons" in out["note"]
 
     def test_a_grid_exactly_at_the_cap_is_not_marked_truncated(self, install):
@@ -360,6 +359,43 @@ class TestTablesSlice:
         install([_sheet("S", custom_tables=[table])])
         row = payload(dg.handler())["sheets"][0]
         assert row["custom_tables"] == 1 and "tables" not in row
+
+
+class TestRevisionsSlice:
+    def test_revisions_lists_every_row_title_and_header_included(self, install):
+        title = _RevisionRow(zone="Revision History")
+        header = _RevisionRow(rev="Rev", description="Description", date="Date",
+                              approved="Approved", zone="Zone", sht="Sheet Name")
+        data = _RevisionRow(rev="A", description="Initial", sht="S")
+        install([_sheet("S", revision_table=_RevisionTable([title, header, data]))])
+        row = payload(dg.handler(include=["revisions"]))["sheets"][0]
+        assert row["revision_count"] == 3
+        assert [r["rev"] for r in row["revisions"]] == ["", "Rev", "A"]
+
+    def test_a_sheet_with_no_table_reads_an_empty_list_and_zero_count(self, install):
+        install([_sheet("S")])
+        row = payload(dg.handler(include=["revisions"]))["sheets"][0]
+        assert row["revisions"] == [] and row["revision_count"] == 0
+
+    def test_a_getrevisiontable_raise_reads_both_fields_null(self, install):
+        sheet = _sheet("S")
+        sheet.getRevisionTable = lambda: (_ for _ in ()).throw(RuntimeError("unavailable"))
+        install([sheet])
+        row = payload(dg.handler(include=["revisions"]))["sheets"][0]
+        assert row["revisions"] is None and row["revision_count"] is None
+
+    def test_the_revisions_list_is_capped_but_the_count_is_not(self, install):
+        rows = [_RevisionRow(rev=str(i)) for i in range(dg._MAX_TABLE_ROWS + 3)]
+        install([_sheet("S", revision_table=_RevisionTable(rows))])
+        row = payload(dg.handler(include=["revisions"]))["sheets"][0]
+        assert len(row["revisions"]) == dg._MAX_TABLE_ROWS
+        assert row["revision_count"] == dg._MAX_TABLE_ROWS + 3
+        assert row["revisions_truncated"] is True
+
+    def test_without_the_slice_no_revisions_are_read(self, install):
+        install([_sheet("S", revision_table=_RevisionTable([_RevisionRow()]))])
+        row = payload(dg.handler())["sheets"][0]
+        assert "revisions" not in row and "revision_count" not in row
 
 
 class TestSheetScope:

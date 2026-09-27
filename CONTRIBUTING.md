@@ -118,11 +118,13 @@ refresh or edit generated facts or receipts to make that checkout appear live-ve
 changes invalidate the receipt until the maintainer loads and exercises that code. `--offline` is
 not a workaround for absent binding files or a stale receipt.
 
-Two lints and the API-facts stamp read red on every checkout until a full live measurement run
-is made on an install that holds the Manufacturing Extension: `test_fake_shapes_exist` (the
-FormFeature shape) and `test_enum_families_measured` (the LoftRailEdgeConditions family) wait on
-that run, and `measure_api --check` refuses to restamp while three gated rows cannot pass without
-the extension. Every other check is green; these three are the known state, not a regression.
+The API-facts stamp (`measure_api --check`) reads red after any edit to `tests/live/measure_api.py`
+until a full live measurement run restamps it. A full run rewrites the ledger and
+`tests/live_api_facts.py` when every row reads PASS or CARRIED. A row that needs the Design or
+Manufacturing Extension reads CARRIED on an install where the extension has lapsed: it keeps its
+last entitled measurement, its cell names that measurement's date and build, and it is never
+relabelled PASS. `test_fake_shapes_exist` and `test_enum_families_measured` read the regenerated
+facts module, so they go red between a new measurement row and the full run that lands it.
 
 Windows is the validated development platform. The manifest also targets macOS; that declaration
 does not establish an equivalent tested contributor or native execution path. Keep production code

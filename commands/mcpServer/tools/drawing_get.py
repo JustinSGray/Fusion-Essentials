@@ -102,8 +102,7 @@ def _table_row(table, row_cap, col_cap):
 
 
 def _tables_rows(sheet, cap, row_cap, col_cap):
-    """(rows, truncated) - one sheet's custom tables, or (None, False) when the collection did not
-    read. bendTables is a SEPARATE sheet member carrying no .count (measured) - untouched here."""
+    """(rows, truncated) - one sheet's custom tables, or (None, False) when unreadable."""
     tables = safe(lambda: sheet.customTables)
     count = _common.counted(lambda: tables.count) if tables is not None else None
     if count is None:
@@ -122,7 +121,7 @@ _MAX_TABLES_PER_SHEET = 20
 _MAX_TABLE_ROWS = 20
 _MAX_TABLE_COLS = 20
 
-_SLICES = ("views", "curves", "tables")
+_SLICES = ("views", "curves", "tables", "revisions")
 
 
 def handler(include=None, sheet: str = "", view: int = None) -> dict:
@@ -138,6 +137,7 @@ def handler(include=None, sheet: str = "", view: int = None) -> dict:
     want_views = "views" in raw
     want_curves = "curves" in raw
     want_tables = "tables" in raw
+    want_revisions = "revisions" in raw
     if view is not None:
         # a client holding a stale schema sends a new integer input as a digit string
         index = (_inputs._ascii_int(view) if isinstance(view, str)
@@ -221,15 +221,32 @@ def handler(include=None, sheet: str = "", view: int = None) -> dict:
             facts["tables"] = trows
             if ttrunc:
                 facts["tables_truncated"] = True
+        if want_revisions:
+            try:
+                table = s.getRevisionTable()
+            except Exception:
+                facts["revisions"], facts["revision_count"] = None, None
+            else:
+                if table is None:
+                    facts["revisions"], facts["revision_count"] = [], 0
+                else:
+                    rev_rows = _drawing_common.revision_rows(table)
+                    if rev_rows is None:
+                        facts["revisions"], facts["revision_count"] = None, None
+                    else:
+                        facts["revision_count"] = len(rev_rows)
+                        facts["revisions"] = rev_rows[:_MAX_TABLE_ROWS]
+                        if len(rev_rows) > _MAX_TABLE_ROWS:
+                            facts["revisions_truncated"] = True
         rows.append(facts)
     payload["sheets"] = rows
 
     payload["note"] = (
         "collection_index is 1-based; export_index is unknown - the PDF shows page order. "
-        "Width/height are mm. include=['views'] adds index/type, ['curves'] curve points (view=N "
-        "scopes one), ['tables'] custom tables. dimension_count/symbol_count count placed "
-        "dimensions/symbols; values, symbol kinds/text, view names/scales, parts lists, balloons "
-        "and quantities do not read back - the PDF's text is the read.")
+        "Width/height are mm. include= adds views/curves (view=N scopes one)/tables/revisions. "
+        "Dimension values, symbol text, view scales, parts lists and balloons do not read back - "
+        "the PDF is the read. revisions lists every row, title and header included, at the "
+        "indexes drawing_edit_revisions takes.")
     return ok(payload)
 
 

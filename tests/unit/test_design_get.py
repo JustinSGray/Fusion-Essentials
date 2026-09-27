@@ -16,8 +16,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (FakeOccurrence, FakeTimeline, FakeUserParameters, MakeComp, MakeDesign,
-                      _NamedCollection, error_message, load_tool, make_design)
+from conftest import (FakeOccurrence, FakeTimeline, FakeTimelineObject, FakeFeature,
+                      FakeUserParameters, MakeComp, MakeDesign,
+                      _NamedCollection, error_message, load_tool, make_design, install)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 "live"))
@@ -36,6 +37,111 @@ _DIRECT_DESIGN_TIMELINE = "3 : this is not a parametric design"
 def _payload(result):
     assert result["isError"] is False, result
     return json.loads(result["content"][0]["text"])
+
+
+@pytest.fixture
+def definition_scene():
+    component = MakeComp(name="Cradle", entity_token="cradle")
+    info = SimpleNamespace(threadType="ANSI Unified Screw Threads", threadDesignation="3/8-16 UNC",
+                           threadClass="1B", isInternal=True)
+    child = FakeFeature(name="ThreadChild", parent_component=component)
+    child.objectType = "adsk::fusion::ThreadFeature"
+    child.threadInfo = info
+    child.isFullLength, child.isModeled, child.isRightHanded = False, False, True
+    child.threadLength, child.threadOffset = SimpleNamespace(value=1.0), SimpleNamespace(value=0.0)
+    hole = FakeFeature(name="Hole4", parent_component=component)
+    hole.objectType = "adsk::fusion::HoleFeature"
+    hole.extentDefinition = SimpleNamespace(objectType="adsk::fusion::DistanceExtentDefinition",
+                                            distance=SimpleNamespace(value=0.875 * 2.54))
+    hole.holeDiameter = SimpleNamespace(value=0.8)
+    hole.tappedHoleInfo, hole.thread = info, child
+    row = FakeTimelineObject(name=hole.name, index=0, entity=hole)
+    hole.timelineObject = row
+    timeline = FakeTimeline([row], marker=0)
+    design = make_design(comp=component)
+    design.timeline = timeline
+    install(dg, design)
+    return SimpleNamespace(hole=hole, child=child, component=component, row=row,
+                           timeline=timeline, design=design)
+
+
+@pytest.mark.parametrize("units, factor", [("mm", 10), ("in", 1 / 2.54)])
+def test_definition_separates_hole_depth_from_hidden_partial_thread(definition_scene, units, factor):
+    s = definition_scene
+    out = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4", units=units))
+    assert set(out) == {"definition"}
+    hole = out["definition"]
+    assert (hole["type"], hole["component"], hole["extent"]) == ("HoleFeature", "Cradle", "blind")
+    assert hole["depth"] == round(0.875 * 2.54 * factor, 6)
+    assert hole["diameter_parameter"] is None
+    assert hole["diameter_parameter_applicable"] is False
+    assert hole["depth_applicable"] is True and hole["thread_present"] is True
+    assert hole["tapped_hole_info"]["thread_class"] == "1B"
+    assert hole["thread"]["full_length"] is False
+    assert hole["thread"]["length"] == round(factor, 6)
+    assert hole["thread"]["offset"] == 0
+    assert hole["thread"]["modeled"] is False
+    assert s.timeline.markerPosition == 0 and s.timeline._moves == [] and s.row._rolls == []
+    assert s.design.activeComponent is s.component
+
+
+def test_full_thread_omits_inapplicable_stale_numeric_parameters(definition_scene):
+    s = definition_scene
+    s.child.isFullLength = True
+    s.child.threadLength = SimpleNamespace(value=999)
+    s.row.entity, s.row.name = s.child, s.child.name
+    s.child.timelineObject = s.row
+    thread = _payload(dg.handler(include=["definition"], feature="0"))["definition"]
+    assert thread["full_length"] is True
+    assert thread["length"] is thread["offset"] is None
+    assert thread["length_applicable"] is thread["offset_applicable"] is False
+    assert s.timeline._moves == []
+
+
+def test_through_hole_has_no_depth_or_child(definition_scene):
+    s = definition_scene
+    s.hole.extentDefinition = SimpleNamespace(objectType="adsk::fusion::AllExtentDefinition")
+    s.hole.tappedHoleInfo = s.hole.thread = None
+    hole = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert hole["extent"] == "through" and hole["depth"] is None
+    assert hole["depth_applicable"] is False
+    assert hole["diameter_parameter_applicable"] is True
+    assert hole["diameter_parameter"] == 8
+    assert hole["tapped"] is hole["thread_present"] is False
+    assert hole["thread"] is hole["tapped_hole_info"] is None
+
+
+def test_unreadable_tap_child_and_length_do_not_claim_absence(definition_scene):
+    s = definition_scene
+    del s.hole.tappedHoleInfo
+    del s.child.threadLength
+    hole = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert hole["tapped"] is None and hole["diameter_parameter_applicable"] is None
+    assert hole["diameter_parameter"] is None
+    assert hole["thread_present"] is True
+    assert hole["thread"]["length"] is None and hole["thread"]["length_applicable"] is True
+    assert hole["thread"]["offset"] == 0 and hole["depth"] == 22.225
+    del s.hole.thread
+    hole = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert hole["thread_present"] is None and hole["thread"] is None
+    assert s.timeline._moves == [] and s.row._rolls == []
+
+
+def test_definition_requires_explicit_supported_feature_and_units(definition_scene):
+    assert "requires 'feature'" in error_message(dg.handler(include=["definition"]))
+    assert "Unknown units" in error_message(dg.handler(include=["definition"], feature="Hole4", units="ft"))
+    assert "include" in error_message(dg.handler(feature="Hole4"))
+    definition_scene.hole.objectType = "adsk::fusion::ExtrudeFeature"
+    assert "unsupported definition type" in error_message(dg.handler(include=["definition"], feature="Hole4"))
+
+
+def test_definition_keeps_feature_ref_ambiguity_refusal(definition_scene):
+    s = definition_scene
+    twin = FakeFeature(name="Hole4", parent_component=MakeComp(name="Other", entity_token="other"))
+    s.timeline._items.append(FakeTimelineObject(name="Hole4", index=1, entity=twin))
+    refused = dg.handler(include=["definition"], feature="Hole4")
+    assert refused["isError"] is True and "matches 2" in error_message(refused)
+    assert _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]["component"] == "Cradle"
 
 
 # ── ROUTER composition: stub the slice SEAMS (not the source-tool internals) ────────────────────────
@@ -74,11 +180,19 @@ def stub_slices(monkeypatch):
          "max_results": max_results, "document": {"count": 1}, "libraries": []}, None))
     monkeypatch.setattr(dg, "_slice_appearances", lambda d, library, name_filter, max_results: (
         {"kind": "appearances", "library": library, "document": {"count": 1}, "libraries": []}, None))
+    monkeypatch.setattr(dg, "_slice_definition", lambda feature, units: ({"feature": feature}, None))
 
 
 # ── default orientation slice is DENSE + bounded (the core rich-read contract) ──────────────────────
 
 class TestDefaultSlice:
+    def test_default_does_not_resolve_or_read_a_feature(self, stub_slices, monkeypatch):
+        def forbidden(*args):
+            raise AssertionError("default orientation read touched a feature definition")
+        monkeypatch.setattr(dg._FEATURE, "resolve", forbidden)
+        monkeypatch.setattr(dg, "_slice_definition", forbidden)
+        assert "definition" not in _payload(dg.handler())
+
     def test_default_is_the_dense_orientation(self, stub_slices):
         out = _payload(dg.handler())                   # no include=
         # the headline: design_type + feature_count + TIMELINE_healthy + a CONTENT fingerprint.

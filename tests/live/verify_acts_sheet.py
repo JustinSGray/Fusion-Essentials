@@ -87,7 +87,20 @@ def run(context):
     design = adsk.fusion.Design.cast(app.activeProduct)
     occ = design.rootComponent.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
     print("added " + occ.name)
+    print("component " + occ.component.name)
 '''
+
+
+def _save_raw_names(p):
+    """Recall the raw duplicate's occurrence name (delete target) and bare component name (census)."""
+    lines = p.splitlines() if isinstance(p, str) else []
+    occ = next((ln[len("added "):].strip() for ln in lines if ln.startswith("added ")), None)
+    comp = next((ln[len("component "):].strip() for ln in lines if ln.startswith("component ")), None)
+    if not occ or not comp:
+        raise ValueError(f"script output lacks the 'added'/'component' lines: {p!r}")
+    _RECALL["sm_raw_component"] = comp
+    _RECALL["sm_raw_occurrence"] = occ
+    return occ
 
 
 def _rule_adopted_from_copy(p):
@@ -140,6 +153,43 @@ def _dup_gap_isolated(p):
                      r1 is not None and r2 is not None
                      and _near((r2.get("gap") or {}).get("value_cm"), 0.06, 1e-6)
                      and not _near((r1.get("gap") or {}).get("value_cm"), 0.06, 1e-6))
+
+
+def _seed2_occurrence_deleted(p):
+    """Require the tool's own verified-absence verdict for the recalled Second Seed occurrence."""
+    expected = _RECALL.get("sm_seed2_occurrence")
+    return _measured("Second Seed occurrence delete verdict",
+                     {"deleted": p.get("deleted"), "occurrence": p.get("occurrence"), "expected": expected},
+                     isinstance(expected, str) and bool(expected)
+                     and p.get("deleted") is True and p.get("occurrence") == expected
+                     and "timeline_warning" not in p)
+
+
+def _raw_component_occurrence_deleted(p):
+    """Require the tool's own verified-absence verdict for the recalled raw duplicate occurrence."""
+    expected = _RECALL.get("sm_raw_occurrence")
+    return _measured("raw duplicate occurrence delete verdict",
+                     {"deleted": p.get("deleted"), "occurrence": p.get("occurrence"), "expected": expected},
+                     isinstance(expected, str) and bool(expected)
+                     and p.get("deleted") is True and p.get("occurrence") == expected
+                     and "timeline_warning" not in p)
+
+
+def _cleanup_census(p):
+    """Require a complete walk with both empty rule-test components absent and the bodied pair present."""
+    census = p.get("components") or {}
+    rows = census.get("components") or []
+    names = [r.get("component") for r in rows]
+    raw_name = _RECALL.get("sm_raw_component")
+    seed = [r for r in rows if r.get("component") == _SEED]
+    blank = [r for r in rows if r.get("component") == _PART]
+    return _measured("post-cleanup component census", {"names": names, "raw_name": raw_name,
+                     "walk_complete": census.get("walk_complete"), "truncated": census.get("truncated")},
+                     census.get("walk_complete") is True and census.get("truncated") is False
+                     and _SEED2 not in names
+                     and isinstance(raw_name, str) and bool(raw_name) and raw_name not in names
+                     and len(seed) == 1 and bool(seed[0].get("bodies"))
+                     and len(blank) == 1 and bool(blank[0].get("bodies")))
 
 
 def _top_match(p, area):
@@ -678,10 +728,10 @@ def _drawing_saved_session(p):
 
 
 def _pdf_flat_geometry(page, reader):
-    """Read a stroked 2:1 flat outline and bend strokes from native PDF layers."""
+    """Read a stroked 2:1 flat outline, bend strokes, and the Visible-layer stroke count from one page."""
     from pypdf.generic import ContentStream
     properties = page["/Resources"].get("/Properties", {})
-    layer, points, outlines, bend_strokes = "", [], 0, 0
+    layer, points, outlines, bend_strokes, visible_strokes = "", [], 0, 0, 0
     for args, op in ContentStream(page.get_contents(), reader).operations:
         if op == b"BDC":
             layer = properties[args[1]].get_object().get("/Name", "")
@@ -693,17 +743,18 @@ def _pdf_flat_geometry(page, reader):
             points.append(tuple(float(v) for v in args))
         elif op == b"S":
             bend_strokes += int(layer == "Bend Center" and len(points) >= 2)
+            visible_strokes += int(layer == "Visible")
             if layer == "Visible" and len(points) == 5 and points[0] == points[-1]:
                 xs, ys = {xy[0] for xy in points}, {xy[1] for xy in points}
                 if len(xs) == len(ys) == 2:
                     width, height = max(xs) - min(xs), max(ys) - min(ys)
                     outlines += int(height > 0 and _near(width / height, 2, 0.002))
             points = []
-    return {"flat_outlines": outlines, "bend_strokes": bend_strokes}
+    return {"flat_outlines": outlines, "bend_strokes": bend_strokes, "visible_strokes": visible_strokes}
 
 
 def _drawing_pdf(p):
-    """Read the actual PDF's bend table and retain pages for visual inspection."""
+    """Read the actual PDF's bend table, require part geometry on every page, retain for inspection."""
     from pypdf import PdfReader
     expected = {"expect_document": _RECALL.get("sm_drawing_session"),
                 "file_path": _PDF, "format": "pdf"}
@@ -713,11 +764,21 @@ def _drawing_pdf(p):
     pages = list(reader.pages) if reader else []
     texts = [re.sub(r"\s+", "", page.extract_text()) for page in pages]
     tables = [i for i, t in enumerate(texts) if "BendTableIDDirectionAngleRadius1Up902" in t]
-    geometry = _pdf_flat_geometry(pages[tables[0]], reader) if len(tables) == 1 else {}
-    return _measured("PDF bend table; inspect rendered flat and formed views", {
-        "file": str(path), "pages": len(pages), "bend_tables": len(tables), "geometry": geometry},
-        payload.get("exported") is True and len(pages) == 4 and len(tables) == 1
+    per_page = [_pdf_flat_geometry(page, reader) for page in pages] if reader else []
+    geometry = per_page[tables[0]] if len(tables) == 1 and per_page else {}
+    page_visible_strokes = [g.get("visible_strokes", 0) for g in per_page]
+    # the sheet names the pre-export drawing_get listed; the generator makes '<component>' and
+    # '<component>_2' for every sheet-metal component, so these are the two bodied components'
+    # pairs.
+    sheet_names = _RECALL.get("sm_sheet_names")
+    expected_names = sorted([_SEED, _SEED + "_2", _PART, _PART + "_2"])
+    return _measured("PDF bend table; every page carries part geometry; inspect rendered views", {
+        "file": str(path), "pages": len(pages), "sheet_names": sheet_names, "bend_tables": len(tables),
+        "geometry": geometry, "page_visible_strokes": page_visible_strokes},
+        payload.get("exported") is True and sheet_names == expected_names
+        and len(pages) == len(sheet_names) and len(tables) == 1
         and geometry.get("flat_outlines") == 1 and geometry.get("bend_strokes", 0) > 0
+        and len(page_visible_strokes) == len(pages) and all(c > 0 for c in page_visible_strokes)
         and path.stat().st_size == payload.get("size_bytes")
         and (payload.get("acted_on") or {}).get("document_id") == _RECALL["sm_drawing"][0])
 
@@ -931,15 +992,24 @@ _SHEET = _SHEET_BUILD + [
     ("sheet_get", {}, "ok",
      ("sm_rule_count_before_adopt", _recall("sm_rule_count_before_adopt",
                                             lambda p: p["design_rule_count"]))),
-    ("model_create_component", {"name": _SEED2, "sheet_metal": True}, _rule_adopted_from_copy, None),
+    ("model_create_component", {"name": _SEED2, "sheet_metal": True}, _rule_adopted_from_copy,
+     ("sm_seed2_occurrence", _recall("sm_seed2_occurrence", lambda p: p["occurrence"]))),
     ("sheet_get", {"include": ["rules"], "max_results": 200}, _design_rule_count_after_adopt, None),
     # A duplicate the TOOL never created (direct API, bypassing the adopt path) still has to read
     # and resolve as '#1'/'#2' - sheet_get's rows and sheet_edit_rule's rule kind, not a special case.
-    ("sys_execute_script", {"script": _DUP_STEEL_RULE_SCRIPT}, "ok", None),
+    ("sys_execute_script", {"script": _DUP_STEEL_RULE_SCRIPT}, "ok",
+     ("sm_raw_occurrence", _save_raw_names)),
     ("sheet_get", {"include": ["rules"], "max_results": 200}, _duplicate_steel_rows, None),
     ("sheet_edit_rule", {"action": "update", "rule": "design:Steel (mm)#2",
                          "gap": "0.6 mm"}, _second_dup_gap_updated, None),
     ("sheet_get", {"include": ["rules"], "max_results": 200}, _dup_gap_isolated, None),
+    ("design_delete_occurrence", lambda c: {"occurrence": _ctx_get(
+        c, "sm_seed2_occurrence", "Second Seed occurrence name")},
+     _seed2_occurrence_deleted, None),
+    ("design_delete_occurrence", lambda c: {"occurrence": _ctx_get(
+        c, "sm_raw_occurrence", "raw duplicate occurrence name")},
+     _raw_component_occurrence_deleted, None),
+    ("sheet_get", {"include": ["components"], "max_results": 200}, _cleanup_census, None),
     ("model_inspect", {"target": _PART, "include": ["default", "mass"]}, _formed_extent,
      ("sm_before_slot_volume", _recall("sm_before_slot_volume", lambda p: (p.get("mass") or {})["volume"]))),
     ("find_geometry", {"target": _PART, "kind": "planar_face", "max_results": 25},
@@ -1282,7 +1352,9 @@ _SHEET_DRAWING = [
      ("sm_drawing_session", _recall("sm_drawing_session", lambda p: p["document_handle"]))),
     _dwell(4.0),
     ("doc_get", {}, _drawing_saved_session, None),
-    ("drawing_get", {"include": ["views"]}, _drawing_sheets, None),
+    ("drawing_get", {"include": ["views"]}, _drawing_sheets,
+     ("sm_sheet_names", _recall("sm_sheet_names", lambda p: sorted(
+         row.get("name") for row in (p.get("sheets") or []) if isinstance(row, dict))))),
     ("drawing_edit_sheet", {"action": "tidy_up", "sheet": _PART + "_2"},
      lambda p: p.get("tidied") is True and p.get("views") == 4, None),
     ("drawing_export", lambda c: {"format": "pdf", "file_path": _PDF,

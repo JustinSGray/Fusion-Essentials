@@ -109,19 +109,17 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
 
 
 TOOL_DESCRIPTION = (
-    "Read the design's sketches, or ONE sketch's overview: counts, constrained state, and profile "
-    "handles for model_extrude."
+    "List sketches or read one: curve/constraint state and profile handles for model_extrude."
 )
 tool = (
     Tool.create_simple(name="sketch_get", description=TOOL_DESCRIPTION)
-    .add_input_property("sketch_name", {"type": "string",
-            "description": "Omit for the paged summary list."})
+    .add_input_property("sketch_name", {"type": "string"})
     .add_input_property("max_results", {"type": "integer",
-            "description": f"Summary rows per read (default {_LIST_CAP})."})
+            "description": f"Summary page size; default {_LIST_CAP}."})
     .add_input_property("component", {"type": "string",
-            "description": "Component to read within: a name or occurrence fullPathName/handle."})
+            "description": "Component name/occurrence fullPathName/handle."})
     .add_input_property("include_entities", {"type": "boolean",
-            "description": "Adds the full entity X-ray."})
+            "description": "Include entity details."})
     .add_input_property(*_inputs.UNITS.as_property())
     .strict_schema()
 )

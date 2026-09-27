@@ -4,7 +4,7 @@
 """Lint: a write tool whose 'operation' enum offers cut or intersect fails unless its handler (or a
 same-module helper it directly calls) takes a MATERIAL reading - volume, face count, lump, body
 census, native token - AFTER a features.<x>.add(...) mutation, with an error(...) gate on the
-surface. A tool that cannot take one goes in the shrink-only _MATERIAL_EXEMPT with a reason."""
+surface. Audited alternative mutation shapes and evidence are recorded in _MATERIAL_EXEMPT."""
 
 import inspect
 import re
@@ -25,10 +25,12 @@ _ERROR_CALL = re.compile(r"\berror\(")
 # every name called in a source part - how the handler's own same-module helpers are found.
 _CALLED_NAME = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
-# Tools in the target set that cannot take a material reading: name -> the audited reason, either
-# 'evidence:' (it verifies with a reading outside this lint's vocabulary) or 'shape:' (its
-# cut/intersect removes no material). Shrink-only - never a quiet exit from the detector.
+# Audited shape/evidence exceptions: alternative mutations or material readings the scanner
+# cannot represent, and operations whose cut/intersect choice removes no material.
 _MATERIAL_EXEMPT = {
+    'model_edit_extrude': 'evidence: in-place property/extent setters have no features.add call; '
+                         'the handler compares pre/post _geometry volume, area, bounds and center '
+                         'of mass and returns error when unchanged',
     'mesh_combine': 'evidence: a MeshBody carries no volume, and the meshCombineFeatures collection '
                     'is held in a local before its add() - the target mesh TRIANGLE count is read '
                     'before and after instead, and an unchanged count on a cut/intersect is an '
@@ -143,6 +145,5 @@ class TestMaterialEffectVerified:
                 stale.append(f"{name} (not a cut-capable write tool)")
             elif _verifies_material(_handler_parts(item)):
                 stale.append(f"{name} (now reads material back - drop the exemption)")
-        assert not stale, ("stale _MATERIAL_EXEMPT entries - the table only shrinks:\n  "
+        assert not stale, ("stale audited _MATERIAL_EXEMPT entries:\n  "
                            + "\n  ".join(stale))
-

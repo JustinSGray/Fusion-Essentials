@@ -6,9 +6,11 @@ refuses, which chain document is opened, when a run counts as stalled, and what 
 The Fusion wire is a stub returning (is_error, payload); nothing here launches an executor."""
 
 import json
+import io
 import os
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -242,18 +244,32 @@ class TestWatch:
         proctor.kill_tree(proc)
         assert ran[-1] == "kill"
 
-    def test_launch_records_executor_start_failure(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("start_fails", [False, True])
+    def test_launch_isolates_cwd_and_preserves_artifacts(self, tmp_path, monkeypatch, start_fails):
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         monkeypatch.setattr(proctor.shutil, "which", lambda name: "claude")
         monkeypatch.setattr(proctor, "CONFIG_DIR", str(tmp_path / "config"))
         monkeypatch.setattr(proctor, "executor_login", lambda env: {})
-        monkeypatch.setattr(proctor.subprocess, "Popen",
-                            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("quota")))
+        working_dirs = []
+        def spawn(*args, **kwargs):
+            cwd = kwargs["cwd"]
+            working_dirs.append(cwd)
+            assert os.path.isdir(cwd) and os.listdir(cwd) == []
+            for parent in (str(tmp_path), proctor.harness.REPO_ROOT):
+                assert not Path(cwd).resolve().is_relative_to(Path(parent).resolve())
+            if start_fails:
+                raise OSError("quota")
+            return types.SimpleNamespace(stdin=io.StringIO(), stderr=io.StringIO(),
+                                         poll=lambda: 0, wait=lambda: 0, returncode=0)
+        monkeypatch.setattr(proctor.subprocess, "Popen", spawn)
+        monkeypatch.setattr(proctor, "kill_tree", lambda proc: None)
         ended, call_times, returncode = proctor.launch("prompt", str(run_dir), "opus")
-        assert ended == "executor launch failed: quota"
-        assert call_times == [] and returncode is None
-        assert (run_dir / "stderr.txt").read_text(encoding="utf-8") == "quota"
+        assert ended == ("executor launch failed: quota" if start_fails else "report")
+        assert call_times == [] and returncode == (None if start_fails else 0)
+        assert (run_dir / "stderr.txt").read_text(encoding="utf-8") == ("quota" if start_fails else "")
+        assert (run_dir / "transcript.jsonl").exists() and (run_dir / "mcp.json").exists()
+        assert len(working_dirs) == 1 and not os.path.exists(working_dirs[0])
 
     def test_main_records_failed_staged_and_partial_runs_and_returns_nonzero(self, tmp_path, monkeypatch):
         scenario = tmp_path / "S99_Widget.md"

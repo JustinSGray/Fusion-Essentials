@@ -2,7 +2,7 @@
 
 _Auto-generated from the live registry by `tests/gen_manifest.py`. Do not edit by hand — re-run the generator after adding/renaming a tool or kind. `--check` fails the suite if this is stale. This is the batch form of the `sys_find_tool` live lookup: the one place to see what already exists before building it._
 
-**Tools:** 208  |  **Input-kinds:** 27  |  write-status: `·` read · `✎` write · `⚠` destructive
+**Tools:** 210  |  **Input-kinds:** 27  |  write-status: `·` read · `✎` write · `⚠` destructive
 
 ## Input kinds — reference EXISTING geometry/structure with these (don't hand-roll a name/index)
 
@@ -53,11 +53,12 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `model_create_component` | Create a new EMPTY component occurrence, at root unless 'parent' nests it |
 | ✎ | `model_draft` | Taper (draft) faces relative to a pull plane.
 Produces: feature -> design_delete_feature, faces_drafted, faces_moved, faces_compared. |
+| ✎ | `model_edit_extrude` | Edit solid Extrude; refs from design_get/sketch_get. |
 | ✎ | `model_emboss` | Stamp sketch profiles or text onto faces; a negative 'depth' engraves.
 Produces: feature -> design_delete_feature. |
 | ✎ | `model_extrude` | Extrude a closed sketch profile into a solid; sketch_get returns profile handles. |
 | ✎ | `model_fillet` | Round (fillet) edges; model_chamfer bevels |
-| ✎ | `model_hole` | Drill holes with the Hole feature, so it carries hole and thread metadata; several 'points' make ONE patterned feature. |
+| ✎ | `model_hole` | Drill a Hole feature; multiple points share one feature. |
 | · | `model_inspect` | Measure a target: the bounding box by default, mass or mesh stats through 'include'. |
 | ✎ | `model_loft` | Loft through ordered sections; model_stitch closes a surface loft. |
 | · | `model_measure_between` | Measure the distance or angle between two targets; a distance of 0 is touching. |
@@ -154,7 +155,7 @@ Produces: feature, area_after. |
 | ⚠ | `sketch_delete_entity` | Delete ONE sketch entity, constraint, dimension or text, named as '<type>:<index>'. |
 | ✎ | `sketch_dimension` | Add dimensional constraints to one sketch, each optionally driven to a value. |
 | ✎ | `sketch_edit_curve` | Edit an EXISTING sketch curve in place |
-| · | `sketch_get` | Read the design's sketches, or ONE sketch's overview: counts, constrained state, and profile handles for model_extrude. |
+| · | `sketch_get` | List sketches or read one: curve/constraint state and profile handles for model_extrude. |
 | ✎ | `sketch_insert_svg` | Import an SVG into a sketch at (x,y).
 Produces: curves_added, sketch_extent. |
 | ✎ | `sketch_move` | MOVE existing sketch entities by one transform. |
@@ -236,7 +237,7 @@ Produces: full... |
 | ⚠ | `design_delete_occurrence` | Delete one component occurrence; if it was the last instance of its component, the component goes too. |
 | ⚠ | `design_edit_timeline` | Drive the parametric timeline |
 | ✎ | `design_export` | Export a body, component/occurrence or the whole design (omit 'target') to a CAD file on local disk. |
-| · | `design_get` | Read the active design: modelling mode, contents and timeline health by default; 'include' pulls one deeper slice. |
+| · | `design_get` | Design mode, contents, timeline health; include selects detail. |
 | ✎ | `design_move_occurrence` | Re-parent an occurrence into another occurrence's component.
 Produces: full_path -> joint_create/assembly_move. |
 | ✎ | `design_recompute` | Force a full recompute so downstream features rebuild against current values |
@@ -295,6 +296,7 @@ Produces: sketch_name, curves_landed. |
 Produces: sketch_count. |
 | ✎ | `drawing_dimension` | Dimension one view of the active drawing: auto, or one dimension on curves from drawing_get(include=['curves'], view=N).
 Produces: dimension_count_after. |
+| ⚠ | `drawing_edit_revisions` | Add, update, delete, hide or show rows of a sheet's one revision table |
 | ⚠ | `drawing_edit_sheet` | Manage the active 2D drawing's sheets; tidy_up lays a sheet's views out again. |
 | ✎ | `drawing_export` | Export the active 2D drawing to PDF, DXF or DWG on local disk - open the drawing first (doc_open by file_id).
 Produces: file_path, size_bytes. |
@@ -339,8 +341,8 @@ Produces: annot... |
 
 | | Tool | Summary |
 |---|---|---|
-| · | `find_geometry` | Scan a part's faces/edges/vertices and return the short-lived handles other tools consume, each with kind, world position and shape data.
-Produces: handle -> jo... |
+| · | `find_geometry` | Find short-lived handles with kind, world position and shape.
+Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/model_chamfer/model... |
 
 ### workspace
 
