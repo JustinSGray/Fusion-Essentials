@@ -27,8 +27,8 @@ def handler(request_key: str = "") -> dict:
 
 
 TOOL_DESCRIPTION = (
-    "Poll deferred drawing_create, drawing_update, or drawing_export by caller-known request_key. "
-    "It reads stored state and does not replay work."
+    "Poll deferred drawing_create, drawing_update or drawing_export by request_key; it reads "
+    "stored state and does not replay work."
 )
 
 tool = (

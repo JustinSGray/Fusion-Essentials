@@ -328,7 +328,7 @@ def handler(geometry=None, sheet_name: str = "", name: str = "") -> dict:
 
 
 TOOL_DESCRIPTION = (
-    "Draw 2D geometry on a NEW sketch on a sheet of the active 2D drawing document."
+    "Draw 2D geometry on a NEW sketch on a sheet of the active drawing."
 )
 
 FULL_DESCRIPTION = TOOL_DESCRIPTION + "\n" + _outputs.produces_block(RETURNS)

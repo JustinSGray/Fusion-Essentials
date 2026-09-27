@@ -89,8 +89,8 @@ class FakeDocumentSettings:
 
 @fusion_fake(live_type="View", facts=("shape-dump-drawing-world",))
 class FakeView:
-    """One drawing View: `type` is the only readable fact it carries - no name, scale or position -
-    and viewCurves is populated with items exposing no readable geometry."""
+    """One drawing View: `type` and viewCurves, whose items read a type and four points (start,
+    end, mid, center); a View carries no readable name, scale or position."""
     def __init__(self, view_type=None, curves=()):
         self.type = view_type
         self.viewCurves = _NamedCollection(list(curves))

@@ -102,11 +102,6 @@ _ENUM_INPUTS = (
     ("tangent_edges", "TangentEdgeDisplayTypes", _TANGENT_EDGE_MAP),
 )
 
-# center_line / center_mark have no enum to reach: adsk.drawing carries no CenterLineDisplayTypes or
-# CenterMarkDisplayTypes family (the namespace holds CenterLineOptions / CenterMarkOptions classes
-# instead), so a non-default request is refused rather than dropped by a best-effort setter.
-_UNREACHABLE_INPUTS = {"center_line": ("CenterLineDisplayTypes", "CenterLineOptions"),
-                       "center_mark": ("CenterMarkDisplayTypes", "CenterMarkOptions")}
 _STANDARD = _inputs.Choice("standard", ["iso", "asme"], default="iso")
 _UNITS = _inputs.Choice("units", ["mm", "inch"], default="mm")
 _CONTENT = _inputs.Choice("content", ["full", "visible"], default="full")
@@ -130,12 +125,6 @@ _BEND_TABLE_LOCATION = _inputs.Choice("bend_table_location", ["default"] + list(
 _HOLE_ANNOTATIONS = _inputs.Choice("hole_annotations",
                              ["default", "both", "hole", "thread", "none"],
                              default="default")
-_CENTER_LINE = _inputs.Choice("center_line", ["default", "off", "cylindrical", "holes"], default="default",
-                             description="Refused unless 'default': no enum exists.")
-_CENTER_MARK = _inputs.Choice("center_mark",
-                             ["default", "off", "holes", "fillets", "edges", "punches"],
-                             default="default",
-                             description="Refused unless 'default': no enum exists.")
 _TANGENT_EDGES = _inputs.Choice("tangent_edges", ["default", "off", "full_length", "shortened"],
                              default="default")
 
@@ -392,8 +381,7 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
             fastener_keywords: str = "", view_style: str = "default", parts_list: bool = None,
             parts_list_location: str = "default", template_file: str = "",
             custom_width_mm: float = None, custom_height_mm: float = None,
-            hole_annotations: str = "default", center_line: str = "default",
-            center_mark: str = "default", tangent_edges: str = "default",
+            hole_annotations: str = "default", tangent_edges: str = "default",
             show_interference_edges: bool = None, show_thread_edges: bool = None,
             creation_mode: str = "automatic", flat_isometric=None, bend_table=None,
             bend_table_location: str = "default") -> dict:
@@ -434,12 +422,6 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
     if e:
         return error(e)
     hole_v, e = _HOLE_ANNOTATIONS.resolve(hole_annotations)
-    if e:
-        return error(e)
-    cl_v, e = _CENTER_LINE.resolve(center_line)
-    if e:
-        return error(e)
-    cmk_v, e = _CENTER_MARK.resolve(center_mark)
     if e:
         return error(e)
     te_v, e = _TANGENT_EDGES.resolve(tangent_edges)
@@ -509,14 +491,6 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
                          f"{', '.join(_SHEET_TYPE_ATTR)}.")
         types_v = list(sheet_types)
 
-    for input_name, value in (("center_line", cl_v), ("center_mark", cmk_v)):
-        if value != "default":
-            family, present = _UNREACHABLE_INPUTS[input_name]
-            return error(f"{input_name} '{value}' cannot be applied: adsk.drawing has no {family} enum "
-                         f"on this Fusion version (the namespace carries {present} classes instead), so "
-                         f"the setting has no API to reach and no drawing was created. Leave "
-                         f"{input_name} at 'default'.")
-
     cfg = {
         "creation_mode": mode_v,
         "standard": std, "units": units_v, "content": content_v, "isometric": bool(isometric),
@@ -530,7 +504,7 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
         "base_document": "template" if template_df is not None else None,
         "custom_width_mm": custom_width_mm, "custom_height_mm": custom_height_mm,
         "custom_size": custom_size,
-        "hole_annotations": hole_v, "center_line": cl_v, "center_mark": cmk_v, "tangent_edges": te_v,
+        "hole_annotations": hole_v, "tangent_edges": te_v,
         "show_interference_edges": (bool(show_interference_edges) if show_interference_edges is not None
                                      else None),
         "show_thread_edges": (bool(show_thread_edges) if show_thread_edges is not None else None),
@@ -641,12 +615,10 @@ tool = (
     .add_input_property(*_PARTS_LIST_LOCATION.as_property())
     .add_input_property(*_CREATION_MODE.as_property())
     .add_input_property("template_file", {"type": "string",
-            "description": "Template DataFile id/URL."})
+            "description": "DataFile id/URL."})
     .add_input_property("custom_width_mm", {"type": "number"})
     .add_input_property("custom_height_mm", {"type": "number"})
     .add_input_property(*_HOLE_ANNOTATIONS.as_property())
-    .add_input_property(*_CENTER_LINE.as_property())
-    .add_input_property(*_CENTER_MARK.as_property())
     .add_input_property(*_TANGENT_EDGES.as_property())
     .add_input_property("show_interference_edges", {"type": "boolean"})
     .add_input_property("show_thread_edges", {"type": "boolean"})

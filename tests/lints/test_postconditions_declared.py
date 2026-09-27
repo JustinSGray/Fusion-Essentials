@@ -36,7 +36,7 @@ def _postconditions_of(item):
 # visible instead of a quiet reclassification. The ceiling is an alarm that UN-RINGS itself:
 # the shrink-only half of the test below forces the number back down the moment a gap closes, so
 # a tool parked here while its evidence is unrecorded cannot quietly stay parked.
-_GAP_CEILING = 2
+_GAP_CEILING = 1
 
 
 def _verification_of(item):
@@ -123,6 +123,10 @@ _RUNG_SHORT = {
     "doc_new": "the request carries no value: a new document exists and is active",
     "design_recompute": "the request carries no value: the timeline health after the rebuild is "
                         "the only observation",
+    "drawing_dimension": "a placed dimension's kind reads off the sheet's collection, but no "
+                         "value or points do, so the count and kind census is the strongest read",
+    "drawing_add_symbol": "a placed symbol reads only its kind off the returned object - no text "
+                          "or points - so the count and kind are the strongest read",
 }
 
 

@@ -11,6 +11,7 @@ import adsk.core
 import adsk.fusion
 
 from . import _common
+from . import _drawing_common
 from . import _geom     # owning_bodies - the ONE identity-keyed owning-body walk
 from . import _joints   # the JointOrigin walk (all_joint_origins / find_joint_origins_by_name / proxy)
 from ._export import find_component as _find_component   # the one design-wide by-name component resolve
@@ -3488,6 +3489,47 @@ class SketchRefList(InputKind):
                               f"{_available_sketch_names(d)}.")
             out.append(sk)
         return out, None
+
+
+# ── drawing view-curve point (a curve index and one of its points) ──────────
+
+class CurvePointRef(InputKind):
+    """A point of a drawing view curve as '<curve_index>:<start|end|mid|center>'."""
+
+    MAP_HINT = ("a drawing view-curve point as '<curve_index>:<start|end|mid|center>' from "
+                "drawing_get(include=['curves'])")
+
+    def contract_note(self) -> str:
+        return "'<curve_index>:<start|end|mid|center>'."
+
+    def parse(self, raw):
+        """((curve_index, point_key), error) for the form alone, before any view is read."""
+        points = _drawing_common.CURVE_POINTS
+        index, sep, key = (raw.partition(":") if isinstance(raw, str) else ("", "", ""))
+        number = _ascii_int(index) if sep else None
+        key = key.strip().lower()
+        if number is None or key not in points:
+            return None, (f"'{self.name}' must read '<curve_index>:<{'|'.join(points)}>', "
+                          f"such as '2:start' (got {raw!r}).")
+        return (number, key), None
+
+    def resolve(self, raw, view=None, view_index=None):
+        """(DrawingPoint, error) for the point `raw` names on `view`'s curves."""
+        parsed, err = self.parse(raw)
+        if err:
+            return None, f"{err} drawing_get(include=['curves'], view={view_index}) lists them."
+        index, key = parsed
+        curve, err = _drawing_common.view_curve(view, view_index, index, self.name)
+        if err:
+            return None, err
+        point = _drawing_common.curve_point(curve, key)
+        if point is not None:
+            return point, None
+        kind = _drawing_common.curve_type_label(_common.safe(lambda: curve.type))
+        has = [k for k in _drawing_common.CURVE_POINTS
+               if _drawing_common.curve_point(curve, k) is not None]
+        return None, (f"'{self.name}': curve {index} reads as {kind or 'an unread type'}, which "
+                      f"has no {key} point; it has {', '.join(has) or 'none'}.")
 
 
 # ── the resolver: resolve all declared inputs at once ───────────────────────

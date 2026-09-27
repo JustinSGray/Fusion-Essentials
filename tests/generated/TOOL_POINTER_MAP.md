@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 207  |  **description breadcrumbs:** 307  |  **note/error breadcrumbs:** 663
+**Tools:** 208  |  **description breadcrumbs:** 311  |  **note/error breadcrumbs:** 667
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -17,8 +17,8 @@ close orphans, factor duplicated guards into shared helpers.
 **Read/Acquire (9)** - higher concern, a check-your-work tool nothing points to:
   `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `model_compute_holder`, `model_measure_continuity`, `model_measure_relation`, `sys_get_api_doc`
 
-**Edit (52)** - usually leaf actions, scan for genuine gaps:
-  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
+**Edit (53)** - usually leaf actions, scan for genuine gaps:
+  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
 
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
 - **55x** across 54 module(s): "No active design. Create or open a document first (see doc_new)."
@@ -44,8 +44,8 @@ close orphans, factor duplicated guards into shared helpers.
 - `cam_get`  <- 33  (desc 15, note 18)
 - `data_get`  <- 25  (desc 10, note 15)
 - `model_inspect`  <- 25  (desc 3, note 22)
+- `doc_open`  <- 24  (desc 5, note 19)
 - `sketch_create`  <- 24  (desc 7, note 17)
-- `doc_open`  <- 23  (desc 5, note 18)
 - `sketch_get`  <- 23  (desc 5, note 18)
 - `assembly_get`  <- 21  (desc 4, note 17)
 
@@ -1971,6 +1971,29 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - geometry[] ('') carries , far outside . This call bounds every coordinate and radius to ,  times the sheet's longer side; coordinates are taken as . A coordinate far outside the sheet can stop this...
 - Deleting sketch '' is NOT CONFIRMED: deleteMe answered  and sheet '' would not report its sketch count. Read drawing_get for sheet '' before drawing on it again
 
+### `drawing_add_symbol`
+- beside the attachment - it does not take
+- No drawing to place a symbol on: the active document is not a drawing. Open the drawing (doc_open by file_id) and make it active, then retry.
+- action='edge' places an ISO edge symbol; this drawing's standard reads
+- , and Fusion offers edge symbols on ISO only.
+- Sheet.drawingSymbols.count did not read, so nothing could confirm a placed symbol - nothing was added.
+- Sheet.drawingSymbols returned no input for action='
+- drawing - nothing was added.
+- carries a secondary tolerance, which applies on ASME drawings only; this drawing's standard reads
+- , where Fusion ignores it - drop it.
+- Could not attach the symbol to curve
+- ; the sheet's symbol count reads
+- before), so one added
+- symbol is not confirmed.
+- ; drawing_export shows the sheet.
+- . The sheet's symbol count reads
+- . The sheet's symbol count re-reads
+- before). drawing_get(include=['curves'], view=
+- ) lists the curves to attach to.
+- frames[]  carries a secondary tolerance, which applies on ASME drawings only; this drawing's standard reads , where Fusion ignores it - drop it.
+- was refused on view : . The sheet's symbol count re-reads  ( before). drawing_get(include=['curves'], view=) lists the curves to attach to.
+- returned  on view ; the sheet's symbol count reads  ( before), so one added  symbol is not confirmed. ; drawing_export shows the sheet.
+
 ### `drawing_create`
 - Created as a CLOUD file (NOT opened). Use doc_open(file_id, force_api_open=true), then drawing_export; no manual step is needed up front. If open fails or hangs, opening once in the Fusion UI is a ...
 - Flat drawing options require 'flat_pattern' in sheet_types; enable that sheet or omit the options.
@@ -1993,9 +2016,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - . Pass a DataFile id/versionId or a fusionWebURL from data_get / design_get(include=['tree']).
 - sheet_types must be a list of sheet-type names (e.g. ['component', 'main_assembly']).
 - sheet_types has unknown value(s)
-- ' cannot be applied: adsk.drawing has no
-- enum on this Fusion version (the namespace carries
-- classes instead), so the setting has no API to reach and no drawing was created. Leave
 - createDrawingInput failed:
 - createDrawing failed:
 - custom_width_mm and custom_height_mm must be numbers (got
@@ -2008,7 +2028,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - '' needs , which is not available on this Fusion version - the setting could not be applied, so no drawing was created. Retry with a different .
 - template_file '' could not be resolved to a file. Tried: . Pass a DataFile id/versionId or a fusionWebURL from data_get / design_get(include=['tree']).
 - creation_mode 'manual' requires template_file, which was empty.  This call stops here without creating anything. Pass the template's DataFile id/URL as template_file, or use creation_mode 'automatic'.
-- '' cannot be applied: adsk.drawing has no  enum on this Fusion version (the namespace carries  classes instead), so the setting has no API to reach and no drawing was created. Leave  at 'default'.
 - Custom sheet size:  x   (the document unit),  x  zones - all four read back off the input before the create. The created SHEET's own width/height are not readable from here, so open it and read the...
 
 ### `drawing_delete_sketch`
@@ -2024,31 +2043,41 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - deleteMe() reported success for sketch '' on sheet '', but the sheet's sketch count reads  (was ) - treating the delete as unverified. Re-read drawing_get before retrying.
 
 ### `drawing_dimension`
-- Save the drawing with doc_save to keep them.
-- Auto-dimensioned one view.
-- The document's modified flag could not be read, so nothing here confirms the dimensioning took.
 - No drawing to dimension: the active document is not a drawing. Open the drawing (doc_open by file_id) and make it active, then retry.
-- ' has no views to dimension. Drawing views are created by the automatic generator (drawing_create) or in the Fusion UI - the API cannot add one.
-- Provide 'view' - the index of the view to dimension, 0 to
-- is out of range: sheet '
-- view(s), so the legal indices are 0 to
-- could not be read off sheet '
-- ' - nothing to dimension.
+- Sheet.drawingDimensions.count did not read, so nothing could confirm a placed dimension - action='
+- ' is refused. The manual actions need Fusion 2706 or later; action='auto' still runs here.
+- Sheet.drawingDimensions.count did not read before the add - nothing was added.
+- ; the sheet's dimension count reads
+- before), so one added
+- dimension is not confirmed.
+- ; drawing_export shows the sheet.
+- DrawingPoint.create returned nothing for
+- . The sheet's dimension count reads
+- before). Retry with other points, or on a fresh drawing of the same source (drawing_create).
+- Auto-dimensioned view
+- : the sheet's dimension count went from
+- Auto-dimensioned one view.
 - createAutoDimensionInput returned nothing - this sheet cannot be auto-dimensioned.
 - Setting the view did not take - AutoDimensionInput.view reads back null after assigning view index
 - , so the dimensioning would run on no view.
 - autoDimension returned false for view index
 - ' - Fusion placed nothing. Treating this as a failure.
-- autoDimension reported success for view index
-- but the document is still unmodified, so nothing was placed. Treating this as a failure.
-- The document was ALREADY modified before this call, so the modified flag cannot confirm this dimensioning on its own.
-- 'view' must be an integer view index (got
+- The document's modified flag could not be read, so nothing here confirms the dimensioning took.
 - createAutoDimensionInput failed:
 - Could not set the view to dimension (index
-- The dimensions themselves are NOT readable: adsk.drawing has no dimension entity, so they cannot be counted, listed or deleted through the API. Export the sheet (drawing_export) or open it in Fusio...
-- Sheet '' has no views to dimension. Drawing views are created by the automatic generator (drawing_create) or in the Fusion UI - the API cannot add one.
+- autoDimension returned true for view index
+- ', but the sheet's dimension count reads
+- before), so no added dimension is confirmed.
+- autoDimension reported success for view index
+- but the document is still unmodified, so nothing was placed.
+- The document was ALREADY modified before this call, so the modified flag cannot confirm this dimensioning on its own.
+- Sheet.drawingDimensions did not read on this build, so the dimensions cannot be counted: the call's boolean and the document's modified flag are the whole check. Export the sheet (drawing_export) t...
+- action='angular' needs 'curves' as two different line indices of view  (got ); drawing_get(include=['curves'], view=) lists them.
+- raised on view : . The sheet's dimension count reads  ( before). Retry with other points, or on a fresh drawing of the same source (drawing_create).
+- returned  on view ; the sheet's dimension count reads  ( before) and its  count  ( before), so one added  dimension is not confirmed. ; drawing_export shows the sheet.
+- Sheet.drawingDimensions.count did not read, so nothing could confirm a placed dimension - action='' is refused. The manual actions need Fusion 2706 or later; action='auto' still runs here.
 - Setting the view did not take - AutoDimensionInput.view reads back null after assigning view index , so the dimensioning would run on no view.
-- autoDimension reported success for view index  but the document is still unmodified, so nothing was placed. Treating this as a failure.
+- autoDimension returned true for view index  with strategy '', but the sheet's dimension count reads  after the call ( before), so no added dimension is confirmed.
 
 ### `drawing_edit_sheet`
 - The active document is not a drawing, so it has no sheets. Open the drawing (doc_open by file_id) and make it active, then retry.
@@ -2125,11 +2154,15 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - '=' is a format= option, but this call asked for format= - the  export options carry no such setting. Drop '', or export with format=.
 
 ### `drawing_get`
-- collection_index is 1-based; export_index is unknown - export sheets and inspect the PDF for page order. Width/height are mm. include=['views'] adds index/type; include=['tables'] adds custom table...
+- collection_index is 1-based; export_index is unknown - the PDF shows page order. Width/height are mm. include=['views'] adds index/type, ['curves'] curve points (view=N scopes one), ['tables'] cust...
 - Unknown include value(s):
 - The active document is not a 2D drawing. Activate the drawing document first (doc_activate), then read it.
+- 'view' must be a 0-based view index (got
+- scopes include=['views'] or ['curves'] - add one.
 - The drawing's sheet count could not be read, so sheet name '
 - ' cannot be resolved. Retry drawing_get after the drawing finishes updating.
+- is out of range on sheet '
+- ; pass sheet= to read one sheet.
 - The drawing's sheet count could not be read, so sheet name '' cannot be resolved. Retry drawing_get after the drawing finishes updating.
 
 ### `drawing_get_status`

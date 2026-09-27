@@ -15,6 +15,7 @@ from ..mcp_primitives.registry import register
 from ._common import error, ok, safe
 from . import _common
 from . import _drawing_common
+from . import _inputs
 
 app = adsk.core.Application.get()
 
@@ -54,19 +55,33 @@ def _custom_size_facts(sheet):
     return {"width": w, "height": h}
 
 
-def _views_rows(sheet, cap):
-    """Per-view rows for one sheet: {index, type}. Type is the only readable fact a drawing View
-    carries - it has no name, scale or position, and its populated viewCurves collection hands back
-    ViewCurve instances with no readable geometry."""
+def _curve_rows(view, cap):
+    """(rows, truncated) - a view's curves as _drawing_common.curve_row records, or (None, False)."""
+    curves = safe(lambda: view.viewCurves)
+    count = _common.counted(lambda: curves.count)
+    if count is None:
+        return None, False
+    rows = [_drawing_common.curve_row(i, safe(lambda i=i: curves.item(i)))
+            for i in range(min(count, cap))]
+    return rows, count > cap
+
+
+def _views_rows(sheet, cap, only=None, with_curves=False):
+    """(rows, truncated) - {index, type} per view or for view `only`, with its curves if asked."""
     views = safe(lambda: sheet.views)
     count = _common.counted(lambda: views.count)
     if count is None:
         return None, False
     rows = []
-    for i in range(min(count, cap)):
+    for i in ([only] if only is not None else range(min(count, cap))):
         v = safe(lambda i=i: views.item(i))
-        rows.append({"index": i, "type": _view_type_label(safe(lambda: v.type)) if v else None})
-    return rows, count > cap
+        row = {"index": i, "type": _view_type_label(safe(lambda: v.type)) if v else None}
+        if with_curves:
+            row["curves"], truncated = _curve_rows(v, _MAX_CURVES_PER_VIEW)
+            if truncated:
+                row["curves_truncated"] = True
+        rows.append(row)
+    return rows, only is None and count > cap
 
 
 def _table_row(table, row_cap, col_cap):
@@ -102,14 +117,15 @@ def _tables_rows(sheet, cap, row_cap, col_cap):
 
 
 _MAX_VIEWS_PER_SHEET = 50
+_MAX_CURVES_PER_VIEW = 60
 _MAX_TABLES_PER_SHEET = 20
 _MAX_TABLE_ROWS = 20
 _MAX_TABLE_COLS = 20
 
-_SLICES = ("views", "tables")
+_SLICES = ("views", "curves", "tables")
 
 
-def handler(include=None, sheet: str = "") -> dict:
+def handler(include=None, sheet: str = "", view: int = None) -> dict:
     # include accepts a list or a comma-string, like the family's other rich reads.
     if isinstance(include, str):
         raw = [p.strip().lower() for p in include.split(",") if p.strip()]
@@ -120,7 +136,17 @@ def handler(include=None, sheet: str = "") -> dict:
         return error(f"Unknown include value(s): {', '.join(bad)}. "
                      f"This read offers: {', '.join(_SLICES)}.")
     want_views = "views" in raw
+    want_curves = "curves" in raw
     want_tables = "tables" in raw
+    if view is not None:
+        # a client holding a stale schema sends a new integer input as a digit string
+        index = (_inputs._ascii_int(view) if isinstance(view, str)
+                 else view if type(view) is int and view >= 0 else None)
+        if index is None:
+            return error(f"'view' must be a 0-based view index (got {view!r}).")
+        view = index
+        if not (want_views or want_curves):
+            return error(f"'view'={view} scopes include=['views'] or ['curves'] - add one.")
 
     dd = _drawing_common.active_drawing_document()
     dwg = safe(lambda: dd.drawing) if dd is not None else None
@@ -176,11 +202,20 @@ def handler(include=None, sheet: str = "") -> dict:
         custom = _custom_size_facts(s)
         if custom is not None and facts.get("sheet_size") is None:
             facts["custom_size"] = dict(custom, unit=_drawing_common.coordinate_unit(dwg))
-        if want_views:
-            vrows, truncated = _views_rows(s, _MAX_VIEWS_PER_SHEET)
+        facts["dimension_count"] = _common.counted(lambda: s.drawingDimensions.count)
+        facts["symbol_count"] = _common.counted(lambda: s.drawingSymbols.count)
+        if want_views or want_curves:
+            n = facts.get("views")
+            if view is not None and n is not None and view >= n:
+                span = f" (0 to {n - 1})" if n else ""
+                return error(f"'view'={view} is out of range on sheet '{sheet_name}', which has "
+                             f"{n} view(s){span}; pass sheet= to read one sheet.")
+            vrows, truncated = _views_rows(s, _MAX_VIEWS_PER_SHEET, view, want_curves)
             facts["view_rows"] = vrows
             if truncated:
                 facts["view_rows_truncated"] = True
+            if want_curves:
+                facts["curve_unit"] = _drawing_common.coordinate_unit(dwg)
         if want_tables:
             trows, ttrunc = _tables_rows(s, _MAX_TABLES_PER_SHEET, _MAX_TABLE_ROWS, _MAX_TABLE_COLS)
             facts["tables"] = trows
@@ -190,26 +225,26 @@ def handler(include=None, sheet: str = "") -> dict:
     payload["sheets"] = rows
 
     payload["note"] = (
-        "collection_index is 1-based; export_index is unknown - export sheets and inspect the PDF "
-        "for page order. Width/height are mm. include=['views'] adds index/type; include=['tables'] "
-        "adds custom tables. viewCurves exposes no readable geometry. View names/scales/positions, "
-        "parts lists, balloons, quantities and placed dimensions have no read API - the exported "
-        "PDF's text is the read.")
+        "collection_index is 1-based; export_index is unknown - the PDF shows page order. "
+        "Width/height are mm. include=['views'] adds index/type, ['curves'] curve points (view=N "
+        "scopes one), ['tables'] custom tables. dimension_count/symbol_count count placed "
+        "dimensions/symbols; values, symbol kinds/text, view names/scales, parts lists, balloons "
+        "and quantities do not read back - the PDF's text is the read.")
     return ok(payload)
 
 
 TOOL_DESCRIPTION = (
-    "Read the ACTIVE 2D drawing: standard, units, and a sheet listing with per-sheet facts and a "
-    "1-based collection_index (export order unavailable)."
+    "Read the ACTIVE 2D drawing: standard, units and per-sheet facts."
 )
 
 tool = (
     Tool.create_simple(name="drawing_get", description=TOOL_DESCRIPTION)
     .add_input_property("include", {"type": "array",
-            "items": {"type": "string", "enum": list(_SLICES)},
-            "description": "Omit for the orientation read."})
+            "items": {"type": "string", "enum": list(_SLICES)}})
     .add_input_property("sheet", {"type": "string",
-            "description": "One sheet by name; omit for all."})
+            "description": "Sheet name; omit for all."})
+    .add_input_property("view", {"type": "integer",
+            "description": "0-based; scopes views/curves."})
     .strict_schema()
 )
 item = Item.create_tool_item(tool=tool, write="read", handler=handler, run_on_main_thread=True)

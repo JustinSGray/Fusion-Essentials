@@ -3,7 +3,7 @@
 Covers the creation flow: source-DataFile guard (unsaved design refused), the createDrawingInput/
 createDrawing dispatch, creation-mode selection (automatic by default; manual refused without a
 template), enum resolution (each map's member spellings, an absent family or member failing the call
-before the create transaction opens, and the center_line/center_mark refusal), the full
+before the create transaction opens), the full
 auto-generator config mapping (standard/units/content/size/orientation/scope, sheet types,
 auto-dimensioning, fastener omission, view style, isometric), the size<->standard and portrait
 guards, and that a created cloud drawing reports its file_id. No live Fusion.
@@ -121,8 +121,6 @@ _STRATEGY_FAMILY = live_api_facts.ENUMS["drawing.DimensionStrategyTypes"]
 _SIZE_FAMILY = live_api_facts.ENUMS["drawing.SheetSizes"]
 _CREATION_MODES = live_api_facts.ENUMS["drawing.DrawingCreationModes"]
 
-# No CenterLineDisplayTypes / CenterMarkDisplayTypes: adsk.drawing carries no such families, so the
-# stand-in namespace carries none either and a getattr for them raises, as the live one does.
 _UNMEASURED_FAMILIES = {
     "DrawingContentTypes": _CONTENT_FAMILY,
     "SheetCreationTypes": _SHEET_CREATION_FAMILY,
@@ -980,54 +978,11 @@ class TestPerViewDraftingDisplay:
         assert node.isShowInterferenceEdges is None
         assert node.isShowThreadEdges is None
 
-    def test_unknown_center_line_is_refused(self, install):
-        install()
-        res = dc.handler(center_line="bogus")
-        assert res["isError"] is True
-        assert "center_line" in res["message"] and "bogus" in res["message"]
-
-    def test_unknown_center_mark_is_refused(self, install):
-        install()
-        res = dc.handler(center_mark="bogus")
-        assert res["isError"] is True
-        assert "center_mark" in res["message"] and "bogus" in res["message"]
-
     def test_unknown_tangent_edges_is_refused(self, install):
         install()
         res = dc.handler(tangent_edges="bogus")
         assert res["isError"] is True
         assert "tangent_edges" in res["message"] and "bogus" in res["message"]
-
-    def test_center_line_request_is_refused_naming_the_absent_family(self, install):
-        # adsk.drawing carries no CenterLineDisplayTypes, so the setting has no API to reach; a
-        # request must fail rather than pass through a best-effort setter that drops it.
-        dm = install()
-        res = dc.handler(center_line="holes")
-        assert res["isError"] is True
-        assert "center_line" in res["message"] and "CenterLineDisplayTypes" in res["message"]
-        assert dm._mode is None
-        assert dm._created_with is None
-
-    def test_center_mark_request_is_refused_naming_the_absent_family(self, install):
-        dm = install()
-        res = dc.handler(center_mark="fillets")
-        assert res["isError"] is True
-        assert "center_mark" in res["message"] and "CenterMarkDisplayTypes" in res["message"]
-        assert dm._mode is None
-        assert dm._created_with is None
-
-    def test_center_line_and_mark_at_default_do_not_block_creation(self, install):
-        install()
-        out = _payload(dc.handler(center_line="default", center_mark="default"))
-        assert out["created"] is True
-
-    def test_the_two_input_descriptions_state_the_refusal_their_resolver_enforces(self):
-        # the schema advertises values the handler refuses outright; a description that sells them
-        # as a capability is the only place an agent could learn otherwise before it calls
-        for kind in (dc._CENTER_LINE, dc._CENTER_MARK):
-            desc = kind.as_property()[1]["description"]
-            assert "Refused unless 'default'" in desc, kind.name
-            assert "no enum exists" in desc, kind.name
 
 
 class TestJustSavedLag:

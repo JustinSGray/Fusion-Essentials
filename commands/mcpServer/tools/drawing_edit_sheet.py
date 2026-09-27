@@ -22,8 +22,7 @@ app = adsk.core.Application.get()
 
 _ACTIONS = ("add", "copy", "delete", "rename", "set_size", "set_orientation", "tidy_up")
 
-_ACTION = _inputs.Choice("action", list(_ACTIONS), required=True,
-                         description="The sheet operation to perform.")
+_ACTION = _inputs.Choice("action", list(_ACTIONS), required=True)
 _SHEET_SIZE = _inputs.Choice("sheet_size", list(SHEET_SIZE_MAP),
                              description="For set_size.")
 _ORIENTATION = _inputs.Choice("orientation", ["landscape", "portrait"],
@@ -358,15 +357,14 @@ def handler(action: str = "", sheet: str = "", new_name: str = "", sheet_size: s
 
 
 TOOL_DESCRIPTION = (
-    "Manage the active 2D drawing's sheets - add, copy, delete, rename, set_size, set_orientation, "
-    "or tidy_up (lay a sheet's views out again)."
+    "Manage the active 2D drawing's sheets; tidy_up lays a sheet's views out again."
 )
 
 tool = (
     Tool.create_simple(name="drawing_edit_sheet", description=TOOL_DESCRIPTION)
     .add_input_property(*_ACTION.as_property())
     .add_input_property("sheet", {"type": "string",
-            "description": "By name; omit for the active sheet."})
+            "description": "Omit for the active sheet."})
     .add_input_property("new_name", {"type": "string",
             "description": "For add, copy or rename."})
     .add_input_property(*_SHEET_SIZE.as_property())

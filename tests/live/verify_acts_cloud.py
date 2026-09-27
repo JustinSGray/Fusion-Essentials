@@ -1054,14 +1054,16 @@ def _drawing_current(p):
 
 
 def _dimensioned(p):
-    """drawing_dimension: the request result and modified flags, with no placement readback."""
-    return _measured("the auto-dimension request returned true; placement is unverified",
+    """drawing_dimension auto: the request returned true and the sheet's dimension count grew."""
+    before, after = p.get("dimension_count_before"), p.get("dimension_count_after")
+    return _measured("the auto-dimension request raised the sheet's dimension count",
                      {"dimensioned": p.get("dimensioned"),
                       "document_modified_before": p.get("document_modified_before"),
                       "document_modified": p.get("document_modified"),
                       "strategy": p.get("strategy"),
-                      "placement_verified": False},
-                     p.get("dimensioned") is True and p.get("document_modified") is True)
+                      "dimension_count_before": before, "dimension_count_after": after},
+                     p.get("dimensioned") is True and p.get("document_modified") is True
+                     and type(before) is int and type(after) is int and after > before)
 
 
 def _drawing_persistence_start(ctx):
@@ -1111,12 +1113,14 @@ def _drawing_sheet_structure(sheet):
 
 
 def _drawing_persistence_structure(p):
-    """Return retained drawing facts with only native view collection order normalized."""
+    """Return retained drawing facts, view order normalized, the placed-item counts left out."""
     values = _drawing_persistence_sheet_values(p)
     sheets = values.get("sheets")
     if not isinstance(sheets, list) or not all(isinstance(sheet, dict) for sheet in sheets):
         raise AssertionError("the retained drawing sheet collection is incomplete")
-    normalized = [{**sheet, "view_rows": _drawing_sheet_structure(sheet)["view_rows"]}
+    normalized = [{**{k: v for k, v in sheet.items()
+                      if k not in ("dimension_count", "symbol_count")},
+                   "view_rows": _drawing_sheet_structure(sheet)["view_rows"]}
                   for sheet in sheets]
     return {**values, "sheets": normalized}
 
@@ -1310,13 +1314,22 @@ def _drawing_original_settled(p, polls=_SETTLE_POLLS):
     raise AssertionError(f"Copied sheet still present after {polls} reads: {names!r}")
 
 
+def _drawing_persisted_counts(sheet):
+    """(read, expected) dimension/symbol counts: the last recalled add's, else the baseline's."""
+    base = ((_RECALL.get("drawing_persist_sheets") or {}).get("sheets") or [{}])[0]
+    want = {"dimension_count": _RECALL.get("drawing_persist_dims", base.get("dimension_count")),
+            "symbol_count": _RECALL.get("drawing_persist_symbols", base.get("symbol_count"))}
+    return {key: sheet.get(key) for key in want}, want
+
+
 def _drawing_persistence_sheets(p, compare=False):
-    """Verify the clean plate's sheet/view identities without claiming dimension placement."""
+    """The plate's sheet/view identities; compare=True also holds them and both counts to recall."""
     _sheets_answer(p)
     rows = p.get("sheets") or []
     sheet = rows[0]
     drawing = _RECALL.get("drawing") or [None, None]
-    values = _drawing_persistence_sheet_values(p)
+    counts, want = _drawing_persisted_counts(sheet)
+    values = {**_drawing_persistence_sheet_values(p), "expected_counts": want}
     return _measured("the plate drawing's readable sheet and view identities", values,
                      bool(drawing[0]) and p.get("drawing") == drawing[1]
                      and (p.get("active_document") or {}).get("document_id") == drawing[0]
@@ -1331,9 +1344,11 @@ def _drawing_persistence_sheets(p, compare=False):
                      and _drawing_sheet_structure(sheet)["view_rows"]
                      == {"indices": [0, 1, 2, 3],
                          "types": ["base", "projected", "projected", "projected"]}
-                     and (not compare or _drawing_persistence_structure(p)
-                          == _drawing_persistence_structure(
-                              _RECALL.get("drawing_persist_sheets") or {})))
+                     and (not compare or (_drawing_persistence_structure(p)
+                                          == _drawing_persistence_structure(
+                                              _RECALL.get("drawing_persist_sheets") or {})
+                                          and all(type(v) is int for v in want.values())
+                                          and counts == want)))
 
 
 def _drawing_overall_requested(view):
@@ -1349,6 +1364,207 @@ def _drawing_overall_requested(view):
                          and p.get("view_index") == view and p.get("view_count") == 4
                          and p.get("strategy") == "overall" and p.get("datum") == "bottom_left")
     return check
+
+
+def _drawing_base_view(ctx=None):
+    """Return the original sheet's one base-view index from its captured view rows."""
+    rows = _drawing_original_sheet(ctx).get("view_rows") or []
+    bases = [row.get("index") for row in rows
+             if isinstance(row, dict) and row.get("type") == "base"]
+    if len(bases) != 1 or type(bases[0]) is not int:
+        raise AssertionError(f"the original sheet carries no single base view: {bases!r}")
+    return bases[0]
+
+
+def _xy(point):
+    """True for an [x, y] pair of real numbers."""
+    return isinstance(point, list) and len(point) == 2 and all(_num(v) for v in point)
+
+
+def _drawing_lines(curves):
+    """The line rows of a curves slice whose two ends read."""
+    return [c for c in curves or [] if isinstance(c, dict) and c.get("type") == "line"
+            and _xy(c.get("start")) and _xy(c.get("end"))]
+
+
+def _drawing_curves_args(ctx):
+    """Read the original sheet's base view with its curve points."""
+    return {"include": ["curves"], "sheet": _drawing_original_sheet(ctx)["name"],
+            "view": _drawing_base_view(ctx)}
+
+
+def _drawing_curves_listed(p):
+    """drawing_get(include=['curves'], view=N): the base view lists lines with numeric ends."""
+    rows = p.get("sheets") or []
+    sheet = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+    views = sheet.get("view_rows") or []
+    curves = (views[0].get("curves") if len(views) == 1 and isinstance(views[0], dict)
+              else None)
+    return _measured("the base view lists line curves with numeric ends in the sheet's unit",
+                     {"sheet": sheet.get("name"), "curve_unit": sheet.get("curve_unit"),
+                      "views": [(v.get("index"), v.get("type")) for v in views
+                                if isinstance(v, dict)],
+                      "curves": len(curves) if isinstance(curves, list) else curves,
+                      "lines": len(_drawing_lines(curves)),
+                      "dimension_count": sheet.get("dimension_count")},
+                     sheet.get("name") == _drawing_original_sheet()["name"]
+                     and sheet.get("curve_unit") == "mm"
+                     and len(views) == 1 and views[0].get("index") == _drawing_base_view()
+                     and views[0].get("type") == "base" and len(_drawing_lines(curves)) >= 1
+                     and type(sheet.get("dimension_count")) is int)
+
+
+def _drawing_curves_record(p):
+    """Park the base view's curves, and the sheet's count the first manual add starts from."""
+    sheet = p["sheets"][0]
+    _RECALL["drawing_persist_dims"] = sheet["dimension_count"]
+    _RECALL["drawing_persist_curves"] = sheet["view_rows"][0]["curves"]
+    return _RECALL["drawing_persist_curves"]
+
+
+def _drawing_linear_args(ctx):
+    """A linear dimension across the base view's first horizontal line, 15 below its lowest point."""
+    curves = _ctx_get(ctx, "drawing_persist_curves", "the base view's curves")
+    flat = [c for c in _drawing_lines(curves)
+            if abs(c["end"][0] - c["start"][0]) > abs(c["end"][1] - c["start"][1])]
+    if not flat:
+        raise AssertionError("the base view lists no horizontal line to dimension")
+    line = flat[0]
+    lowest = min(pt[1] for c in curves if isinstance(c, dict)
+                 for pt in (c.get("start"), c.get("end"), c.get("mid"), c.get("center"))
+                 if _xy(pt))
+    return {"action": "linear", "sheet": _drawing_original_sheet(ctx)["name"],
+            "view": _drawing_base_view(ctx), "from_point": f"{line['index']}:start",
+            "to_point": f"{line['index']}:end",
+            "placement": [(line["start"][0] + line["end"][0]) / 2, lowest - 15]}
+
+
+def _drawing_corner(ctx):
+    """(line a, line b, their shared corner, a's far-end key, b's far-end key, a's leg, b's leg)."""
+    lines = _drawing_lines(_ctx_get(ctx, "drawing_persist_curves", "the base view's curves"))
+    for a in lines:
+        for b in lines:
+            ends = [(ka, kb) for ka in ("start", "end") for kb in ("start", "end")
+                    if abs(a[ka][0] - b[kb][0]) < 1e-3 and abs(a[ka][1] - b[kb][1]) < 1e-3]
+            if a is b or len(ends) != 1:
+                continue
+            corner = a[ends[0][0]]
+            far_a = "end" if ends[0][0] == "start" else "start"
+            far_b = "end" if ends[0][1] == "start" else "start"
+            u = (a[far_a][0] - corner[0], a[far_a][1] - corner[1])
+            v = (b[far_b][0] - corner[0], b[far_b][1] - corner[1])
+            if abs(u[0] * v[1] - u[1] * v[0]) > 1e-6:
+                return a, b, corner, far_a, far_b, u, v
+    raise AssertionError("no two base-view lines meet at a corner")
+
+
+def _drawing_angular_args(ctx):
+    """An angular dimension between two base-view lines meeting at a corner, placed inside it."""
+    a, b, corner, _fa, _fb, u, v = _drawing_corner(ctx)
+    return {"action": "angular", "sheet": _drawing_original_sheet(ctx)["name"],
+            "view": _drawing_base_view(ctx), "curves": [a["index"], b["index"]],
+            "placement": [corner[0] + 0.3 * (u[0] + v[0]), corner[1] + 0.3 * (u[1] + v[1])]}
+
+
+def _drawing_aligned_args(ctx):
+    """An aligned dimension across that corner's diagonal, between the two lines' far ends."""
+    a, b, corner, far_a, far_b, u, v = _drawing_corner(ctx)
+    return {"action": "aligned", "sheet": _drawing_original_sheet(ctx)["name"],
+            "view": _drawing_base_view(ctx), "from_point": f"{a['index']}:{far_a}",
+            "to_point": f"{b['index']}:{far_b}",
+            "placement": [corner[0] + 0.75 * (u[0] + v[0]), corner[1] + 0.75 * (u[1] + v[1])]}
+
+
+def _drawing_dimension_added(action):
+    """drawing_dimension manual action: one more dimension, read as `action`, on the original."""
+    def check(p):
+        before, after = p.get("dimension_count_before"), p.get("dimension_count_after")
+        return _measured(f"one {action} dimension raised the original sheet's count by one",
+                         {key: p.get(key) for key in (
+                             "dimensioned", "action", "sheet", "view_index",
+                             "dimension_count_before", "dimension_count_after", "type_read",
+                             "placement", "placement_unit")},
+                         p.get("dimensioned") is True and p.get("action") == action
+                         and p.get("type_read") == action
+                         and p.get("sheet") == _drawing_original_sheet()["name"]
+                         and p.get("view_index") == _drawing_base_view()
+                         and type(before) is int and before == _RECALL.get("drawing_persist_dims")
+                         and after == before + 1 and p.get("placement_unit") == "mm")
+    return check
+
+
+def _drawing_dimension_count_read(p):
+    """drawing_get: the original sheet's own count equals the last manual add's after-count."""
+    rows = p.get("sheets") or []
+    sheet = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+    want = _RECALL.get("drawing_persist_dims")
+    return _measured("drawing_get reads the count the last manual add reported",
+                     {"sheet": sheet.get("name"), "dimension_count": sheet.get("dimension_count"),
+                      "expected": want},
+                     sheet.get("name") == _drawing_original_sheet()["name"]
+                     and type(want) is int and sheet.get("dimension_count") == want)
+
+
+def _toward(point, direction, distance):
+    """`point` moved `distance` sheet units along `direction`, which need not be unit length."""
+    length = (direction[0] ** 2 + direction[1] ** 2) ** 0.5
+    return [point[0] + distance * direction[0] / length, point[1] + distance * direction[1] / length]
+
+
+def _drawing_symbol_args(action):
+    """drawing_add_symbol args at the base view's corner, each leadered to a clear spot outside."""
+    def build(ctx):
+        a, b, corner, far_a, far_b, u, v = _drawing_corner(ctx)
+        mid_a = [corner[0] + u[0] / 2, corner[1] + u[1] / 2]
+        mid_b = [corner[0] + v[0] / 2, corner[1] + v[1] / 2]
+        args = {"action": action, "sheet": _drawing_original_sheet(ctx)["name"],
+                "view": _drawing_base_view(ctx)}
+        if action == "datum_identifier":
+            return {**args, "attach": f"{a['index']}:mid", "placement": _toward(mid_a, v, -35),
+                    "identifier": "A"}
+        if action == "feature_control_frame":
+            bend = _toward(mid_b, u, -20)
+            return {**args, "attach": f"{b['index']}:mid", "bends": [bend],
+                    "placement": _toward(bend, v, 10), "frames": ["parallelism|0.1|A"]}
+        if action == "edge":
+            near_a = "start" if far_a == "end" else "end"
+            return {**args, "attach": f"{a['index']}:{near_a}",
+                    "placement": _toward(_toward(corner, u, -10), v, -10),
+                    "upper_limit": "+0.5", "lower_limit": "-0.3"}
+        return {**args, "attach": f"{b['index']}:{far_b}", "second_curve": a["index"],
+                "placement": _toward(_toward(b[far_b], u, -15), v, 6), "dimension": "1:1"}
+    return build
+
+
+def _drawing_symbol_added(action):
+    """drawing_add_symbol: one more symbol on the original, its returned object read as `action`."""
+    def check(p):
+        before, after = p.get("symbol_count_before"), p.get("symbol_count_after")
+        return _measured(f"one {action} symbol raised the original sheet's symbol count by one",
+                         {key: p.get(key) for key in (
+                             "added", "action", "sheet", "view_index", "symbol_count_before",
+                             "symbol_count_after", "type_read", "attach", "placement",
+                             "placement_unit")},
+                         p.get("added") is True and p.get("action") == action
+                         and p.get("type_read") == action
+                         and p.get("sheet") == _drawing_original_sheet()["name"]
+                         and p.get("view_index") == _drawing_base_view()
+                         and type(before) is int
+                         and before == _RECALL.get("drawing_persist_symbols")
+                         and after == before + 1 and p.get("placement_unit") == "mm")
+    return check
+
+
+def _drawing_symbol_count_read(p):
+    """drawing_get: the original sheet's symbol_count equals the last symbol add's after-count."""
+    rows = p.get("sheets") or []
+    sheet = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+    want = _RECALL.get("drawing_persist_symbols")
+    return _measured("drawing_get reads the symbol count the last add reported",
+                     {"sheet": sheet.get("name"), "symbol_count": sheet.get("symbol_count"),
+                      "expected": want},
+                     sheet.get("name") == _drawing_original_sheet()["name"]
+                     and type(want) is int and sheet.get("symbol_count") == want)
 
 
 def _drawing_persistence_version_current(snap):
@@ -2450,6 +2666,44 @@ _CLOUD_DRAWING = [
      _drawing_overall_requested(0), None),
     ("drawing_dimension", lambda c: _drawing_overall_args(c, 1),
      _drawing_overall_requested(1), None),
+    # The manual route on the plate's base view: its curve points read, an angular, a linear and
+    # an aligned dimension placed from them, each judged by the sheet's count and the kind its new
+    # item reads, then that count read back.
+    ("drawing_get", _drawing_curves_args, _drawing_curves_listed,
+     ("drawing_persist_curves", _drawing_curves_record)),
+    ("drawing_dimension", _drawing_angular_args, _drawing_dimension_added("angular"),
+     ("drawing_persist_dims", _recall("drawing_persist_dims",
+                                      lambda p: p["dimension_count_after"]))),
+    ("drawing_dimension", _drawing_linear_args, _drawing_dimension_added("linear"),
+     ("drawing_persist_dims", _recall("drawing_persist_dims",
+                                      lambda p: p["dimension_count_after"]))),
+    ("drawing_dimension", _drawing_aligned_args, _drawing_dimension_added("aligned"),
+     ("drawing_persist_dims", _recall("drawing_persist_dims",
+                                      lambda p: p["dimension_count_after"]))),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"]},
+     _drawing_dimension_count_read,
+     ("drawing_persist_symbols", _recall("drawing_persist_symbols",
+                                         lambda p: p["sheets"][0].get("symbol_count")))),
+    # GD&T on the same corner of the ISO drawing: a datum A, a parallelism frame referencing it,
+    # an edge symbol and a taper/slope between the two lines - each judged by the sheet's count
+    # and the kind its returned symbol reads - then that count read back.
+    ("drawing_add_symbol", _drawing_symbol_args("datum_identifier"),
+     _drawing_symbol_added("datum_identifier"),
+     ("drawing_persist_symbols", _recall("drawing_persist_symbols",
+                                         lambda p: p["symbol_count_after"]))),
+    ("drawing_add_symbol", _drawing_symbol_args("feature_control_frame"),
+     _drawing_symbol_added("feature_control_frame"),
+     ("drawing_persist_symbols", _recall("drawing_persist_symbols",
+                                         lambda p: p["symbol_count_after"]))),
+    ("drawing_add_symbol", _drawing_symbol_args("edge"), _drawing_symbol_added("edge"),
+     ("drawing_persist_symbols", _recall("drawing_persist_symbols",
+                                         lambda p: p["symbol_count_after"]))),
+    ("drawing_add_symbol", _drawing_symbol_args("taper_slope"),
+     _drawing_symbol_added("taper_slope"),
+     ("drawing_persist_symbols", _recall("drawing_persist_symbols",
+                                         lambda p: p["symbol_count_after"]))),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"]},
+     _drawing_symbol_count_read, None),
     ("drawing_get", {"include": ["views"]}, _drawing_named_sheets, None),
     ("drawing_export", _drawing_persistence_pdf_args(_DRAWING_NAMED_AFTER_PDF),
      _drawing_persistence_pdf(_DRAWING_NAMED_AFTER_PDF),

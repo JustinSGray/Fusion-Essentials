@@ -918,11 +918,6 @@ _SHOWCASE = [
     # saved source design) and stays out of the default sweep.
     # adsk.drawing carries no plain shaded member - shading pairs with hidden or with visible edges.
     ("drawing_create", {"view_style": "shaded"}, "refused", None),
-    # center_line / center_mark have NO enum family to reach on this build (the namespace carries
-    # CenterLineOptions / CenterMarkOptions classes instead), so a non-default request is refused
-    # rather than dropped by a best-effort setter.
-    ("drawing_create", {"center_line": "holes"}, "refused", None),
-    ("drawing_create", {"center_mark": "fillets"}, "refused", None),
     ("drawing_create", {"tangent_edges": "partial"}, "refused", None),
     # Fusion gates manual creation on a template carrying view-placeholder information, and the
     # failure escapes an enclosing try/except - so the mode is refused up front instead of called

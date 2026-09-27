@@ -1,11 +1,12 @@
 """Unit tests for ``drawing_get`` - the drawing family's ONE read tool.
 
 What is pinned: the not-a-drawing refusal, the sheet rows (1-based collection_index, is_active,
-width/height in mm), the custom-size disclosure (sheet_size null + custom_size only when the
-build's customSize property answers - an earlier build RAISED on it), the per-view rows carrying
-ONLY index + type, the wire's account of what else a View carries, the view cap, and the
-include/scope plumbing.
+width/height in mm, the placed-dimension count), the custom-size disclosure (sheet_size null +
+custom_size only when the build's customSize property answers), the per-view rows, each view's
+curve points and their cap, the one-view scope, and the include/scope plumbing.
 """
+
+import types
 
 import pytest
 
@@ -14,6 +15,29 @@ from conftest import (FakeCustomSheetSize, FakeSheet, FakeView, FakeViews, _Cust
                       load_tool, make_drawing, make_drawing_session, payload)
 
 dg = load_tool("drawing_get")
+
+# The API-declared ViewCurveTypes members; live_api_facts carries them once the enum sweep
+# measures the family.
+_CURVE_TYPES = live_api_facts.ENUMS.get("drawing.ViewCurveTypes") or dict(zip(
+    ("LineViewCurveType", "ArcViewCurveType", "CircleViewCurveType", "EllipseViewCurveType",
+     "SplineViewCurveType", "PolylineViewCurveType", "UnknownViewCurveType"), range(7)))
+
+
+class _Point:
+    """A DrawingPoint whose coordinate is the pair given; DrawingPoint carries no shape dump."""
+
+    def __init__(self, x, y):
+        self.coordinate = types.SimpleNamespace(x=x, y=y)
+
+
+class _Curve:
+    """A ViewCurve: a type and four accessors, None where live reads null; no shape dump."""
+
+    def __init__(self, type_value, start, end, mid=None, center=None):
+        self.type = type_value
+        self.startPoint, self.endPoint = _Point(*start), _Point(*end)
+        self.midPoint = _Point(*mid) if mid else None
+        self.centerPoint = _Point(*center) if center else None
 
 _SIZES = live_api_facts.ENUMS["drawing.SheetSizes"]
 _ORIENTATIONS = live_api_facts.ENUMS["drawing.SheetOrientationTypes"]
@@ -38,7 +62,8 @@ class _UnreadCount:
 def install(monkeypatch):
     def _install(sheets, active=0, doc_name="P6-Vise Drawing", **drawing):
         document = make_drawing(sheets=sheets, active=active, name=doc_name, **drawing)
-        make_drawing_session(monkeypatch, document)
+        make_drawing_session(monkeypatch, document,
+                             ViewCurveTypes=types.SimpleNamespace(**_CURVE_TYPES))
         return document.drawing
     return _install
 
@@ -115,6 +140,22 @@ class TestOrientationRead:
         assert row["custom_tables"] is None
         assert row["view_rows"] is None
 
+    def test_dimension_count_reads_the_sheet_collection_and_null_without_it(self, install):
+        counted, bare = _sheet("Counted"), _sheet("Bare")
+        counted.drawingDimensions = types.SimpleNamespace(count=3)
+        install([counted, bare])
+        rows = payload(dg.handler())["sheets"]
+        assert [r["dimension_count"] for r in rows] == [3, None]
+
+    def test_symbol_count_reads_the_sheet_collection_and_null_without_it(self, install):
+        counted, bare, unread = _sheet("Counted"), _sheet("Bare"), _sheet("Unread")
+        counted.drawingSymbols = types.SimpleNamespace(count=2)
+        unread.drawingSymbols = _UnreadCount()
+        install([counted, bare, unread])
+        out = payload(dg.handler())
+        assert [r["symbol_count"] for r in out["sheets"]] == [2, None, None]
+        assert "symbol_count" in out["note"]
+
     def test_the_read_never_touches_the_mutating_tidyup_property(self, install):
         # reading Sheet.tidyUp TIDIES the sheet, so a READ tool that touched it would mutate the
         # document it claims only to describe
@@ -167,19 +208,14 @@ class TestViewsSlice:
         rows = payload(dg.handler(include=["views"]))["sheets"][0]["view_rows"]
         assert rows == [{"index": 0, "type": "base"}, {"index": 1, "type": "projected"}]
 
-    def test_the_note_says_what_a_view_carries_beyond_its_type(self, install):
-        # A View also carries a POPULATED viewCurves collection whose ViewCurve items expose no
-        # readable geometry - a different fact from the member not being there, and the one a
-        # caller needs to stop hunting for a geometry read that will never answer.
+    def test_the_note_advertises_the_curves_slice_and_the_dimension_count(self, install):
         base, _proj = self._typed()
         install([_sheet("S", views=FakeViews([FakeView(base)]))])
         note = payload(dg.handler(include=["views"]))["note"]
-        assert "viewCurves" in note and "no readable geometry" in note
-        assert "ALL a view exposes" not in note and "ONLY its type" not in note
+        assert "['curves']" in note and "dimension_count" in note
+        assert "no readable geometry" not in note
 
     def test_the_description_does_not_claim_type_is_all_a_view_exposes(self):
-        # the viewCurves fact now rides on the note (test_the_note_says_what_a_view_carries_beyond
-        # _its_type), so what the description must not do is make the opposite claim
         assert "ALL a view exposes" not in dg.TOOL_DESCRIPTION
         assert "ONLY its type" not in dg.TOOL_DESCRIPTION
 
@@ -214,13 +250,72 @@ class TestViewsSlice:
     def test_every_advertised_slice_actually_dispatches(self, install):
         # A name the guard admits but no branch reads returns the orientation read again under a
         # token that promised a deeper one.
-        adds = {"views": "view_rows", "tables": "tables"}
+        adds = {"views": "view_rows", "curves": "curve_unit", "tables": "tables"}
         base, _proj = self._typed()
         install([_sheet("S", views=FakeViews([FakeView(base)]))])
         for name in dg._SLICES:
             assert name in adds, f"name the sheet key include=['{name}'] adds"
             row = payload(dg.handler(include=[name]))["sheets"][0]
             assert adds[name] in row, name
+
+
+def _line(start, end):
+    return _Curve(_CURVE_TYPES["LineViewCurveType"], start, end,
+                  mid=((start[0] + end[0]) / 2, (start[1] + end[1]) / 2))
+
+
+class TestCurvesSlice:
+    def test_curve_rows_carry_the_type_and_the_points_that_read(self, install):
+        circle = _Curve(_CURVE_TYPES["CircleViewCurveType"], (36, 20), (36, 20), center=(30, 20))
+        install([_sheet("S", views=FakeViews([FakeView(None, curves=[_line((0, 0), (60, 0)),
+                                                                      circle])]))])
+        row = payload(dg.handler(include=["curves"]))["sheets"][0]
+        assert row["curve_unit"] == "mm"
+        assert row["view_rows"][0]["curves"] == [
+            {"index": 0, "type": "line", "start": [0, 0], "end": [60, 0], "mid": [30.0, 0.0],
+             "center": None},
+            {"index": 1, "type": "circle", "start": [36, 20], "end": [36, 20], "mid": None,
+             "center": [30, 20]}]
+
+    def test_a_type_value_outside_the_family_publishes_null(self, install):
+        odd = _Curve(max(_CURVE_TYPES.values()) + 1, (0, 0), (1, 1))
+        install([_sheet("S", views=FakeViews([FakeView(None, curves=[odd])]))])
+        row = payload(dg.handler(include=["curves"]))["sheets"][0]
+        assert row["view_rows"][0]["curves"][0]["type"] is None
+
+    @pytest.mark.parametrize("view", [1, "1"])
+    def test_view_scopes_the_rows_to_that_one_view_int_or_digit_string(self, install, view):
+        install([_sheet("S", views=FakeViews([FakeView(None, curves=[_line((0, 0), (1, 0))]),
+                                              FakeView(None, curves=[_line((5, 5), (9, 5))])]))])
+        rows = payload(dg.handler(include=["curves"], view=view))["sheets"][0]["view_rows"]
+        assert [r["index"] for r in rows] == [1]
+        assert rows[0]["curves"][0]["start"] == [5, 5]
+
+    @pytest.mark.parametrize("bad", [-1, "-1", "one", True])
+    def test_a_view_that_is_not_an_index_is_refused_naming_it(self, install, bad):
+        install([_sheet("S", views=2)])
+        res = dg.handler(include=["views"], view=bad)
+        assert res["isError"] is True
+        assert f"(got {bad!r})" in res["message"]
+
+    def test_a_view_past_the_sheet_is_refused_naming_its_range(self, install):
+        install([_sheet("Front", views=FakeViews([FakeView(None), FakeView(None)]))])
+        res = dg.handler(include=["curves"], view=2)
+        assert res["isError"] is True
+        assert "'Front'" in res["message"] and "(0 to 1)" in res["message"]
+
+    def test_view_without_a_view_slice_is_refused(self, install):
+        install([_sheet("S", views=1)])
+        res = dg.handler(view=0)
+        assert res["isError"] is True and "include=['views'] or ['curves']" in res["message"]
+
+    @pytest.mark.parametrize("extra,truncated", [(0, False), (1, True)])
+    def test_the_curve_walk_is_capped_at_its_boundary(self, install, extra, truncated):
+        many = [_line((i, 0), (i, 1)) for i in range(dg._MAX_CURVES_PER_VIEW + extra)]
+        install([_sheet("S", views=FakeViews([FakeView(None, curves=many)]))])
+        row = payload(dg.handler(include=["curves"]))["sheets"][0]["view_rows"][0]
+        assert len(row["curves"]) == dg._MAX_CURVES_PER_VIEW
+        assert row.get("curves_truncated", False) is truncated
 
 
 class TestTablesSlice:

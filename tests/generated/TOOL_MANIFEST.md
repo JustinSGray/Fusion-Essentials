@@ -2,7 +2,7 @@
 
 _Auto-generated from the live registry by `tests/gen_manifest.py`. Do not edit by hand — re-run the generator after adding/renaming a tool or kind. `--check` fails the suite if this is stale. This is the batch form of the `sys_find_tool` live lookup: the one place to see what already exists before building it._
 
-**Tools:** 207  |  **Input-kinds:** 26  |  write-status: `·` read · `✎` write · `⚠` destructive
+**Tools:** 208  |  **Input-kinds:** 27  |  write-status: `·` read · `✎` write · `⚠` destructive
 
 ## Input kinds — reference EXISTING geometry/structure with these (don't hand-roll a name/index)
 
@@ -14,6 +14,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | `BodyRef` | A reference to a BODY, by a 'handle' from find_geometry (precise - bodies are auto-named |
 | `BodyRefList` | A LIST of body references (handles or names) - for tools that act on several bodies. Kind-checks |
 | `Choice` | One of a fixed set of string options. Emits a JSON-schema `enum` so the legal values are |
+| `CurvePointRef` | A point of a drawing view curve as '<curve_index>:<start|end|mid|center>'. |
 | `Distance` | A length value in display 'units', resolved to Fusion's internal cm. The companion 'units' |
 | `EdgeLoopRef` | A boundary of find_geometry edge handles: closed=True a CLOSED loop, a one-body set checked |
 | `FeatureRef` | A reference to ONE timeline FEATURE by name, '<component>/<name>', or timeline index, as |
@@ -286,18 +287,19 @@ Produces: file_path, size_bytes. |
 
 | | Tool | Summary |
 |---|---|---|
-| ✎ | `drawing_add_sketch` | Draw 2D geometry on a NEW sketch on a sheet of the active 2D drawing document.
+| ✎ | `drawing_add_sketch` | Draw 2D geometry on a NEW sketch on a sheet of the active drawing.
 Produces: sketch_name, curves_landed. |
+| ✎ | `drawing_add_symbol` | Place one GD&T symbol leadered from a curve point of drawing_get(include=['curves'], view=N) |
 | ✎ | `drawing_create` | Create a cloud drawing; doc_open file_id, then drawing_export, no UI step by default |
-| ⚠ | `drawing_delete_sketch` | Delete a drawing sketch by exact name from a sheet of the active 2D drawing document.
+| ⚠ | `drawing_delete_sketch` | Delete a drawing sketch by exact name from a sheet of the active drawing.
 Produces: sketch_count. |
-| ✎ | `drawing_dimension` | Auto-dimension one view on a named sheet of the active drawing - the API's route to dimensions.
-Produces: document_modified. |
-| ⚠ | `drawing_edit_sheet` | Manage the active 2D drawing's sheets - add, copy, delete, rename, set_size, set_orientation, or tidy_up (lay a sheet's views out again). |
+| ✎ | `drawing_dimension` | Dimension one view of the active drawing: auto, or one dimension on curves from drawing_get(include=['curves'], view=N).
+Produces: dimension_count_after. |
+| ⚠ | `drawing_edit_sheet` | Manage the active 2D drawing's sheets; tidy_up lays a sheet's views out again. |
 | ✎ | `drawing_export` | Export the active 2D drawing to PDF, DXF or DWG on local disk - open the drawing first (doc_open by file_id).
 Produces: file_path, size_bytes. |
-| · | `drawing_get` | Read the ACTIVE 2D drawing: standard, units, and a sheet listing with per-sheet facts and a 1-based collection_index (export order unavailable). |
-| · | `drawing_get_status` | Poll deferred drawing_create, drawing_update, or drawing_export by caller-known request_key |
+| · | `drawing_get` | Read the ACTIVE 2D drawing: standard, units and per-sheet facts. |
+| · | `drawing_get_status` | Poll deferred drawing_create, drawing_update or drawing_export by request_key; it reads stored state and does not replay work. |
 | ✎ | `drawing_insert_image` | Place an image file from local disk onto the active drawing's active sheet.
 Produces: document_modified. |
 | ✎ | `drawing_update` | Refresh the active 2D drawing's stale references from its saved source |
