@@ -36,8 +36,8 @@ def handler(plane: str = "xy", name: str = "", on_face: str = "") -> dict:
     if (on_face or "").strip():
         face, ferr = _ON_FACE.resolve(on_face)
         if ferr:
-            # A construction-plane NAME lands here (find_geometry never returns plane handles), and
-            # the generic stale-handle error would misdirect. Point at the 'plane' parameter instead.
+            # A construction-plane NAME lands here, and the generic stale-handle error would
+            # misdirect. Point at the 'plane' parameter instead.
             named_plane, _ = _PLANE.resolve(on_face.strip())
             if named_plane is not None:
                 return error(f"'on_face' got '{on_face.strip()}', which is a construction PLANE name, "

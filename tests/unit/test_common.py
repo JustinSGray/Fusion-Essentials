@@ -2198,11 +2198,8 @@ class TestBuildPathLabel:
         assert label == "from 1 seed handle; edge count unreadable"
 
     def test_several_handles_are_used_exactly(self, monkeypatch):
-        import adsk.fusion
         self._stub_handles(monkeypatch, 3)
-        monkeypatch.setattr(adsk.fusion.Path, "create",
-                            staticmethod(lambda coll, opts: _BuiltPath(3)))
-        _p, label, err = common.build_path(self._comp(None), ["E1", "E2", "E3"])
+        _p, label, err = common.build_path(self._comp(_BuiltPath(3)), ["E1", "E2", "E3"])
         assert err is None and label == "3 edge(s) from 3 handles, used exactly"
 
     def test_the_docstring_states_the_tangent_continuity_rule(self):

@@ -2,7 +2,7 @@
 
 _Auto-generated from the live registry by `tests/gen_manifest.py`. Do not edit by hand — re-run the generator after adding/renaming a tool or kind. `--check` fails the suite if this is stale. This is the batch form of the `sys_find_tool` live lookup: the one place to see what already exists before building it._
 
-**Tools:** 211  |  **Input-kinds:** 29  |  write-status: `·` read · `✎` write · `⚠` destructive
+**Tools:** 212  |  **Input-kinds:** 29  |  write-status: `·` read · `✎` write · `⚠` destructive
 
 ## Input kinds — reference EXISTING geometry/structure with these (don't hand-roll a name/index)
 
@@ -57,6 +57,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 Produces: feature -> design_delete_feature, faces_drafted, faces_moved, faces_compared. |
 | ✎ | `model_edit_body` | Copy, move, or make a child component for a BRep or mesh body |
 | ✎ | `model_edit_extrude` | Edit solid Extrude; refs from design_get/sketch_get. |
+| ✎ | `model_edit_sweep` | Edit Sweep profile/path |
 | ✎ | `model_emboss` | Stamp sketch profiles or text onto faces; a negative 'depth' engraves.
 Produces: feature -> design_delete_feature. |
 | ✎ | `model_extrude` | Extrude a closed sketch profile into a solid; sketch_get returns profile handles. |
@@ -240,7 +241,7 @@ Produces: full... |
 | ⚠ | `design_delete_occurrence` | Delete one component occurrence; if it was the last instance of its component, the component goes too. |
 | ⚠ | `design_edit_timeline` | Drive the parametric timeline |
 | ✎ | `design_export` | Export a body, component/occurrence or the whole design (omit 'target') to a CAD file on local disk. |
-| · | `design_get` | Design mode, contents, timeline health; include selects detail. |
+| · | `design_get` | Design summary and opt-in detail. |
 | ✎ | `design_move_occurrence` | Re-parent an occurrence into another occurrence's component.
 Produces: full_path -> joint_create/assembly_move. |
 | ✎ | `design_recompute` | Force a full recompute so downstream features rebuild against current values |
@@ -344,8 +345,8 @@ Produces: annot... |
 
 | | Tool | Summary |
 |---|---|---|
-| · | `find_geometry` | Find handles with kind, world position and shape.
-Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/model_chamfer/model_constructio... |
+| · | `find_geometry` | Find world geometry and handles.
+Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/model_chamfer/model_construction/model_mirror/mo... |
 
 ### workspace
 

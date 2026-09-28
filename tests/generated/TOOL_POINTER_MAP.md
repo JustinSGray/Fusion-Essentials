@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 211  |  **description breadcrumbs:** 319  |  **note/error breadcrumbs:** 679
+**Tools:** 212  |  **description breadcrumbs:** 321  |  **note/error breadcrumbs:** 684
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -17,8 +17,8 @@ close orphans, factor duplicated guards into shared helpers.
 **Read/Acquire (9)** - higher concern, a check-your-work tool nothing points to:
   `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `model_compute_holder`, `model_measure_continuity`, `model_measure_relation`, `sys_get_api_doc`
 
-**Edit (55)** - usually leaf actions, scan for genuine gaps:
-  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
+**Edit (56)** - usually leaf actions, scan for genuine gaps:
+  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
 
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
 - **55x** across 54 module(s): "No active design. Create or open a document first (see doc_new)."
@@ -37,16 +37,16 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
-- `design_get`  <- 55  (desc 11, note 44)
+- `design_get`  <- 56  (desc 11, note 45)
 - `find_geometry`  <- 55  (desc 14, note 41)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 33  (desc 15, note 18)
-- `model_inspect`  <- 26  (desc 4, note 22)
+- `model_inspect`  <- 28  (desc 5, note 23)
 - `data_get`  <- 25  (desc 10, note 15)
 - `doc_open`  <- 25  (desc 5, note 20)
+- `sketch_create`  <- 25  (desc 7, note 18)
 - `sketch_get`  <- 25  (desc 7, note 18)
-- `sketch_create`  <- 24  (desc 7, note 17)
 - `assembly_get`  <- 21  (desc 4, note 17)
 
 ## The detected guidance surface
@@ -1572,6 +1572,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - include=['definition'] requires 'feature'; use include=['timeline'] to find it.
 - ' has unsupported definition type
 - ; this slice reads HoleFeature and ThreadFeature. Use include=['timeline'] or model_inspect.
+- Definition inventory only. Use find_geometry(kind=construction_axis/construction_plane/construction_point, target=<occurrence>, name=<exact name>) for world geometry and a placed handle. Narrow wit...
 - Light nodes: name, component, body_count, child_count. Narrow: name_filter, component=<name>, max_depth, max_results. tree_handles=true adds handle/full_path/source ids. children_truncated = a leve...
 - lists at most  (per_body_truncated past that); one component has no narrower scope, so read the rest with model_inspect(target='<body>').
 - Bodies directly in the root component (not occurrences). A root body can't be jointed - model_create_component then move it in to joint it.
@@ -2264,13 +2265,12 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 A planar face's 'frame' is that plane in world space: the point at local (u, v) is frame.origin + u*frame.x_world + v*frame.y_world, and f...
 - '. Use mm, cm, or in.
 - No active design (open or create a document first).
-- 'sketch' and 'name' narrow the sketch_* and construction_point kinds; kind='
-- 'position' is WORLD, through the sketch transform (a sketch entity's) and the occurrence's placement; a curve's is the midpoint of its ends, a circle's its centre. model_construction takes a sketch...
+- 'sketch' and 'name' narrow sketch_* and construction-datum kinds; kind='
+- 'position' is WORLD. Axis handles feed assembly_move(rotate_axis); plane handles feed sketch_create(plane). Vectors are readbacks; handles retain occurrence. Null position/handle means unread geome...
 - occurrences_walk='unreadable': NEITHER root.allOccurrences nor the component.occurrences fallback enumerated, so the occurrence tree was not searched at all and only root-level bodies were scanned ...
 - occurrences_walk='recursed': root.allOccurrences raised, so the occurrence census was rebuilt from component.occurrences.
 - The occurrence walk did not run to the end (a collection would not enumerate, or a depth/node cap was hit), so part of the design was not scanned.
 - occurrence(s) hold an unresolved external reference () - reading their component raises, so they carry no geometry to scan and were skipped.
-- target '' names no occurrence or component - sketch and construction point kinds read components (assembly_get lists them).
 - Could not resolve target ''. Use an occurrence/component name, a body name (bare, or '<occurrence-or-component>:<body>' when several components hold that name), or '' for the whole design (see asse...
 
 ### `form_create`
@@ -2997,6 +2997,15 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' is not native to its owning component.
 - Two-sided through_all with cut/intersect participant assignment is unsupported. Use separate one-sided features or the Fusion UI.
 - Editing '':  The feature was not deleted; inspect design_get(include=['timeline']). Observed edit state is in 'details'.
+
+### `model_edit_sweep`
+- Sweep operand changed on the same feature. Boolean edits retain the current participants; newly reached bodies are excluded. Inspect model_inspect.
+- ' has unreadable timeline identity; nothing was edited.
+- ; roll after it with design_edit_timeline.
+- ' has unreadable or active linked features; nothing was edited.
+- 's evaluated-health census is unreadable; nothing was edited.
+- Inspect design_get(include=['timeline']); observed state is in details.
+- ' is unused for action='
 
 ### `model_emboss`
 - Profile stamped onto the face(s). 'mode' ECHOES the sign of the depth requested; the call is refused when the body's measured volume moves the other way, so the mode reported here is also the direc...

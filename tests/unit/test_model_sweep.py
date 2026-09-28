@@ -173,6 +173,17 @@ class TestSurface:
 # ── path from model edges ───────────────────────────────────────────────────
 
 class TestEdgePath:
+    def test_two_edge_handles_use_component_exact_list_constructor(self):
+        adsk.fusion.BRepEdge = BRepEdge
+        first, second = BRepEdge(curve=Line3D()), BRepEdge(curve=Line3D())
+        _, design = _install(tokens={"EDGE1": first, "EDGE2": second})
+        design.rootComponent.features.path_returns = _built_path(2)
+        out = _payload(sw.handler(profile={"sketch": "Prof"}, path=["EDGE1", "EDGE2"]))
+        call, chained = design.rootComponent.features.path_calls[0]
+        assert chained is False
+        assert call.count == 2 and call.item(0) is first and call.item(1) is second
+        assert out["path_curves"] == 2
+
     def test_single_edge_path_seeds_createpath(self):
         adsk.fusion.BRepEdge = BRepEdge
         edge = BRepEdge(curve=Line3D())

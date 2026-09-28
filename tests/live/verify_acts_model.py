@@ -32,6 +32,58 @@ from verify_layout import _px, _py
 _RADIUS_DIAMETER_TOL_MM = 0.0005
 _SHOT_PATH = EXPORT_DIR + "/w4_shot"
 
+
+def _sweep_edit_at_volume(expected):
+    """Check one edit's verified target shape and preserved sweep identity."""
+    def check(p):
+        bodies = p.get("target_after") or []
+        volume = bodies[0].get("volume_cm3") if len(bodies) == 1 else None
+        return _measured("sweep operand edit", {
+            "same_feature": p.get("same_feature"), "definition_matches": p.get("definition_matches"),
+            "geometry_changed": p.get("geometry_changed"), "target_volume_cm3": volume,
+            "outside_body_changes": p.get("outside_body_changes"),
+            "marker_restored": p.get("marker_restored"),
+            "new_errors": p.get("new_timeline_errors"),
+            "new_warnings": p.get("new_timeline_warnings")},
+            p.get("edited") is True and p.get("same_feature") is True
+            and p.get("definition_matches") is True and p.get("geometry_changed") is True
+            and (p.get("definition_before") or {}).get("profile_members") == 1
+            and (p.get("definition_after") or {}).get("profile_members") == 1
+            and p.get("outside_body_changes") == [] and p.get("marker_restored") is True
+            and p.get("feature_health") == "healthy"
+            and p.get("new_timeline_errors") == [] and p.get("new_timeline_warnings") == []
+            and _num(volume) and _near(volume, expected, 0.02))
+    return check
+
+
+def _sweep_inspected_at_volume(expected):
+    """Check independent model_inspect volume in cm3 after a sweep edit."""
+    def check(p):
+        volume = (p.get("mass") or {}).get("volume")
+        return _measured("independent swept body volume", {"volume_cm3": volume},
+                         _num(volume) and _near(volume, expected, 0.02))
+    return check
+
+
+def _sweep_brep_list_edited(p):
+    """Check the exact two-member BRep path and independent target material delta."""
+    path_count = (p.get("definition_after") or {}).get("path_curves")
+    return _sweep_edit_at_volume(math.pi * 0.8 ** 2 * (1 + math.pi / 4))(p) and _measured(
+        "two BRep path members", {"count": path_count}, path_count == 2)
+
+
+def _sweep_dependent_survived(changed_bounds):
+    """Check the saved dependent body handle, material and expected support motion."""
+    def check(p):
+        base = _RECALL["sweep_dependent_before"]
+        volume = (p.get("mass") or {}).get("volume")
+        bounds = (p.get("min_point"), p.get("max_point"))
+        moved = bounds != (base["min_point"], base["max_point"])
+        return _measured("sweep dependent body", {"volume_cm3": volume, "bounds_moved": moved},
+                         _num(volume) and _near(volume, base["volume"], 0.001)
+                         and moved is changed_bounds)
+    return check
+
 _HOLE_HOST = "HoleHostB"
 _HOLE_ACTIVE = "ActiveA"
 _HOLE_X0 = 2600.0
@@ -2024,6 +2076,27 @@ def _operand_point(u, v, path="OperandBench:1"):
     return check
 
 
+def _rediscovered_axis(p):
+    """The acquired axis lies on OperandS's independently read world x line."""
+    rows = p.get("matches") or []
+    row = rows[0] if len(rows) == 1 else {}
+    point, direction = row.get("position"), row.get("direction")
+    anchor, along = _frame_world(0, 0), _operand_frame_read()["x_world"]
+    if (not isinstance(point, list) or len(point) != 3
+            or not isinstance(direction, list) or len(direction) != 3):
+        return False
+    dot = sum(a * b for a, b in zip(direction, along))
+    delta = [a - b for a, b in zip(point, anchor)]
+    cross = [delta[1] * along[2] - delta[2] * along[1],
+             delta[2] * along[0] - delta[0] * along[2],
+             delta[0] * along[1] - delta[1] * along[0]]
+    return _measured("rediscovered placed axis has its independent world line", row,
+                     p.get("match_count") == 1 and row.get("occurrence") == "OperandBench:1"
+                     and "|@construction_axis:" in (row.get("handle") or "")
+                     and _near(abs(dot), 1, 1e-5)
+                     and sum(v * v for v in cross) ** 0.5 < 0.001)
+
+
 def _swung_about_the_piece(p):
     """After the 90 deg turn about the first piece: its start stays, P1 swings to one side."""
     rows = [r.get("position") for r in p.get("matches") or []]
@@ -2106,6 +2179,19 @@ def _datum_operand_rows():
                              p.get("frame"), (p.get("frame") or {}).get("space") == "world"
                              and _on_moved_plane((p.get("frame") or {}).get("normal"),
                                                  (p.get("frame") or {}).get("origin_mm"))))
+    read("find_geometry", {"kind": "construction_plane", "name": "OperandPlane"},
+         lambda p: _matched(1, "construction_plane")(p)
+         and p.get("match_count") == 1
+         and _on_moved_plane(p["matches"][0].get("normal"), p["matches"][0].get("position"))
+         and "|@construction_plane:" in (p["matches"][0].get("handle") or ""),
+         _fg("dop_plane_rediscovered"))
+    write("sketch_create", lambda c: {"plane": _ctx_get(c, "dop_plane_rediscovered", "plane"),
+                                      "name": "RediscoveredPlaneS"})
+    read("sketch_get", {"sketch_name": "RediscoveredPlaneS"},
+         lambda p: _measured("rediscovered plane handle seats a sketch on the independent plane",
+                             p.get("frame"), (p.get("frame") or {}).get("space") == "world"
+                             and _on_moved_plane((p.get("frame") or {}).get("normal"),
+                                                 (p.get("frame") or {}).get("origin_mm"))))
     write("model_construction", lambda c: {
         "kind": "axis", "mode": "two_points", "name": "OperandAxis",
         "points": [_ctx_get(c, "dop_p1", "P1 handle"), "OperandS/" + ids(c)["p3"]]},
@@ -2127,7 +2213,16 @@ def _datum_operand_rows():
     read("find_geometry", {"kind": "construction_point", "name": "OperandCentre"},
          lambda p: _matched(1, "construction_point")(p) and _measured(
              "the datum point read back where its operand sits", p["matches"],
-             _operand_at(p["matches"][0].get("position"), _frame_world(30, 30))))
+             _operand_at(p["matches"][0].get("position"), _frame_world(30, 30))),
+         _fg("dop_point_rediscovered"))
+    write("model_construction", lambda c: {"kind": "point", "mode": "at_point",
+                                           "name": "RediscoveredPoint",
+                                           "points": [_ctx_get(c, "dop_point_rediscovered", "point")]},
+          lambda p: _datum("point")(p) and p.get("at_operand") is True
+          and _operand_at(p.get("world"), _frame_world(30, 30)))
+    read("find_geometry", {"kind": "construction_point", "name": "RediscoveredPoint"},
+         lambda p: _matched(1, "construction_point")(p)
+         and _operand_at(p["matches"][0].get("position"), _frame_world(30, 30)))
     # inside the placed component the SAME native points go in native, and still land in world;
     # the plane's own read runs through the active occurrence.
     write("design_activate_component", {"occurrence": "OperandBench:1"})
@@ -2141,6 +2236,20 @@ def _datum_operand_rows():
         _operand_plane(lambda: [_frame_world(10, 20), _frame_world(40, 20), _frame_world(10, 50)],
                        path=None))
     write("design_activate_component", {"occurrence": "root"})
+    read("find_geometry", {"target": "OperandBench:1", "kind": "construction_plane",
+                           "name": "LocalPlane"},
+         lambda p: _matched(1, "construction_plane")(p)
+         and p.get("match_count") == 1
+         and p["matches"][0].get("occurrence") == "OperandBench:1"
+         and _on_moved_plane(p["matches"][0].get("normal"), p["matches"][0].get("position")),
+         _fg("dop_local_plane_rediscovered"))
+    write("sketch_create", lambda c: {"plane": _ctx_get(c, "dop_local_plane_rediscovered", "plane"),
+                                      "name": "RediscoveredLocalPlaneS"})
+    read("sketch_get", {"sketch_name": "RediscoveredLocalPlaneS"},
+         lambda p: _measured("placed plane handle seats a sketch on the independent plane",
+                             p.get("frame"), (p.get("frame") or {}).get("space") == "world"
+                             and _on_moved_plane((p.get("frame") or {}).get("normal"),
+                                                 (p.get("frame") or {}).get("origin_mm"))))
     # a split leaves the pre-split handle naming a piece that no longer sits where it was read.
     write("sketch_edit_curve", {"action": "split", "sketch_name": "OperandS",
                                 "entity_one": "line:0", "x1": 20, "y1": 0})
@@ -2151,14 +2260,36 @@ def _datum_operand_rows():
     write("model_construction", lambda c: {"kind": "axis", "name": "OperandPieceAxis",
                                            "axis": _ctx_get(c, "dop_piece", "first piece")},
           lambda p: p.get("component") == "OperandBench"
-          and _operand_axis(lambda: _operand_frame_read()["x_world"], through=False)(p),
-          ("dop_axis", lambda p: p["handle"]))
+          and _operand_axis(lambda: _operand_frame_read()["x_world"], through=False)(p))
     write("design_activate_component", {"occurrence": "root"})
-    # The created datum, consumed by handle, turns about the piece's WORLD line.
+    write("design_add_instance", {"component": "OperandBench", "x": 400, "units": "mm"},
+          lambda p: p.get("occurrence") == "OperandBench:2")
+    read("design_get", {"include": ["datums"], "name_filter": "Operand"},
+         lambda p: _measured("lost datum replies rediscovered as definition rows",
+                             (p.get("datums") or {}).get("counts"),
+                             {("construction_axis", "OperandPieceAxis"),
+                              ("construction_plane", "OperandPlane"),
+                              ("construction_point", "OperandCentre")}
+                             <= {(r.get("kind"), r.get("name"))
+                                 for r in (p.get("datums") or {}).get("datums") or []}
+                             and (p.get("datums") or {}).get("match_count") is not None
+                             and any(r.get("name") == "OperandPieceAxis"
+                                     and r.get("placement_count") == 2
+                                     for r in (p.get("datums") or {}).get("datums") or [])))
+    read("find_geometry", {"target": "OperandBench:1", "kind": "construction_axis",
+                           "name": "OperandPieceAxis"}, _rediscovered_axis,
+         _fg("dop_axis_rediscovered"))
+    read("find_geometry", {"target": "OperandBench:2", "kind": "construction_axis",
+                           "name": "OperandPieceAxis"},
+         lambda p: _matched(1, "construction_axis")(p)
+         and p.get("match_count") == 1
+         and p["matches"][0].get("occurrence") == "OperandBench:2"
+         and (p["matches"][0].get("handle") or "").endswith(";occ=OperandBench:2"))
+    # The reacquired datum, consumed by handle, turns about the piece's WORLD line.
     write("assembly_move", lambda c: {"occurrence": "OperandBench:1", "rotate_deg": 90,
-                                      "rotate_axis": _ctx_get(c, "dop_axis", "piece axis")},
+                                      "rotate_axis": _ctx_get(c, "dop_axis_rediscovered", "piece axis")},
           _moved_occurrence())
-    read("find_geometry", {"target": "OperandBench", "kind": "sketch_point", "max_results": 100},
+    read("find_geometry", {"target": "OperandBench:1", "kind": "sketch_point", "max_results": 100},
          _swung_about_the_piece)
     rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "dop_story", "story"),
                                          "expect_document": _ctx_get(c, "dop_doc", "operands")},
@@ -3174,6 +3305,300 @@ _EXTRUDE_EDITS = _extrude_edit_rows()
 # The hero solids ride on ACT 1's parametric sketches; the multi-body feature tools that have no
 # natural home on the part (draft/mirror/patterns/combine) ride cameo bodies in the SAME
 # document, so every one is exercised without contorting the mechanism.
+def _sweep_mode_shape(p):
+    """Return the independent body volume, area and world bounds used by sweep edit rows."""
+    mass = p.get("mass") or {}
+    return {"volume": mass.get("volume"), "area": mass.get("area"),
+            "min": p.get("min_point"), "max": p.get("max_point")}
+
+
+def _sweep_mode_box_equal(left, right, tol=0.0001):
+    """Compare complete measured body bounds without accepting unread coordinates."""
+    return all(isinstance((left.get(side) or {}).get(axis), (int, float))
+               and isinstance((right.get(side) or {}).get(axis), (int, float))
+               and math.isfinite(left[side][axis]) and math.isfinite(right[side][axis])
+               and abs(left[side][axis] - right[side][axis]) <= tol
+               for side in ("min", "max") for axis in ("x", "y", "z"))
+
+
+def _sweep_mode_expected_volume(case, stage):
+    """Return the selected stock volume after clipping a circular sweep at x=0.05 cm."""
+    radius = 0.1 if stage == "before" else 0.15
+    length = 3.0 if stage == "path" else 2.0
+    cap = 0.05
+    disk = math.pi * radius * radius
+    inside = (disk / 2 + cap * math.sqrt(radius * radius - cap * cap)
+              + radius * radius * math.asin(cap / radius))
+    return {"join": 1.65 + (disk - inside) * length,
+            "cut": 1.65 - inside * length,
+            "intersect": inside * length}[case]
+
+
+def _sweep_mode_solid(case, stage, role, previous=None):
+    """Require a selected volume change or a pristine independent witness read."""
+    def check(p):
+        got = _sweep_mode_shape(p)
+        old = _RECALL.get(previous) if previous else None
+        volume, area = got["volume"], got["area"]
+        valid = (p.get("kind") == "body" and p.get("units") == "cm"
+                 and (p.get("mass") or {}).get("accuracy_used") == "very_high"
+                 and isinstance(volume, (int, float)) and math.isfinite(volume) and volume > 0
+                 and isinstance(area, (int, float)) and math.isfinite(area) and area > 0
+                 and _sweep_mode_box_equal(got, got)
+                 and (previous is None or old is not None))
+        if valid and role == "SelectedStock":
+            valid = abs(volume - _sweep_mode_expected_volume(case, stage)) <= 0.002
+        if valid and role != "SelectedStock":
+            lo, hi, expected_volume = {
+                "UnselectedStock": ((0.06, -0.5, 0), (0.6, 0.5, 3), 1.62),
+                "OverlappingForeign": ((0.08, -0.5, 0), (0.3, 0.5, 3), 0.66),
+            }[role]
+            expected_box = {"min": dict(zip(("x", "y", "z"), lo)),
+                            "max": dict(zip(("x", "y", "z"), hi))}
+            valid = (abs(volume - expected_volume) <= 0.002
+                     and _sweep_mode_box_equal(got, expected_box, 0.001))
+        if old is not None and valid:
+            if role == "SelectedStock":
+                valid = (isinstance(old.get("volume"), (int, float))
+                         and abs(volume - old["volume"]) > 0.0001)
+            else:
+                valid = (abs(volume - old["volume"]) <= 0.00001
+                         and abs(area - old["area"]) <= 0.00001
+                         and _sweep_mode_box_equal(got, old))
+        return _measured(f"{case} {stage} {role} independent volume/bounds",
+                         {"current": got, "previous": old,
+                          "selected_expected_cm3": (_sweep_mode_expected_volume(case, stage)
+                                                    if role == "SelectedStock" else None)}, valid)
+    return check
+
+
+def _sweep_mode_edit(case, action, surface=False):
+    """Require one edit to retain its feature, scope, marker and readable body shape."""
+    def check(p):
+        after = p.get("target_after") or []
+        shape = after[0] if len(after) == 1 else {}
+        return _measured(f"{case} {action} sweep definition and participants", p,
+                         p.get("edited") is True and p.get("action") == action
+                         and p.get("same_feature") is True
+                         and p.get("definition_matches") is True
+                         and (p.get("definition_before") or {}).get("profile_members") == 1
+                         and (p.get("definition_after") or {}).get("profile_members") == 1
+                         and p.get("geometry_changed") is True
+                         and p.get("participant_scope_preserved") is True
+                         and p.get("participants_replayed") is (not surface)
+                         and p.get("retained_participants") == ([] if surface else ["SelectedStock"])
+                         and p.get("marker_restored") is True
+                         and p.get("outside_body_changes") == []
+                         and p.get("new_timeline_errors") == []
+                         and p.get("new_timeline_warnings") == []
+                         and shape.get("solid") is (not surface)
+                         and (shape.get("volume_cm3") is None if surface else
+                              isinstance(shape.get("volume_cm3"), (int, float))))
+    return check
+
+
+def _sweep_mode_surface(case, stage, previous=None):
+    """Require the independently found surface face area to change after each edit."""
+    def check(p):
+        rows = p.get("matches") or []
+        row = rows[0] if len(rows) == 1 else {}
+        area = row.get("area")
+        old = _RECALL.get(previous) if previous else None
+        valid = (p.get("units") == "cm" and p.get("match_count") == 1
+                 and p.get("returned") == 1 and p.get("truncated") is not True
+                 and isinstance(area, (int, float)) and math.isfinite(area) and area > 0
+                 and (previous is None or old is not None))
+        width = 0.2 if stage == "before" else 0.3
+        length = 3.0 if stage == "path" else 2.0
+        expected = width * length if case == "open" else math.pi * width * length
+        if valid:
+            valid = abs(area - expected) <= 0.005
+        if old is not None and valid:
+            valid = abs(area - old) > 0.01
+        return _measured(f"{case} {stage} independent surface face area",
+                         {"area_cm2": area, "expected_cm2": expected,
+                          "previous_cm2": old}, valid)
+    return check
+
+
+def _sweep_mode_bounds(case, stage, previous=None):
+    """Require a complete surface body box, changed after each edit."""
+    def check(p):
+        got = _sweep_mode_shape(p)
+        old = _RECALL.get(previous) if previous else None
+        valid = (p.get("kind") == "body" and p.get("units") == "cm"
+                 and _sweep_mode_box_equal(got, got)
+                 and (previous is None or old is not None))
+        expected_x = 0.2 if stage == "before" else 0.3
+        expected_z = 3.0 if stage == "path" else 2.0
+        if valid:
+            valid = (_near(p.get("x"), expected_x, 0.01)
+                     and _near(p.get("z"), expected_z, 0.01))
+        if old is not None and valid:
+            valid = not _sweep_mode_box_equal(got, old, 0.01)
+        return _measured(f"{case} {stage} independent surface bounds",
+                         {"current": got, "x": p.get("x"), "z": p.get("z"),
+                          "expected_x": expected_x, "expected_z": expected_z,
+                          "previous": old}, valid)
+    return check
+
+
+def _sweep_edit_modes_rows():
+    """Exercise scoped boolean and surface sweep edits in one owned scratch document."""
+    rows = [("doc_get", {}, _home_document, ("sem_story", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "sem_story", "story")},
+             _new_document, ("sem_doc", lambda p: p["document_handle"]))]
+
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: _combine_pin(
+            c, "sem_doc", args(c) if callable(args) else args), check, save))
+
+    def read(name, args, check, save=None):
+        rows.append((name, args, check, save))
+
+    def box(component, name, low, high, key):
+        sketch = component + name + "S"
+        write("sketch_create", {"plane": "xy", "name": sketch})
+        write("sketch_add_geometry", {"sketch_name": sketch, "geometry": [
+            {"kind": "rectangle", "x1": low[0], "y1": low[1],
+             "x2": high[0], "y2": high[1]}]})
+        write("model_extrude", {"sketch_name": sketch, "profile_index": 0,
+                                "distance": high[2]}, _extruded,
+              (key, lambda p: p["result_bodies"][0]))
+        write("design_set_name", lambda c: {
+            "target": component + ":" + _ctx_get(c, key, "new stock body"),
+            "new_name": name}, lambda p: p.get("renamed") is True and p.get("name") == name)
+
+    def solid_read(case, stage, component, role, previous=None):
+        key = f"sem_{case}_{stage}_{role}"
+        read("model_inspect", {"target": f"{component}:{role}",
+                               "include": ["default", "mass"], "units": "cm",
+                               "accuracy": "very_high"},
+             _sweep_mode_solid(case, stage, role, previous),
+             (key, _recall(key, _sweep_mode_shape)))
+        return key
+
+    def surface_read(case, stage, component, face_kind, previous_area=None,
+                     previous_bounds=None):
+        target = f"{component}:SweepSheet"
+        bkey, akey = f"sem_{case}_{stage}_bounds", f"sem_{case}_{stage}_area"
+        read("model_inspect", {"target": target, "units": "cm"},
+             _sweep_mode_bounds(case, stage, previous_bounds),
+             (bkey, _recall(bkey, _sweep_mode_shape)))
+        read("find_geometry", {"target": target, "kind": face_kind,
+                               "units": "cm", "max_results": 2},
+             _sweep_mode_surface(case, stage, previous_area),
+             (akey, _recall(akey, lambda p: p["matches"][0]["area"])))
+        return akey, bkey
+
+    for case in ("join", "cut", "intersect"):
+        host, foreign = "Sweep" + case.title(), "Foreign" + case.title()
+        write("model_create_component", {"name": host, "activate": True}, _made_component)
+        for name, radius in (("OriginalProfile", 1), ("AlternateProfile", 1.5)):
+            write("sketch_create", {"plane": "xy", "name": name})
+            write("sketch_add_geometry", {"sketch_name": name, "component": host, "geometry": [
+                {"kind": "circle", "cx": 0, "cy": 0, "radius": radius}]})
+        for name, length in (("OriginalPath", 20), ("AlternatePath", 30)):
+            write("sketch_create", {"plane": "xz", "name": name})
+            write("sketch_add_geometry", {"sketch_name": name, "component": host, "geometry": [
+                {"kind": "line", "x1": 0, "y1": 0, "x2": 0, "y2": -length}]})
+        for role, lo, hi in (
+                ("SelectedStock", (-5, -5, 0), (0.5, 5, 30)),
+                ("UnselectedStock", (0.6, -5, 0), (6, 5, 30))):
+            box(host, role, lo, hi, f"sem_{case}_{role}_body")
+        write("design_activate_component", {"occurrence": "root"})
+        write("model_create_component", {"name": foreign, "activate": True}, _made_component)
+        for role, lo, hi in (
+                ("OverlappingForeign", (0.8, -5, 0), (3, 5, 30)),):
+            box(foreign, role, lo, hi, f"sem_{case}_{role}_body")
+        write("design_activate_component", {"occurrence": host + ":1"})
+        feature_key = f"sem_{case}_feature"
+        write("model_sweep", {"profile": {"sketch": "OriginalProfile", "profile_index": 0},
+                              "path": "sketch:OriginalPath", "operation": case,
+                              "target_bodies": [f"{host}:SelectedStock"], "component": host},
+              lambda p, case=case, host=host: _measured(
+                  f"{case} scoped sweep created", p,
+                  p.get("swept") is True and p.get("operation") == case
+                  and p.get("component") == host
+                  and p.get("scoped_to_bodies") == ["SelectedStock"]
+                  and p.get("is_solid") is True and bool(p.get("result_bodies"))),
+              (feature_key, lambda p, host=host: host + "/" + p["feature"]))
+        roles = ((host, "SelectedStock"), (host, "UnselectedStock"),
+                 (foreign, "OverlappingForeign"))
+        before = {role: solid_read(case, "before", component, role)
+                  for component, role in roles}
+        for action, operand in (("profile", {"sketch": "AlternateProfile", "profile_index": 0}),
+                                ("path", "sketch:AlternatePath")):
+            write("model_edit_sweep", lambda c, action=action, operand=operand, host=host,
+                  feature_key=feature_key: {
+                      "feature": _ctx_get(c, feature_key, "scoped sweep feature"),
+                      "action": action, action: operand,
+                      **({"component": host} if action == "profile" else {})},
+                  _sweep_mode_edit(case, action))
+            stage = action
+            for component, role in roles:
+                prior = before[role]
+                before[role] = solid_read(case, stage, component, role, prior)
+        write("design_activate_component", {"occurrence": "root"})
+
+    for case, face_kind in (("open", "planar_face"), ("closed", "cylinder_face")):
+        host = "Surface" + case.title()
+        write("model_create_component", {"name": host, "activate": True}, _made_component)
+        for name, width in (("OriginalProfile", 2), ("AlternateProfile", 3)):
+            write("sketch_create", {"plane": "xy", "name": name})
+            geometry = ({"kind": "line", "x1": 0, "y1": 0, "x2": width, "y2": 0}
+                        if case == "open" else
+                        {"kind": "circle", "cx": 0, "cy": 0, "radius": width / 2})
+            write("sketch_add_geometry", {"sketch_name": name, "component": host, "geometry": [geometry]})
+        for name, length in (("OriginalPath", 20), ("AlternatePath", 30)):
+            write("sketch_create", {"plane": "xz", "name": name})
+            write("sketch_add_geometry", {"sketch_name": name, "component": host, "geometry": [
+                {"kind": "line", "x1": 0, "y1": 0, "x2": 0, "y2": -length}]})
+        feature_key, body_key = f"sem_{case}_feature", f"sem_{case}_body"
+
+        def surface_refs(p, host=host, body_key=body_key):
+            _RECALL[body_key] = p["result_bodies"][0]
+            return host + "/" + p["feature"]
+
+        write("model_sweep", {"profile": {"sketch": "OriginalProfile", "profile_index": 0},
+                              "path": "sketch:OriginalPath", "as_surface": True,
+                              "component": host},
+              lambda p, case=case, host=host: _measured(
+                  f"{case} surface sweep created", p,
+                  p.get("swept") is True and p.get("component") == host
+                  and p.get("is_solid") is False
+                  and p.get("as_surface") is True
+                  and len(p.get("result_bodies") or []) == 1),
+              (feature_key, surface_refs))
+        write("design_set_name", lambda c, host=host, body_key=body_key: {
+            "target": host + ":" + _RECALL[body_key],
+            "new_name": "SweepSheet"},
+            lambda p: p.get("renamed") is True and p.get("name") == "SweepSheet")
+        area, bounds = surface_read(case, "before", host, face_kind)
+        for action, operand in (("profile", {"sketch": "AlternateProfile", "profile_index": 0}),
+                                ("path", "sketch:AlternatePath")):
+            write("model_edit_sweep", lambda c, action=action, operand=operand, host=host,
+                  feature_key=feature_key: {
+                      "feature": _ctx_get(c, feature_key, "surface sweep feature"),
+                      "action": action, action: operand,
+                      **({"component": host} if action == "profile" else {})},
+                  _sweep_mode_edit(case, action, surface=True))
+            area, bounds = surface_read(case, action, host, face_kind, area, bounds)
+        write("design_activate_component", {"occurrence": "root"})
+
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "sem_story", "story"),
+                                         "expect_document": _ctx_get(c, "sem_doc", "sweep modes")},
+              "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "sem_doc", "sweep modes"),
+                                      "save_changes": False,
+                                      "expect_document": _ctx_get(c, "sem_story", "story")},
+              _document_closed, None)]
+    return rows
+
+
+_SWEEP_EDIT_MODES = _sweep_edit_modes_rows()
+
+
 _SOLIDS = [
     # The sketch acts have already drawn the whole scratch field by now, so a whole-model fit is a
     # metre of scenery with the part a speck in it. Frame the profiles the features below consume,
@@ -3305,7 +3730,7 @@ _SOLIDS = [
     ("sketch_get", {"sketch_name": "LoftTop"}, "ok", _prof("loft_top")),
     ("model_loft", lambda c: {"profiles": [_ctx_get(c, "loft_base", "the loft's base profile"),
                                            _ctx_get(c, "loft_top", "the loft's top profile")]},
-     _lofted, None),
+     _lofted, ("sweep_edit_witness_body", lambda p: p["result_bodies"][0])),
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
     ("model_create_component", {"name": "SweepCameo", "activate": True}, _made_component, None),
     ("sketch_create", {"plane": "xz", "name": "SweepPath"}, "ok", None),
@@ -3315,8 +3740,96 @@ _SOLIDS = [
     ("sketch_create", {"plane": "xy", "name": "SweepProf"}, "ok", None),
     ("sketch_add_geometry", {"geometry": [{"kind": "circle", "cx": 250, "cy": 0, "radius": 5}],
                              "sketch_name": "SweepProf"}, "ok", None),
+    ("sketch_create", {"plane": "xy", "name": "SweepProfWide"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [{"kind": "circle", "cx": 250, "cy": 0, "radius": 8}],
+                             "sketch_name": "SweepProfWide"}, "ok", None),
+    ("sketch_create", {"plane": "xz", "name": "SweepPathArc"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [{"kind": "arc", "cx": 300, "cy": 0,
+                                            "x1": 250, "y1": 0, "sweep_deg": 90}],
+                             "sketch_name": "SweepPathArc"}, "ok", None),
+    ("sketch_create", {"plane": "xz", "name": "SweepPathBrepSource"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [
+        {"kind": "line", "x1": 250, "y1": 0, "x2": 250, "y2": -10},
+        {"kind": "arc", "cx": 260, "cy": -10, "x1": 250, "y1": -10, "sweep_deg": 45}],
+        "sketch_name": "SweepPathBrepSource"}, "ok", None),
+    ("model_extrude", {"sketch_name": "SweepPathBrepSource", "distance": 3,
+                       "as_surface": True}, _extruded,
+     ("sweep_brep_strip", lambda p: p["result_bodies"][0])),
     ("model_sweep", {"profile": {"sketch": "SweepProf", "profile_index": 0},
-                     "path": "sketch:SweepPath"}, _swept, None),
+                     "path": "sketch:SweepPath"}, _swept,
+     ("sweep_edit_body", lambda p: p["result_bodies"][0])),
+    ("find_geometry", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_edit_body", "sweep body"),
+                                  "kind": "planar_face", "nearest_to": [250, 0, 50],
+                                  "max_results": 1}, _matched(1, "planar_face"), _fg("sweep_end_cap")),
+    ("model_construction", lambda c: {"kind": "plane", "plane": _ctx_get(c, "sweep_end_cap", "end cap"),
+                                       "offset": 2, "name": "SweepSupportPlane"},
+     _datum_plane("xy"), None),
+    ("sketch_create", {"plane": "SweepSupportPlane", "name": "SweepDependent"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [{"kind": "circle", "cx": 0, "cy": 0, "radius": 2}],
+                             "sketch_name": "SweepDependent"}, "ok", None),
+    ("model_extrude", {"sketch_name": "SweepDependent", "distance": 1}, _extruded,
+     ("sweep_dependent_body", _recall("sweep_dependent_body", lambda p: p["result_bodies"][0]))),
+    ("design_get", {"include": ["tree"], "component": "SweepCameo", "tree_bodies": True}, "ok",
+     ("sweep_dependent_handle", lambda p: next(
+         body["handle"] for body in p["tree"]["tree"]["bodies"]
+         if body["name"] == _RECALL["sweep_dependent_body"]))),
+    ("model_inspect", lambda c: {"target": _ctx_get(c, "sweep_dependent_handle", "dependent handle"),
+                                 "include": ["default", "mass"], "units": "cm"}, "ok",
+     ("sweep_dependent_before", _recall("sweep_dependent_before", lambda p: {
+         "volume": p["mass"]["volume"], "min_point": p["min_point"],
+         "max_point": p["max_point"]}))),
+    ("model_inspect", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_edit_body", "sweep body"),
+                                 "include": ["mass"], "units": "cm"},
+     _sweep_inspected_at_volume(math.pi * 0.5 ** 2 * 5), None),
+    ("model_inspect", lambda c: {"target": "LoftCameo:" + _ctx_get(
+        c, "sweep_edit_witness_body", "loft witness"), "include": ["mass"], "units": "cm"},
+     lambda p: _num((p.get("mass") or {}).get("volume")),
+     ("sweep_edit_witness_volume", _recall("sweep_edit_witness_volume",
+                                              lambda p: p["mass"]["volume"]))),
+    ("model_edit_sweep", {"feature": "SweepCameo/Sweep1", "action": "profile",
+                          "profile": {"sketch": "SweepProfWide", "profile_index": 0},
+                          "component": "SweepCameo"},
+     _sweep_edit_at_volume(math.pi * 0.8 ** 2 * 5), None),
+    ("model_inspect", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_edit_body", "sweep body"),
+                                 "include": ["mass"], "units": "cm"},
+     _sweep_inspected_at_volume(math.pi * 0.8 ** 2 * 5), None),
+    ("model_inspect", lambda c: {"target": _ctx_get(c, "sweep_dependent_handle", "dependent handle"),
+                                 "include": ["default", "mass"], "units": "cm"},
+     _sweep_dependent_survived(False), None),
+    ("model_edit_sweep", {"feature": "SweepCameo/Sweep1", "action": "path",
+                          "path": "sketch:SweepPathArc"},
+     _sweep_edit_at_volume(math.pi * 0.8 ** 2 * 5 * math.pi / 2), None),
+    ("model_inspect", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_edit_body", "sweep body"),
+                                 "include": ["mass"], "units": "cm"},
+     _sweep_inspected_at_volume(math.pi * 0.8 ** 2 * 5 * math.pi / 2), None),
+    ("model_inspect", lambda c: {"target": _ctx_get(c, "sweep_dependent_handle", "dependent handle"),
+                                 "include": ["default", "mass"], "units": "cm"},
+     _sweep_dependent_survived(True), None),
+    ("find_geometry", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_brep_strip", "strip"),
+                                  "kind": "line_edge", "nearest_to": [250, 0, 5],
+                                  "max_results": 1}, _matched(1, "line_edge"), _fg("sweep_brep_line")),
+    ("find_geometry", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_brep_strip", "strip"),
+                                  "kind": "arc_edge", "nearest_to": [251, 0, 13],
+                                  "max_results": 1}, _matched(1, "arc_edge"), _fg("sweep_brep_arc")),
+    ("model_edit_sweep", lambda c: {"feature": "SweepCameo/Sweep1", "action": "path",
+                                       "path": [_ctx_get(c, "sweep_brep_line", "strip line"),
+                                                _ctx_get(c, "sweep_brep_arc", "strip arc")]},
+     _sweep_brep_list_edited, None),
+    ("model_inspect", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_edit_body", "sweep body"),
+                                 "include": ["mass"], "units": "cm"},
+     _sweep_inspected_at_volume(math.pi * 0.8 ** 2 * (1 + math.pi / 4)), None),
+    ("model_edit_sweep", {"feature": "SweepCameo/Sweep1", "action": "path",
+                          "path": "sketch:SweepPath", "profile": {"sketch": "SweepProf", "profile_index": 0}},
+     _refused("unused"), None),
+    ("model_inspect", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_edit_body", "sweep body"),
+                                 "include": ["mass"], "units": "cm"},
+     _sweep_inspected_at_volume(math.pi * 0.8 ** 2 * (1 + math.pi / 4)), None),
+    ("model_inspect", lambda c: {"target": "LoftCameo:" + _ctx_get(
+        c, "sweep_edit_witness_body", "loft witness"), "include": ["mass"], "units": "cm"},
+     lambda p: _measured("untouched loft witness", {"volume_cm3": (p.get("mass") or {}).get("volume")},
+                         _num((p.get("mass") or {}).get("volume")) and _near(
+                             p["mass"]["volume"], _RECALL["sweep_edit_witness_volume"], 0.001)),
+     None),
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
     # THE GUIDE SCOPE: a sketch name is only unique INSIDE a component, so two components each hold
     # one called 'Spine' and the loft below has to be told which one its rail lives in.
@@ -3782,7 +4295,7 @@ _SOLIDS = [
     ("find_geometry", {"target": "PivotCameo", "kind": "planar_face", "nearest_to": [375, 15, 20],
                        "max_results": 1}, "ok", _fg("pv_top")),
     ("model_replace_face", lambda c: {"faces": [_ctx_get(c, "pv_top", "the block top")],
-                                      "target": _ctx_get(c, "pv_sheet_body", "the tilted sheet")},
+                                      "target": "PivotCameo:" + _ctx_get(c, "pv_sheet_body", "the tilted sheet")},
      _replaced_on_its_pivot, None),
     ("design_activate_component", {"occurrence": "FeatureCameo:1"}, "ok", None),
     ("find_geometry", {"target": "FeatureCameo", "kind": "planar_face", "nearest_to": [220, 20, 20], "max_results": 1}, "ok", _fg("fc_top")),
@@ -4179,6 +4692,7 @@ _SOLIDS = [
                          _near(p.get("x"), 40.0, 0.05) and _near(p.get("y"), 40.0, 0.05)
                          and p.get("box_read") == "preciseBoundingBox"), None),
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
+    *_SWEEP_EDIT_MODES,
 ]
 
 

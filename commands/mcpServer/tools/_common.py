@@ -1360,7 +1360,7 @@ def build_path(comp, path_raw):
             coll.add(e)
         try:
             # Multiple edges: use them exactly (noChainedCurves); they must connect into one path.
-            p = adsk.fusion.Path.create(coll, adsk.fusion.ChainedCurveOptions.noChainedCurves)
+            p = comp.features.createPath(coll, False)
         except Exception as e:
             return None, None, f"Could not build a path from the {len(edges)} edges: {e}"
     if not p:

@@ -29,10 +29,10 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source 23dbcc3871740645c874a9c0d5a862082c370cade3df7068e7bd79527bbed41a | Fusion 2706.0.97 | verified 2026-09-28
-Loaded: implementation 6eeb825e051f5ed1be97848fe52679e26bd08f91229c186ea974329980301637 | schema dba74ab04cfa14dcd860192a267d1063b110c5e23c6b376d028f37db9fffcecc | load f9cd092adf4b40d4989d542463de7858 | session fa497df10e484b47988c4aa7edcbbacb
+Stamp: source 204a8b10de4c2bfa9c50e096211ab22cde26f9a34314b17d3bc998eac38909e4 | Fusion 2706.0.97 | verified 2026-09-28
+Loaded: implementation 00303c86f1165911e867aba93bae8704f1f6b22bdb3ebcc145533b8135746654 | schema 41b0ea1fcb18f5c0af60463e0c5021cfe6ac940d6e1e4c1b3fdd94a84c689ae6 | load 443dba6a85934c9da5b369d520897ef4 | session 4cc8bd8ec306421c984664d456bea274
 
-201 covered / 1 called / 5 refusals-only / 4 skipped(reason) / 0 pending
+202 covered / 1 called / 5 refusals-only / 4 skipped(reason) / 0 pending
 
 | act | mode |
 |---|---|
@@ -217,6 +217,7 @@ Loaded: implementation 6eeb825e051f5ed1be97848fe52679e26bd08f91229c186ea97432998
 | model_draft | covered | draft a cameo face |
 | model_edit_body | covered |  |
 | model_edit_extrude | covered |  |
+| model_edit_sweep | covered |  |
 | model_emboss | covered | raise then engrave a circular profile on a scratch block's top face, each checked against the volume direction; a zero depth refused |
 | model_extrude | covered | extrude the block, JOIN the stepped half and the boss onto it and CUT the pocket down from the step floor, each depth an expression off the driver; then a three-bay frame with 'all' whose payload NAMES the regions enclosed by another selected one - the bays that filled with material. Then the hub's three cuts: the keyway symmetric about the axis plane, the inclined flat cut from the tilted sketch, and the flange pocket where 'all' takes TWO regions and neither encloses the other - the sector and the round pocket beside it, both cutting something a viewer can see |
 | model_fillet | covered | round the pocket's four corners at the radius the parameter states, break the step's leading edge, blend the boss rim; then the two path fixtures - one box corner rounded into an OPEN tangent run, and all four rounded into a CLOSED tangent loop - that the chaining beats read their edge counts off; and the EDGE FILTER, on an L prism whose 18 edges are 17 convex and one concave by hand count - the census partitions them, the filter requests the concave one alone, and the volume grows because filling a corner adds material; then the SMOOTH branch on the body that round curved - 21 edges reading 19 convex, no concave one left and the two tangent joins smooth, published in the refusal a filter matching nothing carries. And the hub's flange RIM, rounded 1.5 mm on the one circular edge told from its twin below it by its own centre; then a FULL ROUND, replacing a slab's whole side face with a round the two faces beside it set the radius of - no radius is given at all |

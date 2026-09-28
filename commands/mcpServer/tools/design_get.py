@@ -4,7 +4,7 @@
 """RICH READ: design_get - the active design's structure by zoom level (see CLAUDE.md "Reads are
 RICH"). Default: a cheap orientation slice (design type, feature count, timeline health, content
 fingerprint). include=['tree'|'timeline'|'mode'|'configurations'|'materials'|'appearances'|
-'attributes'|'definition'] pulls one deeper slice at a time via _slice_*() helpers. Read-only.
+'attributes'|'definition'|'datums'] pulls one deeper slice at a time via _slice_*() helpers. Read-only.
 """
 
 import json
@@ -28,7 +28,7 @@ app = adsk.core.Application.get()
 
 # The deeper slices an agent can opt into (the default returns NONE of these in full - only summaries).
 _SLICES = ("mode", "tree", "timeline", "configurations", "materials", "appearances", "attributes",
-           "metadata", "definition")
+           "metadata", "definition", "datums")
 _FEATURE = _inputs.FeatureRef("feature", description="Hole/Thread.")
 _DEFINITION_UNREAD = object()
 
@@ -830,6 +830,100 @@ def _slice_metadata(design, name_filter, max_results, component=""):
     return out, None
 
 
+_DATUM_COLLECTIONS = (("construction_axis", "constructionAxes"),
+                      ("construction_plane", "constructionPlanes"),
+                      ("construction_point", "constructionPoints"))
+_DATUM_PLACEMENT_CAP = 4
+
+
+def _slice_datums(design, component, name_filter, max_results):
+    """Bounded definition inventory for construction axes, planes and points."""
+    root = safe(lambda: design.rootComponent)
+    if root is None:
+        return None, error("No root component.")
+    scope = (component or "").strip()
+    all_count = _common.counted(lambda: design.allComponents.count)
+    known_components = _common.all_components(design)
+    definitions_complete = (all_count is not None and len(known_components) == all_count)
+    if scope and (safe(lambda: root.name) or "").strip().lower() == scope.lower():
+        pool, serr = known_components, None
+    elif scope:
+        pool, scope_walk, serr = _scoped_components(root, scope)
+        if serr:
+            return None, serr
+        definitions_complete = (scope_walk.complete and not scope_walk.broken
+                                and scope_walk.readable)
+    else:
+        pool, serr = known_components, None
+    if serr:
+        return None, serr
+    cap = _cam_common.clamp_rows(max_results, 25, 200)
+    wanted = (name_filter or "").strip().lower()
+    walk = _common.occurrence_walk(design)
+    placements_complete = walk.readable and walk.complete and not walk.broken
+    definitions_complete = definitions_complete and placements_complete
+    counts = {kind: 0 for kind, _attr in _DATUM_COLLECTIONS}
+    rows = []
+    for comp in pool:
+        owner = safe(lambda comp=comp: comp.name)
+        owner_matches = [(_common.same_component(safe(lambda occ=occ: occ.component), comp),
+                          safe(lambda occ=occ: occ.fullPathName)) for occ in walk.occurrences]
+        paths = [path for match, path in owner_matches if match is True and path is not None]
+        owner_placements_complete = (placements_complete
+                                     and all(match is not None for match, _path in owner_matches)
+                                     and all(path is not None for match, path in owner_matches
+                                             if match is True))
+        for kind, attr in _DATUM_COLLECTIONS:
+            coll = safe(lambda comp=comp, attr=attr: getattr(comp, attr))
+            n = _common.counted(lambda coll=coll: coll.count) if coll is not None else None
+            if n is None:
+                counts[kind] = None
+                continue
+            for i in range(n):
+                datum = safe(lambda coll=coll, i=i: coll.item(i))
+                if datum is None:
+                    counts[kind] = None
+                    continue
+                name = safe(lambda datum=datum: datum.name)
+                if name is None and wanted:
+                    counts[kind] = None
+                    continue
+                if wanted and (not isinstance(name, str) or wanted not in name.lower()):
+                    continue
+                if counts[kind] is not None:
+                    counts[kind] += 1
+                if len(rows) >= cap:
+                    continue
+                row = {"kind": kind, "name": name, "component": owner,
+                       "light_bulb_on": _common.read_flag(lambda datum=datum: datum.isLightBulbOn),
+                       "is_deletable": _common.read_flag(lambda datum=datum: datum.isDeletable),
+                       "is_parametric": _common.read_flag(lambda datum=datum: datum.isParametric),
+                       "timeline_index": _common.counted(lambda datum=datum: datum.timelineObject.index),
+                       "placement_count": (len(paths) if owner_placements_complete else None),
+                       "occurrences": paths[:_DATUM_PLACEMENT_CAP]}
+                if len(paths) > _DATUM_PLACEMENT_CAP:
+                    row["occurrences_truncated"] = True
+                rows.append(row)
+    if not definitions_complete:
+        counts = {kind: None for kind in counts}
+    match_count = (sum(counts.values()) if all(v is not None for v in counts.values()) else None)
+    out = {"counts": counts, "match_count": match_count, "returned": len(rows),
+           "truncated": (match_count > len(rows) if match_count is not None else None),
+           "datums": rows,
+           "occurrences_walk": walk.method,
+           "note": ("Definition inventory only. Use find_geometry(kind=construction_axis/"
+                    "construction_plane/construction_point, target=<occurrence>, name=<exact name>) "
+                    "for world geometry and a placed handle. Narrow with component/name_filter or "
+                    "raise max_results; null counts mean incomplete reads.")}
+    if scope:
+        out["component"] = scope
+    if wanted:
+        out["name_filter"] = name_filter.strip()
+    if not definitions_complete or any(v is None for v in counts.values()):
+        out["incomplete"] = True
+    return out, None
+
+
 # ── material / appearance catalog (both slices, one walk in _materials) ────────────────────────────
 
 def _slice_materials(design, library, name_filter, max_results):
@@ -1081,6 +1175,10 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
         out["definition"], derr = _slice_definition(feature, units)
         if derr:
             return derr
+    if "datums" in inc:
+        out["datums"], daterr = _slice_datums(design, component, name_filter, max_results)
+        if daterr:
+            return daterr
 
     # advertise the slices NOT yet pulled (load-bearing: an un-named flag is invisible to the agent).
     remaining = [s for s in _SLICES if s not in inc]
@@ -1091,7 +1189,7 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
                        "'group'/'include_suppressed'/'timeline_params' the timeline; "
                        "'library'/'name_filter'/'max_results' the catalog; 'attribute_group' "
                        "(required)/'attribute_key' the attributes; 'component'/'name_filter'/"
-                       "'max_results' the metadata; 'feature'/'units' the definition.")
+                       "'max_results' the metadata/datums; 'feature'/'units' the definition.")
     # A census nothing could be read from leaves 'occurrences' out of contents entirely, which reads
     # exactly like a design holding no placed instance. The marker beside it is what tells the two
     # apart, so the unreadable one is stated in words as well.
@@ -1118,7 +1216,7 @@ def _normalize_include(include):
 
 
 TOOL_DESCRIPTION = (
-    "Design mode, contents, timeline health; include selects detail."
+    "Design summary and opt-in detail."
 )
 
 tool = (
@@ -1137,7 +1235,7 @@ tool = (
     .add_input_property("library", {"type": "string",
             "description": "Exact library name/id."})
     .add_input_property("name_filter", {"type": "string",
-            "description": "Contains: catalog entries/tree TOP-LEVEL nodes."})
+            "description": "Substring for selected slices."})
     .add_input_property("max_results", {"type": "integer",
             "description": f"Catalog 50 (max 200); tree {_TREE_CHILDREN_DEFAULT}/level; "
                            f"timeline {_TIMELINE_MAX_ITEMS}; metadata {_METADATA_MAX_ROWS}."})

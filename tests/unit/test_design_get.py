@@ -175,6 +175,8 @@ def stub_slices(monkeypatch):
     monkeypatch.setattr(dg, "_slice_metadata", lambda d, name_filter, max_results, component="": (
         {"component_count": 1, "returned": 1, "components": [], "name_filter": name_filter,
          "max_results": max_results}, None))
+    monkeypatch.setattr(dg, "_slice_datums", lambda d, component, name_filter, max_results: (
+        {"counts": {}, "returned": 0, "datums": []}, None))
     monkeypatch.setattr(dg, "_slice_materials", lambda d, library, name_filter, max_results: (
         {"kind": "materials", "library": library, "name_filter": name_filter,
          "max_results": max_results, "document": {"count": 1}, "libraries": []}, None))
@@ -290,6 +292,7 @@ class TestIncludeSlices:
         ("appearances", "appearances"),
         ("attributes", "attributes"),
         ("metadata", "metadata"),
+        ("datums", "datums"),
     ])
     def test_include_adds_the_slice(self, stub_slices, slice_name, key):
         out = _payload(dg.handler(include=[slice_name]))
@@ -1960,6 +1963,43 @@ class TestSliceAttributes:
 def _metadata_design(root, *subs):
     """A design whose allComponents holds the root beside its sub-components, as live does."""
     return MakeDesign(comp=root, all_components=[root, *subs])
+
+
+def test_datum_inventory_counts_definitions_and_bounds_repeated_placements():
+    root = MakeComp(name="Assembly", entity_token="T:root")
+    owner = MakeComp(name="Fixture", entity_token="T:fixture")
+    for comp in (root, owner):
+        comp.constructionAxes = _NamedCollection([])
+        comp.constructionPlanes = _NamedCollection([])
+        comp.constructionPoints = _NamedCollection([])
+    def datum(name):
+        return SimpleNamespace(name=name, isLightBulbOn=True, isDeletable=True,
+                               isParametric=True, timelineObject=SimpleNamespace(index=3))
+    owner.constructionAxes = _NamedCollection([datum("DatumAxis")])
+    owner.constructionPlanes = _NamedCollection([datum("DatumPlane")])
+    owner.constructionPoints = _NamedCollection([datum("DatumPoint")])
+    placements = [FakeOccurrence(path=f"Fixture:{i}", component=owner) for i in (1, 2)]
+    root.allOccurrences = placements
+    design = _metadata_design(root, owner)
+    install(dg, design)
+    out, err = dg._slice_datums(design, "", "Datum", 2)
+    assert err is None and out["counts"] == {"construction_axis": 1,
+                                            "construction_plane": 1,
+                                            "construction_point": 1}
+    assert out["match_count"] == 3 and out["returned"] == 2 and out["truncated"] is True
+    assert out["datums"][0]["placement_count"] == 2
+    assert out["datums"][0]["occurrences"] == ["Fixture:1", "Fixture:2"]
+    assert "handle" not in out["datums"][0] and "position" not in out["datums"][0]
+    owner.constructionPlanes = None
+    unread, unread_err = dg._slice_datums(design, "", "Datum", 2)
+    assert unread_err is None and unread["counts"]["construction_plane"] is None
+    assert unread["match_count"] is None and unread["incomplete"] is True
+    owner.constructionPlanes = _NamedCollection([SimpleNamespace(isLightBulbOn=True)])
+    unnamed, unnamed_err = dg._slice_datums(design, "", "Datum", 2)
+    assert unnamed_err is None and unnamed["counts"]["construction_plane"] is None
+    assert unnamed["match_count"] is None and unnamed["incomplete"] is True
+    missing, miss_error = dg._slice_datums(design, "Ghost", "", 2)
+    assert missing is None and "Ghost" in error_message(miss_error)
 
 
 class TestSliceMetadata:

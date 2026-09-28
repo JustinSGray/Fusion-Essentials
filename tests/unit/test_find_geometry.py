@@ -1134,6 +1134,19 @@ class TestPlacedKinds:
         out = _payload(fg.handler(kind="construction_point", name="point1", units="cm"))
         assert [(m["name"], m["position"]) for m in out["matches"]] == [("Point1", [1.0, 2.0, 3.0])]
 
+    def test_unread_datum_collection_cannot_be_reported_as_no_matches(self):
+        design = _bench_design()
+        root, bench = design._all_components
+        root.constructionAxes = None
+        bench.constructionAxes = _NamedCollection([])
+        install(fg, design)
+        unknown = _payload(fg.handler(kind="construction_axis"))
+        assert unknown["match_count"] is None and unknown["incomplete"] is True
+        assert unknown["matches"] == []
+        root.constructionAxes = _NamedCollection([])
+        empty = _payload(fg.handler(kind="construction_axis"))
+        assert empty["match_count"] == 0 and "incomplete" not in empty
+
     def test_a_placed_circle_reads_its_world_centre_and_the_radius_filter_holds_its_edge(self):
         # radius 10 mm keeps the 10.5 mm circle at exactly its 5% edge and drops the 10.6 mm one;
         # with the component placed twice each row's centre is read through its own instance.

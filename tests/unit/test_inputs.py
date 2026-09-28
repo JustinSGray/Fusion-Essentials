@@ -8,13 +8,14 @@ Pinned: handle resolution + the require-predicate enforcement, the units/Distanc
 schema/contract auto-generation, and resolve_inputs end-to-end.
 """
 
+import json
 import math
 import re
 import types
 
 import pytest
 
-from conftest import (load_tool, make_design, make_occurrence, _make_object_collection,
+from conftest import (install, load_tool, make_design, make_occurrence, _make_object_collection,
                       _MeshBodies, _NamedCollection, BRepBody, BRepEdge, BRepFace, Circle3D,
                       Cylinder, FakeApplication, FakeBaseFeature, FakeMatrix3D, FakeOccurrence,
                       FakePoint, FakeSketchPoint, FakeTimeline, FakeTimelineObject,
@@ -1360,6 +1361,88 @@ class TestAxisLineOfWorldSpace:
             assert (origin.x, origin.y, origin.z) == pytest.approx((1.133974596, -0.5, 4.2))
             assert (direction.x, direction.y, direction.z) == pytest.approx(
                 (0.612372436, 0.353553391, 0.707106781))
+
+    def test_acquired_axis_handle_keeps_second_placement_through_axisref(self, axis_env):
+        fg = load_tool("find_geometry")
+        env = axis_env()
+        owner = MakeComp(name="AxisOwner", entity_token="TOKEN:AxisOwner")
+        native = _FakeConstructionAxis("Spin", origin=FakePoint(-1, 0, 3),
+                                       direction=FakeVector3D(2 ** -0.5, 0, 2 ** -0.5),
+                                       component=owner)
+        native.entityToken = "AXIS-TOKEN"
+        owner.constructionAxes = _NamedCollection([native])
+        first, second = env.place(owner, "AxisOwner:1", "AxisOwner:2",
+                                  matrices=[FakeMatrix3D(deg=30, t=(2, 0, 1.2)),
+                                            FakeMatrix3D(t=(8, 0, 0))])
+        env.root.allOccurrences = _NamedCollection([first, second])
+        env.design._tokens["AXIS-TOKEN"] = native
+        def proxy_at(occ):
+            proxy = _FakeConstructionAxis("Spin", origin=FakePoint(99, 99, 99),
+                                          direction=FakeVector3D(2 ** -0.5, 0, 2 ** -0.5),
+                                          component=owner,
+                                          assembly_context=occ, native=native)
+            proxy.entityToken = native.entityToken
+            proxy.isVisible = True
+            return proxy
+        native.createForAssemblyContext = proxy_at
+        install(fg, env.design)
+        result = fg.handler(kind="construction_axis", target="AxisOwner:2", name="spin", units="cm")
+        row = json.loads(result["content"][0]["text"])["matches"][0]
+        assert row["position"] == [7.0, 0.0, 3.0]
+        assert row["direction"] == pytest.approx([2 ** -0.5, 0.0, 2 ** -0.5])
+        assert row["occurrence"] == "AxisOwner:2"
+        resolved, err = inp.AxisRef("axis").resolve(row["handle"])
+        assert err is None and resolved[1].assemblyContext is second
+        (point, direction), line_err = inp.axis_line_of("axis", resolved[1])
+        assert line_err is None and (point.x, point.y, point.z) == (7.0, 0.0, 3.0)
+        assert (direction.x, direction.y, direction.z) == pytest.approx(
+            (2 ** -0.5, 0.0, 2 ** -0.5))
+
+    def test_acquired_plane_handle_keeps_rotated_placement_through_planeref(self, axis_env,
+                                                                            monkeypatch):
+        import adsk.fusion
+        fg = load_tool("find_geometry")
+        env = axis_env()
+        owner = MakeComp(name="PlaneOwner", entity_token="TOKEN:PlaneOwner")
+        class ConstructionPlane:
+            def __init__(self, context=None, native=None):
+                self.name, self.component = "Offset", owner
+                self.geometry = types.SimpleNamespace(origin=FakePoint(0, 2, 1),
+                                                      normal=FakeVector3D(0, 1, 0))
+                self.assemblyContext, self.nativeObject = context, native
+                self.entityToken, self.isVisible = "PLANE-TOKEN", True
+        monkeypatch.setattr(adsk.fusion, "ConstructionPlane", ConstructionPlane, raising=False)
+        native = ConstructionPlane()
+        owner.constructionPlanes = _NamedCollection([native])
+        first, second = env.place(owner, "PlaneOwner:1", "PlaneOwner:2",
+                                  matrices=[FakeMatrix3D(deg=30, t=(2, 0, 1.2)),
+                                            FakeMatrix3D(t=(8, 0, 0))])
+        env.root.allOccurrences = _NamedCollection([first, second])
+        env.design._tokens["PLANE-TOKEN"] = native
+        native.createForAssemblyContext = lambda occ: ConstructionPlane(occ, native)
+        install(fg, env.design)
+        first_result = fg.handler(kind="construction_plane", target="PlaneOwner:1", name="offset",
+                                  units="cm")
+        row = json.loads(first_result["content"][0]["text"])["matches"][0]
+        assert row["position"] == pytest.approx([1.0, 3 ** 0.5, 2.2])
+        assert row["normal"] == pytest.approx([-0.5, 3 ** 0.5 / 2, 0.0])
+        plane, err = inp.PlaneRef("plane").resolve(row["handle"])
+        assert err is None and plane.assemblyContext is first
+        second_result = fg.handler(kind="construction_plane", target="PlaneOwner:2", name="offset",
+                                   units="cm")
+        second_row = json.loads(second_result["content"][0]["text"])["matches"][0]
+        other, other_err = inp.PlaneRef("plane").resolve(second_row["handle"])
+        assert other_err is None and other.assemblyContext is second
+        assert second_row["position"] == [8.0, 2.0, 1.0]
+
+    def test_plane_proxy_without_native_read_does_not_double_place_world_geometry(self, axis_env):
+        env = axis_env()
+        owner = MakeComp(name="PlaneOwner", entity_token="TOKEN:PlaneOwner")
+        occ = env.place(owner, "PlaneOwner:1", matrices=[FakeMatrix3D(t=(8, 0, 0))])[0]
+        proxy = types.SimpleNamespace(assemblyContext=occ,
+                                      geometry=types.SimpleNamespace(origin=FakePoint(8, 2, 1),
+                                                                     normal=FakeVector3D(0, 1, 0)))
+        assert inp.placed_datum_frame(proxy, "construction_plane") == (None, None)
 
     def test_a_datum_in_a_placed_component_is_lifted_through_its_occurrence(self, axis_env):
         env = axis_env()

@@ -42,13 +42,16 @@ _CENTERED_EDGES = ("circular_edge", "arc_edge", "ellipse_edge", "elliptical_arc_
 # friendly sketch 'kind' -> the '<type>' collection each sketch is read through.
 _SKETCH_KINDS = {"sketch_point": "point", "sketch_line": "line", "sketch_arc": "arc",
                  "sketch_circle": "circle", "sketch_spline": "spline"}
-_PLACED_KINDS = tuple(_SKETCH_KINDS) + ("construction_point",)
+_PLACED_KINDS = tuple(_SKETCH_KINDS) + ("construction_point", "construction_axis",
+                                         "construction_plane")
 
-_PLACED_NOTE = ("'position' is WORLD, through the sketch transform (a sketch entity's) and the "
-                "occurrence's placement; a curve's is the midpoint of its ends, a circle's its "
-                "centre. model_construction takes a sketch_point or construction_point handle in "
-                "'points'/'to_object', a sketch_line handle in 'axis' and two_edges' 'edges', and "
-                "a circle or arc centre as '<sketch>/<id>:center'.")
+_PLACED_NOTE = ("'position' is WORLD. "
+                "Axis handles feed assembly_move(rotate_axis); plane handles feed sketch_create"
+                "(plane). Vectors are readbacks; handles retain occurrence. Null "
+                "position/handle means unread "
+                "geometry. model_construction accepts point handles in 'points'/'to_object', "
+                "a sketch_line handle in 'axis' and two_edges' 'edges', or a circle/arc centre "
+                "as '<sketch>/<id>:center'.")
 
 
 def _named_subtree(all_occs, name):
@@ -236,8 +239,8 @@ def _placed_scopes(design, target):
         pairs.insert(0, (None, root))
     if pairs:
         return pairs, f"occurrence/component '{name}'", None, walk
-    return [], None, (f"target '{name}' names no occurrence or component - sketch and construction "
-                      "point kinds read components (assembly_get lists them)."), walk
+    return [], None, (f"target '{name}' names no occurrence or component - placed kinds read "
+                      "components (assembly_get lists them)."), walk
 
 
 def _radius_kept(rec, value, requested, tolerance, inv_k):
@@ -281,63 +284,99 @@ def _sketch_rows(occ, comp, knd, sketch_name, requested, tolerance, inv_k):
     return rows
 
 
-def _datum_rows(occ, comp, want_name, requested, inv_k):
-    """[(record, entity)] for every construction point of `comp` (named `want_name` when given)."""
+def _datum_rows(occ, comp, kind, want_name, requested, inv_k):
+    """(rows, incomplete) for one construction-datum kind in a placed component."""
     if requested is not None:
-        return []
+        return [], False
     path = safe(lambda: occ.fullPathName) if occ is not None else None
+    attr = {"construction_point": "constructionPoints", "construction_axis": "constructionAxes",
+            "construction_plane": "constructionPlanes"}[kind]
+    coll = safe(lambda: getattr(comp, attr))
+    count = _common.counted(lambda: coll.count) if coll is not None else None
+    if count is None:
+        return [], True
     rows = []
-    for cp in _common.iter_collection(safe(lambda: comp.constructionPoints)):
-        nm = safe(lambda cp=cp: cp.name)
+    incomplete = False
+    for i in range(count):
+        datum = safe(lambda i=i: coll.item(i))
+        if datum is None:
+            incomplete = True
+            continue
+        nm = safe(lambda datum=datum: datum.name)
+        if nm is None and want_name:
+            incomplete = True
+            continue
         if want_name and not (isinstance(nm, str) and nm.strip().lower() == want_name.lower()):
             continue
-        pos = _inputs.placed_point_cm(cp, occ)
+        if kind == "construction_point":
+            pos, vector = _inputs.placed_point_cm(datum, occ), None
+        else:
+            pos, vector = _inputs.placed_datum_frame(datum, kind, occ)
+        proxy = safe(lambda datum=datum: datum.createForAssemblyContext(occ)) if occ else datum
+        rec = {"handle": None, "kind": kind, "name": nm,
+               "position": [round(c * inv_k, 6) for c in pos] if pos else None,
+               "occurrence": path,
+               "is_visible": _common.read_flag(lambda: proxy.isVisible) if proxy else None}
+        if vector is not None:
+            rec["direction" if kind == "construction_axis" else "normal"] = vector
         if pos is None:
-            continue
-        rows.append(({"handle": None, "kind": "construction_point", "name": nm,
-                      "position": [round(c * inv_k, 6) for c in pos], "occurrence": path}, cp))
-    return rows
+            rec["read_error"] = "World geometry unavailable; no handle can be minted."
+        rows.append((rec, datum))
+    return rows, incomplete
 
 
 def _placed_search(design, target, knd, sketch, name, radius, inv_k):
     """([(record, entity, occurrence)], label, error, walk) for a sketch or construction-point kind."""
     sketch_name, want_name = (sketch or "").strip(), (name or "").strip()
     if sketch_name and knd not in _SKETCH_KINDS:
-        return [], None, f"'sketch' narrows the sketch_* kinds; kind='{knd}' reads no sketch.", None
-    if want_name and knd != "construction_point":
-        return [], None, f"'name' narrows kind='construction_point'; kind='{knd}' carries none.", None
+        return [], None, f"'sketch' narrows the sketch_* kinds; kind='{knd}' reads no sketch.", None, False
+    if want_name and knd in _SKETCH_KINDS:
+        return [], None, f"'name' narrows construction datums; kind='{knd}' carries none.", None, False
     scopes, label, err, walk = _placed_scopes(design, target)
     if err:
-        return [], None, err, walk
+        return [], None, err, walk, False
     requested = float(radius) if radius is not None else None
     tolerance = max(0.05 * requested, 1e-6) if requested is not None else None
-    found = []
+    found, incomplete = [], False
     for occ, comp in scopes:
         if comp is None:
+            incomplete = True
             continue
-        rows = (_sketch_rows(occ, comp, knd, sketch_name, requested, tolerance, inv_k)
-                if knd in _SKETCH_KINDS else _datum_rows(occ, comp, want_name, requested, inv_k))
+        if knd in _SKETCH_KINDS:
+            rows = _sketch_rows(occ, comp, knd, sketch_name, requested, tolerance, inv_k)
+        else:
+            rows, partial = _datum_rows(occ, comp, knd, want_name, requested, inv_k)
+            incomplete = incomplete or partial
         found.extend((rec, ent, occ) for rec, ent in rows)
-    return found, label, None, walk
+    incomplete = incomplete or not walk.complete or bool(walk.broken)
+    return found, label, None, walk, incomplete
 
 
 def _placed_payload(design, target, knd, sketch, name, radius, nearest_to, units, inv_k,
                     max_results):
     """The result for a placed kind, each returned row's handle minted where it was read."""
-    found, label, err, walk = _placed_search(design, target, knd, sketch, name, radius, inv_k)
+    found, label, err, walk, incomplete = _placed_search(design, target, knd, sketch, name, radius, inv_k)
     space_note = _search_space_note(walk)
     if err:
         return error(f"{err} {space_note}".strip() if space_note else err)
     if isinstance(nearest_to, (list, tuple)) and len(nearest_to) == 3:
         npt = [float(nearest_to[i]) for i in range(3)]
-        found.sort(key=lambda row: _dist(row[0]["position"], npt))
+        found.sort(key=lambda row: (_dist(row[0]["position"], npt)
+                                    if row[0]["position"] is not None else float("inf")))
     kept = found[:clamp_rows(max_results, _MAX_RESULTS_DEFAULT, _MAX_RESULTS_CEILING)]
     for rec, ent, occ in kept:
-        rec["handle"] = _inputs.placed_handle(ent, knd, occ)
-    payload = {"target": label, "kind_filter": knd, "match_count": len(found),
+        if rec["position"] is not None:
+            rec["handle"] = _inputs.placed_handle(ent, knd, occ)
+            if rec["handle"] is None:
+                rec["read_error"] = "Placed handle unavailable; datum cannot be consumed."
+    payload = {"target": label, "kind_filter": knd,
+               "match_count": None if incomplete else len(found),
                "returned": len(kept), "units": units,
                "occurrences_walk": walk.method if walk is not None else None,
                "matches": [rec for rec, _ent, _occ in kept], "note": _PLACED_NOTE}
+    if incomplete:
+        payload["incomplete"] = True
+        payload["note"] += " A collection or occurrence did not read; match_count is unknown."
     if space_note:
         payload["note"] += "\n" + space_note
     return ok(payload)
@@ -361,7 +400,7 @@ def handler(target: str = "", kind: str = "", radius: float = None,
         return _placed_payload(design, target, knd, sketch, name, radius, nearest_to, units, inv_k,
                                max_results)
     if (sketch or "").strip() or (name or "").strip():
-        return error(f"'sketch' and 'name' narrow the sketch_* and construction_point kinds; "
+        return error(f"'sketch' and 'name' narrow sketch_* and construction-datum kinds; "
                      f"kind='{knd or 'faces+edges'}' reads bodies.")
 
     pairs, target_label, resolve_err, walk = _resolve_target(design, target)
@@ -453,7 +492,7 @@ def handler(target: str = "", kind: str = "", radius: float = None,
 
 
 TOOL_DESCRIPTION = (
-    "Find handles with kind, world position and shape.\n"
+    "Find world geometry and handles.\n"
     + _outputs.produces_block(RETURNS)
 )
 

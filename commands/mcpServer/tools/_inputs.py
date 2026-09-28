@@ -314,7 +314,7 @@ def _resolve_token_entity(des, s):
     found = _common.safe(lambda: des.findEntityByToken(token))
     hits = list(found) if found else []
     if hits and locator and locator[0] in PLACED_KINDS:
-        return _placed_hit(hits, locator)
+        return _placed_hit(des, hits, locator)
     if len(hits) == 1:
         return hits[0]
     if len(hits) > 1:
@@ -661,7 +661,8 @@ def _refind_by_locator(des, locator):
 
 # The locator kinds read through a sketch transform and a placement: 'sketch_<type>' for every
 # sketch entity ref kind, and the construction point.
-PLACED_KINDS = frozenset({"sketch_" + k for k in _common.ENTITY_REF_KINDS} | {"construction_point"})
+PLACED_KINDS = frozenset({"sketch_" + k for k in _common.ENTITY_REF_KINDS}
+                         | {"construction_point", "construction_axis", "construction_plane"})
 
 
 def _local_anchor_points(native):
@@ -728,6 +729,39 @@ def placed_point_cm(entity, context=None):
     return tuple(sum(c[i] for c in coords) / len(coords) for i in range(3))
 
 
+def placed_datum_frame(entity, kind, context=None):
+    """WORLD (position_cm, unit direction/normal) of an axis or plane, else (None, None)."""
+    if kind == "construction_axis":
+        line, err = _datum_world_line("axis", entity, context)
+        origin = _common.safe(lambda: line.origin) if not err else None
+        vector = _common.safe(lambda: line.direction) if not err else None
+    elif kind == "construction_plane":
+        native = _common._native_of(entity)
+        if native is entity and _common.safe(lambda: entity.assemblyContext) is not None:
+            return None, None
+        geometry = _common.safe(lambda: native.geometry)
+        origin = _common.safe(lambda: geometry.origin.copy())
+        vector = _common.safe(lambda: geometry.normal.copy())
+        matrix, found = _placement_matrix(entity, native, context)
+        if not found or origin is None or vector is None:
+            return None, None
+        if matrix is not None and (not _common.safe(lambda: origin.transformBy(matrix))
+                                   or not _common.safe(lambda: vector.transformBy(matrix))):
+            return None, None
+    else:
+        return None, None
+    point = _geom._coords(origin) if origin is not None else None
+    direction = _geom.unit_vector(vector) if vector is not None else None
+    return (point, direction) if point is not None and direction is not None else (None, None)
+
+
+def _placed_anchor_cm(entity, kind, context=None):
+    """The world locator point for a placed entity, or None when its geometry is unreadable."""
+    if kind in ("construction_axis", "construction_plane"):
+        return placed_datum_frame(entity, kind, context)[0]
+    return placed_point_cm(entity, context)
+
+
 def placed_handle(entity, kind, occurrence=None):
     """The handle of an entity read through `occurrence` (None: the root), or None."""
     own = _common.safe(lambda: entity.assemblyContext)
@@ -740,7 +774,7 @@ def placed_handle(entity, kind, occurrence=None):
     if target is None:
         return None
     path = _common.safe(lambda: occurrence.fullPathName) if occurrence is not None else None
-    return make_handle(target, kind, placed_point_cm(target), path) or None
+    return make_handle(target, kind, _placed_anchor_cm(target, kind), path) or None
 
 
 def sketch_entity_address(entity):
@@ -769,15 +803,30 @@ def _at_cm(p):
     return f"({p[0]:.6f}, {p[1]:.6f}, {p[2]:.6f}) cm"
 
 
-def _placed_hit(hits, locator):
+def _placed_hit(des, hits, locator):
     """The one token hit on the handle's recorded occurrence and position, else None (refused)."""
     global _LAST_REFIND_REFUSAL
     want_path = locator[5] if len(locator) > 5 else None
     want = locator[1:4]
     rows = []
     for ent in hits:
+        if locator[0] in ("construction_axis", "construction_plane") and want_path:
+            actual, read = _read_path(ent)
+            if read and actual is None:
+                placements = [o for o in _common.all_occurrences(des)
+                              if _common.safe(lambda o=o: o.fullPathName) == want_path
+                              and _common.same_component(_common.safe(lambda o=o: o.component),
+                                                         entity_component(ent)) is True]
+                if len(placements) != 1:
+                    _LAST_REFIND_REFUSAL = (f"{len(placements)} occurrences place this datum at "
+                                            f"'{want_path}'; the handle cannot select one")
+                    return None
+                ent = _common.safe(lambda: ent.createForAssemblyContext(placements[0]))
+                if ent is None:
+                    _LAST_REFIND_REFUSAL = f"the datum did not read through '{want_path}'"
+                    return None
         path, path_read = _read_path(ent)
-        point = placed_point_cm(ent) if path_read else None
+        point = _placed_anchor_cm(ent, locator[0]) if path_read else None
         if point is None:
             what = "position" if path_read else "occurrence"
             _LAST_REFIND_REFUSAL = (f"its token names a {type(ent).__name__} whose {what} did not "
@@ -821,6 +870,10 @@ def _placed_candidates(comp, kind):
     """Every native entity of a placed locator kind in `comp`'s datums or sketches."""
     if kind == "construction_point":
         return list(_common.iter_collection(_common.safe(lambda: comp.constructionPoints)))
+    if kind == "construction_axis":
+        return list(_common.iter_collection(_common.safe(lambda: comp.constructionAxes)))
+    if kind == "construction_plane":
+        return list(_common.iter_collection(_common.safe(lambda: comp.constructionPlanes)))
     ref_kind = kind[len("sketch_"):]
     return [ent for sk in _common.iter_collection(_common.safe(lambda: comp.sketches))
             for ent in _common.iter_collection(_common.entity_collection(sk, ref_kind))]
@@ -845,7 +898,7 @@ def _refind_placed(des, locator):
         comp = _common.safe(lambda: occ.component)
     want = locator[1:4]
     near = [e for e in _placed_candidates(comp, locator[0])
-            if (p := placed_point_cm(e, occ)) is not None
+            if (p := _placed_anchor_cm(e, locator[0], occ)) is not None
             and sum((a - b) ** 2 for a, b in zip(p, want)) ** 0.5 <= _LOCATOR_TOL_CM]
     if len(near) > 1:
         named = _common.named_with_remainder([_entity_context_label(e) for e in near],
@@ -1983,10 +2036,10 @@ class PlaneRef(InputKind):
     construction plane's NAME, or a find_geometry 'handle' at a PLANAR FACE. A NAME resolves
     design-wide - the active component first, a unique one elsewhere PROXIED, a shared one refused."""
 
-    MAP_HINT = "a plane: xy/xz/yz alias, construction-plane name, OR planar-face handle"
+    MAP_HINT = "a plane: xy/xz/yz alias, construction-plane name/handle, or planar-face handle"
 
     def contract_note(self) -> str:
-        return "xy/xz/yz/top/front/right, a construction-plane name, or a planar-face 'handle'."
+        return "xy/xz/yz/top/front/right; construction-plane name/handle or planar-face handle."
 
     def resolve(self, raw, component=None):
         # `component` is the context the plane is resolved FOR - the active component unless the
@@ -2158,7 +2211,7 @@ class SurfaceRef(InputKind):
         self.curved_ops = tuple(curved_ops)
 
     def contract_note(self) -> str:
-        note = "xy/xz/yz, a construction-plane name, or a planar-face 'handle'"
+        note = "xy/xz/yz, plane name/handle or planar-face handle"
         if self.curved_ops:
             note += " (a curved face too for " + "/".join(self.curved_ops) + ")"
         return note + "."
@@ -2398,13 +2451,12 @@ class AxisRef(InputKind):
         # Where a NAME is looked up (the active component only) is in the miss refusal, which reads
         # that component and names it.
         if self.entity_only:
-            return "x/y/z, a construction-axis name, or a straight-edge/line 'handle'."
+            return "x/y/z, axis name/handle or straight-edge/line handle."
         if self.face_entity:
-            return "x/y/z, a construction-axis name, or an edge/line/round-face 'handle'."
+            return "x/y/z, axis name/handle or edge/line/round-face handle."
         # The face forms RESOLVE (a planar face to its normal, a round one to its axis), so no
         # refusal ever states them - this note is their only home.
-        return ("x/y/z, a construction-axis name, or an edge/line/face 'handle' "
-                "(planar = normal, round = axis).")
+        return "x/y/z, axis name/handle or edge/line/face handle (planar = normal, round = axis)."
 
     def _from_entity(self, ent):
         """(tagged value, error) for the entity a handle resolved to."""
