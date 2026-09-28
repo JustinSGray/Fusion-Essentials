@@ -59,8 +59,8 @@ HTTP transport can connect directly from the same machine — no `mcp-remote`/No
 
 This repository includes that [`.mcp.json`](../../.mcp.json). For another client, add a Streamable
 HTTP server with the same URL. Approve or enable the server in the client as required, then check
-that its tool list contains `workspace_orient`. A healthy endpoint alone does not establish a client
-connection. Review the client permission presets under *Security* before adopting them.
+that its tool list contains `workspace_orient`. The endpoint can be healthy while the client is still
+not connected. Review the client permission presets under *Security* before adopting them.
 
 ## Why specific tools instead of "just let it write scripts"
 
@@ -95,18 +95,17 @@ exists so that you rarely need to reach for it.
 ## What the agent is told
 
 You do not have to coach the assistant on how to use this. When a client connects, the server sends
-an instruction block that routes it to two cheap orientation reads before it touches anything else,
-and each tool then carries its own contract, its next-step pointers, and whichever Fusion traps
-apply to it.
+an instruction block that sends it to two cheap reads before it touches anything else:
+`sys_capability_map` (what this server can do) and `workspace_orient` (what is in front of it). Each
+tool then carries its own contract, its next-step pointers, and whichever Fusion traps apply to it.
 
 Fusion is several environments glued together (CAD, assemblies, the parametric timeline, CAM, the
 cloud data model), and most wasted effort comes from acting before knowing which one you are in.
-The places a reading looks authoritative but isn't are stated by the tool that owns them, so they
-arrive when they are relevant rather than in a list nobody re-reads: CAM validity is untrustworthy
-until Manufacture has been opened, saves and exports complete asynchronously, Fusion enforces no
-name uniqueness anywhere.
+Each tool warns about its own traps when they apply, for example: CAM validity is untrustworthy
+until Manufacture has been opened, saves and exports complete asynchronously, and Fusion enforces
+no name uniqueness anywhere.
 
-If you are writing tools rather than using them, that doctrine and the reasoning behind it live in
+If you are writing tools rather than using them, the rules and the reasoning behind them live in
 the `CLAUDE.md` files beside the code.
 
 ## Tools
@@ -114,8 +113,8 @@ the `CLAUDE.md` files beside the code.
 **The authoritative tool inventory is [`tests/generated/TOOL_MANIFEST.md`](../../tests/generated/TOOL_MANIFEST.md)** —
 generated from the live registry (every tool, each with its inputs and write level) — or ask a
 connected client for its tool list (`tools/list`). Each tool's own `TOOL_DESCRIPTION` is the
-contract the agent sees; this README does not restate it (a second copy only drifts). Tool names
-are predictable: `<family>_<verb>`, so the family prefix tells you the area —
+contract the agent sees. Tool names are predictable: `<family>_<verb>`, so the family prefix tells
+you the area:
 
 | Prefix | Area | Examples |
 |--------|------|----------|
@@ -140,23 +139,22 @@ are predictable: `<family>_<verb>`, so the family prefix tells you the area —
 Tool definitions expose `readOnlyHint` and, for destructive tools, `destructiveHint` annotations.
 These describe behavior; the client's permission policy determines whether it asks before a call.
 
-### A few core tools (the ones a session leans on)
+### A few core tools
 
-These are the load-bearing reads that the design philosophy (above) is built around — start
-here when learning the surface:
+Start with these:
 
-- **`workspace_orient`** — the cold-boot read. One call reports what's open, its health,
+- **`workspace_orient`** — the first call. One call reports what's open, its health,
   whether CAM data exists, the major pieces, and *pointers* to the right narrow tool next.
   Call it first.
 - **`assembly_get`** — kinematic state as JSON: every occurrence's world position, ground
   flags, and joint wiring. The numbers you reason about instead of a cluttered screenshot.
-- **`find_geometry`** → **`joint_at_geometry`** — the geometry-as-values pair. `find_geometry`
-  returns stable *handles* to faces/edges (filterable by radius/proximity); you pass a handle
-  to a consumer like `joint_at_geometry`, which lands the joint AT that exact geometry.
+- **`find_geometry`** → **`joint_at_geometry`** — `find_geometry` returns stable *handles* to
+  faces/edges (filterable by radius/proximity); you pass a handle to a consumer like
+  `joint_at_geometry`, which lands the joint at that exact geometry.
 - **`view_set`** + **`view_screenshot`** — the agent's "eyes": isolate/orient a single
   component, then capture it (a screenshot of a whole assembly is the least reliable input).
 - **`sys_execute_script`** — the gated escape hatch: arbitrary Fusion Python, off by default
-  (see Security). The typed tool surface exists so this is rarely needed.
+  (see Security).
 
 ### Things that aren't obvious from a tool's name
 
@@ -170,8 +168,7 @@ here when learning the surface:
 
 ## What it gets used for
 
-Three fairly different jobs, all built from the same calls, which is the test of whether the tools
-really are workflow-agnostic:
+The same tools serve three different jobs:
 
 - **A repeatable procedure.** A skill in your client runs a fixed sequence where the order matters
   and you want the same result every time. The steps and the checks live with you, outside the
@@ -184,44 +181,43 @@ really are workflow-agnostic:
   pile of files you would otherwise open one at a time. Much of this never writes anything, and it
   is where an assistant tends to earn its keep first.
 
-Two runnable demonstrations show the surface driving real work end-to-end:
+Two runnable demonstrations show the tools driving real work end to end:
 
-- **A shipped procedure** (a Claude Code skill in `.claude/skills/`): `insert-into-template` stands
+- **A shipped procedure** (a Claude Code skill in `.claude/skills/`): `insert-into-template` sets
   up a CAM job for a part — saves the CAD, defines a part-space origin, places the shop template,
   inserts and positions the part, and sizes stock from measurements. It is built entirely from
   these tools; fork it as the pattern for your own shop procedures.
-- **The eval pipeline** (`tests/live/evals/scenarios/`): goal-shaped scenarios (parametric
-  multi-part foundations, joints and motion, detail features, external references, CAM templating)
-  that a context-isolated agent runs against a live session holding only this server's wire — the
-  standing proof that the tool descriptions alone can carry an agent from a goal to a verified
-  result.
+- **The eval pipeline** (`tests/live/evals/scenarios/`): design briefs (parametric multi-part
+  foundations, joints and motion, detail features, external references, CAM templating) that a
+  fresh agent, with nothing but these tools, runs on a live session. They check that the tool
+  descriptions alone get an agent from a goal to a checked result.
 
-## What makes the tools trustworthy (the contracts)
+## What makes the tools trustworthy
 
-Three typed kind systems make false success structurally hard. They are what to study if you are
-forking this as a pattern for your own MCP server:
+Three pieces of code make a false success hard to return. Study them if you fork this for your own
+MCP server:
 
 - **Inputs** ([`tools/_inputs.py`](tools/_inputs.py)) — a tool never takes a bare `name: str` for
-  existing geometry. Typed kinds resolve names and handles, REFUSE ambiguity instead of guessing
-  an instance, and self-heal a stale geometry handle from its world-position locator.
+  existing geometry. Typed kinds resolve names and handles, refuse ambiguity instead of guessing
+  an instance, and self-heal a stale geometry handle from the kind and world position stored in it.
 - **Outputs** ([`tools/_outputs.py`](tools/_outputs.py)) — a tool declares `RETURNS = [...]`
-  (handles, URNs, names, verdicts); tests assert the declared keys are actually minted, and an
-  assertion read's verdict is a real boolean beside its measured evidence, never prose.
+  (handles, URNs, names, verdicts); tests assert the handler returns the declared keys, and a read
+  that returns a verdict gives a real boolean beside its measured evidence, never prose.
 - **Postconditions** ([`tools/_assert.py`](tools/_assert.py)) — a write tool declares
-  verify-the-effect kinds; the kernel re-reads ground truth after the mutation and converts a
-  "success" that changed nothing into an error. Fusion really does report success while changing
-  nothing, which is the whole reason this layer exists. Where the effect is material, the evidence is
-  geometric: a cut that removed no volume, a mesh trim that moved neither count nor area, a delete
-  whose target still resolves — each is an error carrying its measurements, never a false ok.
+  verify-the-effect kinds; the tool framework re-reads the model after the change and turns a
+  "success" that changed nothing into an error. Fusion does report success while changing nothing,
+  which is why this layer exists. Where the effect is material, the evidence is geometric: a cut
+  that removed no volume, a mesh trim that moved neither count nor area, a delete whose target
+  still resolves — each is an error carrying its measurements, never a false ok.
 
 Two further habits run through every payload. **Honest reads**: a value that cannot be read is
-published as null (or the key is absent), never a fabricated 0/False/echo of the request — so an
-agent can always tell "measured as nothing" from "could not be measured" — and a partial success
-(a joint created but a limit refused, a rename the platform declined) is disclosed with exactly
-what landed. **Identity by handle**: Fusion enforces no name uniqueness at any level (even two
-siblings can share a full path), so structural reads emit each entity's `handle` (its
-entityToken), every reference-taking input accepts it as the exact identity, and a name several
-entities answer to is refused with the candidates' handles rather than silently matched.
+published as null (or the key is absent), never a fabricated 0/False/echo of the request, so an
+agent can always tell "measured as nothing" from "could not be measured". A partial success (a
+joint created but a limit refused, a rename the platform declined) says exactly what landed.
+**Identity by handle**: Fusion enforces no name uniqueness at any level (even two siblings can
+share a full path), so structural reads emit each entity's `handle` (its entityToken), every
+reference-taking input accepts it as the exact identity, and a name several entities answer to is
+refused with the candidates' handles rather than silently matched.
 
 The naming schema (`<family>_<verb>`, with the verb's read/write kind linted against the declared
 write level), pure-ASCII wire strings, helper deduplication, and doc freshness are all enforced by
@@ -238,7 +234,7 @@ self-audit of the guidance strings). Authoring conventions live in
 - **Local transport.** The server binds `127.0.0.1` and rejects non-loopback web origins. It has no
   authentication token and permits requests without an Origin header, so other local processes can
   connect. A connected AI client may send tool results to its model provider.
-- **Registration gates.** The server is off by default and runs only while the add-in is running.
+- **What is switched on.** The server is off by default and runs only while the add-in is running.
   Family checkboxes remove those tools on reload; they are independent of client permissions.
 - **`sys_execute_script` is separately gated.** It lets a connected agent run
   arbitrary Python in your active Fusion session — including modifying or deleting
@@ -264,5 +260,5 @@ self-audit of the guidance strings). Authoring conventions live in
 ## Platform support
 
 Developed and tested on **Windows**, using Fusion's embedded Python. No separate server runtime
-or package installation is needed. The manifest targets Windows and macOS; that declaration is not
-verification of macOS support. macOS remains unverified, including script execution and settings UI.
+or package installation is needed. The manifest lists macOS too, but it is untested there, including
+script execution and the settings UI.
