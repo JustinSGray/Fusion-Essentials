@@ -2316,6 +2316,23 @@ def _settled(name, key=None):
              (key, _recall(key, lambda p: p["active"]["document_id"])) if key else None)]
 
 
+def _modified_reads(name, expected):
+    """doc_get: the active document is `name` and its is_modified flag reads `expected`."""
+    def check(p):
+        active = p.get("active") or {}
+        return _measured(f"'{name}' reads is_modified {expected}",
+                         {"name": active.get("name"), "is_modified": active.get("is_modified")},
+                         active.get("name") == name and active.get("is_modified") is expected)
+    return check
+
+
+def _fit_to_modified_disclosed(p):
+    """view_screenshot fit_to on a clean document: its text block names the flag the shot set."""
+    text = str(p)
+    return _measured("the fit_to shot says it left the document modified", {"text": text[:400]},
+                     "records as a document modification" in text)
+
+
 # --- ACT 11a: THE DATA MODEL -------------------------------------------------------------------
 # A folder tree of this run's own, one file uploaded into it, moved, read, downloaded - and then
 # every one of them taken back out, each delete proven by its own read-back and by the project tree
@@ -2557,6 +2574,12 @@ _CLOUD_DOC = [
     # the lineage URN read off the SESSION rather than off the save: doc_save_as waits for the urn
     # before it answers, and this read is where the tier refuses a local path in its place.
 ] + _settled(SOURCE_DOC, "source_urn") + [
+    # A fit_to shot on the just-saved source: the flag reads clear before it, the shot says its
+    # isolate set it, and doc_get reads it set; the doc_save below clears it with the 14 mm edit.
+    ("doc_get", {}, _modified_reads(SOURCE_DOC, False), None),
+    ("view_screenshot", {"fit_to": SRC_COMP + ":1", "width": 300, "height": 240},
+     _fit_to_modified_disclosed, None),
+    ("doc_get", {}, _modified_reads(SOURCE_DOC, True), None),
     ("param_set", {"name": "CloudPlateH", "expression": "14 mm"}, "ok", None),
     ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
      _plate_geometry("the changed unsaved plate", 14.0), None),
@@ -2575,6 +2598,21 @@ _CLOUD_DOC = [
     ("doc_get", {"include": ["default", "versions"]}, _tip_advanced("plate_tip_before"), None),
     ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
      _file_settled(FOLDER), None),
+    # view_set on the saved source: the flag reads clear, the isolate reports setting it, and the
+    # clear that follows finds it already set and claims nothing.
+    ("doc_get", {}, _modified_reads(SOURCE_DOC, False), None),
+    ("view_set", {"action": "isolate", "target": SRC_COMP + ":1"},
+     lambda p: _measured("the isolate reports turning the saved source modified",
+                         {k: p.get(k) for k in ("document_modified", "modified_by_this_call")},
+                         p.get("document_modified") is True
+                         and p.get("modified_by_this_call") is True), None),
+    ("doc_get", {}, _modified_reads(SOURCE_DOC, True), None),
+    ("view_set", {"action": "clear_isolation"},
+     lambda p: _measured("the clear finds the source already modified",
+                         {k: p.get(k) for k in ("cleared_count", "document_modified",
+                                                "modified_by_this_call")},
+                         p.get("cleared_count") == 1 and p.get("document_modified") is True
+                         and "modified_by_this_call" not in p), None),
     ("param_set", {"name": "CloudPlateH", "expression": "16 mm"}, "ok", None),
     ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
      _plate_geometry("the milestone source plate", 16.0), None),

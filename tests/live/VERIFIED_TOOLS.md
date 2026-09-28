@@ -29,10 +29,10 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source 73659d96f32fe32f5c6a1237af2c0062ab952520fffcfd73d0b23946a7fad90d | Fusion 2706.0.97 | verified 2026-09-27
-Loaded: implementation 9f100dcef01101be2f0bee9dc1cc42878905d8adfc6418ad9b1bf8af5a53cba7 | schema c4691e50f173312829b1fe474ee9e1c50d04cb70ba8d12bdfc713db590bd8ca0 | load cc4294b7f3eb488cb168a2e78b5fff0d | session f3f7e07c654e434f92d4d4dda083b467
+Stamp: source 3a19837695e206e2098117cf6c588085c506148777ccbcb42f14b6a46794c8d4 | Fusion 2706.0.97 | verified 2026-09-27
+Loaded: implementation 8cf055b3fd80c6869f7de324a3e263f29d95c7a74724dc33ab574c25c57da9f9 | schema d361b34d301d222254697f88d3707a42b545dc8480b1efc57b9fa2eb4c6ae467 | load d2605be88063429b9bc480a9484f1a96 | session 3a365ea89e4d4b00a1d5070a0e4c5d7c
 
-199 covered / 1 called / 5 refusals-only / 5 skipped(reason) / 0 pending
+201 covered / 1 called / 5 refusals-only / 4 skipped(reason) / 0 pending
 
 | act | mode |
 |---|---|
@@ -154,7 +154,7 @@ Loaded: implementation 9f100dcef01101be2f0bee9dc1cc42878905d8adfc6418ad9b1bf8af5
 | design_recompute | covered | recompute the assembly after motion |
 | design_remove_feature | covered | remove a scratch body and its occurrence; deleting each Remove brings them back |
 | design_set_metadata | covered | stamp the bracket with the shop's part number and a description, the pair read back off the component - with the metadata slice either side of it: Fusion's own minted part number before, the shop's after |
-| design_set_mode | skipped: irreversible parametric->direct conversion; not run unattended |  |
+| design_set_mode | covered |  |
 | design_set_name | covered | rename a cameo component and re-find it by the name that landed, rename a cameo occurrence with its instance name following, give a twin body the name its sibling holds so the deduped '(1)' is what gets published, and rename a MESH body - the kind reads 'mesh' and a fresh read of the component's meshes carries the new name; the empty target and the root component refused |
 | doc_activate | covered | the overture opens a SECOND unsaved scratch document beside the story one and switches both ways between them by the 'open:N' index doc_get published - the address an UNSAVED document has instead of a URN, and the only one that reaches it when two documents share the name 'Untitled'; the cloud tier then switches between the source, the host, the copy and the drawing by lineage URN and comes home the same way |
 | doc_close | covered | discard the document on camera - clean teardown; and, on the cloud tier, close every cloud document this run opened, by lineage URN, before deleting it |
@@ -215,6 +215,7 @@ Loaded: implementation 9f100dcef01101be2f0bee9dc1cc42878905d8adfc6418ad9b1bf8af5
 | model_construction | covered | offset the step floor the pocket is cut from and the top the boss stands on; an AXIS on a cameo bore whose published handle the circular pattern turns about; a plane at 30 deg about a bench bore's own axis (origin pinned to the axis) and a plane through a cap vertex; then the ON-PATH surface on one measured 30 mm cap edge - a proportional plane and point reading their ratio back with no extent published, an absolute placement inside the path, one before the start and one far past the end (both accepted, both disclosed against the measured length), the boundary exactly at the length, an expression placement whose model parameter is named for param_set, a to-object plane carrying distance AND offset off the path and a second one landing inside a two-edge chained path, and the summed length of that chain; the out-of-range proportional value and to_object on the point kind refused. Then the datum bench - one bored block carrying every reference the remaining modes read: a plane swung 30 deg about a top edge, one spanning three corners, one splitting the block at mid-height, one spanning two coplanar edges and one resting tangent on the bore wall; an axis on an edge, one spanning two corners and one along the top face's own normal; and points at the bore centre, at a corner where two edges meet, at the three world planes' shared origin and where an edge pierces XY. The world axis and the coordinate point are refused up front - both are setByLine/setByPoint, direct-edit-only, and this design is parametric. And the hub's own datum: the axis plane swung 30 deg about the SHAFT WALL, whose frame maps its +X onto world Z alone - which is what lets the inclined flat be drawn in depths and radii measured from the hub's axis rather than from the datum's parametric origin |
 | model_create_component | covered | cast the part, the billet, the three vise parts and the lead screw; then the HUB, the turned flange the CAM competence beats machine |
 | model_draft | covered | draft a cameo face |
+| model_edit_body | covered |  |
 | model_edit_extrude | covered |  |
 | model_emboss | covered | raise then engrave a circular profile on a scratch block's top face, each checked against the volume direction; a zero depth refused |
 | model_extrude | covered | extrude the block, JOIN the stepped half and the boss onto it and CUT the pocket down from the step floor, each depth an expression off the driver; then a three-bay frame with 'all' whose payload NAMES the regions enclosed by another selected one - the bays that filled with material. Then the hub's three cuts: the keyway symmetric about the axis plane, the inclined flat cut from the tilted sketch, and the flange pocket where 'all' takes TWO regions and neither encloses the other - the sector and the round pocket beside it, both cutting something a viewer can see |

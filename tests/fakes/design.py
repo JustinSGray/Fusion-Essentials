@@ -57,6 +57,7 @@ class BRepBody:
         self.parentComponent = parent_component
         self.nativeObject = None
         self.assemblyContext = None
+        self._organization = None
         self.boundingBox = bbox
         # Set only when given, so a body whose precise box does not read stays a testable state.
         if precise_bbox is not None:
@@ -104,6 +105,28 @@ class BRepBody:
         # `del body.isSolid` and go_stale(body, attrs=("isSolid",)) both mean the flag stops
         # answering, which is what solid_readable False already models.
         self._solid_readable = False
+
+    def createForAssemblyContext(self, occurrence):
+        """Return the measured placement proxy for this native body."""
+        return body_proxy(self, occurrence)
+
+    def copyToComponent(self, target):
+        """Delegate the scene's modeled copy."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("copy", target)
+
+    def moveToComponent(self, target):
+        """Delegate the scene's modeled move."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("move", target)
+
+    def createComponent(self):
+        """Delegate the scene's modeled component creation."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("create_component", None)
 
 
 @fusion_fake(live_type="BRepBody", facts=("shape-dump-design-world", "body-proxy-token-differs",
@@ -680,7 +703,7 @@ class FakeOccurrence:
     (occurrence-plain-reads-valid-and-lit): a plain local occurrence answers the bool False, so that
     is the default rather than an absent member; the read goes through ``raises_on`` like every
     other one here and the write lands, so an isolate walk that sets the lock and reads it back
-    drives the shared fake.
+    drives the shared fake. ``document`` is the document an isolation write marks modified.
 
     ``appearance`` is the override applied to this instance - None until one is, measured by
     shape-dump-appearance-world, which also measured that Occurrence carries NO ``opacity`` member
@@ -702,7 +725,8 @@ class FakeOccurrence:
                  ground_set_ok=True, ground_lies=False, referenced=None, delete_ok=True,
                  derived=False, document_reference=None, valid=_OCC_PLAIN_VALID,
                  light_bulb_on=_OCC_PLAIN_LIT, bodies_bounding_box=_UNSET, isolated=False,
-                 mesh_bodies=None):
+                 mesh_bodies=None, document=None):
+        self._document = document
         # meshBodies is handed in WHOLE: an occurrence's is a MeshBodyVector (len + iteration, no
         # count/item - meshbodyvector-shape), not the counted collection a component answers, so
         # the caller supplies the shape it is testing against.
@@ -781,6 +805,8 @@ class FakeOccurrence:
     @isIsolated.setter
     def isIsolated(self, value):
         self._isolated = value
+        if self._document is not None:
+            self._document.isModified = True
 
     # Each read below goes through _read, so `raises`/`raises_on` govern it like every
     # other read here; each takes a setter so a scenario SUBCLASS can assign it in its own __init__.
@@ -898,14 +924,16 @@ def make_occurrence(path="Comp:1", component=None, raises=None, transform2=None,
                     transform=None, joints=None, grounded=None, bodies=None, bounding_box=None,
                     entity_token=None, referenced=None, delete_ok=True, derived=False,
                     document_reference=None, valid=_OCC_PLAIN_VALID, light_bulb_on=_OCC_PLAIN_LIT,
-                    bodies_bounding_box=FakeOccurrence._UNSET, isolated=False, mesh_bodies=None):
+                    bodies_bounding_box=FakeOccurrence._UNSET, isolated=False, mesh_bodies=None,
+                    document=None):
     """An occurrence placing `component` at assembly path `path`, with the placement matrix
     ``transform2`` and the occurrence ``assembly_context`` that places it, the ground-to-parent lock
     ``ground_to_parent`` and the nested ``children`` a census descends into. Pass ``raises`` to model
     an unresolved external reference, where every read but ``name`` throws that message, or
     ``raises_on`` = {property: message} for the row where only that one read declines;
     ``delete_ok`` False is the deleteMe the platform refuses. ``valid``/``light_bulb_on``/
-    ``bodies_bounding_box``/``isolated``/``mesh_bodies`` pass through to FakeOccurrence."""
+    ``bodies_bounding_box``/``isolated``/``mesh_bodies``/``document`` pass through to
+    FakeOccurrence."""
     return FakeOccurrence(path, component, raises, transform2, assembly_context,
                           ground_to_parent, children, raises_on, transform=transform,
                           joints=joints, grounded=grounded, bodies=bodies,
@@ -913,7 +941,7 @@ def make_occurrence(path="Comp:1", component=None, raises=None, transform2=None,
                           referenced=referenced, delete_ok=delete_ok, derived=derived,
                           document_reference=document_reference, valid=valid,
                           light_bulb_on=light_bulb_on, bodies_bounding_box=bodies_bounding_box,
-                          isolated=isolated, mesh_bodies=mesh_bodies)
+                          isolated=isolated, mesh_bodies=mesh_bodies, document=document)
 
 
 @fusion_fake(factory_for="FakeOccurrence")

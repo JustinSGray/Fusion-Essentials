@@ -571,6 +571,44 @@ class TestVisibilityReadBack:
         assert "did not read back" in out["note"]
 
 
+class TestDocumentModified:
+    """A call whose visibility write turned a clean document modified says so; none other does."""
+
+    def _run(self, monkeypatch, action, is_modified, isolated=False, hooked=True, **kw):
+        doc = FakeFusionDocument(is_modified=is_modified)
+        occ = FakeOccurrence(**_occ_args("Bracket", isolated=isolated),
+                             document=doc if hooked else None)
+        _install(monkeypatch, [occ])
+        monkeypatch.setattr(iv.app, "activeDocument", doc)
+        if action == "restore":
+            _payload(iv.handler(action="snapshot"))
+        return _payload(iv.handler(action=action, **kw))
+
+    def test_an_isolate_that_modified_a_clean_document_says_so(self, monkeypatch):
+        out = self._run(monkeypatch, "isolate", is_modified=False, target="Bracket")
+        assert out["document_modified"] is True and out["modified_by_this_call"] is True
+        assert "doc_save clears the flag" in out["note"]
+
+    def test_an_already_modified_document_is_not_claimed_by_this_call(self, monkeypatch):
+        out = self._run(monkeypatch, "isolate", is_modified=True, target="Bracket")
+        assert out["document_modified"] is True and "modified_by_this_call" not in out
+        assert "doc_save" not in out["note"]
+
+    def test_a_before_read_that_declines_claims_no_flip(self, monkeypatch):
+        out = self._run(monkeypatch, "isolate", is_modified=None, target="Bracket")
+        assert out["document_modified"] is True and "modified_by_this_call" not in out
+        assert "doc_save" not in out["note"]
+
+    def test_an_after_read_that_declines_is_published_as_null(self, monkeypatch):
+        out = self._run(monkeypatch, "isolate", is_modified=None, hooked=False, target="Bracket")
+        assert out["document_modified"] is None and "modified_by_this_call" not in out
+
+    @pytest.mark.parametrize("action", ["clear_isolation", "restore"])
+    def test_each_isolation_writer_reads_the_flag_around_its_writes(self, monkeypatch, action):
+        out = self._run(monkeypatch, action, is_modified=False, isolated=True)
+        assert out["document_modified"] is True and out["modified_by_this_call"] is True
+
+
 class TestBodyVisibility:
     """hide/show reach single BODIES (root-level bodies / one body of a multi-body component) -
     the granularity occurrence bulbs cannot address. The bulb write is READ BACK per body."""

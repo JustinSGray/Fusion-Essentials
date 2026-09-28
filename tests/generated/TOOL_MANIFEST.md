@@ -2,7 +2,7 @@
 
 _Auto-generated from the live registry by `tests/gen_manifest.py`. Do not edit by hand — re-run the generator after adding/renaming a tool or kind. `--check` fails the suite if this is stale. This is the batch form of the `sys_find_tool` live lookup: the one place to see what already exists before building it._
 
-**Tools:** 210  |  **Input-kinds:** 27  |  write-status: `·` read · `✎` write · `⚠` destructive
+**Tools:** 211  |  **Input-kinds:** 29  |  write-status: `·` read · `✎` write · `⚠` destructive
 
 ## Input kinds — reference EXISTING geometry/structure with these (don't hand-roll a name/index)
 
@@ -27,6 +27,8 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | `OccurrenceRef` | A reference to an assembly OCCURRENCE (a component instance): a `handle` - its entityToken, which |
 | `OccurrenceRefList` | A list of occurrence references (JSON list or comma-separated), each resolved via OccurrenceRef's |
 | `PlaneRef` | A reference to a PLANE to act on, resolved from ANY of three shapes a user might supply: |
+| `PointRef` | A point operand: a point handle, a point or circle/arc centre index ref, or a datum name. |
+| `PointRefList` | An ORDERED list of point operands, each resolved through PointRef. |
 | `ProfileRef` | A reference to a sketch PROFILE - a stable 'handle' (entityToken, order-stable across rebuilds) |
 | `ProfileRefList` | An ORDERED list of profile references - for loft, where profile ORDER is load-bearing (the loft |
 | `SectionRef` | A reference to one SectionAnalysis by its generated name from view_section cut/list. |
@@ -49,10 +51,11 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `model_chamfer` | Bevel edges; model_fillet rounds |
 | ✎ | `model_combine` | Boolean-combine solid bodies: join, cut or intersect 'tools' into 'target', the body that survives. |
 | · | `model_compute_holder` | Profile a solid holder body into CAM tool-holder segments, returned with 'holder_json'. |
-| ✎ | `model_construction` | Add a construction point, axis, or plane; each 'mode' reads its own subset of the inputs. |
+| ✎ | `model_construction` | Add a construction point, axis or plane; each 'mode' reads its own inputs. |
 | ✎ | `model_create_component` | Create a new EMPTY component occurrence, at root unless 'parent' nests it |
 | ✎ | `model_draft` | Taper (draft) faces relative to a pull plane.
 Produces: feature -> design_delete_feature, faces_drafted, faces_moved, faces_compared. |
+| ✎ | `model_edit_body` | Copy, move, or make a child component for a BRep or mesh body |
 | ✎ | `model_edit_extrude` | Edit solid Extrude; refs from design_get/sketch_get. |
 | ✎ | `model_emboss` | Stamp sketch profiles or text onto faces; a negative 'depth' engraves.
 Produces: feature -> design_delete_feature. |
@@ -341,8 +344,8 @@ Produces: annot... |
 
 | | Tool | Summary |
 |---|---|---|
-| · | `find_geometry` | Find short-lived handles with kind, world position and shape.
-Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/model_chamfer/model... |
+| · | `find_geometry` | Find handles with kind, world position and shape.
+Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/model_chamfer/model_constructio... |
 
 ### workspace
 
@@ -373,7 +376,7 @@ Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/m
 | ✎ | `sheet_create_hem` | Hem a sheet body's rim edge: flat, open, rolled, rope, teardrop or double, each with its own dimensions |
 | ✎ | `sheet_create_join_by_bend` | Join two sheet bodies with a bend between two rim edges (the preview API merges them into one body) |
 | ✎ | `sheet_create_refold` | Refold one explicit unfold feature after adding flat-state edits |
-| ✎ | `sheet_create_rip` | Rip a sheet body by a face, along an edge or between two vertices (gap from the rule unless given) |
+| ✎ | `sheet_create_rip` | Rip a sheet body by a face (takes no gap), along an edge or between two vertices (gap from the rule unless given) |
 | ✎ | `sheet_create_unfold` | Unfold a sheet body's bends for cross-bend machining features, then sheet_create_refold |
 | ✎ | `sheet_edit_rule` | Copy a scoped sheet-metal rule into this design, or edit a design-local rule. |
 | · | `sheet_get` | Read sheet-metal rule counts; include rules, library_rules, components or features for detail. |

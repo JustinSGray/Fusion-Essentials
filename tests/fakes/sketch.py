@@ -101,12 +101,15 @@ class Sketch:
     item does not read is its own tested state."""
     def __init__(self, name="Sketch1", curves=None, points=(), profiles=(),
                  is_compute_deferred=False, parent_component=None, is_visible=True,
-                 entity_token=None, timeline_object=None):
+                 entity_token=None, timeline_object=None, transform=None):
         self.name = name
         if entity_token is not None:
             self.entityToken = entity_token
         if timeline_object is not None:
             self.timelineObject = timeline_object
+        # `transform` maps sketch space into the component's (a FakeMatrix3D), set only when given.
+        if transform is not None:
+            self.transform = transform
         self.sketchCurves = SketchCurves() if curves is None else curves
         self.sketchPoints = _NamedCollection(points)
         self.profiles = _NamedCollection(profiles)
@@ -118,10 +121,19 @@ class Sketch:
 @fusion_fake(live_type="SketchPoint", facts=("shape-dump-timeline-world",))
 class FakeSketchPoint:
     """One point a sketch owns - the 'point:<index>' address space sketchPoints indexes - carrying
-    its 2D `geometry`. There is no isConstruction: SketchPoint carries none, so a point never reads
-    as construction the way a curve does."""
-    def __init__(self, geometry=None):
+    its SKETCH-space `geometry`; no isConstruction, which SketchPoint lacks. `assembly_context` is
+    the occurrence a PROXY is read through - None on a native - and `native_object`
+    what it stands for; `parent_sketch` and `entity_token` are set only when given."""
+    def __init__(self, geometry=None, parent_sketch=None, entity_token=None,
+                 assembly_context=None, native_object=None):
         self.geometry = geometry
+        self.assemblyContext = assembly_context
+        if parent_sketch is not None:
+            self.parentSketch = parent_sketch
+        if entity_token is not None:
+            self.entityToken = entity_token
+        if native_object is not None:
+            self.nativeObject = native_object
 
 
 @fusion_fake(factory_for="Sketch")

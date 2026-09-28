@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (BRepBody, Camera, FakeApplication, FakeOccurrence, FakePoint, MakeComp,
-                      MakeDesign, Viewport, _NamedCollection, body_proxy, camera_state, install,
-                      load_tool, make_design, make_occurrence)
+from conftest import (BRepBody, Camera, FakeApplication, FakeFusionDocument, FakeOccurrence,
+                      FakePoint, MakeComp, MakeDesign, Viewport, _NamedCollection, body_proxy,
+                      camera_state, install, load_tool, make_design, make_occurrence)
 
 gs = load_tool("view_screenshot")
 
@@ -627,6 +627,57 @@ class TestFitToRestoreDisclosure:
         desc = gs.tool.to_dict()["inputSchema"]["properties"]["fit_to"]["description"]
         assert "Isolates" in desc
         assert "restores the view" in desc
+
+
+class TestFitToModifiedFlag:
+    """A fit_to shot that turned a clean document modified says so; an already-modified one not."""
+
+    @pytest.fixture
+    def shoot(self, monkeypatch):
+        def _shoot(is_modified):
+            doc = FakeFusionDocument(is_modified=is_modified)
+            occs = [make_occurrence(path=p, component=MakeComp(name=p[0]), document=doc)
+                    for p in ("A:1", "B:1")]
+            design = install(gs, MakeDesign(comp=MakeComp(name="Root", all_occurrences=occs)))
+            app = FakeApplication(active_product=design, active_document=doc,
+                                  active_viewport=Viewport(camera=Camera()))
+            monkeypatch.setattr(gs, "app", app)
+            monkeypatch.setattr(gs._common, "app", app)
+            monkeypatch.setattr(gs._view_common, "capture_png_b64",
+                                lambda *a, **k: ("B64DATA", None))
+            return gs.handler(fit_to="B:1"), doc
+        return _shoot
+
+    def test_a_clean_document_the_shot_modified_is_disclosed(self, shoot):
+        result, doc = shoot(is_modified=False)
+        assert result["isError"] is False and doc.isModified is True
+        assert "records as a document modification" in result["content"][0]["text"]
+
+    def test_an_already_modified_document_gets_no_such_sentence(self, shoot):
+        result, _doc = shoot(is_modified=True)
+        assert [c["type"] for c in result["content"]] == ["image"]
+
+    def test_the_flag_is_read_after_the_restore_runs(self, monkeypatch):
+        doc = FakeFusionDocument(is_modified=False)
+        monkeypatch.setattr(gs._common, "app", FakeApplication(active_document=doc))
+
+        def restore():
+            doc.isModified = True             # the restore's own write sets the flag
+            return []
+        restore.modified_before = False
+        assert "records as a document modification" in gs._restore_message(restore)
+
+    def test_a_body_subject_names_the_bodies_it_hid_not_an_isolation(self, monkeypatch):
+        doc = FakeFusionDocument(is_modified=False)
+        monkeypatch.setattr(gs._common, "app", FakeApplication(active_document=doc))
+
+        def restore():
+            doc.isModified = True
+            return []
+        restore.modified_before, restore.isolated, restore.hidden = False, False, "bodies"
+        msg = gs._restore_message(restore)
+        assert "hid the other bodies for this shot, which Fusion records as a document" in msg
+        assert "isolated" not in msg
 
 
 class TestCameraRestore:

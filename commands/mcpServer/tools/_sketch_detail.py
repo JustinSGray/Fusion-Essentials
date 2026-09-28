@@ -20,8 +20,9 @@ from . import _inputs
 app = adsk.core.Application.get()
 
 MAP_BLURB = (
-    "sketch_get's X-ray; sketch_world_frame/frame_space_note - a sketch's frame + sentence; "
-    "curve_id - a curve's '<type>:<index>'; scope_component/scope_components/COMPONENT_SCOPE/"
+    "sketch_get's X-ray; sketch_world_frame/frame_space_note - frame + sentence; "
+    "curve_id/entity_id - an entity's '<type>:<index>'; scope_component/scope_components/"
+    "COMPONENT_SCOPE/"
     "component_scope/scoped_sketch/scoped_or_recent_sketch/scope_remedy - the 'component' scope "
     "+ wire form; _sketch_summary - a sketch's row; _prepare/_transform - move/copy matrix; "
     "unquote_text/font_read_back - SketchText.")
@@ -219,6 +220,29 @@ def curve_id(sketch, curve):
             if safe(lambda coll=coll, i=i: coll.item(i) == curve) is True:
                 return f"{kind}:{i}"
     return None
+
+
+def entity_id(sketch, entity):
+    """'<type>:<index>' for one curve or sketch point, matched by IDENTITY, or None."""
+    ref = curve_id(sketch, entity)
+    if ref is not None:
+        return ref
+    pts = safe(lambda: sketch.sketchPoints)
+    for i in range(safe(lambda: pts.count, 0) if pts else 0):
+        if safe(lambda i=i: pts.item(i) == entity) is True:
+            return f"point:{i}"
+    return None
+
+
+def _entity_handles(sketch, rows, occurrence, placed):
+    """Stamp each point/curve row with its 'handle' through `occurrence`, None when not `placed`."""
+    for rec in rows:
+        kind = str(rec.get("id", "")).rpartition(":")[0]
+        if kind not in _common.ENTITY_REF_KINDS:
+            continue
+        ent = _common.resolve_entity_ref(sketch, rec["id"]) if placed else None
+        rec["handle"] = (_inputs.placed_handle(ent, "sketch_" + kind, occurrence)
+                         if ent is not None else None)
 
 
 def _build_token_map(sketch):
@@ -1065,6 +1089,10 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
 
     entities, constraints, dimensions, construction_count, driving_dims, truncated = _entity_xray(
         sketch, f, unit)
+    framed = safe(lambda: _frame_context(sketch, design, host_occurrence))
+    placed = bool(framed) and framed[1] == WORLD_SPACE
+    _entity_handles(sketch, entities,
+                    safe(lambda: framed[0].assemblyContext) if placed else None, placed)
     note = (lead + "Full X-ray, lengths in 'units'. Entity coordinates are sketch-LOCAL; "
                  + frame_space_note(out.get("frame")) + face_note
                  + " Entity ids ('line:0', ...) match sketch_constrain "
@@ -1072,6 +1100,12 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
                  "sketch ORIGIN. is_fully_constrained=false means free DOF remain; a dimension "
                  "driving=false only measures. A 'text:<i>' id is what "
                  "sketch_set_text(index=<i>) edits and sketch_delete_entity removes.")
+    if placed:
+        note += (" A point row's 'handle' goes in model_construction's 'points'/'to_object' and a "
+                 "line row's in its 'axis' and two_edges' 'edges'; a circle's or arc's centre goes "
+                 "in as '<sketch>/<id>:center'. An 'id' is a position in the current collection.")
+    elif any("handle" in e for e in entities):
+        note += " 'handle' is null on every row until the instance is named as above."
     if any(e.get("reference") for e in entities):
         note += (" reference:true marks reference geometry; linked:true marks an external or API-driven link.")
     if any("?" in c.get("entities", []) for c in constraints):

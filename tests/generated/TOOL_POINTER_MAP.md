@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 210  |  **description breadcrumbs:** 316  |  **note/error breadcrumbs:** 678
+**Tools:** 211  |  **description breadcrumbs:** 318  |  **note/error breadcrumbs:** 680
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -17,8 +17,8 @@ close orphans, factor duplicated guards into shared helpers.
 **Read/Acquire (9)** - higher concern, a check-your-work tool nothing points to:
   `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `model_compute_holder`, `model_measure_continuity`, `model_measure_relation`, `sys_get_api_doc`
 
-**Edit (54)** - usually leaf actions, scan for genuine gaps:
-  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_edit_extrude`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
+**Edit (55)** - usually leaf actions, scan for genuine gaps:
+  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
 
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
 - **55x** across 54 module(s): "No active design. Create or open a document first (see doc_new)."
@@ -37,16 +37,16 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
+- `design_get`  <- 55  (desc 11, note 44)
 - `find_geometry`  <- 55  (desc 14, note 41)
-- `design_get`  <- 54  (desc 11, note 43)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 5, note 31)
 - `cam_get`  <- 33  (desc 15, note 18)
+- `model_inspect`  <- 26  (desc 4, note 22)
 - `data_get`  <- 25  (desc 10, note 15)
 - `doc_open`  <- 25  (desc 5, note 20)
-- `model_inspect`  <- 25  (desc 3, note 22)
+- `sketch_get`  <- 25  (desc 7, note 18)
 - `sketch_create`  <- 24  (desc 7, note 17)
-- `sketch_get`  <- 24  (desc 6, note 18)
 - `assembly_get`  <- 21  (desc 4, note 17)
 
 ## The detected guidance surface
@@ -2263,10 +2263,13 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 A planar face's 'frame' is that plane in world space: the point at local (u, v) is frame.origin + u*frame.x_world + v*frame.y_world, and f...
 - '. Use mm, cm, or in.
 - No active design (open or create a document first).
+- 'sketch' and 'name' narrow the sketch_* and construction_point kinds; kind='
+- 'position' is WORLD, through the sketch transform (a sketch entity's) and the occurrence's placement; a curve's is the midpoint of its ends, a circle's its centre. model_construction takes a sketch...
 - occurrences_walk='unreadable': NEITHER root.allOccurrences nor the component.occurrences fallback enumerated, so the occurrence tree was not searched at all and only root-level bodies were scanned ...
 - occurrences_walk='recursed': root.allOccurrences raised, so the occurrence census was rebuilt from component.occurrences.
 - The occurrence walk did not run to the end (a collection would not enumerate, or a depth/node cap was hit), so part of the design was not scanned.
 - occurrence(s) hold an unresolved external reference () - reading their component raises, so they carry no geometry to scan and were skipped.
+- target '' names no occurrence or component - sketch and construction point kinds read components (assembly_get lists them).
 - Could not resolve target ''. Use an occurrence/component name, a body name (bare, or '<occurrence-or-component>:<body>' when several components hold that name), or '' for the whole design (see asse...
 
 ### `form_create`
@@ -2875,11 +2878,15 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '. Use: point, axis, plane.
 - No active design. Create or open a document first (see doc_new).
 - creation returned nothing.
+- Fusion reported success but the datum '
+- ' where it was built. It is still in the design - remove it with design_delete_feature.
 - Could not add construction geometry:
 - Could not add construction geometry: this datum mode isn't supported in the current modeling mode. Only a bare coordinate point or a world-axis-through-a-point needs DIRECT-modeling; every geometry...
 - kind={k} at a raw coordinate needs DIRECT-modeling mode and this design is PARAMETRIC (setByPoint/setByLine are direct-only). Options: (1) sketch_create a sketch, add a sketch point there, and buil...
+- mode='': Fusion reported success but the  it created misses its operand point(s) by  . The datum '' was added and is still in the design - remove it with design_delete_feature.
 - 'handle' is this axis's entityToken - pass it (or the datum's name in this component) as 'axis' to model_pattern_circular, model_revolve, or model_move.
 - 'handle' is this plane's entityToken - pass it as 'plane' to model_mirror, view_section, or model_split; sketch_create takes this datum's NAME instead.
+- 'handle' is this point's entityToken - pass it (or the datum's name in this component) in model_construction's 'points' or 'to_object'.
 - A sketch on this plane takes its origin at the world origin's projection onto it, not at geometry.origin - sketch_create's frame.origin_mm reads it.
 - A null field above was NOT measured: an occurrence is active and the entity could not be read in its space, so the value is left unclaimed rather than reported in the component-local space the reso...
 - This datum's WORLD placement could not be determined, so 'aligned_to_face_axis' is unchecked and 'frame' stays 'component'.
@@ -2899,8 +2906,10 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - mode='three_planes': Fusion rejected these planes (setByThreePlanes returned false) - they must intersect at a single point.
 - mode='edge_plane': Fusion rejected these inputs (setByEdgePlane returned false) - the edge (extended if needed) must meet the plane.
 - mode='on_path' with kind='point': 'to_object' is plane-only - ConstructionPointInput has no setByPathToObject. Use kind='plane', or place the point with 'at' and distance_type='absolute'.
+- Fusion reported success but the datum '' reads component '', not '' where it was built. It is still in the design - remove it with design_delete_feature.
 - angle_deg is null: the created plane's angle parameter did not read back, so the landed angle was not compared to the request.
 - The names in 'model_parameters' are this datum's own model parameters - param_set one to an expression to drive the datum parametrically.
+- 'operands' is where each input sat in WORLD space when it was used, with its owner and the occurrence it was read through.
 
 ### `model_create_component`
 - . Model a constant-thickness solid, then use sheet_convert and verify isSheetMetal.
@@ -2944,6 +2953,31 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - NONE of the bodies' volume, their face count or the requested faces' own normal/area could be read back, so there is no geometric proof the taper landed - re-read the faces with model_inspect befor...
 - faces_compared is 0 - no requested face's normal or area could be compared across the add, so faces_moved counts nothing; the volume and face-count deltas are what this result rests on.
 - 'faces_drafted' is null - the count could not be read off the feature, so how many faces the draft took is UNKNOWN here;  face(s) were requested.
+
+### `model_edit_body`
+- action='create_component' does not use 'destination'; omit it.
+- ' requires explicit 'destination' (occurrence or root).
+- No active design. Open a design document first.
+- 'body' did not resolve to a BRep or mesh body.
+- returned no body. The operation may have partially landed; inspect source and destination with design_get(include=['tree']). Partial state:
+- Body ownership changes the component definition in every placement. Use the fresh handle promptly; old move/create handles may be stale.
+- Could not read selected body owner or placement:
+- ' does not contain exactly one selected body.
+- ' refused: component '
+- . Use a singly placed destination or an available BRep source.
+- Could not read scoped body state before action='
+- raised after the mutation was attempted:
+- . Inspect source and destination with design_get(include=['tree']). Partial state:
+- returned a body but its effect is incomplete or unknown:
+- ); pass an occurrence-qualified body or proxy handle.
+- create_component for '
+- source placements have nonidentity transforms
+- . Use a mesh in root or an identity-placed component, or use a parametric design. An available BRep source also supports this action.
+- New child has  matching placements; cannot mint one body handle. Inspect design_get(include=['tree']) and choose the intended instance.
+- create_component for '' in component '' refused:  of  source placements have nonidentity transforms . Use a mesh in root or an identity-placed component, or use a parametric design. An available BR...
+- Body  raised after the mutation was attempted: . Inspect source and destination with design_get(include=['tree']). Partial state:
+- Body  returned no body. The operation may have partially landed; inspect source and destination with design_get(include=['tree']). Partial state:
+- Body  returned a body but its effect is incomplete or unknown: . Inspect source and destination with design_get(include=['tree']). Partial state:
 
 ### `model_edit_extrude`
 - Definition changed on the same Extrude. Use param_get/param_set for numeric edits.
@@ -3844,6 +3878,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Rip landed. A converted box may still refuse to develop (blended corners); build boxes from sheet_create_flange. Next: sheet_create_flat_pattern.
 - bodies in the component:
 - . Next: sheet_create_flat_pattern.
+- does not apply to mode='face': setByFace removes the bend face and takes no gap. Drop gap, or pass mode='along_edge' or 'between_points' to rip at a chosen gap.
 - 's body could not be read.
 - belongs to an ordinary body. Use sheet_convert first.
 - 's owning component could not be read.
@@ -3853,10 +3888,11 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' remains, but its changed geometry was not verified. Inspect it before retrying.
 - ' remains, but the component's bodies read
 - cm3 after; inspect it before retrying.
-- gap is not given and the component's active sheet-metal rule has no readable gap; pass 'gap' explicitly.
 - ' selector was not accepted; pick a rim
 - point_one/point_two's body could not be read.
 - point_one and point_two must lie on the same body.
+- gap is not given and the component's active sheet-metal rule has no readable gap; pass 'gap' explicitly.
+- gap= does not apply to mode='face': setByFace removes the bend face and takes no gap. Drop gap, or pass mode='along_edge' or 'between_points' to rip at a chosen gap.
 
 ### `sheet_create_unfold`
 - Pass bend_faces or all_bends=true, exactly one. Use find_geometry for bend-face handles.

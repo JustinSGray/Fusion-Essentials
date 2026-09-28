@@ -18,6 +18,10 @@ _JOIN_B = "SM Sweep Join Plate B"
 _BASE_KIND_PROFILE = "SM Sweep Base Kind Profile"
 _JOIN_E_BASE = "SM Sweep Join Plate E"
 _JOIN_F_BASE = "SM Sweep Join Plate F"
+_OBLIQUE = "SM Sweep Oblique Flange"
+_OBLIQUE_HINGE = "SM Sweep Oblique Hinge"
+_OBLIQUE_PLANE = "SM Sweep Oblique Plane"
+_OBLIQUE_PROFILE = "SM Sweep Oblique Profile"
 
 
 def _edge_match(p, x=None, y=None, z=None, length=None, tol=0.1):
@@ -262,6 +266,38 @@ def _rip_created(mode, new_bodies=()):
                          and p["volume_after_cm3"] < p["volume_before_cm3"]
                          and p.get("new_bodies") == list(new_bodies))
     return check
+
+
+def _face_rip_landed(p):
+    """Require a face rip to publish no gap and to remove the whole R4/r2.5 x 40 mm bend region."""
+    return _rip_created("face")(p) and _measured(
+        "face rip takes no gap", {"gap_mm": p.get("gap_mm"), "gap_source": p.get("gap_source"),
+                                  "volume_removed_cm3": p.get("volume_removed_cm3")},
+        "gap_mm" not in p and "gap_source" not in p
+        and _near(p.get("volume_removed_cm3"), 0.306305, 0.001))
+
+
+def _oblique_flange_created(p):
+    """Require a base flange on the 30 deg plane to read its fresh component's 2.5 mm rule thickness."""
+    return _measured("oblique base flange thickness", {"bodies": (p.get("bodies_before"), p.get("bodies_after")),
+                     "thickness_mm": p.get("thickness_mm"), "rule": p.get("rule")},
+                     p.get("created") is True and p.get("kind") == "base"
+                     and isinstance(p.get("bodies_before"), int) and isinstance(p.get("bodies_after"), int)
+                     and p["bodies_after"] == p["bodies_before"] + 1
+                     and _near(p.get("thickness_mm"), 2.5, 0.001) and p.get("rule") == "Steel (mm)")
+
+
+def _oblique_slab_faces(p):
+    """Require find_geometry's own read of the slab's two 80 x 40 mm faces: tilted off Z, 2.5 mm apart."""
+    broad = [m for m in (p.get("matches") or []) if m.get("kind") == "planar_face"
+             and _near(m.get("area"), 3200.0, 1.0) and m.get("normal") and m.get("position")]
+    gap = tilt = None
+    if len(broad) == 2:
+        n, a, b = broad[0]["normal"], broad[0]["position"], broad[1]["position"]
+        gap, tilt = abs(sum((b[i] - a[i]) * n[i] for i in range(3))), abs(n[2])
+    return _measured("oblique slab faces read independently",
+                     {"broad_faces": len(broad), "gap_mm": gap, "normal_z": tilt},
+                     gap is not None and _near(gap, 2.5, 0.01) and tilt < 0.99)
 
 
 def _other_corner_edge(p, used_xy, min_sep=10):
@@ -557,9 +593,13 @@ _SHEET_FLANGE = _SHEET_BUILD[:-1] + [
                                   "rule": "design:" + _RULE}, _converted, None),
     ("find_geometry", {"target": _RIP_BOX, "kind": "cylinder_face", "max_results": 30},
      _corner_cylinder_census, ("sm_rip_cyl", _recall("sm_rip_cyl", _first_cylinder_save))),
+    # a face rip takes no gap: an explicit one is refused before anything is ripped
+    ("sheet_create_rip", lambda c: {"mode": "face",
+                                    "face": _ctx_get(c, "sm_rip_cyl", "rip box outer corner cylinder")["handle"],
+                                    "gap": 1}, _refused("does not apply to mode='face'", "takes no gap"), None),
     ("sheet_create_rip", lambda c: {"mode": "face",
                                     "face": _ctx_get(c, "sm_rip_cyl", "rip box outer corner cylinder")["handle"]},
-     _rip_created("face"), ("sm_rip_vol_face", _recall("sm_rip_vol_face", lambda p: p["volume_after_cm3"]))),
+     _face_rip_landed, ("sm_rip_vol_face", _recall("sm_rip_vol_face", lambda p: p["volume_after_cm3"]))),
     ("model_inspect", {"target": _RIP_BOX, "include": ["mass"]}, _rip_volume_read("sm_rip_vol_face"), None),
     ("find_geometry", {"target": _RIP_BOX, "kind": "line_edge", "max_results": 40},
      _other_corner_edge_check, ("sm_rip_edge", _recall("sm_rip_edge", _other_corner_edge_save))),
@@ -574,6 +614,27 @@ _SHEET_FLANGE = _SHEET_BUILD[:-1] + [
                                     "point_one": _ctx_get(c, "sm_rip_vertices", "rip box one-edge vertex pair")["v1"],
                                     "point_two": _ctx_get(c, "sm_rip_vertices", "rip box one-edge vertex pair")["v2"],
                                     "gap": 1}, _refused("same edge"), None),
+    # --- a base flange on a plane 30 deg off XY, hinged on a helper block's edge: its thickness is
+    # read off the slab's own faces, then read again independently by find_geometry -----------------
+    ("model_create_component", {"name": _OBLIQUE, "sheet_metal": True, "activate": True}, "ok", None),
+    ("sketch_create", {"name": _OBLIQUE_HINGE, "plane": "xy"}, "ok", None),
+    ("sketch_add_geometry", {"sketch_name": _OBLIQUE_HINGE, "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": -10, "x2": 80, "y2": 0}]}, "ok", None),
+    ("model_extrude", {"sketch_name": _OBLIQUE_HINGE, "profile_index": 0,
+                       "distance": 5, "operation": "new"}, _extruded, None),
+    ("find_geometry", {"target": _OBLIQUE, "kind": "line_edge", "max_results": 20},
+     _one_edge("oblique hinge edge at y=0, z=0", x=40, y=0, z=0, length=80),
+     ("sm_oblique_hinge", _edge_handle(x=40, y=0, z=0, length=80))),
+    ("model_construction", lambda c: {"kind": "plane", "mode": "at_angle", "plane": "xy",
+                                      "edges": [_ctx_get(c, "sm_oblique_hinge", "oblique hinge edge")],
+                                      "angle": 30, "name": _OBLIQUE_PLANE}, "ok", None),
+    ("sketch_create", {"name": _OBLIQUE_PROFILE, "plane": _OBLIQUE_PLANE}, "ok", None),
+    ("sketch_add_geometry", {"sketch_name": _OBLIQUE_PROFILE, "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 80, "y2": 40}]}, "ok", None),
+    ("sheet_create_flange", {"kind": "base", "profile": {"sketch": _OBLIQUE_PROFILE, "profile_index": 0}},
+     _oblique_flange_created, None),
+    ("find_geometry", {"target": _OBLIQUE, "kind": "planar_face", "max_results": 30},
+     _oblique_slab_faces, None),
     ("doc_close", lambda c: {"name": _ctx_get(c, "sm_rip", "rip scratch session"), "save_changes": False},
      _closed_one, None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "sm_coupon", "flange coupon session")}, "ok", None),

@@ -17,11 +17,12 @@ from . import _joints   # the JointOrigin walk (all_joint_origins / find_joint_o
 from ._export import find_component as _find_component   # the one design-wide by-name component resolve
 
 MAP_BLURB = (
-    "the typed reference kinds (table above); resolve_inputs/apply_to_tool (wire and resolve "
-    "an input spec), length_value_input/expression_report (a length as a number OR a "
-    "parameter expression), world_construction_axis/axis_line_of (a world axis as an entity; "
-    "an AxisRef's line), single_placement/entity_component (the assembly-context lift), "
-    "resolve_surface/surface_ref_label (the *_to_surface operand)")
+    "the typed kinds (table above); resolve_inputs/apply_to_tool (wire an input spec), "
+    "length_value_input/expression_report (length or expression), "
+    "world_construction_axis/axis_line_of (axis entity; world line), "
+    "single_placement/entity_component/operand_in (assembly-context lift), "
+    "operand_meta/placed_point_cm/placed_handle (world frame, handle), "
+    "resolve_surface/surface_ref_label (*_to_surface operand)")
 
 app = adsk.core.Application.get()
 
@@ -150,6 +151,17 @@ class GeometryHandle(InputKind):
         return ent, None
 
 
+def list_items(raw):
+    """The entries of a list input sent as a JSON list or a comma-separated string."""
+    if isinstance(raw, (list, tuple)):
+        return list(raw)
+    if isinstance(raw, str) and _HANDLE_SEP in raw:
+        # A COMPOSITE handle ('<token>|@<kind>:x,y,z') carries commas INSIDE its locator, so
+        # comma-splitting one shreds it into fragments. A '|@' string is ONE handle.
+        return [raw.strip()]
+    return [s.strip() for s in str(raw).split(",") if s.strip()]
+
+
 class GeometryHandleList(GeometryHandle):
     """A LIST of geometry handles (e.g. the specific edges to fillet, the bodies to mirror). Accepts a
     JSON list of handles OR a comma-separated string, each resolved through GeometryHandle."""
@@ -170,14 +182,7 @@ class GeometryHandleList(GeometryHandle):
                 return None, (f"'{self.name}' needs a list of geometry handles from find_geometry "
                               f"({_GEOMETRY_REQUIREMENTS[self.require][0]}).")
             return (self.default if self.default is not None else []), None
-        if isinstance(raw, (list, tuple)):
-            items = list(raw)
-        elif isinstance(raw, str) and _HANDLE_SEP in raw:
-            # A COMPOSITE handle ('<token>|@<kind>:x,y,z') carries commas INSIDE its locator, so
-            # comma-splitting one shreds it into fragments. A '|@' string is ONE handle.
-            items = [raw.strip()]
-        else:
-            items = [s.strip() for s in str(raw).split(",") if s.strip()]
+        items = list_items(raw)
         ents = []
         for i, h in enumerate(items):
             ent, err = GeometryHandle.resolve(self, h)
@@ -307,6 +312,8 @@ def _resolve_token_entity(des, s):
     token, locator = _split_handle(s)
     found = _common.safe(lambda: des.findEntityByToken(token))
     hits = list(found) if found else []
+    if hits and locator and locator[0] in PLACED_KINDS:
+        return _placed_hit(hits, locator)
     if len(hits) == 1:
         return hits[0]
     if len(hits) > 1:
@@ -322,12 +329,14 @@ def _resolve_token_entity(des, s):
 
 
 def _entity_context_label(ent):
-    """What tells one candidate of an ambiguous token from the others: its type plus the assembly
-    path it is placed in, else its owning body/component."""
-    kind = type(ent).__name__
+    """What tells one candidate of an ambiguous token from the others: its type and sketch address
+    or datum name, plus the assembly path it is placed in, else its owning body/component."""
+    ref = sketch_entity_address(ent) or _common.safe(lambda: ent.name)
+    kind = f"{type(ent).__name__} '{ref}'" if isinstance(ref, str) and ref else type(ent).__name__
     where = (_common.safe(lambda: ent.assemblyContext.fullPathName)
              or _common.safe(lambda: ent.body.parentComponent.name)
-             or _common.safe(lambda: ent.parentComponent.name))
+             or _common.safe(lambda: ent.parentComponent.name)
+             or _common.safe(lambda: entity_component(ent).name))
     return f"{kind} in '{where}'" if where else kind
 
 
@@ -371,11 +380,10 @@ def _handle_refusal_suffix():
 _HANDLE_SEP = "|@"
 
 
-def make_handle(entity, kind, position_cm):
-    """A composite handle from a live entity: its entityToken plus a kind+position locator
-    (`position_cm` is a face centroid or a point on an edge), so a later stale token self-heals. A
-    BRep entity also carries its body's revisionId (';rv='), which tells benign token rotation from
-    a model edit - recovering across one silently measures the WRONG entity, live-proven."""
+def make_handle(entity, kind, position_cm, occurrence_path=None):
+    """A composite handle: the entityToken plus a kind+world-position locator, the owning body's
+    revisionId (';rv=', which tells token rotation from a model edit) and the occurrence path it
+    was read through (';occ=') - so a later stale or many-valued token is settled, never guessed."""
     token = _common.safe(lambda: entity.entityToken) or ""
     if not token or position_cm is None:
         return token
@@ -384,6 +392,8 @@ def make_handle(entity, kind, position_cm):
     rev = _common.safe(lambda: entity.body.revisionId)
     if rev:
         handle += f";rv={rev}"
+    if occurrence_path:
+        handle += f";occ={occurrence_path}"
     return handle
 
 
@@ -412,19 +422,23 @@ def is_handle(v) -> bool:
 
 
 def _split_handle(s):
-    """('<token>', (kind, x, y, z, rev)) for a composite handle, else ('<token>', None) - 'rev' is
-    the minting body's revisionId where the handle carries one (';rv=<id>')."""
+    """('<token>', (kind, x, y, z, rev, occurrence path)) for a composite handle, else
+    ('<token>', None) - rev and the path are None where the handle carries neither."""
     if not isinstance(s, str) or _HANDLE_SEP not in s:
         return s, None
     token, loc = s.split(_HANDLE_SEP, 1)
     try:
         kind, coords = loc.split(":", 1)
+        occ = None
+        if ";occ=" in coords:
+            coords, occ = coords.split(";occ=", 1)
+            occ = occ or None
         rev = None
         if ";rv=" in coords:
             coords, rev = coords.split(";rv=", 1)
             rev = rev or None
         x, y, z = (float(c) for c in coords.split(","))
-        return token, (kind, x, y, z, rev)
+        return token, (kind, x, y, z, rev, occ)
     except Exception:
         return token, None
 
@@ -435,7 +449,7 @@ def handle_token(s):
 
 
 def _entity_point_cm(ent):
-    """A representative world point (cm) for a face (centroid) or edge (point on it), else None."""
+    """A world point (cm) for a face (centroid), edge, vertex or placed entity, else None."""
     if isinstance(ent, adsk.fusion.BRepFace):
         c = _common.safe(lambda: ent.centroid)
     elif isinstance(ent, adsk.fusion.BRepEdge):
@@ -443,7 +457,7 @@ def _entity_point_cm(ent):
     elif isinstance(ent, adsk.fusion.BRepVertex):
         c = _common.safe(lambda: ent.geometry)
     else:
-        c = None
+        return placed_point_cm(ent)
     return (c.x, c.y, c.z) if c else None
 
 
@@ -564,22 +578,24 @@ def _pick_by_locator(entities, locator):
     lx, ly, lz = locator[1], locator[2], locator[3]
     want_rev = locator[4] if len(locator) > 4 else None
     best, best_d = None, None
-    within_tol = 0
+    at_point = []
     for ent in entities:
         p = _entity_point_cm(ent)
         if p is None:
             continue
         d = ((p[0] - lx) ** 2 + (p[1] - ly) ** 2 + (p[2] - lz) ** 2) ** 0.5
         if d <= _LOCATOR_TOL_CM:
-            within_tol += 1
+            at_point.append(ent)
         if best_d is None or d < best_d:
             best, best_d = ent, d
     if best is None or best_d is None or best_d > _LOCATOR_TOL_CM:
         return None, None
-    if within_tol > 1:
-        return None, (f"{within_tol} of them sit at the recorded position (co-located candidates - "
-                      "a concentric split puts both survivors at one centroid), so the locator "
-                      "cannot name exactly one")
+    if len(at_point) > 1:
+        named = _common.named_with_remainder([_entity_context_label(e) for e in at_point],
+                                             cap=_TOKEN_CANDIDATES_LISTED)
+        return None, (f"{len(at_point)} of them sit at the recorded position ({named}) - "
+                      "co-located candidates, as a concentric split or two coincident entities "
+                      "leave them, so the locator cannot name exactly one")
     if want_rev:
         got_rev = _common.safe(lambda: best.body.revisionId)
         if got_rev != want_rev:
@@ -599,6 +615,8 @@ def _refind_by_locator(des, locator):
     kind, lx, ly, lz = locator[0], locator[1], locator[2], locator[3]
     if kind.startswith("profile"):
         return _refind_profile(des, kind, (lx, ly, lz))
+    if kind in PLACED_KINDS:
+        return _refind_placed(des, locator)
     root = _common.safe(lambda: des.rootComponent)
     if not root:
         return None
@@ -636,6 +654,259 @@ def _refind_by_locator(des, locator):
     if reason:
         _LAST_REFIND_REFUSAL = reason
     return best
+
+
+# ── placed operands: sketch entities and construction points, located in WORLD cm ───────────────
+
+# The locator kinds read through a sketch transform and a placement: 'sketch_<type>' for every
+# sketch entity ref kind, and the construction point.
+PLACED_KINDS = frozenset({"sketch_" + k for k in _common.ENTITY_REF_KINDS} | {"construction_point"})
+
+
+def _local_anchor_points(native):
+    """Component-space copies of a curve's two ends, else its centre, else its point, or None."""
+    ends = (_common.safe(lambda: native.startSketchPoint.geometry),
+            _common.safe(lambda: native.endSketchPoint.geometry))
+    if all(p is not None for p in ends):
+        points = list(ends)
+    else:
+        centre = _common.safe(lambda: native.centerSketchPoint.geometry)
+        points = [centre if centre is not None else _common.safe(lambda: native.geometry)]
+    copies = [_common.safe(lambda p=p: p.copy()) for p in points if p is not None]
+    if not copies or len(copies) != len(points) or any(c is None for c in copies):
+        return None
+    sketch = _common.safe(lambda: native.parentSketch)
+    if sketch is None:
+        return copies
+    matrix = _common.safe(lambda: sketch.transform)
+    if matrix is None or not all(_common.safe(lambda c=c: c.transformBy(matrix)) for c in copies):
+        return None
+    return copies
+
+
+def _placement_matrix(entity, native, context):
+    """(owner-to-WORLD matrix, None at the root; whether one was found) for a proxy or a native."""
+    occ = _common.safe(lambda: entity.assemblyContext)
+    if occ is not None:
+        m = _common.safe(lambda: occ.transform2)
+        return m, m is not None
+    des = _common.design()
+    root = _common.safe(lambda: des.rootComponent) if des is not None else None
+    owner = entity_component(native)
+    if _common.same_component(owner, root) is True:
+        return None, True
+    m = _joints.component_world_matrix(des, owner, context) if des is not None else None
+    return m, m is not None
+
+
+def _world_points(entity, context=None):
+    """WORLD Point3D copies of an entity's locator points, or None where a read fails."""
+    # A native sketch point's worldGeometry reads in its COMPONENT's space: world is its sketch
+    # geometry through sketch.transform, then its occurrence's transform2.
+    native = _common._native_of(entity)
+    if native is entity and _common.safe(lambda: entity.assemblyContext) is not None:
+        return None                         # a proxy whose native did not read
+    points = _local_anchor_points(native)
+    if not points:
+        return None
+    matrix, found = _placement_matrix(entity, native, context)
+    if not found:
+        return None
+    if matrix is not None and not all(_common.safe(lambda p=p: p.transformBy(matrix))
+                                      for p in points):
+        return None
+    return points
+
+
+def placed_point_cm(entity, context=None):
+    """WORLD (x, y, z) cm of an entity's locator point (`context` places a native), or None."""
+    points = _world_points(entity, context)
+    coords = [_geom._coords(p) for p in points] if points else None
+    if not coords or any(c is None for c in coords):
+        return None
+    return tuple(sum(c[i] for c in coords) / len(coords) for i in range(3))
+
+
+def placed_handle(entity, kind, occurrence=None):
+    """The handle of an entity read through `occurrence` (None: the root), or None."""
+    own = _common.safe(lambda: entity.assemblyContext)
+    if own is not None:
+        target, occurrence = entity, own
+    elif occurrence is not None:
+        target = _common.safe(lambda: entity.createForAssemblyContext(occurrence))
+    else:
+        target = entity
+    if target is None:
+        return None
+    path = _common.safe(lambda: occurrence.fullPathName) if occurrence is not None else None
+    return make_handle(target, kind, placed_point_cm(target), path) or None
+
+
+def sketch_entity_address(entity):
+    """'<sketch>/<type>:<index>' for a sketch point or curve, matched by identity, else None."""
+    from . import _sketch_detail          # it imports this module
+    native = _common._native_of(entity)
+    sketch = _common.safe(lambda: native.parentSketch)
+    if sketch is None:
+        return None
+    ref = _common.safe(lambda: _sketch_detail.entity_id(sketch, native))
+    name = _common.safe(lambda: sketch.name)
+    return f"{name}/{ref}" if isinstance(name, str) and isinstance(ref, str) else None
+
+
+def _read_path(ent):
+    """(the occurrence path `ent` is read through - None for a native, whether that read)."""
+    ctx = _common.safe(lambda: ent.assemblyContext, _common._UNREADABLE)
+    if ctx is None:
+        return None, True
+    path = _common.safe(lambda: ctx.fullPathName) if ctx is not _common._UNREADABLE else None
+    return (path, True) if isinstance(path, str) else (None, False)
+
+
+def _at_cm(p):
+    """'(x, y, z) cm' for a point, as a refusal quotes it."""
+    return f"({p[0]:.6f}, {p[1]:.6f}, {p[2]:.6f}) cm"
+
+
+def _placed_hit(hits, locator):
+    """The one token hit on the handle's recorded occurrence and position, else None (refused)."""
+    global _LAST_REFIND_REFUSAL
+    want_path = locator[5] if len(locator) > 5 else None
+    want = locator[1:4]
+    rows = []
+    for ent in hits:
+        path, path_read = _read_path(ent)
+        point = placed_point_cm(ent) if path_read else None
+        if point is None:
+            what = "position" if path_read else "occurrence"
+            _LAST_REFIND_REFUSAL = (f"its token names a {type(ent).__name__} whose {what} did not "
+                                    "read, so whether it is the entity the handle named cannot be "
+                                    "checked")
+            return None
+        rows.append((ent, path, point))
+    ours = [row for row in rows if row[1] == want_path]
+    if not ours:
+        def where(p):
+            return f"'{p}'" if p else "no occurrence"
+        seen = _common.named_with_remainder(
+            [f"a {type(e).__name__} read through {where(p)}" for e, p, _pt in rows],
+            cap=_TOKEN_CANDIDATES_LISTED)
+        _LAST_REFIND_REFUSAL = (f"the handle was read through {where(want_path)} and its token "
+                                f"names {seen}")
+        return None
+    at = [row for row in ours
+          if sum((a - b) ** 2 for a, b in zip(row[2], want)) ** 0.5 <= _LOCATOR_TOL_CM]
+    if len(at) == 1:
+        return at[0][0]
+    if at:
+        named = _common.named_with_remainder([_entity_context_label(e) for e, _p, _pt in at],
+                                             cap=_TOKEN_CANDIDATES_LISTED)
+        _LAST_REFIND_REFUSAL = (f"{len(at)} entities its token names sit at the recorded position "
+                                f"({named}), so the handle cannot name exactly one")
+        return None
+    # A split sketch line's pieces all carry the pre-split token, which resolves to the first piece.
+    split = (" - a split sketch line keeps its token on its first piece"
+             if locator[0] == "sketch_line" else "")
+    if len(ours) == 1:
+        _LAST_REFIND_REFUSAL = (f"its token names a {type(ours[0][0]).__name__} that reads at "
+                                f"{_at_cm(ours[0][2])}, not at the recorded {_at_cm(want)}{split}")
+    else:
+        _LAST_REFIND_REFUSAL = (f"none of the {len(ours)} entities its token names sits at the "
+                                f"recorded {_at_cm(want)}{split}")
+    return None
+
+
+def _placed_candidates(comp, kind):
+    """Every native entity of a placed locator kind in `comp`'s datums or sketches."""
+    if kind == "construction_point":
+        return list(_common.iter_collection(_common.safe(lambda: comp.constructionPoints)))
+    ref_kind = kind[len("sketch_"):]
+    return [ent for sk in _common.iter_collection(_common.safe(lambda: comp.sketches))
+            for ent in _common.iter_collection(_common.entity_collection(sk, ref_kind))]
+
+
+def _refind_placed(des, locator):
+    """The entity a dead placed token's locator re-finds where it was read, or None (refused)."""
+    global _LAST_REFIND_REFUSAL
+    path = locator[5] if len(locator) > 5 else None
+    occ = None
+    comp = _common.safe(lambda: des.rootComponent)
+    if path:
+        placed = [o for o in _common.all_occurrences(des)
+                  if _common.safe(lambda o=o: o.fullPathName) == path]
+        if len(placed) != 1:
+            _LAST_REFIND_REFUSAL = (f"{len(placed)} occurrences read the path '{path}' the handle "
+                                    "was read through")
+            if not placed:
+                _LAST_REFIND_REFUSAL = f"no occurrence reads the path '{path}' it was read through"
+            return None
+        (occ,) = placed
+        comp = _common.safe(lambda: occ.component)
+    want = locator[1:4]
+    near = [e for e in _placed_candidates(comp, locator[0])
+            if (p := placed_point_cm(e, occ)) is not None
+            and sum((a - b) ** 2 for a, b in zip(p, want)) ** 0.5 <= _LOCATOR_TOL_CM]
+    if len(near) > 1:
+        named = _common.named_with_remainder([_entity_context_label(e) for e in near],
+                                             cap=_TOKEN_CANDIDATES_LISTED)
+        _LAST_REFIND_REFUSAL = (f"{len(near)} entities sit at the recorded position ({named}), so "
+                                "the locator cannot name exactly one")
+        return None
+    if not near:
+        return None
+    (ent,) = near
+    if occ is None:
+        return ent
+    proxy = _common.safe(lambda: ent.createForAssemblyContext(occ))
+    if proxy is None:
+        _LAST_REFIND_REFUSAL = f"the entity at the recorded position did not read through '{path}'"
+    return proxy
+
+
+def placed_ends(entity, context=None):
+    """[start, end] WORLD cm of a sketch curve's or edge's two ends, else None."""
+    native = _common._native_of(entity)
+    ends = (_common.safe(lambda: native.startSketchPoint),
+            _common.safe(lambda: native.endSketchPoint))
+    if any(e is None for e in ends):
+        ends = (_common.safe(lambda: native.startVertex), _common.safe(lambda: native.endVertex))
+    if any(e is None for e in ends):
+        return None
+    through = _common.safe(lambda: entity.assemblyContext) or context
+    points = [placed_point_cm(e, through) for e in ends]
+    return [list(p) for p in points] if all(p is not None for p in points) else None
+
+
+def operand_meta(entity, context=None):
+    """{type, ref, component, assembly_path, world_cm (a point or a line's two ends)} of an operand."""
+    native = _common._native_of(entity)
+    owner = entity_component(native)
+    ref = sketch_entity_address(entity) or _common.safe(lambda: native.name)
+    comp_name = _common.safe(lambda: owner.name) if owner is not None else None
+    path = _common.safe(lambda: entity.assemblyContext.fullPathName)
+    ends = placed_ends(entity, context)
+    point = placed_point_cm(entity, context) if ends is None else None
+    return {"type": type(native).__name__,
+            "ref": ref if isinstance(ref, str) else None,
+            "component": comp_name if isinstance(comp_name, str) else None,
+            "assembly_path": path if isinstance(path, str) else None,
+            "world_cm": ends if ends is not None else (list(point) if point else None)}
+
+
+def operand_in(label, entity, comp, design, remedy=None):
+    """(the operand as a feature built in `comp` takes it, error): proxied into its one placement."""
+    if _common.safe(lambda: entity.assemblyContext) is not None:
+        return entity, None
+    root = _common.safe(lambda: design.rootComponent) if design is not None else None
+    if _common.same_component(entity_component(entity), root) is True:
+        return entity, None
+    fix = remedy or _PLACEMENT_REMEDY
+    occ, err = single_placement(label, entity, comp, design, remedy=fix)
+    if err:
+        return None, err
+    if occ is None:
+        return entity, None
+    return _proxy_or_refuse(label, entity, occ, fix)
 
 
 def _isinstance(b, type_or_tuple) -> bool:
@@ -1947,10 +2218,13 @@ def entity_component(ent):
             or _common.safe(lambda: ent.parent))
 
 
-def single_placement(label, ent, comp, design):
+_PLACEMENT_REMEDY = "Pass a handle at geometry in the instance you mean, or a world axis (x/y/z)."
+
+
+def single_placement(label, ent, comp, design, remedy=_PLACEMENT_REMEDY):
     """The assembly-context walk every consumer of a possibly-foreign entity runs first, as
     (occurrence, error): (None, None) nothing to lift, (occ, None) the owner's ONE placement to
-    proxy into, (None, err) refused naming every fullPathName. `label` opens that refusal."""
+    proxy into, (None, err) refused naming every fullPathName; `label` opens it, `remedy` ends it."""
     # MEASURED: a NATIVE entity owned by ANOTHER component is accepted by a feature input and then
     # fails at add(), while the same entity proxied into its occurrence is accepted. A component
     # placed SEVERAL times is REFUSED - no feature read-back tells a right instance from a wrong one.
@@ -1970,8 +2244,7 @@ def single_placement(label, ent, comp, design):
     if here is None:
         return None, (f"{label} belongs to component '{owner_name}', and whether that is the "
                       "component this call builds in could not be read, so whether it must be "
-                      "brought into the assembly's space is unknown. Pass a handle at geometry in "
-                      "the instance you mean, or a world axis (x/y/z).")
+                      f"brought into the assembly's space is unknown. {remedy}")
     root = _common.safe(lambda: design.rootComponent) if design is not None else None
     if root is None:
         return None, (f"{label} belongs to component '{owner_name}' and this design's root component "
@@ -1991,11 +2264,9 @@ def single_placement(label, ent, comp, design):
             [str(_common.safe(lambda i=i: occs.item(i).fullPathName)) for i in range(count)])
         return None, (f"{label} belongs to component '{owner_name}', which is placed {count} times "
                       f"({paths}). Each instance holds it somewhere different, so the instance must "
-                      "not be guessed. Pass a handle at geometry in the instance you mean, or a "
-                      "world axis (x/y/z).")
+                      f"not be guessed. {remedy}")
     return None, (f"{label} belongs to component '{owner_name}', which is not placed in the "
-                  "assembly, so it cannot be brought into the assembly's space. Pass a handle at "
-                  "geometry in the instance you mean, or a world axis (x/y/z).")
+                  f"assembly, so it cannot be brought into the assembly's space. {remedy}")
 
 
 def _proxy_or_refuse(label, ent, occ, fix_hint):
@@ -2035,25 +2306,38 @@ def _datum_world_line(name, ent):
     return g, None
 
 
+def _line_from_ends(name, sp, ep):
+    """((start Point3D, unit Vector3D), err) for a bounded line's two WORLD ends."""
+    vec = _common.safe(lambda: sp.vectorTo(ep))
+    if vec is None or _common.safe(lambda: vec.length, 0.0) <= 1e-12:
+        return None, f"'{name}': that edge/sketch line is degenerate (zero length) - no axis direction."
+    _common.safe(lambda: vec.normalize())
+    return (sp, vec), None
+
+
 def axis_line_of(name, ent):
     """((Point3D on the line, unit Vector3D), err) for the world line a straight entity runs along.
-    A bounded edge/sketch line's Line3D carries only startPoint/endPoint, so the direction is
-    DERIVED; an InfiniteLine3D carries .origin/.direction. A BRepEdge/SketchLine reads WORLD through
-    `.worldGeometry`; a ConstructionAxis has none and takes the lift in _datum_world_line."""
+    A bounded line's direction is DERIVED from its ends; an InfiniteLine3D carries .origin/.direction.
+    A BRepEdge reads WORLD through `.worldGeometry`; a ConstructionAxis takes _datum_world_line's lift."""
     if _isinstance(ent, adsk.fusion.ConstructionAxis):
         line, lerr = _datum_world_line(name, ent)
         if lerr:
             return None, lerr
+    elif _isinstance(ent, adsk.fusion.SketchLine):
+        # A sketch line's world ends are read through its sketch transform and its placement - the
+        # chain a native sketch point's position takes, since its own world reads stay component-local.
+        ends = _world_points(ent)
+        if not ends or len(ends) != 2:
+            return None, (f"'{name}': that sketch line's ends could not be read in the assembly's "
+                          "space. Pass its handle from find_geometry or sketch_get, read through the "
+                          "instance you mean.")
+        return _line_from_ends(name, *ends)
     else:
         line = _common.safe(lambda: ent.worldGeometry) or _common.safe(lambda: ent.geometry)
     sp = _common.safe(lambda: line.startPoint) if line is not None else None
     ep = _common.safe(lambda: line.endPoint) if line is not None else None
     if sp is not None and ep is not None:
-        vec = _common.safe(lambda: sp.vectorTo(ep))
-        if vec is None or _common.safe(lambda: vec.length, 0.0) <= 1e-12:
-            return None, f"'{name}': that edge/sketch line is degenerate (zero length) - no axis direction."
-        _common.safe(lambda: vec.normalize())
-        return (sp, vec), None
+        return _line_from_ends(name, sp, ep)
     origin = _common.safe(lambda: line.origin) if line is not None else None
     direction = _common.safe(lambda: line.direction) if line is not None else None
     if origin is not None and direction is not None:
@@ -2061,24 +2345,24 @@ def axis_line_of(name, ent):
     return None, f"'{name}': could not read the line geometry off that edge/sketch line."
 
 
-def _construction_axis_by_name(label, comp, want):
-    """(ConstructionAxis, error, available names) for a construction-axis NAME in `comp` - the one
-    place an axis resolves by name, so a datum an agent created is reachable without a handle.
+def _construction_by_name(label, comp, want, attr="constructionAxes", noun="axis",
+                          plural="construction axes"):
+    """(datum, error, available names) for a construction datum NAME in `comp`'s `attr` collection.
     Case-insensitive EXACT, never a substring; scope is the ACTIVE component only, a name being
     unique per component rather than per design."""
     names, hits = [], []
-    for ax in _common.iter_collection(_common.safe(lambda: comp.constructionAxes)):
-        nm = _common.safe(lambda ax=ax: ax.name)
+    for datum in _common.iter_collection(_common.safe(lambda: getattr(comp, attr))):
+        nm = _common.safe(lambda datum=datum: datum.name)
         if not isinstance(nm, str):
             continue
         names.append(nm)
         if nm.strip().lower() == want.strip().lower():
-            hits.append(ax)
+            hits.append(datum)
     if len(hits) > 1:
-        return None, (f"'{label}': '{want}' names {len(hits)} construction axes in "
+        return None, (f"'{label}': '{want}' names {len(hits)} {plural} in "
                       f"'{_common.safe(lambda: comp.name)}' - which one is meant cannot be told from "
-                      "the name, so it is refused rather than guessed. Rename them, or pass the "
-                      "axis 'handle' from the model_construction call that created it."), names
+                      f"the name, so it is refused rather than guessed. Rename them, or pass the "
+                      f"{noun} 'handle' from the model_construction call that created it."), names
     return (hits[0] if hits else None), None, names
 
 
@@ -2109,7 +2393,7 @@ class AxisRef(InputKind):
             return "x/y/z, a construction-axis name, or an edge/line/round-face 'handle'."
         # The face forms RESOLVE (a planar face to its normal, a round one to its axis), so no
         # refusal ever states them - this note is their only home.
-        return ("A world axis x/y/z, a construction-axis name, or an edge/line/face 'handle' "
+        return ("x/y/z, a construction-axis name, or an edge/line/face 'handle' "
                 "(planar = normal, round = axis).")
 
     def _from_entity(self, ent):
@@ -2167,15 +2451,22 @@ class AxisRef(InputKind):
         des = _common.design()
         if not des:
             return None, "No active design to resolve the axis against."
+        parsed = sketch_entity_ref(s)
+        if parsed is not None:
+            return self._from_index(des, s, parsed)
         # Through _resolve_token_entity so a COMPOSITE handle resolves: it splits the '|@locator'
         # suffix off before findEntityByToken, which the whole string would never resolve.
         ent = _resolve_token_entity(des, s)
         if ent is not None:
             return self._from_entity(ent)
+        if _HANDLE_SEP in s:
+            why = _LAST_REFIND_REFUSAL or "no geometry answers its token or its locator"
+            return None, (f"'{self.name}': that handle did not resolve - {why}. Re-run "
+                          "find_geometry for a fresh handle.")
         # Not a token: a construction axis by NAME, resolved by what resolves, so a long axis name
         # is never mistaken for a stale handle.
         comp = _common.safe(lambda: _common.target_component(des))
-        axis, aerr, names = _construction_axis_by_name(self.name, comp, s)
+        axis, aerr, names = _construction_by_name(self.name, comp, s)
         if aerr:
             return None, aerr
         if axis is not None:
@@ -2193,7 +2484,17 @@ class AxisRef(InputKind):
         elif comp_name:
             found = f" '{comp_name}' has no construction axes of its own."
         return None, (f"'{self.name}': '{s}' is not a world axis (x/y/z), a construction-axis name"
-                      f"{where}, or a resolvable {forms}{found}")
+                      f"{where}, '<sketch>/line:<i>', or a resolvable {forms}{found}")
+
+    def _from_index(self, des, raw, parsed):
+        """(tagged value, error) for a '<sketch>/line:<i>' ref - the line at that index NOW."""
+        if not parsed[1].lower().startswith("line:"):
+            return None, (f"'{self.name}': '{raw}' names a sketch {parsed[1].rpartition(':')[0]}; "
+                          "an axis index ref is '<sketch>/line:<i>'.")
+        ent, err = resolve_sketch_entity(des, raw, "", None)
+        if err:
+            return None, f"'{self.name}': {err}"
+        return self._from_entity(ent)
 
 
 # ── distance / units (carries its own unit handling) ────────────────────────
@@ -2557,10 +2858,21 @@ class OccurrenceRef(InputKind):
 
     MAP_HINT = "an assembly occurrence by entityToken handle (exact) or fullPathName/name (refuses ambiguity)"
 
+    def __init__(self, name, allow_root=False, **kw):
+        super().__init__(name, **kw)
+        self.allow_root = allow_root
+
     def contract_note(self) -> str:
+        if self.allow_root:
+            return ("An occurrence 'handle' (design_get tree), fullPathName/name "
+                    "or 'root' (design root component).")
         return "An occurrence 'handle' (design_get tree) or fullPathName/name."
 
     def resolve(self, raw):
+        if self.allow_root and isinstance(raw, str) and raw.strip().lower() == "root":
+            design = _common.design()
+            root = _common.safe(lambda: design.rootComponent) if design is not None else None
+            return (root, None) if root is not None else (None, "No active design root component.")
         if raw in (None, "", []):
             if self.required:
                 return None, f"'{self.name}' is required (an occurrence handle or fullPathName)."
@@ -3255,12 +3567,29 @@ def sketch_entity_ref(raw):
     return (name.strip(), ref.strip()) if name.strip() and good else None
 
 
+# The way past a sketch name several components carry, for a consumer with no component scope.
+_INDEX_REF_REMEDY = ("Pass the entity's 'handle' instead - sketch_get(sketch_name, component, "
+                     "include_entities=true) prints one per row.")
+
+
+def _index_range(sketch, ref):
+    """What a '<type>' collection of `sketch` holds right now, for an index-past-the-end refusal."""
+    kind = ref.strip().lower().rpartition(":")[0]
+    n = _common.counted(lambda: _common.entity_collection(sketch, kind).count)
+    if n is None:
+        return f"its {kind} collection did not read"
+    return f"its {kind} ids run {kind}:0 to {kind}:{n - 1}" if n else f"it holds no {kind}"
+
+
 def resolve_sketch_entity(design, raw, component="", scope_input="component"):
-    """(entity, error naming the ref) for a '<sketch>/<type>:<index>' ref inside `component`."""
+    """(entity, error) for a '<sketch>/<type>:<index>' ref in `component`, else design-wide."""
     from . import _sketch_detail          # it imports this module
     name, ref = sketch_entity_ref(raw)
-    sketch, ambiguous = _sketch_detail.scoped_sketch(design, name, component,
-                                                     input_name=scope_input)
+    if scope_input:
+        sketch, ambiguous = _sketch_detail.scoped_sketch(design, name, component,
+                                                         input_name=scope_input)
+    else:
+        sketch, ambiguous = _common.find_sketch(design, name, remedy=_INDEX_REF_REMEDY)
     if ambiguous:
         return None, f"'{raw}': {ambiguous}"
     if sketch is None:
@@ -3268,7 +3597,7 @@ def resolve_sketch_entity(design, raw, component="", scope_input="component"):
                       f"{_available_sketch_names(design)}.")
     ent = _common.resolve_entity_ref(sketch, ref)
     if ent is None:
-        return None, (f"'{raw}': sketch '{name}' has no '{ref}'. "
+        return None, (f"'{raw}': sketch '{name}' has no '{ref}' - {_index_range(sketch, ref)}. "
                       "sketch_get(include_entities=true) lists its entity ids.")
     return ent, None
 
@@ -3301,6 +3630,138 @@ class SketchLineRef(InputKind):
         if not isinstance(ent, adsk.fusion.SketchLine):
             return None, f"'{self.name}' reference '{raw}' did not resolve to a SketchLine."
         return ent, None
+
+
+# ── point reference (a vertex, sketch point or construction point) ──────────────────────────────
+
+# The accepted row of the operand matrix, as every PointRef refusal ends.
+_POINT_FORMS = ("a vertex, sketch point or construction point 'handle', '<sketch>/point:<i>', "
+                "'<sketch>/circle:<i>:center', '<sketch>/arc:<i>:center', or a construction point "
+                "name in the active component")
+
+
+def _point_index_parts(raw):
+    """(sketch name, '<type>:<index>', anchor or None) for '<sketch>/<type>:<index>[:<anchor>]'."""
+    if not isinstance(raw, str) or _HANDLE_SEP in raw or "/" not in raw:
+        return None
+    name, _, tail = raw.strip().rpartition("/")
+    parts = [p.strip() for p in tail.split(":")]
+    if not name.strip() or len(parts) not in (2, 3):
+        return None
+    kind, index = parts[0].lower(), parts[1]
+    if kind not in _common.ENTITY_REF_KINDS or not index.isdigit():
+        return None
+    return name.strip(), f"{kind}:{index}", (parts[2].lower() if len(parts) == 3 else None)
+
+
+def _is_point_entity(ent):
+    """True for a SketchPoint, BRepVertex or ConstructionPoint."""
+    return any(_isinstance(ent, t) for t in (adsk.fusion.SketchPoint, adsk.fusion.BRepVertex,
+                                             adsk.fusion.ConstructionPoint))
+
+
+class PointRef(InputKind):
+    """A point operand: a point handle, a point or circle/arc centre index ref, or a datum name."""
+
+    MAP_HINT = ("a point: vertex/sketch-point/construction-point handle, '<sketch>/point:<i>' or "
+                "'<sketch>/circle|arc:<i>:center', or a construction point name")
+
+    def __init__(self, name, scope_input=None, **kw):
+        super().__init__(name, **kw)
+        self.scope_input = scope_input
+
+    def contract_note(self) -> str:
+        return ("A point 'handle', '<sketch>/point:<i>' or '<sketch>/circle|arc:<i>:center' (index "
+                "read at call time), or a construction point name.")
+
+    def resolve(self, raw, component=""):
+        s = raw.strip() if isinstance(raw, str) else raw
+        if not s:
+            if self.required:
+                return None, f"'{self.name}' is required - {_POINT_FORMS}."
+            return self.default, None
+        if not isinstance(s, str):
+            return None, f"'{self.name}': expected a point reference string, got {type(raw).__name__}."
+        des = _common.design()
+        if not des:
+            return None, "No active design to resolve the point against."
+        parts = _point_index_parts(s)
+        if parts is not None:
+            return self._from_index(des, s, parts, component)
+        ent = _resolve_token_entity(des, s)
+        if ent is not None:
+            if _is_point_entity(ent):
+                return ent, None
+            return None, (f"'{self.name}': that handle names a {type(ent).__name__}, not a point - "
+                          f"pass {_POINT_FORMS}.")
+        if _HANDLE_SEP in s:
+            why = _LAST_REFIND_REFUSAL or "no entity answers its token or its locator"
+            return None, (f"'{self.name}': that handle did not resolve - {why}. Re-run "
+                          "find_geometry for a fresh handle.")
+        return self._by_name(des, s)
+
+    def _from_index(self, des, raw, parts, component):
+        """(point, error) for a sketch index ref: a point, or a circle's or arc's centre point."""
+        name, ref, anchor = parts
+        ent, err = resolve_sketch_entity(des, f"{name}/{ref}", component, self.scope_input)
+        if err:
+            return None, f"'{self.name}': {err}"
+        kind = ref.rpartition(":")[0]
+        if kind == "point" and anchor is None:
+            return ent, None
+        if kind in ("circle", "arc") and anchor == "center":
+            centre = _common.safe(lambda: ent.centerSketchPoint)
+            if centre is not None:
+                return centre, None
+            return None, f"'{self.name}': the centre point of '{raw}' did not read."
+        return None, (f"'{self.name}': '{raw}' reads as a {type(ent).__name__}"
+                      + (f" with anchor '{anchor}'" if anchor else "")
+                      + f", not a point - pass {_POINT_FORMS}.")
+
+    def _by_name(self, des, s):
+        """(construction point, error) for a NAME in the active component."""
+        comp = _common.safe(lambda: _common.target_component(des))
+        point, perr, names = _construction_by_name(self.name, comp, s, "constructionPoints",
+                                                   "point", "construction points")
+        if perr:
+            return None, perr
+        if point is not None:
+            return point, None
+        comp_name = _common.safe(lambda: comp.name) if comp is not None else None
+        held = (f" Construction points in '{comp_name}': "
+                + _common.named_with_remainder(names, cap=10) + "." if names else "")
+        return None, (f"'{self.name}': '{s}' did not resolve as {_POINT_FORMS}"
+                      + (f" ('{comp_name}')" if comp_name else "") + f".{held}"
+                      + _handle_refusal_suffix())
+
+
+class PointRefList(PointRef):
+    """An ORDERED list of point operands, each resolved through PointRef."""
+
+    json_type = "array"
+    MAP_HINT = "several points (handles, sketch index refs or construction point names), in order"
+
+    def schema(self, brief=False) -> dict:
+        return {"type": "array", "items": {"type": "string"}, **self._desc(brief)}
+
+    def contract_note(self) -> str:
+        return ("Point 'handle's, '<sketch>/point:<i>' or '<sketch>/circle|arc:<i>:center' (index "
+                "read at call time), or construction point names.")
+
+    def resolve(self, raw, component=""):
+        if raw in (None, "", []):
+            if self.required:
+                return None, f"'{self.name}' needs at least one point - {_POINT_FORMS}."
+            return [], None
+        out = []
+        for i, item in enumerate(list_items(raw)):
+            point, err = PointRef.resolve(self, item, component)
+            if err:
+                return None, f"'{self.name}'[{i}]: {err}"
+            if point is None:
+                return None, f"'{self.name}'[{i}] is empty - {_POINT_FORMS}."
+            out.append(point)
+        return out, None
 
 
 def _single_path(ent):

@@ -19,7 +19,7 @@ from verify_core import (
     _home_document, _interference_measured, _joined,
     _joint_origin_at, _joint_origins_listed, _lofted, _made_component, _made_component_inactive,
     _material_assigned, _matched, _measured, _metadata_set, _mirrored, _moved, _moved_occurrence,
-    _captured, _near, _needs,
+    _captured, _near, _needs, _num,
     _new_document, _offset_faces, _param_added, _param_deleted, _param_read, _param_set_to,
     _param_traced, _path_count, _patterned, _piped, _pocket_boss, _pockets_recognized, _prof,
     _recall, _recognized_cbore_walls, _recognized_pocket_floor, _refused, _relation_measured,
@@ -1837,6 +1837,304 @@ def _definition_rows():
 _DEFINITION_READS = _definition_rows()
 
 
+# OperandBench is turned 30 deg about world Z and moved (100, 200, 0) mm, so its XZ plane - the one
+# OperandS sits on - has the normal R30 * (0, 1, 0) and holds the moved origin.
+_OPERAND_NORMAL = [-math.sin(math.radians(30)), math.cos(math.radians(30)), 0.0]
+_OPERAND_MOVE = [100.0, 200.0, 0.0]
+
+
+def _operand_frame_read():
+    """The OperandS frame sketch_get published, as recalled."""
+    f = _RECALL.get("dop_frame") or {}
+    if not all(isinstance(f.get(k), list) for k in ("origin_mm", "x_world", "y_world", "normal")):
+        raise AssertionError(f"the OperandS frame did not read: {f!r}")
+    return f
+
+
+def _frame_world(u, v):
+    """WORLD mm of OperandS point (u, v) mm, through the frame sketch_get read off its proxy."""
+    f = _operand_frame_read()
+    return [f["origin_mm"][i] + u * f["x_world"][i] + v * f["y_world"][i] for i in range(3)]
+
+
+def _swung(u, v, sign):
+    """WORLD mm of OperandS point (u, v) after a 90 deg turn, either way, about its sketch x axis."""
+    n = _operand_frame_read()["normal"]
+    return [a + sign * v * b for a, b in zip(_frame_world(u, 0), n)]
+
+
+def _operand_at(got, want, tol=0.001):
+    """True when a published [x, y, z] (or {x, y, z}) sits at `want` within `tol` mm."""
+    if isinstance(got, dict):
+        got = [got.get(k) for k in "xyz"]
+    return isinstance(got, list) and len(got) == 3 and all(_near(a, b, tol) for a, b in zip(got, want))
+
+
+def _on_moved_plane(normal, origin):
+    """True when a plane (unit normal, origin mm) is OperandBench's XZ plane, turned and moved."""
+    if isinstance(origin, dict):
+        origin = [origin.get(k) for k in "xyz"]
+    if not (isinstance(normal, list) and len(normal) == 3 and isinstance(origin, list)
+            and len(origin) == 3 and all(isinstance(v, (int, float)) for v in normal + origin)):
+        return False
+    along = sum(a * b for a, b in zip(normal, _OPERAND_NORMAL))
+    return (_near(abs(along), 1.0, 1e-5)
+            and _near(sum(a * b for a, b in zip(normal, origin)),
+                      sum(a * b for a, b in zip(normal, _OPERAND_MOVE)), 1e-3))
+
+
+def _operand_frame(p):
+    """sketch_get: OperandS's world frame lies on the turned, moved XZ plane."""
+    f = p.get("frame") or {}
+    return _measured("OperandS frame on the turned, moved XZ plane", f,
+                     f.get("space") == "world" and _on_moved_plane(f.get("normal"),
+                                                                    f.get("origin_mm")))
+
+
+def _operand_ends(ends, a, b):
+    """True when a line operand's two published world ends are `a` and `b`, in either order."""
+    if not isinstance(ends, list) or len(ends) != 2:
+        return False
+    return ((_operand_at(ends[0], a) and _operand_at(ends[1], b))
+            or (_operand_at(ends[0], b) and _operand_at(ends[1], a)))
+
+
+def _operand_ids(p):
+    """The sketch ids and handles of OperandS's three free points, found by sketch-local position."""
+    out = {}
+    for key, (x, y) in (("p1", (10, 20)), ("p2", (40, 20)), ("p3", (10, 50))):
+        hits = [r for r in p.get("entities") or [] if r.get("type") == "point"
+                and _near((r.get("position") or {}).get("x"), x, 1e-6)
+                and _near((r.get("position") or {}).get("y"), y, 1e-6)]
+        if len(hits) != 1:
+            raise AssertionError(f"OperandS point ({x}, {y}) read {len(hits)} rows")
+        (row,) = hits
+        out[key], out[key + "_handle"] = row["id"], row.get("handle")
+    return out
+
+
+def _operand_xray(p):
+    """sketch_get: every point and curve row carries a handle minted through OperandBench:1."""
+    rows = [r for r in p.get("entities") or []
+            if r.get("type") in ("point", "line", "circle", "arc", "spline")]
+    return _measured("each sketch row prints its handle beside its id",
+                     [(r.get("id"), r.get("handle")) for r in rows],
+                     (p.get("frame") or {}).get("space") == "world" and len(rows) >= 12
+                     and all(isinstance(r.get("handle"), str) and "|@sketch_" in r["handle"]
+                             and r["handle"].endswith(";occ=OperandBench:1") for r in rows))
+
+
+def _operand_match(kind, wants, shape=None):
+    """find_geometry: ONE `kind` read through OperandBench:1 at one of `wants()` (world mm)."""
+    def check(p):
+        rows = p.get("matches") or []
+        row = rows[0] if len(rows) == 1 else {}
+        return _measured(f"one {kind} at its world position", rows,
+                         len(rows) == 1 and row.get("kind") == kind
+                         and any(_operand_at(row.get("position"), w) for w in wants())
+                         and row.get("occurrence") == "OperandBench:1"
+                         and f"|@{kind}:" in (row.get("handle") or "")
+                         and (shape is None or shape(row)))
+    return check
+
+
+def _round_shape(u, v, radius):
+    """A find_geometry arc/circle row's world centre is OperandS (u, v) and its radius `radius` mm."""
+    return lambda row: (_operand_at(row.get("center"), _frame_world(u, v))
+                        and _near(row.get("radius"), radius, 1e-6))
+
+
+def _operand_rows_at(p, wants, path="OperandBench:1"):
+    """The datum's 'operands' sit at `wants` (world mm), each read through `path`."""
+    ops = p.get("operands") or []
+    return (len(ops) == len(wants)
+            and all(op.get("assembly_path") == path and _operand_at(op.get("world"), w)
+                    for op, w in zip(ops, wants)))
+
+
+def _operand_plane(wants, path="OperandBench:1"):
+    """three_points: through every operand, on the turned and moved XZ plane, read back in world."""
+    def check(p):
+        g = p.get("geometry") or {}
+        return _datum("plane")(p) and _measured(
+            "a plane through three points of the turned, moved component",
+            {"geometry": g, "through": p.get("passes_through_points"),
+             "operands": p.get("operands")},
+            p.get("passes_through_points") is True and _operand_rows_at(p, wants(), path)
+            and _on_moved_plane(g.get("normal"), g.get("origin")))
+    return check
+
+
+def _operand_axis(direction, through=True):
+    """An axis along the world `direction()` (either sense), through its operands when asked."""
+    def check(p):
+        d = (p.get("geometry") or {}).get("direction") or [0, 0, 0]
+        dot = sum(a * b for a, b in zip(d, direction()))
+        return _datum("axis")(p) and _measured(
+            "an axis along the operands' world direction",
+            {"direction": d, "through": p.get("passes_through_points"),
+             "operands": p.get("operands")},
+            _near(abs(dot), 1.0, 1e-5)
+            and (not through or p.get("passes_through_points") is True))
+    return check
+
+
+def _operand_point(u, v, path="OperandBench:1"):
+    """at_point: the datum sits at OperandS (u, v)'s world point, read back off the datum."""
+    def check(p):
+        want = _frame_world(u, v)
+        return _datum("point")(p) and _measured(
+            "a point datum at its operand's world point", p,
+            p.get("at_operand") is True and _operand_at(p.get("world"), want)
+            and _operand_rows_at(p, [want], path))
+    return check
+
+
+def _swung_about_the_piece(p):
+    """After the 90 deg turn about the first piece: its start stays, P1 swings to one side."""
+    rows = [r.get("position") for r in p.get("matches") or []]
+    swung = [r for r in rows if _operand_at(r, _swung(10, 20, 1)) or _operand_at(r, _swung(10, 20, -1))]
+    return _measured("a point on the axis stays put and one off it swings 90 deg", rows,
+                     p.get("match_count") == len(rows)
+                     and any(_operand_at(r, _frame_world(0, 0)) for r in rows)
+                     and len(swung) == 1
+                     and not any(_operand_at(r, _frame_world(10, 20)) for r in rows))
+
+
+def _datum_operand_rows():
+    """Sketch -> point -> plane/axis on a turned, moved component's XZ plane, in a scratch document."""
+    rows = [("doc_get", {}, _home_document, ("dop_story", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "dop_story", "story")},
+             _new_document, ("dop_doc", lambda p: p["document_handle"]))]
+
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: _combine_pin(
+            c, "dop_doc", args(c) if callable(args) else args), check, save))
+
+    def read(name, args, check, save=None):
+        rows.append((name, lambda c, args=args: args(c) if callable(args) else dict(args),
+                     check, save))
+
+    def ids(c):
+        return _ctx_get(c, "dop_ids", "OperandS ids and handles")
+
+    def acquire(kind, u, v, wants, shape=None, save=None):
+        # With no frame recalled (its read failed) the query goes unsorted and the check says so.
+        read("find_geometry", lambda c: {"target": "OperandBench", "kind": kind, "max_results": 1,
+                                         **({"nearest_to": _frame_world(u, v)}
+                                            if _RECALL.get("dop_frame") else {})},
+             _operand_match(kind, wants, shape), save)
+
+    write("model_create_component", {"name": "OperandBench", "activate": True},
+          _made_component)
+    # XZ, so the sketch transform is not the identity: every expected world point below comes
+    # from the frame sketch_get reads off the sketch proxy, a path apart from the one under test.
+    write("sketch_create", {"plane": "xz", "name": "OperandS"})
+    write("sketch_add_geometry", {"sketch_name": "OperandS", "geometry": [
+        {"kind": "point", "cx": 10, "cy": 20}, {"kind": "point", "cx": 40, "cy": 20},
+        {"kind": "point", "cx": 10, "cy": 50},
+        {"kind": "line", "x1": 0, "y1": 0, "x2": 40, "y2": 0},
+        {"kind": "circle", "cx": 30, "cy": 30, "radius": 10},
+        {"kind": "arc", "cx": 60, "cy": 30, "x1": 70, "y1": 30, "sweep_deg": 90},
+        {"kind": "spline", "points": [[80, 0], [90, 10], [100, 0]]}]})
+    write("design_activate_component", {"occurrence": "root"})
+    # A position capture reverts the pending move of the design's first root occurrence unless that
+    # occurrence is released from its parent first; OperandBench:1 is this document's first.
+    write("assembly_ground", {"occurrence": "OperandBench:1", "ground_to_parent": False},
+          lambda p: p.get("isGroundToParent") is False)
+    write("assembly_move", {"occurrence": "OperandBench:1", "rotate_deg": 30, "rotate_axis": "z",
+                            "dx": 100, "dy": 200}, _moved_occurrence(100.0))
+    # captured, or a later add recomputes the design and the uncaptured pose reverts.
+    write("assembly_capture_position", {"action": "capture"}, _captured)
+    read("sketch_get", {"sketch_name": "OperandS"}, _operand_frame,
+         ("dop_frame", _recall("dop_frame", lambda p: p["frame"])))
+    read("sketch_get", {"sketch_name": "OperandS", "include_entities": True}, _operand_xray,
+         ("dop_ids", _recall("dop_ids", _operand_ids)))
+    acquire("sketch_point", 10, 20, lambda: [_frame_world(10, 20)], save=_fg("dop_p1"))
+    acquire("sketch_line", 20, 0, lambda: [_frame_world(20, 0)], save=_fg("dop_line"))
+    # a curve's position is the midpoint of its ends: the arc's other end sits a quarter turn from
+    # (70, 30) either way round, so both chord midpoints are the arithmetic; its centre is not.
+    acquire("sketch_arc", 65, 30, lambda: [_frame_world(65, 35), _frame_world(65, 25)],
+            _round_shape(60, 30, 10.0))
+    acquire("sketch_circle", 30, 30, lambda: [_frame_world(30, 30)], _round_shape(30, 30, 10.0),
+            ("dop_circle", lambda p: f"{p['matches'][0]['sketch']}/{p['matches'][0]['id']}:center"))
+    acquire("sketch_spline", 90, 0, lambda: [_frame_world(90, 0)])
+    # three forms in one call, from the root: a find_geometry handle, a sketch_get handle, and the
+    # circle row's centre form, whose native point is lifted through the one placement.
+    write("model_construction", lambda c: {
+        "kind": "plane", "mode": "three_points", "name": "OperandPlane",
+        "points": [_ctx_get(c, "dop_p1", "P1 handle"), ids(c)["p2_handle"],
+                   _ctx_get(c, "dop_circle", "circle centre ref")]},
+        _operand_plane(lambda: [_frame_world(10, 20), _frame_world(40, 20), _frame_world(30, 30)]))
+    write("sketch_create", {"plane": "OperandPlane", "name": "OperandPlaneS"})
+    read("sketch_get", {"sketch_name": "OperandPlaneS"},
+         lambda p: _measured("a sketch on the operand plane frames the turned, moved XZ plane",
+                             p.get("frame"), (p.get("frame") or {}).get("space") == "world"
+                             and _on_moved_plane((p.get("frame") or {}).get("normal"),
+                                                 (p.get("frame") or {}).get("origin_mm"))))
+    write("model_construction", lambda c: {
+        "kind": "axis", "mode": "two_points", "name": "OperandAxis",
+        "points": [_ctx_get(c, "dop_p1", "P1 handle"), "OperandS/" + ids(c)["p3"]]},
+        _operand_axis(lambda: _operand_frame_read()["y_world"]))
+    write("model_construction", {"kind": "axis", "mode": "edge", "axis": "OperandS/line:0",
+                                 "name": "OperandLineAxis"},
+          lambda p: _operand_axis(lambda: _operand_frame_read()["x_world"], through=False)(p)
+          and _measured(
+              "the index-ref line went in through its one placement, ends in world",
+              p.get("operands"),
+              len(p.get("operands") or []) == 1
+              and p["operands"][0].get("assembly_path") == "OperandBench:1"
+              and _operand_ends(p["operands"][0].get("world"), _frame_world(0, 0),
+                                _frame_world(40, 0))))
+    write("model_construction", lambda c: {"kind": "point", "mode": "at_point",
+                                           "name": "OperandCentre",
+                                           "points": [_ctx_get(c, "dop_circle", "centre ref")]},
+          _operand_point(30, 30))
+    read("find_geometry", {"kind": "construction_point", "name": "OperandCentre"},
+         lambda p: _matched(1, "construction_point")(p) and _measured(
+             "the datum point read back where its operand sits", p["matches"],
+             _operand_at(p["matches"][0].get("position"), _frame_world(30, 30))))
+    # inside the placed component the SAME native points go in native, and still land in world;
+    # the plane's own read runs through the active occurrence.
+    write("design_activate_component", {"occurrence": "OperandBench:1"})
+    write("model_construction", lambda c: {"kind": "point", "mode": "at_point",
+                                           "name": "LocalCentre",
+                                           "points": ["OperandS/" + ids(c)["p2"]]},
+          _operand_point(40, 20, path=None))
+    write("model_construction", lambda c: {
+        "kind": "plane", "mode": "three_points", "name": "LocalPlane",
+        "points": ["OperandS/" + ids(c)[k] for k in ("p1", "p2", "p3")]},
+        _operand_plane(lambda: [_frame_world(10, 20), _frame_world(40, 20), _frame_world(10, 50)],
+                       path=None))
+    write("design_activate_component", {"occurrence": "root"})
+    # a split leaves the pre-split handle naming a piece that no longer sits where it was read.
+    write("sketch_edit_curve", {"action": "split", "sketch_name": "OperandS",
+                                "entity_one": "line:0", "x1": 20, "y1": 0})
+    write("model_construction", lambda c: {"kind": "axis", "axis": _ctx_get(c, "dop_line", "line")},
+          _refused("did not resolve", "find_geometry"))
+    acquire("sketch_line", 10, 0, lambda: [_frame_world(10, 0)], save=_fg("dop_piece"))
+    write("model_construction", lambda c: {"kind": "axis", "name": "OperandPieceAxis",
+                                           "axis": _ctx_get(c, "dop_piece", "first piece")},
+          _operand_axis(lambda: _operand_frame_read()["x_world"], through=False))
+    # the piece as a free turn's axis: its own points stay put, one off it swings a quarter turn.
+    write("assembly_move", lambda c: {"occurrence": "OperandBench:1", "rotate_deg": 90,
+                                      "rotate_axis": _ctx_get(c, "dop_piece", "first piece")},
+          _moved_occurrence())
+    read("find_geometry", {"target": "OperandBench", "kind": "sketch_point", "max_results": 100},
+         _swung_about_the_piece)
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "dop_story", "story"),
+                                         "expect_document": _ctx_get(c, "dop_doc", "operands")},
+              "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "dop_doc", "operands"),
+                                      "save_changes": False,
+                                      "expect_document": _ctx_get(c, "dop_story", "story")},
+              _document_closed, None)]
+    return rows
+
+
+_DATUM_OPERANDS = _datum_operand_rows()
+
+
 def _extrude_edit_landed(p):
     """Require the existing feature, requested definition and restored marker to survive an edit."""
     return _measured("existing Extrude edit", p,
@@ -2074,6 +2372,662 @@ def _extrude_edit_rows():
                                  "expect_document": _ctx_get(c, "ee_story", "story")}, _document_closed, None),
     ]
     return rows
+
+
+def _org_vertices(p):
+    """Read a complete set of finite world vertices from find_geometry."""
+    rows = p.get("matches") or []
+    if (p.get("units") != "mm" or p.get("truncated") is True
+            or p.get("match_count") != len(rows) or not rows):
+        raise AssertionError("Incomplete organization vertex census")
+    points = []
+    for row in rows:
+        xyz = row.get("position")
+        if (row.get("kind") != "vertex" or not isinstance(xyz, list) or len(xyz) != 3
+                or not all(isinstance(x, (int, float)) and not isinstance(x, bool)
+                           and math.isfinite(x) for x in xyz)):
+            raise AssertionError("Unreadable organization vertex")
+        if not any(all(abs(a-b) <= 0.00001 for a, b in zip(xyz, old)) for old in points):
+            points.append(xyz)
+    return sorted(points)
+
+
+def _org_same_vertices(key):
+    """Compare independently read world vertex sets with a saved source."""
+    def check(p):
+        before, after = _RECALL.get(key), _org_vertices(p)
+        good = (isinstance(before, list) and len(before) == len(after) and len(before) in (4, 8)
+                and all(sum(all(abs(a-b) <= 0.00001 for a, b in zip(point, candidate))
+                            for candidate in after) == 1 for point in before))
+        return _measured("organized body world vertices", {"before": before, "after": after}, good)
+    return check
+
+
+def _org_result(action, kind, source_count, destination_count):
+    """Require the writer's ownership facts and a fresh consumable reference."""
+    def check(p):
+        return _measured("body ownership result", p,
+                         p.get("action") == action and p.get("body_kind") == kind
+                         and isinstance(p.get("handle"), str) and bool(p["handle"])
+                         and p.get("source_membership_before") == source_count
+                         and p.get("source_membership_after") == (
+                             source_count if action == "copy" else source_count - 1)
+                         and p.get("destination_membership_after") == destination_count
+                         and p.get("selected_world_sample_preserved") is True
+                         and p.get("source_retained") is (action == "copy"))
+    return check
+
+
+def _org_tree_counts(expected, root_count=0, no_children_of=()):
+    """Read all occurrence body counts without trusting the ownership writer."""
+    def check(p):
+        tree = p.get("tree") or {}
+        rows = tree.get("children") or []
+        got = {}
+        complete = tree.get("truncated") is False and tree.get("children_truncated") is False
+        pending = list(rows)
+        while pending:
+            row = pending.pop()
+            complete = (complete and row.get("children_truncated") is not True
+                        and row.get("bodies_truncated") is not True)
+            got[row.get("full_path")] = row.get("body_count")
+            pending.extend(row.get("children") or [])
+        wanted = expected() if callable(expected) else expected
+        return _measured("organized body occurrence census", got,
+                         complete and len(tree.get("root_bodies") or []) == root_count
+                         and tree.get("root_bodies_truncated") is not True
+                         and all(not any(path.startswith(parent + "+") for path in got)
+                                 for parent in no_children_of)
+                         and all(got.get(name) == count for name, count in wanted.items()))
+    return check
+
+
+def _org_mesh_count(count):
+    """Require a complete scoped mesh census with the expected membership."""
+    def check(p):
+        rows = p.get("meshes") or []
+        return _measured("organized mesh membership", {"count": p.get("count"), "rows": rows},
+                         p.get("truncated") is False and p.get("count") == len(rows) == count
+                         and all(row.get("triangle_count") == 12 for row in rows))
+    return check
+
+
+def _org_mesh_shape(p):
+    """Read mesh topology and analytic box mass through an independent reader."""
+    points = _RECALL.get("org_before") or []
+    center = (p.get("bbox") or {}).get("center") or {}
+    expected_center = [sum(point[i] for point in points) / len(points) for i in range(3)] if points else []
+    return _measured("organized mesh shape", p,
+                     p.get("kind") == "mesh" and p.get("units") == "mm"
+                     and p.get("triangle_count") == 12 and p.get("is_closed") is True
+                     and p.get("is_oriented") is True
+                     and len(expected_center) == 3
+                     and all(_near(center.get(axis), value, 0.001)
+                             for axis, value in zip("xyz", expected_center))
+                     and _near(p.get("volume"), 672.0, 0.001)
+                     and _near(p.get("area"), 472.0, 0.001))
+
+
+def _org_mesh_box_shape(p, vertices_key, volume, area, label="organized mesh witness"):
+    """Measure a mesh witness against its authored box and world center."""
+    points = _RECALL.get(vertices_key) or []
+    center = (p.get("bbox") or {}).get("center") or {}
+    expected = [sum(point[i] for point in points) / len(points) for i in range(3)] if points else []
+    return _measured(label, p,
+                     p.get("kind") == "mesh" and p.get("units") == "mm"
+                     and p.get("triangle_count") == 12 and p.get("is_closed") is True
+                     and p.get("is_oriented") is True and len(expected) == 3
+                     and all(_near(center.get(axis), value, 0.001)
+                             for axis, value in zip("xyz", expected))
+                     and _near(p.get("volume"), volume, 0.001)
+                     and _near(p.get("area"), area, 0.001))
+
+
+def _org_mesh_snapshot(p):
+    """Keep the independently read mesh geometry needed across a refused write."""
+    bbox = p.get("bbox") or {}
+    return {"name": p.get("name"), "kind": p.get("kind"), "units": p.get("units"),
+            "triangle_count": p.get("triangle_count"), "is_closed": p.get("is_closed"),
+            "is_oriented": p.get("is_oriented"), "volume": p.get("volume"),
+            "area": p.get("area"), "center": bbox.get("center"),
+            "min_point": bbox.get("min_point"), "max_point": bbox.get("max_point")}
+
+
+def _org_mesh_unchanged(key):
+    """Compare a mesh's direct geometry reads around a refused write."""
+    def check(p):
+        before, after = _RECALL.get(key), _org_mesh_snapshot(p)
+        exact = ("name", "kind", "units", "triangle_count", "is_closed", "is_oriented")
+        good = (isinstance(before, dict) and all(before.get(field) == after.get(field) for field in exact)
+                and all(_num(before.get(field)) and _num(after.get(field))
+                        and _near(after[field], before[field], 0.001)
+                        for field in ("volume", "area"))
+                and all(isinstance(before.get(field), dict) and isinstance(after.get(field), dict)
+                        and all(_num(before[field].get(axis)) and _num(after[field].get(axis))
+                                and _near(after[field][axis], before[field][axis], 0.001)
+                                for axis in "xyz")
+                        for field in ("center", "min_point", "max_point")))
+        return _measured("mesh geometry after refused write", {"before": before, "after": after}, good)
+    return check
+
+
+def _org_mesh_inventory_unchanged(key):
+    """Compare complete scoped mesh membership around a refused write."""
+    def check(p):
+        before = _RECALL.get(key) or {}
+        old, now = before.get("meshes") or [], p.get("meshes") or []
+        facts = lambda row: {name: value for name, value in row.items() if name != "handle"}
+        good = (before.get("truncated") is False and p.get("truncated") is False
+                and before.get("count") == len(old) and p.get("count") == len(now)
+                and [facts(row) for row in old] == [facts(row) for row in now])
+        return _measured("mesh membership after refused write", {"before": old, "after": now}, good)
+    return check
+
+
+def _org_translated_vertices(p):
+    """Check that the returned body handle drives an independent one-millimeter move."""
+    before, after = _RECALL.get("org_before"), _org_vertices(p)
+    expected = [[x + 1, y, z] for x, y, z in before] if isinstance(before, list) else []
+    return _measured("fresh handle consumer translation", {"expected": expected, "actual": after},
+                     len(expected) == len(after) and len(expected) in (4, 8)
+                     and all(sum(all(abs(a-b) <= 0.00001 for a, b in zip(point, candidate))
+                                 for candidate in after) == 1 for point in expected))
+
+
+def _org_sphere_mass(p):
+    """Independently measure a six-millimeter sphere at its selected world position."""
+    mass = p.get("mass") or {}
+    center = mass.get("center_of_mass") or []
+    return _measured("organized sphere mass and world center", mass,
+                     mass.get("units") == "mm" and len(center) == 3
+                     and all(_near(a, b, 0.001) for a, b in zip(center, (40, 20, 10)))
+                     and _near(mass.get("volume"), 4 * math.pi * 6**3 / 3, 0.01)
+                     and _near(mass.get("area"), 4 * math.pi * 6**2, 0.01))
+
+
+def _org_same_copy_result(kind):
+    """Require a fresh same-owner copy and its one-placement context."""
+    def check(p):
+        history = p.get("timeline_health") or {}
+        witness = p.get("witness_check") or {}
+        return _measured("same-owner body copy", p,
+                         p.get("action") == "copy" and p.get("body_kind") == kind
+                         and isinstance(p.get("handle"), str) and bool(p["handle"])
+                         and p.get("full_path") == "OrgSameSource:1"
+                         and p.get("owner_component") == "OrgSameSource"
+                         and p.get("source_membership_before") == 2
+                         and p.get("source_membership_after") == 3
+                         and p.get("destination_membership_before") == 2
+                         and p.get("destination_membership_after") == 3
+                         and p.get("source_retained") is True
+                         and p.get("selected_world_sample_preserved") is True
+                         and history.get("checked") is True and history.get("healthy") is True
+                         and witness.get("unchanged") is True)
+    return check
+
+
+def _org_same_timeline(p, copied):
+    """Check a refused move leaves history or a copy adds one healthy row."""
+    before, after = _RECALL.get("org_same_history"), p.get("timeline")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return _measured("same-owner timeline", after, False)
+    old, now = before.get("timeline") or [], after.get("timeline") or []
+    complete = (before.get("truncated") is not True and after.get("truncated") is not True
+                and before.get("count") == before.get("returned") == len(old)
+                and after.get("count") == after.get("returned") == len(now))
+    fields = lambda rows: [(r.get("index"), r.get("name"), r.get("type"),
+                            r.get("component"), r.get("health")) for r in rows]
+    old_states = (before.get("summary") or {}).get("states") or {}
+    new_states = (after.get("summary") or {}).get("states") or {}
+    healthy_added = (isinstance(old_states.get("healthy"), int)
+                     and new_states.get("healthy") == old_states["healthy"] + 1
+                     and all(new_states.get(key) == value for key, value in old_states.items()
+                             if key != "healthy")
+                     and (after.get("summary") or {}).get("exceptions")
+                     == (before.get("summary") or {}).get("exceptions"))
+    good = (complete and isinstance(before.get("count"), int)
+            and isinstance(before.get("marker_position"), int)
+            and after.get("count") == before["count"] + (1 if copied else 0)
+            and after.get("marker_position") == before.get("marker_position") + (1 if copied else 0)
+            and fields(now[:len(old)]) == fields(old)
+            and (bool(now) and now[-1].get("health", "healthy") == "healthy"
+                 and healthy_added if copied else after == before))
+    return _measured("same-owner copy history" if copied else "same-owner move refusal history",
+                     {"before": before, "after": after}, good)
+
+
+def _org_same_mesh_inventory(p, count):
+    """Read the unchanged original/sibling rows and one new copied mesh."""
+    rows = p.get("meshes") or []
+    saved = _RECALL.get("org_same_mesh_rows") or []
+    names = [row.get("name") for row in rows]
+    copied = _RECALL.get("org_same_copied_name")
+    facts = lambda row: {key: value for key, value in row.items() if key != "handle"}
+    good = (p.get("truncated") is False and p.get("count") == len(rows) == count
+            and len(saved) == 2 and len(set(names)) == count
+            and all(row.get("triangle_count") == 12 for row in rows)
+            and all(sum(row.get("name") == old.get("name") and facts(row) == facts(old)
+                        for row in rows) == 1
+                    for old in saved)
+            and (count == 2 or (isinstance(copied, str)
+                                and copied not in {old.get("name") for old in saved}
+                                and names.count(copied) == 1)))
+    return _measured("same-owner mesh census", {"before": saved, "after": rows}, good)
+
+
+def _org_same_mesh_copy(p):
+    """The copied handle resolves the new named mesh with measured geometry."""
+    name = p.get("name")
+    original_names = {row.get("name") for row in _RECALL.get("org_same_mesh_rows") or []}
+    return (_org_mesh_shape(p) and _measured("copied mesh handle resolves new body", name,
+                                            isinstance(name, str) and bool(name)
+                                            and name not in original_names))
+
+
+def _org_same_mesh_sibling(p):
+    """Measure the actual sibling mesh against its authored box geometry."""
+    return _org_mesh_box_shape(p, "org_same_sibling", 546.0, 422.0,
+                               "same-owner sibling mesh geometry")
+
+
+def _body_organization_rows():
+    """Exercise ownership transfers and output-handle consumers in owned documents."""
+    rows = []
+
+    def row(name, args, check="ok", save=None, write=False):
+        def arguments(c):
+            values = args(c) if callable(args) else dict(args)
+            if name == "doc_get":
+                values["max_results"] = 1000
+            if write:
+                values["expect_document"] = _ctx_get(c, "org_doc", "owned organization document")
+            return values
+        rows.append((name, arguments, check, save))
+
+    def save(key, getter):
+        return key, _recall(key, getter)
+
+    def box(sketch, low, high, height):
+        row("sketch_create", {"plane": "xy", "name": sketch}, write=True)
+        row("sketch_add_geometry", {"sketch_name": sketch, "geometry": [
+            {"kind": "rectangle", "x1": low[0], "y1": low[1],
+             "x2": high[0], "y2": high[1]}]}, write=True)
+        row("model_extrude", {"sketch_name": sketch, "distance": height}, _extruded, write=True)
+
+    def vertices(target, check, capture=None):
+        row("find_geometry", lambda c: {"target": target(c) if callable(target) else target,
+            "kind": "vertex", "units": "mm", "max_results": 64}, check, capture)
+
+    def source_ref(c):
+        return "OrgSource:2:" + _ctx_get(c, "org_body_name", "selected body")
+
+    for kind, mode, surface in (("brep", "parametric", False), ("mesh", "parametric", False),
+                                ("brep", "direct", False), ("mesh", "direct", False),
+                                ("brep", "parametric", True)):
+        row("doc_get", {}, _home_document, save("org_home", _home_address))
+        row("doc_new", lambda c: {"expect_document": _ctx_get(c, "org_home", "home")},
+            _new_document, save("org_doc", lambda p: p["document_handle"]))
+        row("doc_get", {}, lambda p: (p.get("active") or {}).get("document_handle") == _RECALL.get("org_doc"),
+            save("org_body_name", lambda p, kind=kind: "OrgMesh" if kind == "mesh" else "Body1"))
+        # The literal root selector resets the sweep layout cursor for this owned document.
+        rows.append(("design_activate_component", {"occurrence": "root"}, "ok", None))
+        if mode == "direct":
+            row("design_set_mode", {"target": "direct", "confirm_history_loss": True},
+                lambda p: p.get("now") == "direct", write=True)
+        row("model_create_component", {"name": "OrgSource", "activate": True, "x": 40, "y": 20,
+            "z": 10, "rotate_deg": 90, "rotate_axis": "z"}, _made_component, write=True)
+        box("OrgPicked", (2, 3), (14, 11), 7)
+        box("OrgSibling", (22, 3), (28, 10), 13)
+        if surface:
+            row("find_geometry", {"target": "OrgSource:1:Body1", "kind": "planar_face",
+                "max_results": 1}, _matched(1, "planar_face"), _fg("org_face"))
+            row("surface_offset", lambda c: {"faces": [_ctx_get(c, "org_face", "face")],
+                "distance": 0, "chaining": False},
+                lambda p: p.get("offset") is True and p.get("is_solid") is False
+                and len(p.get("result_bodies") or []) == 1,
+                save("org_body_name", lambda p: p["result_bodies"][0]), write=True)
+        if kind == "mesh":
+            row("save_as_mesh", {"body": "OrgSource:1:Body1", "name": "OrgMesh", "quality": "low"},
+                lambda p: p.get("triangle_count") == 12 and p.get("name") == "OrgMesh", write=True)
+            row("save_as_mesh", {"body": "OrgSource:1:Body2", "name": "OrgSiblingMesh", "quality": "low"},
+                lambda p: p.get("triangle_count") == 12 and p.get("name") == "OrgSiblingMesh", write=True)
+        row("design_activate_component", {"occurrence": "root"}, write=True)
+        row("model_create_component", {"name": "OrgDestination", "activate": True,
+            "x": -30, "y": 70, "z": 5, "rotate_deg": -30, "rotate_axis": "z"},
+            _made_component, write=True)
+        box("OrgSentinel", (0, 0), (4, 6), 9)
+        if kind == "mesh":
+            row("save_as_mesh", {"body": "OrgDestination:1:Body1",
+                "name": "OrgSentinelMesh", "quality": "low"},
+                lambda p: p.get("triangle_count") == 12 and p.get("name") == "OrgSentinelMesh", write=True)
+        row("design_activate_component", {"occurrence": "root"}, write=True)
+        row("model_create_component", {"name": "OrgExistingChild", "parent": "OrgDestination:1"},
+            lambda p: _made_component_inactive(p)
+            and p.get("full_path") == "OrgDestination:1+OrgExistingChild:1", write=True)
+        row("design_add_instance", {"component": "OrgSource", "x": -50, "y": -20,
+            "z": 30, "rotate_deg": -45, "rotate_axis": "z"},
+            lambda p: p.get("full_path") == "OrgSource:2", write=True)
+        row("design_add_instance", {"component": "OrgDestination", "x": 70, "y": -50,
+            "z": 10, "rotate_deg": 60, "rotate_axis": "z"},
+            lambda p: p.get("full_path") == "OrgDestination:2", write=True)
+        vertices((source_ref if surface else "OrgSource:2:Body1"),
+                 lambda p, surface=surface: len(_org_vertices(p)) == (4 if surface else 8),
+                 save("org_before", _org_vertices))
+        vertices("OrgSource:2:Body2", lambda p: len(_org_vertices(p)) == 8,
+                 save("org_sibling", _org_vertices))
+        vertices("OrgDestination:2:Body1", lambda p: len(_org_vertices(p)) == 8,
+                 save("org_sentinel", _org_vertices))
+        if kind == "mesh":
+            row("model_inspect", {"target": "OrgSource:2:OrgMesh"}, _org_mesh_shape,
+                save("org_mesh_selected_before", _org_mesh_snapshot))
+            row("model_inspect", {"target": "OrgSource:2:OrgSiblingMesh"},
+                lambda p: _org_mesh_box_shape(p, "org_sibling", 546.0, 422.0),
+                save("org_mesh_sibling_before", _org_mesh_snapshot))
+            row("model_inspect", {"target": "OrgDestination:2:OrgSentinelMesh"},
+                lambda p: _org_mesh_box_shape(p, "org_sentinel", 216.0, 228.0),
+                save("org_mesh_sentinel_before", _org_mesh_snapshot))
+            row("mesh_get", {"target": "OrgSource:2"}, _org_mesh_count(2),
+                save("org_mesh_source_before", lambda p: p))
+            row("mesh_get", {"target": "OrgDestination:2"}, _org_mesh_count(1),
+                save("org_mesh_destination_before", lambda p: p))
+        row("model_edit_body", lambda c: {"action": "copy", "body": source_ref(c)},
+            _refused("destination"), write=True)
+        vertices((source_ref if surface else "OrgSource:2:Body1"), _org_same_vertices("org_before"))
+        if kind == "mesh":
+            row("model_edit_body", lambda c: {"action": "copy", "body": source_ref(c),
+                "destination": "OrgDestination:2"},
+                _refused("Mesh copy", "OrgDestination:2", "component 'OrgDestination'",
+                         "2 placements", "OrgDestination:1", "singly placed destination"), write=True)
+            row("model_inspect", {"target": "OrgSource:2:OrgMesh"},
+                _org_mesh_unchanged("org_mesh_selected_before"))
+            row("model_inspect", {"target": "OrgSource:2:OrgSiblingMesh"},
+                _org_mesh_unchanged("org_mesh_sibling_before"))
+            row("model_inspect", {"target": "OrgDestination:2:OrgSentinelMesh"},
+                _org_mesh_unchanged("org_mesh_sentinel_before"))
+            row("mesh_get", {"target": "OrgSource:2"},
+                _org_mesh_inventory_unchanged("org_mesh_source_before"))
+            row("mesh_get", {"target": "OrgDestination:2"},
+                _org_mesh_inventory_unchanged("org_mesh_destination_before"))
+            row("design_activate_component", {"occurrence": "root"}, write=True)
+            row("model_create_component", {"name": "OrgMeshLanding", "activate": True,
+                "x": 110, "y": 40, "z": 15, "rotate_deg": -15, "rotate_axis": "z"},
+                _made_component, write=True)
+            box("OrgLandingSentinel", (0, 0), (4, 6), 9)
+            row("save_as_mesh", {"body": "OrgMeshLanding:1:Body1",
+                "name": "OrgLandingSentinelMesh", "quality": "low"},
+                lambda p: p.get("triangle_count") == 12
+                and p.get("name") == "OrgLandingSentinelMesh", write=True)
+            row("design_activate_component", {"occurrence": "root"}, write=True)
+            vertices("OrgMeshLanding:1:Body1", lambda p: len(_org_vertices(p)) == 8,
+                     save("org_landing_sentinel", _org_vertices))
+            row("model_inspect", {"target": "OrgMeshLanding:1:OrgLandingSentinelMesh"},
+                lambda p: _org_mesh_box_shape(p, "org_landing_sentinel", 216.0, 228.0))
+            row("mesh_get", {"target": "OrgMeshLanding:1"}, _org_mesh_count(1))
+        landing = "OrgMeshLanding:1" if kind == "mesh" else "OrgDestination:2"
+        row("model_edit_body", lambda c, landing=landing: {"action": "copy", "body": source_ref(c),
+            "destination": landing}, _org_result("copy", kind, 3 if surface else 2, 2),
+            save("org_copy", lambda p: p), write=True)
+        if kind == "brep":
+            vertices(lambda c: _ctx_get(c, "org_copy", "copy")["handle"], _org_same_vertices("org_before"))
+            row("design_get", {"include": ["tree"], "tree_bodies": True, "tree_handles": True,
+                "max_depth": 4}, _org_tree_counts({"OrgSource:1": 3 if surface else 2,
+                                                  "OrgSource:2": 3 if surface else 2,
+                                                  "OrgDestination:1": 2, "OrgDestination:2": 2}))
+        else:
+            row("model_inspect", lambda c: {"target": _ctx_get(c, "org_copy", "copy")["handle"]},
+                _org_mesh_shape, save("org_mesh_copy_before", _org_mesh_snapshot))
+            row("mesh_get", {"target": "OrgSource:2"}, _org_mesh_count(2))
+            row("mesh_get", {"target": landing}, _org_mesh_count(2),
+                save("org_mesh_landing_after_copy", lambda p: p))
+            row("mesh_get", {"target": "OrgDestination:2"}, _org_mesh_count(1))
+        if kind == "mesh" and mode == "direct":
+            row("design_get", {"include": ["tree"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 4},
+                _org_tree_counts({"OrgMeshLanding:1": 1},
+                                 no_children_of=("OrgMeshLanding:1",)))
+            row("model_edit_body", lambda c: {"action": "create_component",
+                "body": _ctx_get(c, "org_copy", "copy")["handle"]},
+                _refused("Direct mesh create_component", "OrgMeshLanding:1",
+                         "component 'OrgMeshLanding'", "nonidentity transforms",
+                         "mesh in root", "identity-placed component"), write=True)
+            row("model_inspect", lambda c: {"target": _ctx_get(c, "org_copy", "copy")["handle"]},
+                _org_mesh_unchanged("org_mesh_copy_before"))
+            row("model_inspect", {"target": "OrgSource:2:OrgMesh"},
+                _org_mesh_unchanged("org_mesh_selected_before"))
+            row("model_inspect", {"target": "OrgSource:2:OrgSiblingMesh"},
+                _org_mesh_unchanged("org_mesh_sibling_before"))
+            row("model_inspect", {"target": "OrgDestination:2:OrgSentinelMesh"},
+                _org_mesh_unchanged("org_mesh_sentinel_before"))
+            row("model_inspect", {"target": "OrgMeshLanding:1:OrgLandingSentinelMesh"},
+                lambda p: _org_mesh_box_shape(p, "org_landing_sentinel", 216.0, 228.0))
+            row("mesh_get", {"target": "OrgSource:2"},
+                _org_mesh_inventory_unchanged("org_mesh_source_before"))
+            row("mesh_get", {"target": "OrgDestination:2"},
+                _org_mesh_inventory_unchanged("org_mesh_destination_before"))
+            row("mesh_get", {"target": landing},
+                _org_mesh_inventory_unchanged("org_mesh_landing_after_copy"))
+            row("design_get", {"include": ["tree"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 4},
+                _org_tree_counts({"OrgMeshLanding:1": 1},
+                                 no_children_of=("OrgMeshLanding:1",)))
+            row("model_edit_body", lambda c: {"action": "move",
+                "body": _ctx_get(c, "org_copy", "copy")["handle"], "destination": "root"},
+                _org_result("move", "mesh", 2, 1), save("org_first_root", lambda p: p), write=True)
+            row("model_inspect", lambda c: {"target": _ctx_get(c, "org_first_root", "root mesh")["handle"]},
+                _org_mesh_shape)
+            row("mesh_get", {"target": landing}, _org_mesh_count(1))
+            row("mesh_get", {}, _org_mesh_count(5))
+            row("model_edit_body", lambda c: {"action": "create_component",
+                "body": _ctx_get(c, "org_first_root", "root mesh")["handle"]},
+                _org_result("create_component", "mesh", 1, 1),
+                save("org_first_child", lambda p: p), write=True)
+            row("model_inspect", lambda c: {"target": _ctx_get(c, "org_first_child", "root child")["handle"]},
+                _org_mesh_shape)
+            row("mesh_get", lambda c: {"target": _ctx_get(c, "org_first_child", "root child")["full_path"]},
+                _org_mesh_count(1))
+            row("model_edit_body", lambda c: {"action": "create_component",
+                "body": _ctx_get(c, "org_first_child", "root child")["handle"]},
+                _org_result("create_component", "mesh", 1, 1),
+                save("org_child", lambda p: p), write=True)
+        else:
+            row("model_edit_body", lambda c: {"action": "create_component",
+                "body": _ctx_get(c, "org_copy", "copy")["handle"]},
+                _org_result("create_component", kind, 2, 1), save("org_child", lambda p: p), write=True)
+        row("design_get", {"include": ["tree"], "tree_bodies": True, "tree_handles": True, "max_depth": 4},
+            _org_tree_counts({"OrgDestination:1+OrgExistingChild:1": 0,
+                              "OrgDestination:2+OrgExistingChild:1": 0}))
+        if kind == "brep":
+            vertices(lambda c: _ctx_get(c, "org_child", "child")["handle"], _org_same_vertices("org_before"))
+            row("design_get", {"include": ["tree"], "tree_bodies": True, "tree_handles": True,
+                "max_depth": 4}, _org_tree_counts(lambda surface=surface: {
+                    "OrgSource:1": 3 if surface else 2, "OrgSource:2": 3 if surface else 2,
+                    "OrgDestination:1": 1, "OrgDestination:2": 1,
+                    _RECALL["org_child"]["full_path"]: 1}))
+        else:
+            row("model_inspect", lambda c: {"target": _ctx_get(c, "org_child", "child")["handle"]},
+                _org_mesh_shape)
+            row("mesh_get", lambda c: {"target": _ctx_get(c, "org_child", "child")["full_path"]},
+                _org_mesh_count(1))
+            row("mesh_get", {"target": landing}, _org_mesh_count(1))
+            row("mesh_get", {"target": "OrgDestination:2"}, _org_mesh_count(1))
+        row("model_edit_body", lambda c: {"action": "move",
+            "body": _ctx_get(c, "org_child", "new child")["handle"], "destination": "root"},
+            _org_result("move", kind, 1, 1), save("org_root", lambda p: p), write=True)
+        if kind == "brep":
+            vertices(lambda c: _ctx_get(c, "org_root", "root body")["handle"], _org_same_vertices("org_before"))
+            row("design_get", {"include": ["tree"], "tree_bodies": True, "tree_handles": True,
+                "max_depth": 4}, _org_tree_counts(lambda surface=surface: {
+                    "OrgSource:1": 3 if surface else 2, "OrgSource:2": 3 if surface else 2,
+                    "OrgDestination:1": 1, "OrgDestination:2": 1,
+                    _RECALL["org_child"]["full_path"]: 0}, root_count=1))
+            row("model_move", lambda c: {"bodies": [_ctx_get(c, "org_root", "root body")["handle"]],
+                "dx": 1, "units": "mm"}, _moved, write=True)
+            vertices(lambda c: _ctx_get(c, "org_root", "root body")["handle"], _org_translated_vertices)
+        else:
+            row("model_inspect", lambda c: {"target": _ctx_get(c, "org_root", "root mesh")["handle"]},
+                _org_mesh_shape)
+            row("mesh_get", lambda c: {"target": _ctx_get(c, "org_child", "child")["full_path"]},
+                _org_mesh_count(0))
+            row("mesh_get", {}, _org_mesh_count(5))
+            row("mesh_to_brep", lambda c: {"mesh": _ctx_get(c, "org_root", "root mesh")["handle"],
+                "method": "faceted"}, lambda p: p.get("converted") is True
+                and len(p.get("brep_bodies") or []) == 1,
+                save("org_converted", lambda p: p["brep_bodies"][0]["handle"]), write=True)
+            vertices(lambda c: _ctx_get(c, "org_converted", "converted body"), _org_same_vertices("org_before"))
+        vertices("OrgSource:2:Body2", _org_same_vertices("org_sibling"))
+        vertices("OrgDestination:2:Body1", _org_same_vertices("org_sentinel"))
+        if kind == "mesh":
+            row("model_inspect", {"target": "OrgSource:2:OrgMesh"},
+                _org_mesh_unchanged("org_mesh_selected_before"))
+            row("model_inspect", {"target": "OrgSource:2:OrgSiblingMesh"},
+                _org_mesh_unchanged("org_mesh_sibling_before"))
+            row("model_inspect", {"target": "OrgDestination:2:OrgSentinelMesh"},
+                _org_mesh_unchanged("org_mesh_sentinel_before"))
+            row("model_inspect", {"target": "OrgMeshLanding:1:OrgLandingSentinelMesh"},
+                lambda p: _org_mesh_box_shape(p, "org_landing_sentinel", 216.0, 228.0))
+        row("doc_close", lambda c: {"name": _ctx_get(c, "org_doc", "owned document"),
+            "save_changes": False}, _document_closed, write=True)
+        row("doc_activate", lambda c: {"name": _ctx_get(c, "org_home", "home")},
+            lambda p: p.get("activated") is True)
+        row("doc_get", {}, lambda p: (p.get("active") or {}).get("document_handle") == _RECALL.get("org_home"))
+
+    for kind in ("brep", "mesh"):
+        row("doc_get", {}, _home_document, save("org_home", _home_address))
+        row("doc_new", lambda c: {"expect_document": _ctx_get(c, "org_home", "home")},
+            _new_document, save("org_doc", lambda p: p["document_handle"]))
+        rows.append(("design_activate_component", {"occurrence": "root"}, "ok", None))
+        row("model_create_component", {"name": "OrgSameSource", "activate": True,
+            "x": 40, "y": 20, "z": 10, "rotate_deg": 90, "rotate_axis": "z"},
+            _made_component, write=True)
+        box("OrgSamePicked", (2, 3), (14, 11), 7)
+        box("OrgSameSibling", (22, 3), (28, 10), 13)
+        if kind == "mesh":
+            row("save_as_mesh", {"body": "OrgSameSource:1:Body1", "name": "OrgSameMesh",
+                "quality": "low"}, lambda p: p.get("triangle_count") == 12
+                and p.get("name") == "OrgSameMesh", write=True)
+            row("save_as_mesh", {"body": "OrgSameSource:1:Body2", "name": "OrgSameSiblingMesh",
+                "quality": "low"}, lambda p: p.get("triangle_count") == 12
+                and p.get("name") == "OrgSameSiblingMesh", write=True)
+        row("design_activate_component", {"occurrence": "root"}, write=True)
+        vertices("OrgSameSource:1:Body1", lambda p: len(_org_vertices(p)) == 8,
+                 save("org_before", _org_vertices))
+        vertices("OrgSameSource:1:Body2", lambda p: len(_org_vertices(p)) == 8,
+                 save("org_same_sibling", _org_vertices))
+        same_ref = "OrgSameSource:1:OrgSameMesh" if kind == "mesh" else "OrgSameSource:1:Body1"
+        if kind == "mesh":
+            row("mesh_get", {"target": "OrgSameSource:1"}, _org_mesh_count(2),
+                save("org_same_mesh_rows", lambda p: p["meshes"]))
+            row("model_inspect", {"target": same_ref}, _org_mesh_shape)
+            row("model_inspect", {"target": "OrgSameSource:1:OrgSameSiblingMesh"},
+                _org_same_mesh_sibling)
+        else:
+            row("design_get", {"include": ["tree"], "tree_bodies": True, "tree_handles": True,
+                "max_depth": 3}, _org_tree_counts({"OrgSameSource:1": 2}))
+        row("design_get", {"include": ["timeline"], "max_results": 1000}, "ok",
+            save("org_same_history", lambda p: p["timeline"]))
+        row("model_edit_body", {"action": "move", "body": same_ref,
+            "destination": "OrgSameSource:1"},
+            _refused("Cannot copy the body" if kind == "brep" else "bodyPaths.size() == 1"),
+            write=True)
+        row("design_get", {"include": ["timeline"], "max_results": 1000},
+            lambda p: _org_same_timeline(p, False))
+        if kind == "mesh":
+            row("mesh_get", {"target": "OrgSameSource:1"},
+                lambda p: _org_same_mesh_inventory(p, 2))
+            row("model_inspect", {"target": same_ref}, _org_mesh_shape)
+            row("model_inspect", {"target": "OrgSameSource:1:OrgSameSiblingMesh"},
+                _org_same_mesh_sibling)
+        else:
+            vertices(same_ref, _org_same_vertices("org_before"))
+            row("design_get", {"include": ["tree"], "tree_bodies": True, "tree_handles": True,
+                "max_depth": 3}, _org_tree_counts({"OrgSameSource:1": 2}))
+        vertices("OrgSameSource:1:Body2", _org_same_vertices("org_same_sibling"))
+        row("model_edit_body", {"action": "copy", "body": same_ref,
+            "destination": "OrgSameSource:1"}, _org_same_copy_result(kind),
+            save("org_same_copy", lambda p: p), write=True)
+        row("design_get", {"include": ["timeline"], "max_results": 1000},
+            lambda p: _org_same_timeline(p, True))
+        if kind == "mesh":
+            row("model_inspect", lambda c: {"target": _ctx_get(c, "org_same_copy", "copied mesh")["handle"]},
+                _org_same_mesh_copy, save("org_same_copied_name", lambda p: p["name"]))
+            row("mesh_get", {"target": "OrgSameSource:1"},
+                lambda p: _org_same_mesh_inventory(p, 3))
+            row("model_inspect", {"target": same_ref}, _org_mesh_shape)
+            row("model_inspect", {"target": "OrgSameSource:1:OrgSameSiblingMesh"},
+                _org_same_mesh_sibling)
+        else:
+            vertices(lambda c: _ctx_get(c, "org_same_copy", "copied body")["handle"],
+                     _org_same_vertices("org_before"))
+            row("design_get", {"include": ["tree"], "tree_bodies": True, "tree_handles": True,
+                "max_depth": 3}, _org_tree_counts({"OrgSameSource:1": 3}))
+            row("model_move", lambda c: {"bodies": [_ctx_get(c, "org_same_copy", "copied body")["handle"]],
+                "dx": 1, "units": "mm"}, _moved, write=True)
+            vertices(lambda c: _ctx_get(c, "org_same_copy", "copied body")["handle"],
+                     _org_translated_vertices)
+            vertices(same_ref, _org_same_vertices("org_before"))
+        vertices("OrgSameSource:1:Body2", _org_same_vertices("org_same_sibling"))
+        row("doc_close", lambda c: {"name": _ctx_get(c, "org_doc", "same-owner document"),
+            "save_changes": False}, _document_closed, write=True)
+        row("doc_activate", lambda c: {"name": _ctx_get(c, "org_home", "home")},
+            lambda p: p.get("activated") is True)
+        row("doc_get", {}, lambda p: (p.get("active") or {}).get("document_handle") == _RECALL.get("org_home"))
+
+    row("doc_get", {}, _home_document, save("org_home", _home_address))
+    row("doc_new", lambda c: {"expect_document": _ctx_get(c, "org_home", "home")},
+        _new_document, save("org_doc", lambda p: p["document_handle"]))
+    rows.append(("design_activate_component", {"occurrence": "root"}, "ok", None))
+    row("model_create_component", {"name": "OrgSphere", "activate": True,
+        "x": 40, "y": 20, "z": 10, "rotate_deg": 90, "rotate_axis": "z"},
+        _made_component, write=True)
+    row("sketch_create", {"plane": "xy", "name": "OrgSphereProfile"}, write=True)
+    row("sketch_add_geometry", {"sketch_name": "OrgSphereProfile", "geometry": [
+        {"kind": "arc", "cx": 0, "cy": 0, "x1": 0, "y1": 6, "sweep_deg": 180},
+        {"kind": "line", "x1": 0, "y1": -6, "x2": 0, "y2": 6}]}, write=True)
+    row("model_revolve", {"sketch_name": "OrgSphereProfile", "axis": "y", "angle_deg": 360},
+        lambda p: p.get("revolved") is True and len(p.get("result_bodies") or []) == 1,
+        save("org_sphere_body", lambda p: "OrgSphere:1:" + p["result_bodies"][0]), write=True)
+    row("design_activate_component", {"occurrence": "root"}, write=True)
+    row("model_create_component", {"name": "OrgSphereDestination", "activate": True,
+        "x": -30, "y": 70, "z": 5, "rotate_deg": -30, "rotate_axis": "z"},
+        _made_component, write=True)
+    row("model_inspect", lambda c: {"target": _ctx_get(c, "org_sphere_body", "sphere"),
+        "include": ["mass"], "units": "mm", "accuracy": "very_high"}, _org_sphere_mass)
+    row("find_geometry", lambda c: {"target": _ctx_get(c, "org_sphere_body", "sphere"),
+        "kind": "vertex", "units": "mm", "max_results": 64},
+        lambda p: p.get("truncated") is not True
+        and p.get("match_count") == len(p.get("matches") or []),
+        save("org_sphere_vertex_count", lambda p: p["match_count"]))
+    for action, input_key, output_key, destination in (
+            ("copy", "org_sphere_body", "org_sphere_copy", "OrgSphereDestination:1"),
+            ("create_component", "org_sphere_copy", "org_sphere_child", None),
+            ("move", "org_sphere_child", "org_sphere_root", "root")):
+        def sphere_args(c, action=action, input_key=input_key, destination=destination):
+            value = _ctx_get(c, input_key, "sphere target")
+            args = {"action": action, "body": value if isinstance(value, str) else value["handle"]}
+            if destination is not None:
+                args["destination"] = destination
+            return args
+        row("model_edit_body", sphere_args, _org_result(action, "brep", 1, 1),
+            save(output_key, lambda p: p), write=True)
+        row("model_inspect", lambda c, key=output_key: {
+            "target": _ctx_get(c, key, "organized sphere")["handle"],
+            "include": ["mass"], "units": "mm", "accuracy": "very_high"}, _org_sphere_mass)
+        row("find_geometry", lambda c, key=output_key: {
+            "target": _ctx_get(c, key, "organized sphere")["handle"],
+            "kind": "sphere_face", "units": "mm", "max_results": 8},
+            _matched(1, "sphere_face"))
+    row("design_get", {"include": ["tree"], "tree_bodies": True, "tree_handles": True, "max_depth": 4},
+        _org_tree_counts(lambda: {"OrgSphere:1": 1, "OrgSphereDestination:1": 0,
+                                 _RECALL["org_sphere_child"]["full_path"]: 0}, root_count=1))
+    row("doc_close", lambda c: {"name": _ctx_get(c, "org_doc", "sphere document"),
+        "save_changes": False}, _document_closed, write=True)
+    row("doc_activate", lambda c: {"name": _ctx_get(c, "org_home", "home")},
+        lambda p: p.get("activated") is True)
+    row("doc_get", {}, lambda p: (p.get("active") or {}).get("document_handle") == _RECALL.get("org_home"))
+    return rows
+
+
+_BODY_ORGANIZATION = _body_organization_rows()
 
 
 _EXTRUDE_EDITS = _extrude_edit_rows()
@@ -3092,6 +4046,7 @@ _SOLIDS = [
 
 _DETAILS = [
     *_DEFINITION_READS,
+    *_DATUM_OPERANDS,
     # THE HOLES AS THE MACHINE SEES THEM, read FIRST: the chamfers below break two of these rims,
     # and a broken rim is a hole of a different shape, so the recognizer's grouping is read while
     # the drilled pattern is still as model_hole left it. The saved handles drive the CAM act's
@@ -3187,6 +4142,7 @@ _DETAILS = [
                 and abs(abs(p["max_point"]["z"]) - abs(p["min_point"]["z"])) > 3), None),
     # back to the shell cameo's component, so every step after this lands where it did before.
     *_EXTRUDE_EDITS,
+    *_BODY_ORGANIZATION,
     ("design_activate_component", {"occurrence": "ShellCap:1"}, "ok", None),
     # THE WartPlane ROW carries the offset_from predicate - the sweep's only offset-plane call, so
     # it is where 'offset_from' gets read once against a real resolved origin plane: the payload

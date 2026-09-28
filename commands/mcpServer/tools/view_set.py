@@ -708,8 +708,20 @@ def _partial_suffix(done):
             + (f" (+{len(names) - 10} more)" if len(names) > 10 else "") + ".")
 
 
+def _with_modified(out, before):
+    """ok(out) with the after-read of the modified flag, marking a False -> True flip in this call."""
+    after = _view_common.document_modified()
+    out["document_modified"] = after
+    if before is False and after is True:
+        out["modified_by_this_call"] = True
+        out["note"] = (out.get("note", "") + " The document read unmodified before this call "
+                       "and reads modified now; doc_save clears the flag.").strip()
+    return ok(out)
+
+
 def _do_visibility(design, action, target):
     if action == "clear_isolation":
+        before = _view_common.document_modified()
         cleared = 0
         stuck = []
         unconfirmed = []
@@ -748,7 +760,7 @@ def _do_visibility(design, action, target):
                      "so the clear is unconfirmed there - see 'not_confirmed'.")
         if note:
             out["note"] = note.strip()
-        return ok(out)
+        return _with_modified(out, before)
     if not target:
         return error(f"Provide 'target' for {action}.")
     if action == "isolate":
@@ -769,6 +781,7 @@ def _do_visibility(design, action, target):
         pairs, target_err = _VIS_TARGET.resolve(target)
         if target_err:
             return error(target_err)
+    before = _view_common.document_modified()
     affected = []
     ancestors_lit = []
     body_states = []
@@ -839,7 +852,7 @@ def _do_visibility(design, action, target):
                             "is hidden; show that occurrence too.")
     if ancestors_lit:
         out["ancestors_also_shown"] = sorted(set(a for a in ancestors_lit if a))
-    return ok(out)
+    return _with_modified(out, before)
 
 
 def _do_style(style):
@@ -928,6 +941,7 @@ def _do_restore(design):
     "(Snapshots are held in memory for this session only - reloading the add-in "
     "clears them. To recover a clean state without a snapshot, use "
     "clear_isolation then show the components you want.)")
+    before = _view_common.document_modified()
     vp = app.activeViewport
     restored_occ = 0
     missing = 0
@@ -1018,7 +1032,7 @@ def _do_restore(design):
                        + ". The snapshot was KEPT so view_set(restore) can be retried.")
     if smooth_error:
         out["note"] += f" isSmoothTransition could not be set: {smooth_error}."
-    return ok(out)
+    return _with_modified(out, before)
 
 
 def _named_views(design):

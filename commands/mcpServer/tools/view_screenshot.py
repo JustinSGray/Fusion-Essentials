@@ -41,8 +41,7 @@ _FIT_TO = _inputs.TargetRef("fit_to", allow=("occurrence", "body", "mesh"),
         description="Isolates it for the shot (a body: its siblings hidden), then restores the view.")
 
 
-# The frame-on-one-occurrence isolate is shared with view_set(orient, focus=) - ONE visibility walk
-# and ONE restore contract, so a fix to either reaches both.
+# The ancestor/descendant path test the fit_to isolate walk in _view_common runs.
 _keep_visible = _view_common.keep_visible
 
 
@@ -54,9 +53,7 @@ def _isolate_for_fit(name):
 
 
 def _restore_message(restore_fit_to):
-    """The fit_to restore, plus the sentence naming any bulb it could not put back (None when
-    everything came back). A restore that did not take leaves the document changed by a READ tool,
-    so EVERY exit that reaches the isolate runs this, not just the successful capture."""
+    """The fit_to restore, plus the sentences naming what it left changed (None when nothing)."""
     return _view_common.restore_message(restore_fit_to, "fit_to", "for this shot")
 
 
@@ -137,8 +134,8 @@ def handler(view: str = "current", width: int = _WIDTH_DEFAULT, height: int = _H
         return error(perr)
 
     # 'fit_to' frames the camera on ONE subject: the occurrence is isolated (a body's siblings are
-    # hidden) so fit() tightens onto it, and the restore puts the view back so a read tool leaves
-    # no permanent change.
+    # hidden) so fit() tightens onto it; the restore puts the visibility back, and a modified flag
+    # the isolate set stays set.
     saved_camera = None
     restore_fit_to = None
     want_fit = (fit_to or "").strip()

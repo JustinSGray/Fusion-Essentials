@@ -17,7 +17,8 @@ class _FakeTriangleMesh:
 
     The three flat arrays a tessellation hands to addByTriangleMeshData are set only when given, so
     a display mesh whose geometry does not read stays a testable state."""
-    def __init__(self, tri, nodes, coords=None, node_indices=None, normals=None):
+    def __init__(self, tri, nodes, coords=None, node_indices=None, normals=None,
+                 points=None):
         self.triangleCount = tri
         self.nodeCount = nodes
         if coords is not None:
@@ -26,6 +27,8 @@ class _FakeTriangleMesh:
             self.nodeIndices = list(node_indices)
         if normals is not None:
             self.normalVectorsAsDouble = list(normals)
+        if points is not None:
+            self.nodeCoordinates = list(points)
 
 
 @fusion_fake(factory_for="_NamedCollection")
@@ -86,7 +89,8 @@ class MeshBody:
     def __init__(self, name="Scan1", tri=12, nodes=8, is_closed=True, volume=1.0, coords=(),
                  normals=(), token=None, parent=None, counts_readable=True, volume_readable=True,
                  closed_readable=True, mesh_readable=True, lifts=True, area=None, bbox=None,
-                 face_groups=(0,), polygons=None, mesh_nodes=None, deletes=True):
+                 face_groups=(0,), polygons=None, mesh_nodes=None, deletes=True,
+                 display_points=None, display_indices=None):
         self.name = name
         self.isValid = True
         self._polygons = polygons
@@ -103,8 +107,10 @@ class MeshBody:
         self.assemblyContext = None
         self.nativeObject = None
         self._lifts = lifts
+        self._organization = None
         self._dead = False
-        self._display = _FakeTriangleMesh(tri, nodes)
+        self._display = _FakeTriangleMesh(tri, nodes, node_indices=display_indices,
+                                          points=display_points)
         self._is_closed = is_closed
         self._volume_cm3 = volume
         self._coords = list(coords)
@@ -166,6 +172,24 @@ class MeshBody:
         meshbody-assembly-context-proxy / meshbody-proxy-token-differs), or None when `lifts`
         is off."""
         return _MeshProxy(self, occurrence) if self._lifts else None
+
+    def copyToComponent(self, target):
+        """Delegate the scene's modeled copy."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("copy", target)
+
+    def moveToComponent(self, target):
+        """Delegate the scene's modeled move."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("move", target)
+
+    def createComponent(self):
+        """Delegate the scene's modeled component creation."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("create_component", None)
 
     def deleteMe(self):
         """Drop this body from its parent component's meshBodies, answering the bool live returns.

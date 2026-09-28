@@ -8,6 +8,7 @@ Pinned: handle resolution + the require-predicate enforcement, the units/Distanc
 schema/contract auto-generation, and resolve_inputs end-to-end.
 """
 
+import math
 import re
 import types
 
@@ -15,10 +16,10 @@ import pytest
 
 from conftest import (load_tool, make_design, make_occurrence, _make_object_collection,
                       _MeshBodies, _NamedCollection, BRepBody, BRepEdge, BRepFace, Circle3D,
-                      Cylinder, FakeApplication, FakeBaseFeature, FakeOccurrence, FakePoint,
-                      FakeTimeline, FakeTimelineObject, FakeUserInterface, FakeVector3D, Line3D, MakeComp,
-                      MakeDesign, MeshBody, Plane, Profile, Sketch, body_proxy, entity_proxy,
-                      make_source_document)
+                      Cylinder, FakeApplication, FakeBaseFeature, FakeMatrix3D, FakeOccurrence,
+                      FakePoint, FakeSketchPoint, FakeTimeline, FakeTimelineObject,
+                      FakeUserInterface, FakeVector3D, Line3D, MakeComp, MakeDesign, MeshBody, Plane,
+                      Profile, Sketch, SketchCurves, body_proxy, entity_proxy, make_source_document)
 
 inp = load_tool("_inputs")
 
@@ -185,9 +186,17 @@ class TestSelfHealingHandle:
 
     def test_split_handle_parses_revision_and_legacy(self):
         tok, loc = inp._split_handle(f"T{inp._HANDLE_SEP}cylinder_face:1.0,2.0,3.0;rv=REV7")
-        assert tok == "T" and loc == ("cylinder_face", 1.0, 2.0, 3.0, "REV7")
+        assert tok == "T" and loc == ("cylinder_face", 1.0, 2.0, 3.0, "REV7", None)
         tok, loc = inp._split_handle(f"T{inp._HANDLE_SEP}cylinder_face:1.0,2.0,3.0")
-        assert tok == "T" and loc == ("cylinder_face", 1.0, 2.0, 3.0, None)
+        assert tok == "T" and loc == ("cylinder_face", 1.0, 2.0, 3.0, None, None)
+
+    def test_an_occurrence_path_round_trips_through_the_handle(self):
+        # A path carries ':' and '+', and the handle keeps it whole beside the revision.
+        ent = type("E", (), {"entityToken": "TOK",
+                             "body": type("B", (), {"revisionId": "REV7"})()})()
+        h = inp.make_handle(ent, "sketch_point", (1.0, 2.0, 3.0), "Asm:1+Probe B:2")
+        assert inp._split_handle(h) == ("TOK", ("sketch_point", 1.0, 2.0, 3.0, "REV7",
+                                                "Asm:1+Probe B:2"))
 
     def test_locator_recovery_with_matching_revision_succeeds(self):
         # token dead, geometry AND its body revision unchanged -> benign token rotation, recover.
@@ -5557,3 +5566,282 @@ class TestSheetMetalRuleRefOrdinals:
         got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)#3")
         assert got is None
         assert "has 2 rule(s)" in err
+
+
+# ── PointRef, the AxisRef sketch-line form, and where an operand sits in the WORLD ───────────────
+
+class SketchLine:
+    """A sketch line - no live shape dump, so a local double: two end SketchPoints in one sketch."""
+    def __init__(self, start, end, sketch, token=None):
+        self.startSketchPoint, self.endSketchPoint, self.parentSketch = start, end, sketch
+        self.assemblyContext = None
+        if token:
+            self.entityToken = token
+
+
+class SketchCircle:
+    """A sketch circle - no live shape dump, so a local double: its centre point and radius."""
+    def __init__(self, centre, sketch, radius=1.0):
+        self.centerSketchPoint, self.parentSketch, self.radius = centre, sketch, radius
+
+
+class ConstructionPoint:
+    """A construction point - no live shape dump, so a local double: name, owner, local point."""
+    def __init__(self, name, component, geometry, token=None):
+        self.name, self.component, self.geometry = name, component, geometry
+        self.assemblyContext = None
+        if token:
+            self.entityToken = token
+
+
+# Where the Bench places a sketch point: the sketch sits 5 cm up its plane, and the occurrence
+# turns the component 30 deg about Z and moves it (10, 20, 0) cm.
+_SKETCH_LIFT = (0.0, 0.0, 5.0)
+
+
+def _bench_world(x, y):
+    """The WORLD (x, y, z) cm of Bench sketch point (x, y)."""
+    c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
+    return (x * c - y * s + 10.0, x * s + y * c + 20.0, _SKETCH_LIFT[2])
+
+
+def _proxy_point(native, occ, token):
+    """`native` read through `occ`: its proxy, which createForAssemblyContext(occ) answers."""
+    proxy = FakeSketchPoint(native.geometry, parent_sketch=native.parentSketch,
+                            entity_token=token, assembly_context=occ, native_object=native)
+    native.createForAssemblyContext = lambda _occ: proxy
+    return proxy
+
+
+@pytest.fixture
+def operand_env(monkeypatch):
+    """Bench placed once as Bench:1 (sketch OpS: 3 points, line:0, circle:0) plus root sketch RootS."""
+    import adsk.fusion
+    for name, cls in (("SketchPoint", FakeSketchPoint), ("SketchLine", SketchLine),
+                      ("ConstructionPoint", ConstructionPoint), ("BRepFace", BRepFace),
+                      ("BRepEdge", BRepEdge), ("BRepVertex", type("V", (), {})),
+                      ("ConstructionAxis", type("CA", (), {}))):
+        monkeypatch.setattr(adsk.fusion, name, cls, raising=False)
+
+    def build(active="root", extra=(), tokens=None):
+        root = MakeComp(name="Root", entity_token="TOKEN:Root")
+        bench = MakeComp(name="Bench", entity_token="TOKEN:Bench")
+        occ = make_occurrence("Bench:1", component=bench,
+                              transform2=FakeMatrix3D(deg=30.0, t=(10.0, 20.0, 0.0)))
+        root.allOccurrences = [occ]
+        sk = Sketch("OpS", parent_component=bench, transform=FakeMatrix3D(t=_SKETCH_LIFT))
+        pts = [FakeSketchPoint(FakePoint(x, y, 0.0), parent_sketch=sk, entity_token=f"P{i}")
+               for i, (x, y) in enumerate(((0.0, 0.0), (1.0, 2.0), (4.0, 0.0)))]
+        line = SketchLine(pts[0], pts[2], sk, token="L0")
+        centre = FakeSketchPoint(FakePoint(3.0, 3.0, 0.0), parent_sketch=sk, entity_token="C0")
+        sk.sketchPoints = _NamedCollection(pts)
+        sk.sketchCurves = SketchCurves(lines=[line], circles=[SketchCircle(centre, sk)])
+        bench.sketches = _NamedCollection([sk])
+        root_sk = Sketch("RootS", parent_component=root, transform=FakeMatrix3D())
+        twins = [FakeSketchPoint(FakePoint(-5.0, -5.0, 0.0), parent_sketch=root_sk,
+                                 entity_token=f"R{i}") for i in range(2)]
+        root_sk.sketchPoints = _NamedCollection(twins)
+        root.sketches = _NamedCollection([root_sk])
+        comps = {"root": root, "bench": bench, **{c.name: c for c in extra}}
+        design = MakeDesign(comp=root, tokens=tokens or {},
+                            all_components=[root, bench, *extra])
+        design.activeComponent = comps[active]
+        monkeypatch.setattr(inp._common, "design", lambda: design)
+        monkeypatch.setattr(inp._common, "target_component", lambda _d=None: design.activeComponent)
+        return types.SimpleNamespace(design=design, root=root, bench=bench, occ=occ, sketch=sk,
+                                     pts=pts, line=line, centre=centre, twins=twins)
+    return build
+
+
+class TestPointRefForms:
+    def test_an_index_ref_resolves_the_sketch_point_itself(self, operand_env):
+        env = operand_env()
+        assert inp.PointRef("p").resolve("OpS/point:1") == (env.pts[1], None)
+
+    def test_a_circle_centre_ref_resolves_to_its_centre_sketch_point(self, operand_env):
+        env = operand_env()
+        assert inp.PointRef("p").resolve("OpS/circle:0:center") == (env.centre, None)
+
+    def test_an_index_past_the_collection_is_refused_with_the_range(self, operand_env):
+        operand_env()
+        val, err = inp.PointRef("p").resolve("OpS/point:3")
+        assert val is None and "point:0 to point:2" in err and "'OpS/point:3'" in err
+
+    def test_a_curve_where_a_point_is_needed_is_refused_with_its_read_type(self, operand_env):
+        operand_env()
+        val, err = inp.PointRef("p").resolve("OpS/line:0")
+        assert val is None and "SketchLine" in err and "'<sketch>/point:<i>'" in err
+
+    def test_a_sketch_name_two_components_carry_is_refused_pointing_at_the_handle(self,
+                                                                               operand_env):
+        other = MakeComp(name="Other", entity_token="TOKEN:Other")
+        other.sketches = _NamedCollection([Sketch("OpS", parent_component=other)])
+        operand_env(extra=(other,))
+        val, err = inp.PointRef("p").resolve("OpS/point:1")
+        assert val is None and "in Bench" in err and "in Other" in err and "'handle'" in err
+        assert "'component'" not in err       # no scope input exists on the consumer to name
+
+    def test_the_active_components_construction_point_name_resolves(self, operand_env):
+        # Every component default-names its first datum 'Point1'; the active one's answers.
+        root_pt = ConstructionPoint("Point1", None, FakePoint())
+        bench_pt = ConstructionPoint("Point1", None, FakePoint())
+        env = operand_env(active="bench")
+        env.root.constructionPoints = _NamedCollection([root_pt])
+        env.bench.constructionPoints = _NamedCollection([bench_pt])
+        assert inp.PointRef("p").resolve("point1") == (bench_pt, None)
+        env.design.activeComponent = env.root
+        assert inp.PointRef("p").resolve("Point1") == (root_pt, None)
+
+    def test_a_handle_naming_a_face_is_refused_with_its_type(self, operand_env):
+        operand_env(tokens={"F": BRepFace(Plane(FakeVector3D(0, 0, 1)))})
+        val, err = inp.PointRef("p").resolve("F")
+        assert val is None and "names a BRepFace, not a point" in err
+
+    def test_a_list_refusal_names_the_entry(self, operand_env):
+        operand_env()
+        val, err = inp.PointRefList("points").resolve(["OpS/point:1", "OpS/point:7"])
+        assert val is None and err.startswith("'points'[1]:")
+
+
+class TestPlacedOperands:
+    def test_a_handle_minted_through_an_occurrence_is_its_proxy_in_world_cm(self, operand_env):
+        env = operand_env()
+        proxy = _proxy_point(env.pts[1], env.occ, "P1@Bench:1")
+        handle = inp.placed_handle(env.pts[1], "sketch_point", env.occ)
+        token, loc = inp._split_handle(handle)
+        assert token == "P1@Bench:1" and loc[0] == "sketch_point" and loc[5] == "Bench:1"
+        want = _bench_world(1.0, 2.0)
+        assert all(abs(a - round(b, 6)) < 1e-9 for a, b in zip(loc[1:4], want))
+        assert inp.placed_point_cm(proxy) == pytest.approx(want, abs=1e-12)
+
+    def test_a_native_reads_through_its_placement_not_its_own_component_space(self, operand_env):
+        # A native point's own reads stay in its component's space; the one placement lifts it.
+        env = operand_env()
+        env.pts[1].worldGeometry = FakePoint(1.0, 2.0, 5.0)
+        assert inp.placed_point_cm(env.pts[1]) == pytest.approx(_bench_world(1.0, 2.0), abs=1e-12)
+
+    def test_a_native_of_a_placed_component_goes_in_as_its_proxy(self, operand_env):
+        env = operand_env()
+        proxy = _proxy_point(env.pts[1], env.occ, "P1@Bench:1")
+        assert inp.operand_in("'p'", env.pts[1], env.root, env.design) == (proxy, None)
+        assert inp.operand_in("'p'", env.twins[0], env.bench, env.design) == (env.twins[0], None)
+
+    def test_a_native_of_a_component_placed_twice_is_refused_naming_each_instance(self,
+                                                                               operand_env):
+        env = operand_env()
+        env.root.allOccurrences.append(make_occurrence("Bench:2", component=env.bench,
+                                                       transform2=FakeMatrix3D()))
+        val, err = inp.operand_in("'p'", env.pts[1], env.root, env.design, remedy="Name one.")
+        assert val is None and "Bench:1" in err and "Bench:2" in err and err.endswith("Name one.")
+
+    def test_operand_meta_reads_owner_path_address_and_world_point(self, operand_env):
+        env = operand_env()
+        meta = inp.operand_meta(_proxy_point(env.pts[1], env.occ, "P1@Bench:1"))
+        assert (meta["component"], meta["assembly_path"], meta["ref"]) == (
+            "Bench", "Bench:1", "OpS/point:1")
+        assert meta["world_cm"] == pytest.approx(list(_bench_world(1.0, 2.0)), abs=1e-12)
+
+
+class TestPlacedHandleStaleness:
+    """A split line's token answers its first piece; only the recorded position tells it moved."""
+
+    def _split_line_handle(self, env):
+        proxy = SketchLine(env.pts[0], env.pts[2], env.sketch, token="L0@Bench:1")
+        proxy.assemblyContext, proxy.nativeObject = env.occ, env.line
+        mid = [round(c, 6) for c in _bench_world(2.0, 0.0)]
+        handle = f"L0@Bench:1{inp._HANDLE_SEP}sketch_line:{mid[0]},{mid[1]},{mid[2]};occ=Bench:1"
+        env.line.endSketchPoint = FakeSketchPoint(FakePoint(2.0, 0.0, 0.0),
+                                                  parent_sketch=env.sketch)
+        return proxy, handle
+
+    def test_a_split_line_handle_is_refused_by_axisref(self, operand_env):
+        env = operand_env()
+        proxy, handle = self._split_line_handle(env)
+        env.design._tokens["L0@Bench:1"] = proxy
+        val, err = inp.AxisRef("axis").resolve(handle)
+        assert val is None and "first piece" in err and "find_geometry" in err
+
+    def test_an_unmoved_line_handle_still_resolves(self, operand_env):
+        env = operand_env()
+        proxy, handle = self._split_line_handle(env)
+        env.line.endSketchPoint = env.pts[2]
+        env.design._tokens["L0@Bench:1"] = proxy
+        assert inp.AxisRef("axis").resolve(handle) == (("edge", proxy), None)
+
+    def test_a_moved_point_handle_is_refused_by_pointref(self, operand_env):
+        env = operand_env()
+        proxy = _proxy_point(env.pts[1], env.occ, "P1@Bench:1")
+        env.design._tokens["P1@Bench:1"] = proxy
+        handle = inp.placed_handle(env.pts[1], "sketch_point", env.occ)
+        env.pts[1].geometry = FakePoint(1.0, 2.001, 0.0)
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "find_geometry" in err and "reads at" in err
+        assert "first piece" not in err            # the split clause is a sketch line's alone
+
+    def _point_handle(self, env):
+        """P1's handle read through Bench:1, and the proxy its token answers."""
+        proxy = _proxy_point(env.pts[1], env.occ, "P1@Bench:1")
+        return inp.placed_handle(env.pts[1], "sketch_point", env.occ), proxy
+
+    def test_a_hit_whose_position_does_not_read_is_refused(self, operand_env):
+        env = operand_env()
+        handle, proxy = self._point_handle(env)
+        env.design._tokens["P1@Bench:1"] = proxy
+        env.pts[1].geometry = None
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "position did not read" in err and "find_geometry" in err
+
+    def test_a_hit_off_the_recorded_occurrence_is_refused_even_without_a_path(self, operand_env):
+        # the native at the very same point reads no occurrence, and one whose path will not read
+        # is no better: neither is the instance the handle was read through.
+        env = operand_env()
+        handle, proxy = self._point_handle(env)
+        env.design._tokens["P1@Bench:1"] = env.pts[1]
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "read through 'Bench:1'" in err and "no occurrence" in err
+        blind = _proxy_point(env.pts[1], types.SimpleNamespace(transform2=FakeMatrix3D()), "B")
+        env.design._tokens["P1@Bench:1"] = blind
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "occurrence did not read" in err
+        env.design._tokens["P1@Bench:1"] = proxy
+        assert inp.PointRef("p").resolve(handle) == (proxy, None)
+
+    def test_many_hits_are_filtered_to_the_recorded_occurrence_first(self, operand_env):
+        env = operand_env()
+        handle, proxy = self._point_handle(env)
+        other = make_occurrence("Other:1", component=env.bench,
+                                transform2=FakeMatrix3D(deg=30.0, t=(10.0, 20.0, 0.0)))
+        twin = FakeSketchPoint(env.pts[1].geometry, parent_sketch=env.sketch,
+                               assembly_context=other, native_object=env.pts[1])
+        env.design._tokens["P1@Bench:1"] = [twin, proxy]
+        assert inp.PointRef("p").resolve(handle) == (proxy, None)
+        far = FakeSketchPoint(FakePoint(3.0, 3.0, 0.0), parent_sketch=env.sketch,
+                              assembly_context=env.occ, native_object=env.centre)
+        env.design._tokens["P1@Bench:1"] = [twin, far]
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "not at the recorded" in err
+
+    def test_two_points_at_the_recorded_position_are_refused_naming_both(self, operand_env):
+        operand_env()           # the token is dead, so the locator scans the root's sketches
+        handle = f"DEAD{inp._HANDLE_SEP}sketch_point:-5.0,-5.0,0.0"
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "'RootS/point:0'" in err and "'RootS/point:1'" in err
+
+
+class TestAxisRefSketchLineIndex:
+    def test_the_index_ref_resolves_the_line_now_at_that_index(self, operand_env):
+        env = operand_env()
+        assert inp.AxisRef("axis").resolve("OpS/line:0") == (("edge", env.line), None)
+
+    def test_an_index_ref_to_a_circle_is_refused(self, operand_env):
+        operand_env()
+        val, err = inp.AxisRef("axis").resolve("OpS/circle:0")
+        assert val is None and "'<sketch>/line:<i>'" in err
+
+    def test_a_placed_native_lines_axis_is_read_in_world_space(self, operand_env):
+        env = operand_env()
+        (start, direction), err = inp.axis_line_of("axis", env.line)
+        assert err is None
+        assert (start.x, start.y, start.z) == pytest.approx(_bench_world(0.0, 0.0), abs=1e-12)
+        c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
+        assert (direction.x, direction.y, direction.z) == pytest.approx((c, s, 0.0), abs=1e-12)

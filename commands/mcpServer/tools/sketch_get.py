@@ -117,9 +117,9 @@ tool = (
     .add_input_property("max_results", {"type": "integer",
             "description": f"Summary page size; default {_LIST_CAP}."})
     .add_input_property("component", {"type": "string",
-            "description": "Component name/occurrence fullPathName/handle."})
+            "description": "Name, occurrence path or handle."})
     .add_input_property("include_entities", {"type": "boolean",
-            "description": "Include entity details."})
+            "description": "Entity X-ray."})
     .add_input_property(*_inputs.UNITS.as_property())
     .strict_schema()
 )

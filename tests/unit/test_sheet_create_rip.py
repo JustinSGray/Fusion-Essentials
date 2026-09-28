@@ -84,6 +84,24 @@ def test_between_points_mode_missing_point_two_is_refused(rip):
     factory.createRipFeatureInput.assert_not_called()
 
 
+def test_face_mode_with_an_explicit_gap_is_refused_before_the_rip(rip):
+    mod, body, body_after, inp, factory, feature, vol_map, fake_bodies = rip
+    result = mod.handler(mode="face", face="f", gap=1.0)
+    assert result["isError"] is True
+    assert "gap=1.0" in result["message"] and "mode='along_edge'" in result["message"]
+    factory.createRipFeatureInput.assert_not_called()
+
+
+def test_face_mode_publishes_no_gap_and_reads_no_rule_gap(rip):
+    mod, body, body_after, inp, factory, feature, vol_map, fake_bodies = rip
+    body.parentComponent.activeSheetMetalRule = None
+    result = mod.handler(mode="face", face="f")
+    assert result["isError"] is False, result
+    out = json.loads(result["content"][0]["text"])
+    assert "gap_mm" not in out and "gap_source" not in out
+    assert out["volume_removed_cm3"] == 0.5
+
+
 def test_gap_falls_back_to_the_rule_and_says_so(rip):
     mod, body, body_after, inp, factory, feature, vol_map, fake_bodies = rip
     result = mod.handler(mode="along_edge", edge="e")

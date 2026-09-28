@@ -144,8 +144,10 @@ class TestPlacementFrame:
         assert stock["expect_document"] == "scratch-document"
         assert stock["geometry"] == [
             {"kind": "rectangle", "x1": 200, "y1": 0, "x2": 260, "y2": 40}]
+        start = next(i for i, step in enumerate(rows) if step[3] and step[3][0] == "def_doc")
+        end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
         queries = [args(context) if callable(args) else args
-                   for tool, args, _check, _save in rows if tool == "find_geometry"]
+                   for tool, args, _check, _save in rows[start:end] if tool == "find_geometry"]
         targets = {"DefinitionBench", "TapControlBench", "HoleFeedback", "DefinitionPost"}
         positions = [(q["target"], q["nearest_to"]) for q in queries
                      if q.get("target") in targets and "nearest_to" in q]
@@ -155,6 +157,17 @@ class TestPlacementFrame:
             ("TapControlBench", [130, 12.5, 30]), ("TapControlBench", [110, 10, 15]),
             ("HoleFeedback", [230, 20, 30]), ("HoleFeedback", [215, 30, 20]),
             ("HoleFeedback", [245, 30, 20]), ("DefinitionPost", [70, 0, 12.5])]
+
+
+class TestDatumOperandStory:
+    def test_the_operand_story_rides_no_slot_so_its_world_points_stay_authored(self):
+        # Its predicates expect bare world millimetres; a slot or a ridden cursor would shift the
+        # geometry and every read away from them.
+        import verify_acts_model as acts
+        mine = {id(row) for row in acts._DATUM_OPERANDS}
+        chunks = [chunk for step, chunk, _cursor, _frame in verify_layout._place_walk(acts._DETAILS)
+                  if id(step) in mine]
+        assert len(chunks) == len(acts._DATUM_OPERANDS) and set(chunks) == {None}
 
 
 class TestSketchView:

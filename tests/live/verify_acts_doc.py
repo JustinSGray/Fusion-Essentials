@@ -675,8 +675,13 @@ _SHOWCASE = [
     ("view_screenshot", {"view": "current", "width": 500, "height": 400}, "ok", None),
     ("view_set", {"action": "style", "style": "shaded-edges"}, "ok", None),
     # visibility, in the order that leaves nothing hidden behind: isolate the stock, hide one jaw,
-    # show it again, then drop the isolation. Each verb reports what it reached.
-    ("view_set", {"action": "isolate", "target": "STOCK:1"}, "ok", None),
+    # show it again, then drop the isolation. Each verb reports what it reached. The story document
+    # already reads modified, so the isolate claims no flip of its own.
+    ("view_set", {"action": "isolate", "target": "STOCK:1"},
+     lambda p: _measured("the already-modified document is not claimed by the isolate",
+                         {k: p.get(k) for k in ("document_modified", "modified_by_this_call")},
+                         p.get("document_modified") is True
+                         and "modified_by_this_call" not in p), None),
     ("view_set", {"action": "clear_isolation"}, "ok", None),
     ("view_set", {"action": "hide", "target": "JawMoving:1"}, "ok", None),
     ("view_set", {"action": "show", "target": "JawMoving:1"}, "ok", None),

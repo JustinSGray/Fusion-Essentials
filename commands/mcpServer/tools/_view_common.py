@@ -151,6 +151,11 @@ def same_body(a, b):
     return not (pa and pb) or pa == pb
 
 
+def document_modified():
+    """The active document's isModified: True, False, or None when it does not read."""
+    return _common.read_flag(lambda: _common.app.activeDocument.isModified)
+
+
 def _relight(entities):
     """Turn each bulb back on and answer the names whose read-back did NOT come back True - the one
     restore both isolate_for_fit's early exit and its restore() report their stuck bulbs from."""
@@ -204,6 +209,7 @@ def isolate_for_fit(name, ref):
         # The kind quotes the caller's whole value back, so the echo is substituted into its message.
         return None, None, err.replace(name, _common.short_ref(name)) if err and name else err
     target, kind = resolved
+    modified_before = document_modified()
     prev = []
     if kind in ("body", "mesh"):
         # A single-body root design places no occurrence at all, so the subject is the BODY and the
@@ -306,29 +312,38 @@ def isolate_for_fit(name, ref):
     # and the isolation on an occurrence one rather than one word for both.
     restore.hidden = "bodies" if kind in ("body", "mesh") else "occurrences"
     restore.isolated = isolated is not None
+    restore.modified_before = modified_before
     return restore, target, None
 
 
 def restore_message(restore, label, purpose):
-    """Run an isolate_for_fit restore and return the sentence naming what it could NOT put back, or
-    None when everything came back."""
+    """Run an isolate_for_fit restore; the sentences naming what it left changed, or None."""
     if not restore:
         return None
     try:
         stuck = restore() or []
     except Exception as e:
         stuck = [f"the restore raised: {e}"]
-    if not stuck:
-        return None
+    parts = []
     hidden = getattr(restore, "hidden", "occurrences")
-    named = ", ".join(str(s) for s in stuck[:5])
-    if getattr(restore, "isolated", False):
-        return (f"{label} isolated the subject {purpose} and could NOT put {len(stuck)} thing(s) "
-                f"back: {named}. The document is left changed.")
-    return (f"{label} hid the other {hidden} {purpose} and could NOT turn "
-            f"{len(stuck)} of them back on: {named}. "
-            f"The document is left with those {hidden} hidden - view_set(action='show', "
-            "target=...) restores them.")
+    isolated = getattr(restore, "isolated", False)
+    acted = "isolated the subject" if isolated else f"hid the other {hidden}"
+    if stuck:
+        named = ", ".join(str(s) for s in stuck[:5])
+        if isolated:
+            parts.append(f"{label} {acted} {purpose} and could NOT put {len(stuck)} "
+                         f"thing(s) back: {named}. The document is left changed.")
+        else:
+            parts.append(f"{label} {acted} {purpose} and could NOT turn "
+                         f"{len(stuck)} of them back on: {named}. The document is left with "
+                         f"those {hidden} hidden - view_set(action='show', target=...) restores "
+                         "them.")
+    # Read after the restore ran, so a flag its own writes set is counted too.
+    if getattr(restore, "modified_before", None) is False and document_modified() is True:
+        parts.append(f"{label} {acted} {purpose}, which Fusion records as a document "
+                     "modification: the document read unmodified before this call and reads "
+                     "modified now - doc_get shows it, doc_save clears it.")
+    return " ".join(parts) or None
 
 # eye - target direction per named view, not pre-normalized; view_direction() normalizes on read.
 # Fusion is Z-up: a positive z aims the camera down at the TOP face, so an iso-bottom-* entry

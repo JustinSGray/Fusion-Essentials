@@ -64,6 +64,10 @@ def handler(mode="", face="", edge="", point_one="", point_two="", gap=None, uni
     extra = [n for n, v in provided.items() if str(v or "").strip() and n not in required]
     if extra:
         return error(f"mode='{mode}' takes {_joined(required)} only; drop {extra[0]}.")
+    if mode == "face" and gap is not None:
+        return error(f"gap={gap!r} does not apply to mode='face': setByFace removes the bend face and "
+                     "takes no gap. Drop gap, or pass mode='along_edge' or 'between_points' to rip at "
+                     "a chosen gap.")
 
     body = None
     selector_label = required[0]
@@ -109,20 +113,22 @@ def handler(mode="", face="", edge="", point_one="", point_two="", gap=None, uni
         return error(f"{selector_label} must belong to the active design; edit the source document "
                      "first.")
 
-    if gap is not None:
-        gap_cm, gerr = _GAP.resolve_scaled(gap, scale_factor)
-        if gerr:
-            return error(gerr)
-        gap_source = "input"
-    else:
-        rule = safe(lambda: comp.activeSheetMetalRule)
-        rule_gap = safe(lambda: rule.gap) if rule is not None else None
-        gap_cm = safe(lambda: rule_gap.value) if rule_gap is not None else None
-        if gap_cm is None:
-            return error("gap is not given and the component's active sheet-metal rule has no "
-                         "readable gap; pass 'gap' explicitly.")
-        gap_source = "rule"
-    gap_mm = round(gap_cm * 10.0, 6)
+    gap_fields = {}
+    if mode != "face":
+        if gap is not None:
+            gap_cm, gerr = _GAP.resolve_scaled(gap, scale_factor)
+            if gerr:
+                return error(gerr)
+            gap_source = "input"
+        else:
+            rule = safe(lambda: comp.activeSheetMetalRule)
+            rule_gap = safe(lambda: rule.gap) if rule is not None else None
+            gap_cm = safe(lambda: rule_gap.value) if rule_gap is not None else None
+            if gap_cm is None:
+                return error("gap is not given and the component's active sheet-metal rule has no "
+                             "readable gap; pass 'gap' explicitly.")
+            gap_source = "rule"
+        gap_fields = {"gap_mm": round(gap_cm * 10.0, 6), "gap_source": gap_source}
 
     body_name = safe(lambda: body.name)
     faces_before = safe(lambda: body.faces.count)
@@ -183,7 +189,7 @@ def handler(mode="", face="", edge="", point_one="", point_two="", gap=None, uni
             "build boxes from sheet_create_flange. Next: sheet_create_flat_pattern.")
 
     return ok({"created": True, "feature": feat.name, "body": body_after.name, "mode": mode,
-               "gap_mm": gap_mm, "gap_source": gap_source,
+               **gap_fields,
                "faces_before": faces_before, "faces_after": faces_after,
                "bend_faces_before": bend_faces_before, "bend_faces_after": bend_faces_after,
                "volume_before_cm3": volume_before, "volume_after_cm3": volume_after,
@@ -195,8 +201,8 @@ def handler(mode="", face="", edge="", point_one="", point_two="", gap=None, uni
                "note": note})
 
 
-TOOL_DESCRIPTION = ("Rip a sheet body by a face, along an edge or between two vertices (gap from the "
-                    "rule unless given). Then sheet_create_flat_pattern.")
+TOOL_DESCRIPTION = ("Rip a sheet body by a face (takes no gap), along an edge or between two vertices "
+                    "(gap from the rule unless given). Then sheet_create_flat_pattern.")
 tool = (Tool.create_simple(name="sheet_create_rip", description=TOOL_DESCRIPTION)
         .add_input_property(*_MODE.as_property())
         .add_input_property("face", _FACE.schema()).add_input_property("edge", _EDGE.schema())

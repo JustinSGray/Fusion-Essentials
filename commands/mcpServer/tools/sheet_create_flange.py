@@ -31,25 +31,37 @@ _NOTE = ("Flange landed (preview API). Next: sheet_create_hem, another edge, or 
          "sheet_create_flat_pattern.")
 
 
-def _vec3(v):
-    """(x, y, z) of a Vector3D-like object, or None when any component will not read."""
-    x, y, z = safe(lambda: v.x), safe(lambda: v.y), safe(lambda: v.z)
-    return None if x is None or y is None or z is None else (x, y, z)
+def _sketch_normal(sketch):
+    """The unit normal of the sketch's plane in its component's space, or None when an axis will not read."""
+    # Profile.plane reads in sketch space (its normal is sketch +Z on any plane); xDirection and
+    # yDirection read in the component's space.
+    x = _geom._coords(safe(lambda: sketch.xDirection))
+    y = _geom._coords(safe(lambda: sketch.yDirection))
+    n = _geom.cross(x, y) if x is not None and y is not None else None
+    mag = math.sqrt(_geom.dot(n, n)) if n is not None else 0.0
+    return None if mag < 1e-12 else tuple(c / mag for c in n)
 
 
-def _bbox_support_cm(body, direction):
-    """The body's own AABB support along unit `direction`, in cm - or None when it will not read."""
-    box = _geom.body_aabb(body)
-    if box is None or direction is None:
+def _slab_thickness_cm(body, normal):
+    """Thickness along unit `normal` in cm: two parallel planar faces' gap, else the vertices' spread, else None."""
+    planes = []
+    for face in _common.iter_collection(safe(lambda: body.faces)):
+        origin, n = _geom._face_plane(face)
+        if origin is None:
+            continue
+        cosine = min(1.0, abs(_geom.dot(n, normal)))
+        if math.degrees(math.acos(cosine)) <= _geom.PARALLEL_PLANE_TOL_DEG:
+            planes.append((origin, n))
+    if len(planes) == 2:
+        (origin_a, n_a), (origin_b, _n_b) = planes
+        return abs(_geom.dot([origin_b[i] - origin_a[i] for i in range(3)], n_a))
+    verts = safe(lambda: body.vertices)
+    count = safe(lambda: verts.count) if verts is not None else None
+    points = [_geom._coords(safe(lambda v=v: v.geometry)) for v in _common.iter_collection(verts)]
+    if not isinstance(count, int) or count < 2 or len(points) != count or None in points:
         return None
-    lo, hi = safe(lambda: box.minPoint), safe(lambda: box.maxPoint)
-    if lo is None or hi is None:
-        return None
-    dx, dy, dz = direction
-    x = hi.x if dx >= 0 else lo.x
-    y = hi.y if dy >= 0 else lo.y
-    z = hi.z if dz >= 0 else lo.z
-    return x * dx + y * dy + z * dz
+    heights = [_geom.dot(p, normal) for p in points]
+    return max(heights) - min(heights)
 
 
 def _edge_flange(design, edges_raw, distance, units, angle_deg, height_datum, position, flip,
@@ -189,7 +201,7 @@ def _base_flange(design, profile_raw, orientation, component):
                      f"'{active_name}' - the flange body lands wherever is active. Activate it "
                      "first with design_activate_component.")
     comp = active
-    n_vec = _vec3(safe(lambda: prof.plane.normal))
+    n_vec = _sketch_normal(sketch)
 
     bodies_before = safe(lambda: comp.bRepBodies.count)
     rule_before = safe(lambda: comp.activeSheetMetalRule)
@@ -224,12 +236,8 @@ def _base_flange(design, profile_raw, orientation, component):
     rule_after = safe(lambda: comp.activeSheetMetalRule)
     rule_after_name = safe(lambda: rule_after.name) if rule_after is not None else None
     rule_thickness_cm = safe(lambda: rule_after.thickness.value) if rule_after is not None else None
-    thickness_cm = None
-    if n_vec is not None and new_body is not None:
-        hi = _bbox_support_cm(new_body, n_vec)
-        lo = _bbox_support_cm(new_body, tuple(-c for c in n_vec))
-        if isinstance(hi, (int, float)) and isinstance(lo, (int, float)):
-            thickness_cm = hi + lo
+    thickness_cm = (_slab_thickness_cm(new_body, n_vec)
+                    if n_vec is not None and new_body is not None else None)
     thickness_ok = (rule_thickness_cm is not None and thickness_cm is not None
                     and math.isclose(thickness_cm, rule_thickness_cm, rel_tol=1e-6, abs_tol=1e-9))
 

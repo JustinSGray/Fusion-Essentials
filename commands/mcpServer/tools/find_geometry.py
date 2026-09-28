@@ -39,7 +39,34 @@ _EDGE_KINDS = {"circular_edge": "Circle3D", "line_edge": "Line3D", "arc_edge": "
 # Edge kinds whose reported 'position' is the curve CENTRE rather than the point on the edge. The
 # handle locator stays keyed to pointOnEdge either way - that is what _refind_by_locator compares.
 _CENTERED_EDGES = ("circular_edge", "arc_edge", "ellipse_edge", "elliptical_arc_edge")
+# friendly sketch 'kind' -> the '<type>' collection each sketch is read through.
+_SKETCH_KINDS = {"sketch_point": "point", "sketch_line": "line", "sketch_arc": "arc",
+                 "sketch_circle": "circle", "sketch_spline": "spline"}
+_PLACED_KINDS = tuple(_SKETCH_KINDS) + ("construction_point",)
 
+_PLACED_NOTE = ("'position' is WORLD, through the sketch transform (a sketch entity's) and the "
+                "occurrence's placement; a curve's is the midpoint of its ends, a circle's its "
+                "centre. model_construction takes a sketch_point or construction_point handle in "
+                "'points'/'to_object', a sketch_line handle in 'axis' and two_edges' 'edges', and "
+                "a circle or arc centre as '<sketch>/<id>:center'.")
+
+
+def _named_subtree(all_occs, name):
+    """Every occurrence whose path, name or component name is `name`, with its whole subtree."""
+    matched = [o for o in all_occs
+               if (safe(lambda o=o: o.fullPathName) == name or safe(lambda o=o: o.name) == name
+                   or safe(lambda o=o: o.component.name) == name)]
+    # The whole SUBTREE, not just direct bodies: an inserted xref wraps its own tree and a derive
+    # lands its solid one level down, so a wrapper's own bodies can be none.
+    prefixes = [p for p in (safe(lambda o=o: o.fullPathName) for o in matched) if p]
+    seen = {id(o) for o in matched}
+    subtree = list(matched)
+    for o2 in all_occs:
+        fp = safe(lambda o2=o2: o2.fullPathName) or ""
+        if id(o2) not in seen and any(fp.startswith(p + "+") for p in prefixes):
+            subtree.append(o2)
+            seen.add(id(o2))
+    return subtree
 
 
 def _resolve_target(design, target):
@@ -62,25 +89,9 @@ def _resolve_target(design, target):
             for b in (safe(lambda o=o: list(o.bRepBodies)) or []):
                 pairs.append((o, b))
         return pairs, "whole design", None, walk
-    # A fullPathName can be worn by two siblings - Fusion enforces no name uniqueness - and for this
-    # read that means both get scanned.
-    matched = [o for o in all_occs
-               if (safe(lambda o=o: o.fullPathName) == name or safe(lambda o=o: o.name) == name
-                   or safe(lambda o=o: o.component.name) == name)]
-    if matched:
-        # The whole SUBTREE, not just direct bodies: an inserted xref wraps its own tree and a
-        # derive lands its solid one level down, so a wrapper's own bodies can be none.
-        prefixes = [p for p in (safe(lambda o=o: o.fullPathName) for o in matched) if p]
-        seen = {id(o) for o in matched}
-        subtree = list(matched)
-        for o2 in all_occs:
-            fp = safe(lambda o2=o2: o2.fullPathName) or ""
-            if id(o2) not in seen and any(fp.startswith(p + "+") for p in prefixes):
-                subtree.append(o2)
-                seen.add(id(o2))
-        for o in subtree:
-            for b in (safe(lambda o=o: list(o.bRepBodies)) or []):
-                pairs.append((o, b))
+    for o in _named_subtree(all_occs, name):
+        for b in (safe(lambda o=o: list(o.bRepBodies)) or []):
+            pairs.append((o, b))
     if pairs:
         return pairs, f"occurrence/component '{name}'", None, walk
     # By BODY name, through the shared ambiguity-refusing resolver.
@@ -212,8 +223,129 @@ def _edge_record(edge, inv_k):
     return rec, radius_value
 
 
+def _placed_scopes(design, target):
+    """((occurrence or None, component) pairs a placed kind scans, label, error, walk)."""
+    root = design.rootComponent
+    walk = _common.occurrence_walk(design)
+    name = (target or "").strip()
+    if not name:
+        return ([(None, root)] + [(o, safe(lambda o=o: o.component)) for o in walk.occurrences],
+                "whole design", None, walk)
+    pairs = [(o, safe(lambda o=o: o.component)) for o in _named_subtree(walk.occurrences, name)]
+    if safe(lambda: root.name) == name:
+        pairs.insert(0, (None, root))
+    if pairs:
+        return pairs, f"occurrence/component '{name}'", None, walk
+    return [], None, (f"target '{name}' names no occurrence or component - sketch and construction "
+                      "point kinds read components (assembly_get lists them)."), walk
+
+
+def _radius_kept(rec, value, requested, tolerance, inv_k):
+    """Stamp 'radius' (units) on `rec` and say whether the radius filter keeps it."""
+    radius = value * inv_k if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    if radius is not None:
+        rec["radius"] = round(radius, 6)
+    return requested is None or (radius is not None and abs(radius - requested) <= tolerance)
+
+
+def _sketch_rows(occ, comp, knd, sketch_name, requested, tolerance, inv_k):
+    """[(record, entity)] for every sketch entity of `knd` in `comp`, located through `occ`."""
+    ref_kind = _SKETCH_KINDS[knd]
+    path = safe(lambda: occ.fullPathName) if occ is not None else None
+    rows = []
+    for sk in _common.iter_collection(safe(lambda: comp.sketches)):
+        sk_name = safe(lambda sk=sk: sk.name)
+        if sketch_name and sk_name != sketch_name:
+            continue
+        coll = _common.entity_collection(sk, ref_kind)
+        for i in range(safe(lambda coll=coll: coll.count, 0) or 0):
+            ent = safe(lambda coll=coll, i=i: coll.item(i))
+            pos = _inputs.placed_point_cm(ent, occ) if ent is not None else None
+            if pos is None:
+                continue
+            rec = {"handle": None, "kind": knd, "position": [round(c * inv_k, 6) for c in pos],
+                   "sketch": sk_name, "id": f"{ref_kind}:{i}", "occurrence": path}
+            if ref_kind in ("arc", "circle"):
+                if not _radius_kept(rec, safe(lambda ent=ent: ent.radius), requested, tolerance,
+                                    inv_k):
+                    continue
+                centre = _inputs.placed_point_cm(safe(lambda ent=ent: ent.centerSketchPoint), occ)
+                rec["center"] = [round(c * inv_k, 6) for c in centre] if centre else None
+            elif requested is not None:
+                continue
+            if ref_kind == "line":
+                ends = _inputs.placed_ends(ent, occ)
+                rec["start"], rec["end"] = ([[round(c * inv_k, 6) for c in e] for e in ends]
+                                            if ends else (None, None))
+            rows.append((rec, ent))
+    return rows
+
+
+def _datum_rows(occ, comp, want_name, requested, inv_k):
+    """[(record, entity)] for every construction point of `comp` (named `want_name` when given)."""
+    if requested is not None:
+        return []
+    path = safe(lambda: occ.fullPathName) if occ is not None else None
+    rows = []
+    for cp in _common.iter_collection(safe(lambda: comp.constructionPoints)):
+        nm = safe(lambda cp=cp: cp.name)
+        if want_name and not (isinstance(nm, str) and nm.strip().lower() == want_name.lower()):
+            continue
+        pos = _inputs.placed_point_cm(cp, occ)
+        if pos is None:
+            continue
+        rows.append(({"handle": None, "kind": "construction_point", "name": nm,
+                      "position": [round(c * inv_k, 6) for c in pos], "occurrence": path}, cp))
+    return rows
+
+
+def _placed_search(design, target, knd, sketch, name, radius, inv_k):
+    """([(record, entity, occurrence)], label, error, walk) for a sketch or construction-point kind."""
+    sketch_name, want_name = (sketch or "").strip(), (name or "").strip()
+    if sketch_name and knd not in _SKETCH_KINDS:
+        return [], None, f"'sketch' narrows the sketch_* kinds; kind='{knd}' reads no sketch.", None
+    if want_name and knd != "construction_point":
+        return [], None, f"'name' narrows kind='construction_point'; kind='{knd}' carries none.", None
+    scopes, label, err, walk = _placed_scopes(design, target)
+    if err:
+        return [], None, err, walk
+    requested = float(radius) if radius is not None else None
+    tolerance = max(0.05 * requested, 1e-6) if requested is not None else None
+    found = []
+    for occ, comp in scopes:
+        if comp is None:
+            continue
+        rows = (_sketch_rows(occ, comp, knd, sketch_name, requested, tolerance, inv_k)
+                if knd in _SKETCH_KINDS else _datum_rows(occ, comp, want_name, requested, inv_k))
+        found.extend((rec, ent, occ) for rec, ent in rows)
+    return found, label, None, walk
+
+
+def _placed_payload(design, target, knd, sketch, name, radius, nearest_to, units, inv_k,
+                    max_results):
+    """The result for a placed kind, each returned row's handle minted where it was read."""
+    found, label, err, walk = _placed_search(design, target, knd, sketch, name, radius, inv_k)
+    space_note = _search_space_note(walk)
+    if err:
+        return error(f"{err} {space_note}".strip() if space_note else err)
+    if isinstance(nearest_to, (list, tuple)) and len(nearest_to) == 3:
+        npt = [float(nearest_to[i]) for i in range(3)]
+        found.sort(key=lambda row: _dist(row[0]["position"], npt))
+    kept = found[:clamp_rows(max_results, _MAX_RESULTS_DEFAULT, _MAX_RESULTS_CEILING)]
+    for rec, ent, occ in kept:
+        rec["handle"] = _inputs.placed_handle(ent, knd, occ)
+    payload = {"target": label, "kind_filter": knd, "match_count": len(found),
+               "returned": len(kept), "units": units,
+               "occurrences_walk": walk.method if walk is not None else None,
+               "matches": [rec for rec, _ent, _occ in kept], "note": _PLACED_NOTE}
+    if space_note:
+        payload["note"] += "\n" + space_note
+    return ok(payload)
+
+
 def handler(target: str = "", kind: str = "", radius: float = None,
-            nearest_to=None, units: str = "mm", max_results: int = 20) -> dict:
+            nearest_to=None, units: str = "mm", max_results: int = 20, sketch: str = "",
+            name: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
     k = scale(units)
     if k is None:
@@ -223,6 +355,14 @@ def handler(target: str = "", kind: str = "", radius: float = None,
     design = _common.design()
     if not design:
         return error("No active design (open or create a document first).")
+
+    knd = (kind or "").strip().lower()
+    if knd in _PLACED_KINDS:
+        return _placed_payload(design, target, knd, sketch, name, radius, nearest_to, units, inv_k,
+                               max_results)
+    if (sketch or "").strip() or (name or "").strip():
+        return error(f"'sketch' and 'name' narrow the sketch_* and construction_point kinds; "
+                     f"kind='{knd or 'faces+edges'}' reads bodies.")
 
     pairs, target_label, resolve_err, walk = _resolve_target(design, target)
     space_note = _search_space_note(walk)
@@ -234,7 +374,6 @@ def handler(target: str = "", kind: str = "", radius: float = None,
                 "design_get(include=['tree'])).")
         return error(f"{miss} {space_note}".strip() if space_note else miss)
 
-    knd = (kind or "").strip().lower()
     want_faces = (not knd) or knd in _FACE_KINDS
     want_edges = (not knd) or knd in _EDGE_KINDS
     want_verts = knd == "vertex" and radius is None
@@ -314,18 +453,20 @@ def handler(target: str = "", kind: str = "", radius: float = None,
 
 
 TOOL_DESCRIPTION = (
-    "Find short-lived handles with kind, world position and shape.\n"
+    "Find handles with kind, world position and shape.\n"
     + _outputs.produces_block(RETURNS)
 )
 
 find_tool = (
     Tool.create_simple(name="find_geometry", description=TOOL_DESCRIPTION)
     .add_input_property("target", {"type": "string", "description":
-            "Occurrence/component/body; shared names match all. Empty = design."})
+            "Occurrence, component or body; '' = the design."})
     .add_input_property(*_inputs.Choice("kind",
         ["cylinder_face", "planar_face", "cone_face", "sphere_face", "torus_face", "nurbs_face",
          "circular_edge", "line_edge", "arc_edge", "ellipse_edge", "elliptical_arc_edge",
-         "spline_edge", "vertex"]).as_property())
+         "spline_edge", "vertex", *_PLACED_KINDS]).as_property())
+    .add_input_property("sketch", {"type": "string"})
+    .add_input_property("name", {"type": "string"})
     .add_input_property("radius", {"type": "number",
             "description": "In 'units', 5% tolerance."})
     .add_input_property("nearest_to", {"type": "array", "items": {"type": "number"},

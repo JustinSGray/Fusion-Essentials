@@ -15,11 +15,12 @@ records (the read half of sketch_set_text: string, height, font, sketch-space bo
 """
 
 import json
+import math
 from types import SimpleNamespace
 
 import pytest
 
-from conftest import (BRepBody, BRepFace, FakeBoundingBox3D, FakeOccurrence, FakePoint,
+from conftest import (BRepBody, BRepFace, FakeBoundingBox3D, FakeMatrix3D, FakeOccurrence, FakePoint,
                       FakeSketchPoint as _SharedSketchPoint, FakeTimeline, FakeTimelineObject,
                       MakeComp, Profile, Sketch, SketchCurves, _NamedCollection, install, load_tool,
                       make_design, make_occurrence, make_timeline)
@@ -2632,3 +2633,47 @@ class TestFaceAttachedSketchNamesItsFace:
         out = _payload(sd.handler(sketch_name="OnPlane"))
         assert out["plane"] == "XY" and "on_face" not in out
         assert design.timeline._moves == []
+
+
+# ── every point/curve row's HANDLE, minted where the sketch's frame is placed ────────────────────
+
+def _placed_sketch(placements):
+    """Sketch 'Placed' (a text, a native point (1, 2)) in 'Blk', placed `placements` times."""
+    root = MakeComp(name="Root", entity_token="TOKEN:Root")
+    blk = MakeComp(name="Blk", entity_token="TOKEN:Blk")
+    occs = [make_occurrence(f"Blk:{i + 1}", component=blk,
+                            transform2=FakeMatrix3D(deg=30.0, t=(10.0, 20.0, 0.0)))
+            for i in range(placements)]
+    root.allOccurrences = occs
+    sk = FakeSketch("Placed", texts=[_sketch_text()])
+    sk.parentComponent, sk.transform = blk, FakeMatrix3D()
+    sk.createForAssemblyContext = lambda occ: SimpleNamespace(
+        origin=FakePoint(10.0, 20.0, 0.0), xDirection=FakePoint(1, 0, 0),
+        yDirection=FakePoint(0, 1, 0), assemblyContext=occ)
+    native = _SharedSketchPoint(FakePoint(1.0, 2.0, 0.0), parent_sketch=sk, entity_token="P")
+    native.createForAssemblyContext = lambda occ: _SharedSketchPoint(
+        native.geometry, parent_sketch=sk, entity_token="P@" + occ.fullPathName,
+        assembly_context=occ, native_object=native)
+    sk.sketchPoints = _Coll([native])
+    blk.sketches = _NamedCollection([sk])
+    install(sd, make_design(comp=root, all_components=[root, blk]))
+
+
+class TestEntityHandles:
+    def test_a_point_row_carries_the_handle_of_its_one_placement_and_text_none(self):
+        _placed_sketch(placements=1)
+        out = _payload(sd.handler(sketch_name="Placed", include_entities=True))
+        point = next(e for e in out["entities"] if e["id"] == "point:0")
+        token, loc = sd._inputs._split_handle(point["handle"])
+        assert token == "P@Blk:1" and loc[0] == "sketch_point" and loc[5] == "Blk:1"
+        assert (loc[1], loc[2]) == (round(math.cos(math.radians(30)) - 1 + 10, 6),
+                                    round(0.5 + 2 * math.cos(math.radians(30)) + 20, 6))
+        assert "handle" not in next(e for e in out["entities"] if e["id"] == "text:0")
+        assert "point row's 'handle' goes in model_construction's 'points'" in out["note"]
+        assert "line row's in its 'axis' and two_edges' 'edges'" in out["note"]
+
+    def test_a_sketch_placed_twice_prints_null_handles_and_says_so(self):
+        _placed_sketch(placements=2)
+        out = _payload(sd.handler(sketch_name="Placed", include_entities=True))
+        assert next(e for e in out["entities"] if e["id"] == "point:0")["handle"] is None
+        assert "'handle' is null on every row" in out["note"]

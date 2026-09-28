@@ -13,10 +13,11 @@ import io
 import json
 import math
 import re
+import types
 
 from conftest import (BRepEdge, BRepFace, Circle3D, Cone, Cylinder, FakeMatrix3D, FakePoint,
-                      FakeUnitsManager, FakeVector3D, Line3D, MakeComp, Plane, _Vertex, install,
-                      load_tool, make_design, make_occurrence)
+                      FakeSketchPoint, FakeUnitsManager, FakeVector3D, Line3D, MakeComp, Plane,
+                      Sketch, _Vertex, install, load_tool, make_design, make_occurrence)
 
 cn = load_tool("model_construction")
 
@@ -40,6 +41,7 @@ class _CollOut:
         self.result_token = None      # the created datum's entityToken; None = an unreadable token
         self.result_definition = None  # the created datum's definition; None = nothing to read back
         self.no_to_object = False     # True models a ConstructionPointInput (no setByPathToObject)
+        self.result_component = None  # the created datum's .component; None = it does not read
         self.added = 0
     def createInput(self):
         self.captured = {}
@@ -118,11 +120,12 @@ class _CollOut:
         self.added += 1
         proxy = (type("OProxy", (), {"name": "Datum", "geometry": self.proxy_geometry})()
                  if self.proxy_geometry is not None else None)
-        obj = type("O", (), {"name": "Datum", "geometry": self.result_geometry,
-                             "entityToken": self.result_token,
-                             "definition": self.result_definition,
-                             "createForAssemblyContext": lambda _s, _occ, _p=proxy: _p})()
-        return obj
+        members = {"name": "Datum", "geometry": self.result_geometry,
+                   "entityToken": self.result_token, "definition": self.result_definition,
+                   "createForAssemblyContext": lambda _s, _occ, _p=proxy: _p}
+        if self.result_component is not None:
+            members["component"] = self.result_component
+        return type("O", (), members)()
 
 
 # An origin ConstructionPlane carries a .name; the payload publishes THAT (via
@@ -236,6 +239,13 @@ def _circular_edge():
 def _stub_resolve(monkeypatch, kind, value):
     """monkeypatch.setattr(cn.<KIND>, 'resolve', lambda v: (value, None)) - auto-restored."""
     monkeypatch.setattr(kind, "resolve", lambda raw: (value, None))
+
+
+def _stub_lines(monkeypatch, ents):
+    """The 'edges' refs two_edges reads per entry, each resolving to ('edge', its entity)."""
+    by_ref = {f"L{i}": e for i, e in enumerate(ents)}
+    monkeypatch.setattr(cn._LINE, "resolve", lambda raw: (("edge", by_ref[raw]), None))
+    return list(by_ref)
 
 
 class TestGuards:
@@ -442,12 +452,11 @@ class TestModeKindValidation:
         # 'two_edges' is a legal mode for BOTH plane and point - each call must hit its OWN
         # collection, never the other kind's.
         comp = _install()
-        e1, e2 = _straight_edge(), _straight_edge()
-        _stub_resolve(monkeypatch, cn._EDGES, [e1, e2])
-        _payload(cn.handler(kind="plane", mode="two_edges"))
+        refs = _stub_lines(monkeypatch, [_straight_edge(), _straight_edge()])
+        _payload(cn.handler(kind="plane", mode="two_edges", edges=refs))
         assert "two_edges" in comp.constructionPlanes.captured
         assert comp.constructionPoints.captured is None
-        _payload(cn.handler(kind="point", mode="two_edges"))
+        _payload(cn.handler(kind="point", mode="two_edges", edges=refs))
         assert "two_edges" in comp.constructionPoints.captured
 
 
@@ -672,13 +681,29 @@ class TestPlaneAtAngleOnFace:
         assert "setByAngleOnCurvedFace returned false" in res["message"]
 
 
+def _root_vertex(comp, x, y, z):
+    """A vertex of a body `comp` (the root) owns, so its own coordinates are world."""
+    v = _Vertex(FakePoint(x, y, z))
+    v.body = types.SimpleNamespace(parentComponent=comp)
+    return v
+
+
+def _placed_vertex(x, y, z, path="CompC:1", placement=None):
+    """A vertex proxy through occurrence `path`, its native at (x, y, z) moved by `placement`."""
+    v = _Vertex(FakePoint(x, y, z))
+    v.nativeObject = _Vertex(FakePoint(x, y, z))
+    v.assemblyContext = types.SimpleNamespace(transform2=placement or FakeMatrix3D(),
+                                              fullPathName=path)
+    return v
+
+
 class TestPlaneOffsetThroughPoint:
     """The point DEFINES the offset, so the created plane passes through it exactly - a plane that
     misses it is a success report over the wrong geometry and must come back as an error."""
 
     def test_calls_setByOffsetThroughPoint_and_confirms_the_plane_passes_through_it(self, monkeypatch):
         comp = _install()
-        v = _Vertex(FakePoint(0, 0, 2))
+        v = _root_vertex(comp, 0, 0, 2)
         _stub_resolve(monkeypatch, cn._POINTS, [v])
         comp.constructionPlanes.result_geometry = Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, 2))
         out = _payload(cn.handler(kind="plane", mode="offset_through_point", plane="xy"))
@@ -697,8 +722,8 @@ class TestPlaneOffsetThroughPoint:
         # normal reports it 2.4e-5 cm off.
         s = 40.0 / (70.0 ** 0.5)
         origin = FakePoint(1, 2, 3)
-        on_plane = FakePoint(1 + 3 * s, 2 + 6 * s, 3 - 5 * s)
-        _stub_resolve(monkeypatch, cn._POINTS, [_Vertex(on_plane)])
+        _stub_resolve(monkeypatch, cn._POINTS,
+                      [_root_vertex(comp, 1 + 3 * s, 2 + 6 * s, 3 - 5 * s)])
         comp.constructionPlanes.result_geometry = Plane(FakeVector3D(1 / m, 2 / m, 3 / m), origin)
         out = _payload(cn.handler(kind="plane", mode="offset_through_point", plane="xy"))
         assert out["passes_through_point"] is True
@@ -708,7 +733,7 @@ class TestPlaneOffsetThroughPoint:
         # proxy-resolved vertex reads WORLD, and the two differ by exactly the occurrence offset -
         # comparing them directly fails every correct call into a transformed component.
         comp = _install(active_occurrence=("occ", "CompC:1"))
-        _stub_resolve(monkeypatch, cn._POINTS, [_Vertex(FakePoint(6, 3, 2))])
+        _stub_resolve(monkeypatch, cn._POINTS, [_placed_vertex(6, 3, 2)])
         comp.constructionPlanes.result_geometry = Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, -1))
         comp.constructionPlanes.proxy_geometry = Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, 2))
         out = _payload(cn.handler(kind="plane", mode="offset_through_point", plane="xy"))
@@ -724,7 +749,7 @@ class TestPlaneOffsetThroughPoint:
 
     def test_a_plane_that_misses_the_point_is_an_error(self, monkeypatch):
         comp = _install()
-        _stub_resolve(monkeypatch, cn._POINTS, [_Vertex(FakePoint(0, 0, 2))])
+        _stub_resolve(monkeypatch, cn._POINTS, [_root_vertex(comp, 0, 0, 2)])
         # created 1 cm short of the vertex
         comp.constructionPlanes.result_geometry = Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, 1))
         res = cn.handler(kind="plane", mode="offset_through_point", plane="xy")
@@ -826,16 +851,16 @@ class TestPlaneTwoEdges:
     def test_calls_setByTwoEdges(self, monkeypatch):
         comp = _install()
         e1, e2 = _straight_edge(), _straight_edge()
-        _stub_resolve(monkeypatch, cn._EDGES, [e1, e2])
-        out = _payload(cn.handler(kind="plane", mode="two_edges"))
+        out = _payload(cn.handler(kind="plane", mode="two_edges",
+                                  edges=_stub_lines(monkeypatch, [e1, e2])))
         assert out["mode"] == "two_edges"
         assert comp.constructionPlanes.captured["two_edges"] == (e1, e2)
 
     def test_needs_exactly_two_edges(self, monkeypatch):
         # the "too many" side of the exact-count guard (0/1 cases are covered elsewhere).
         _install()
-        _stub_resolve(monkeypatch, cn._EDGES, [_straight_edge()] * 3)
-        res = cn.handler(kind="plane", mode="two_edges")
+        refs = _stub_lines(monkeypatch, [_straight_edge()] * 3)
+        res = cn.handler(kind="plane", mode="two_edges", edges=refs)
         assert res["isError"] is True and "needs exactly 2 'edges'" in res["message"]
 
 
@@ -1000,14 +1025,13 @@ class TestPointTwoEdges:
     def test_calls_setByTwoEdges(self, monkeypatch):
         comp = _install()
         e1, e2 = _straight_edge(), _straight_edge()
-        _stub_resolve(monkeypatch, cn._EDGES, [e1, e2])
-        out = _payload(cn.handler(kind="point", mode="two_edges"))
+        out = _payload(cn.handler(kind="point", mode="two_edges",
+                                  edges=_stub_lines(monkeypatch, [e1, e2])))
         assert out["mode"] == "two_edges"
         assert comp.constructionPoints.captured["two_edges"] == (e1, e2)
 
     def test_needs_exactly_two_edges(self, monkeypatch):
         _install()
-        _stub_resolve(monkeypatch, cn._EDGES, [])
         res = cn.handler(kind="point", mode="two_edges")
         assert res["isError"] is True and "needs exactly 2 'edges'" in res["message"]
 
@@ -1940,6 +1964,137 @@ class TestCreatedDatumHandle:
         out = _payload(cn.handler(kind="axis", axis="x"))
         assert out["handle"] is None
         assert "handle" not in out["note"]
+
+
+# ── point and line OPERANDS: the lift into the building component, and the per-mode effect gates ──
+
+def _placed_bench(root, at=None):
+    """(native, proxy) of point (1, 2, 0) in 'Bench', placed once under `root` by `at`."""
+    root.entityToken = "TOKEN:Comp"
+    bench = MakeComp(name="Bench", entity_token="TOKEN:Bench")
+    occ = make_occurrence("Bench:1", component=bench, transform2=at or FakeMatrix3D())
+    root.allOccurrences = [occ]
+    sketch = Sketch("BenchS", parent_component=bench, transform=FakeMatrix3D())
+    native = FakeSketchPoint(FakePoint(1.0, 2.0, 0.0), parent_sketch=sketch)
+    proxy = FakeSketchPoint(native.geometry, parent_sketch=sketch, assembly_context=occ,
+                            native_object=native)
+    native.createForAssemblyContext = lambda _occ: proxy
+    return native, proxy
+
+
+class TestAtPoint:
+    def test_a_point_datum_lands_on_its_operand_even_in_parametric(self, monkeypatch):
+        comp = _install(design_type=1)            # parametric: setByPoint(entity) is not guarded
+        v = _root_vertex(comp, 1.0, 2.0, 3.0)
+        _stub_resolve(monkeypatch, cn._POINTS, [v])
+        comp.constructionPoints.result_geometry = FakePoint(1.0, 2.0, 3.0)
+        comp.constructionPoints.result_component = comp
+        out = _payload(cn.handler(kind="point", mode="at_point", points=["<v>"]))
+        assert comp.constructionPoints.captured["point"] is v
+        assert out["at_operand"] is True and out["world"] == {"x": 10.0, "y": 20.0, "z": 30.0}
+        assert out["operands"][0]["world"] == [10.0, 20.0, 30.0]
+
+    def test_the_gate_holds_at_its_tolerance_and_refuses_past_it(self, monkeypatch):
+        for landed_cm, is_error in ((1e-6, False), (2e-6, True)):
+            comp = _install()
+            _stub_resolve(monkeypatch, cn._POINTS, [_root_vertex(comp, 0.0, 0.0, 0.0)])
+            comp.constructionPoints.result_geometry = FakePoint(landed_cm, 0.0, 0.0)
+            comp.constructionPoints.result_component = comp
+            res = cn.handler(kind="point", mode="at_point", points=["<v>"], units="cm")
+            assert res["isError"] is is_error, landed_cm
+        assert "misses its operand point(s)" in res["message"]
+
+    def test_a_native_operand_of_another_component_goes_in_as_its_proxy(self, monkeypatch):
+        comp = _install()
+        native, proxy = _placed_bench(comp)
+        _stub_resolve(monkeypatch, cn._POINTS, [native])
+        comp.constructionPoints.result_geometry = FakePoint(1.0, 2.0, 0.0)
+        comp.constructionPoints.result_component = comp
+        out = _payload(cn.handler(kind="point", mode="at_point", points=["<p>"]))
+        assert comp.constructionPoints.captured["point"] is proxy
+        assert out["operands"][0]["assembly_path"] == "Bench:1" and out["at_operand"] is True
+
+    def test_a_setter_refusing_a_proxied_operand_is_refused_naming_the_occurrence(self,
+                                                                               monkeypatch):
+        comp = _install()
+        native, _proxy = _placed_bench(comp)
+        _stub_resolve(monkeypatch, cn._POINTS, [native])
+        comp.constructionPoints.next_result = False
+        res = cn.handler(kind="point", mode="at_point", points=["<p>"])
+        assert res["isError"] is True and "setByPoint returned false" in res["message"]
+        assert "'points[0]' in 'Bench:1'" in res["message"]
+
+    def test_a_datum_reading_another_component_is_an_error(self, monkeypatch):
+        comp = _install()
+        comp.entityToken = "TOKEN:Comp"
+        _stub_resolve(monkeypatch, cn._POINTS, [_root_vertex(comp, 0.0, 0.0, 0.0)])
+        comp.constructionPoints.result_component = MakeComp(name="Other", entity_token="TOKEN:O")
+        res = cn.handler(kind="point", mode="at_point", points=["<v>"])
+        assert res["isError"] is True and "reads component 'Other'" in res["message"]
+
+
+class TestPointOperandIncidence:
+    def test_a_three_point_plane_is_checked_against_every_operand(self, monkeypatch):
+        for origin_z, is_error in ((0.0, False), (1.0, True)):
+            comp = _install()
+            _stub_resolve(monkeypatch, cn._POINTS, [_root_vertex(comp, 0, 0, 0),
+                                                    _root_vertex(comp, 1, 0, 0),
+                                                    _root_vertex(comp, 0, 1, 0)])
+            comp.constructionPlanes.result_geometry = Plane(FakeVector3D(0, 0, 1),
+                                                            FakePoint(0, 0, origin_z))
+            res = cn.handler(kind="plane", mode="three_points", points=["a", "b", "c"])
+            assert res["isError"] is is_error, origin_z
+        assert "misses its operand point(s) by 10.0 mm" in res["message"]
+
+    def test_a_two_point_axis_is_lifted_to_world_before_the_check(self, monkeypatch):
+        # A -90 deg placement carries the axis's LOCAL +X to world -Y, where the operands sit;
+        # compared unlifted, the right axis would read 1 cm off its own points.
+        sub, occ = _install_sub_placed(rotation_deg=-90.0)
+        sub.entityToken = "TOKEN:Sub"
+        turn = FakeMatrix3D(deg=-90.0)
+        _stub_resolve(monkeypatch, cn._POINTS, [_placed_vertex(1, 0, 0, "Comp:1", turn),
+                                                _placed_vertex(2, 0, 0, "Comp:1", turn)])
+        sub.constructionAxes.result_geometry = _axis_geometry((1.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        out = _payload(cn.handler(kind="axis", mode="two_points", points=["a", "b"]))
+        assert out["passes_through_points"] is True and out["frame"] == "world"
+        assert out["geometry"]["direction"] == [0.0, -1.0, 0.0]
+        sub.constructionAxes.result_geometry = _axis_geometry((1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+        res = cn.handler(kind="axis", mode="two_points", points=["a", "b"])
+        assert res["isError"] is True and "misses its operand point(s)" in res["message"]
+
+    def test_a_tangent_plane_off_its_operand_is_published_not_refused(self, monkeypatch):
+        comp = _install()
+        _stub_resolve(monkeypatch, cn._FACE, _cylinder_face())
+        _stub_resolve(monkeypatch, cn._POINTS, [_root_vertex(comp, 0, 0, 5)])
+        comp.constructionPlanes.result_geometry = Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, 0))
+        out = _payload(cn.handler(kind="plane", mode="tangent_at_point", points=["p"]))
+        assert out["passes_through_point"] is False and out["point_offset"] == 50.0
+        assert "misses the operand point by 'point_offset'" in out["note"]
+
+    def test_an_unread_operand_position_publishes_null_and_says_why(self, monkeypatch):
+        comp = _install()
+        _stub_resolve(monkeypatch, cn._FACE, _cylinder_face())
+        _stub_resolve(monkeypatch, cn._POINTS, [FakePoint(0, 0, 5)])     # carries no geometry
+        comp.constructionPlanes.result_geometry = Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, 0))
+        out = _payload(cn.handler(kind="plane", mode="tangent_at_point", points=["p"]))
+        assert out["passes_through_point"] is None and "point_offset" not in out
+        assert "passes_through_point is null" in out["note"]
+
+
+class TestLineOperands:
+    def test_an_edge_axis_from_another_components_line_goes_in_as_its_proxy(self, monkeypatch):
+        comp = _install()
+        native, proxy = _placed_bench(comp)       # a point stands in for the line: same lift
+        _stub_resolve(monkeypatch, cn._AXIS, ("edge", native))
+        out = _payload(cn.handler(kind="axis", mode="edge", axis="Bench/line:0"))
+        assert comp.constructionAxes.captured["edge"] is proxy
+        assert out["operands"][0]["input"] == "axis"
+
+    def test_a_world_axis_in_two_edges_is_refused(self, monkeypatch):
+        _install()
+        monkeypatch.setattr(cn._LINE, "resolve", lambda raw: (("world", (1, 0, 0)), None))
+        res = cn.handler(kind="plane", mode="two_edges", edges=["x", "y"])
+        assert res["isError"] is True and "is a world direction, not a line" in res["message"]
 
 
 def test_the_path_description_states_the_tangent_continuity_rule():
