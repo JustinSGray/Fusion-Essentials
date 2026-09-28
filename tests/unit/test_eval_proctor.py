@@ -265,11 +265,78 @@ class TestWatch:
         monkeypatch.setattr(proctor.subprocess, "Popen", spawn)
         monkeypatch.setattr(proctor, "kill_tree", lambda proc: None)
         ended, call_times, returncode = proctor.launch("prompt", str(run_dir), "opus")
-        assert ended == ("executor launch failed: quota" if start_fails else "report")
+        assert ended == ("executor launch failed: quota" if start_fails else
+                         "blocked init: no system init event")
         assert call_times == [] and returncode == (None if start_fails else 0)
         assert (run_dir / "stderr.txt").read_text(encoding="utf-8") == ("quota" if start_fails else "")
         assert (run_dir / "transcript.jsonl").exists() and (run_dir / "mcp.json").exists()
         assert len(working_dirs) == 1 and not os.path.exists(working_dirs[0])
+
+    @pytest.mark.parametrize("server,tools,tool_search,expected", [
+        ({"name": "fusion-essentials", "status": "failed"}, ["DesignSync"], False,
+         "blocked init: fusion-essentials status failed"),
+        (None, ["DesignSync"], False, "blocked init: fusion-essentials status missing"),
+        ({"name": "fusion-essentials", "status": "connected"}, ["DesignSync"], False,
+         "blocked init: no fusion-essentials tools"),
+        ({"name": "fusion-essentials", "status": "connected"},
+         ["DesignSync", "mcp__fusion-essentials__workspace_orient"], False, "report"),
+        ({"name": "fusion-essentials", "status": "connected"}, [], True, "report"),
+    ])
+    def test_launch_validates_exact_init_even_after_quick_exit(self, tmp_path, monkeypatch,
+                                                                server, tools, tool_search, expected):
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        monkeypatch.setattr(proctor.shutil, "which", lambda name: "claude")
+        monkeypatch.setattr(proctor, "CONFIG_DIR", str(tmp_path / "config"))
+        monkeypatch.setattr(proctor, "executor_login", lambda env: {})
+        killed = []
+        monkeypatch.setattr(proctor, "kill_tree", lambda proc: killed.append(True))
+        init = {"type": "system", "subtype": "init", "tools": tools,
+                "mcp_servers": [server] if server else []}
+
+        def spawn(*args, **kwargs):
+            kwargs["stdout"].write(json.dumps({"type": "system", "subtype": "notice"}) + "\n")
+            kwargs["stdout"].write(json.dumps(init) + "\n")
+            kwargs["stdout"].flush()
+            return types.SimpleNamespace(stdin=io.StringIO(), stderr=io.StringIO(),
+                                         poll=lambda: 0, wait=lambda: 0, returncode=0)
+
+        monkeypatch.setattr(proctor.subprocess, "Popen", spawn)
+        ended, calls, code = proctor._launch("prompt", str(run_dir), "opus", (), tool_search,
+                                             str(tmp_path))
+        assert (ended, calls, code) == (expected, [], 0)
+        assert killed == [True]
+
+    def test_blocked_init_records_artifacts_without_save_or_next_run(self, tmp_path, monkeypatch):
+        scenario = tmp_path / "S99_Widget.md"
+        scenario.write_text(_SCENARIO, encoding="utf-8")
+        results = tmp_path / "results"
+        monkeypatch.setattr(proctor, "RESULTS", str(results))
+        monkeypatch.setattr(proctor, "INDEX", str(results / "index.md"))
+        monkeypatch.setattr(proctor, "scenario_path", lambda name: str(scenario))
+        monkeypatch.setattr(proctor.cloud_config, "load_config",
+                            lambda: ({"hub": "H", "project": "P", "folder": "F"}, None))
+        monkeypatch.setattr(proctor.harness, "health_gate", lambda: None)
+        monkeypatch.setattr(proctor, "ensure_hub", lambda hub, call: None)
+        monkeypatch.setattr(proctor, "ensure_project", lambda project, hub, call: project)
+        monkeypatch.setattr(proctor, "ensure_folder", lambda project, folder, name, call: name)
+        staged = []
+        monkeypatch.setattr(proctor, "stage_empty", lambda call: staged.append("staged") or "staged-doc")
+        monkeypatch.setattr(proctor, "build_prompt", lambda *args, **kwargs: "prompt")
+        monkeypatch.setattr(proctor, "launch", lambda *args: ("blocked init: fusion-essentials status failed", [], 0))
+        monkeypatch.setattr(proctor, "audit", lambda transcript: (0, 0, ""))
+        saves = []
+        monkeypatch.setattr(proctor, "save_result", lambda *args: saves.append(args))
+        monkeypatch.setattr(proctor.sys, "argv", ["proctor.py", "S99_Widget", "--runs", "3"])
+
+        assert proctor.main() == 1
+        run_dirs = list(results.glob("Eval-*/S99_Widget_*"))
+        assert len(run_dirs) == 1 and staged == ["staged"] and saves == []
+        rec = json.loads((run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+        assert rec["outcome"] == rec["execution_state"] == "blocked_init"
+        assert rec["saved"]["error"] == "save skipped: blocked init: fusion-essentials status failed"
+        assert (run_dirs[0] / "prompt.txt").exists() and (run_dirs[0] / "report.txt").exists()
+        assert "blocked init: fusion-essentials status failed" in (results / "index.md").read_text(encoding="utf-8")
 
     def test_main_records_failed_staged_and_partial_runs_and_returns_nonzero(self, tmp_path, monkeypatch):
         scenario = tmp_path / "S99_Widget.md"

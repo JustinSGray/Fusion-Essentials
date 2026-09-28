@@ -118,10 +118,11 @@ class TestSectionIndex:
             assert row == {"id": rec["id"], "section": rec["section"], "title": rec["title"],
                            "use_when": rec["use_when"]}
 
-    def test_the_index_carries_no_rules_and_no_recipe_steps_at_all(self):
-        # the whole point of an index: a client that asked for nothing is not sent the document.
+    def test_the_index_carries_only_kernel_rules_and_no_recipe_steps(self):
+        # The index includes the kernel, but no other section rules or recipe bodies.
         out = _payload(gd.handler())
         assert "rules" not in out
+        assert out["kernel"] == _canonical()["sections"][0]["rules"]
         assert all("rules" not in row for row in out["sections"])
         assert all("steps" not in row and "bar" not in row for row in out["recipes"])
 
@@ -140,6 +141,21 @@ class TestSectionIndex:
 # ── one section ─────────────────────────────────────────────────────────────
 
 class TestOneSection:
+    def test_a_non_kernel_section_carries_the_canonical_kernel_with_its_scope_and_exceptions(self):
+        kernel = next(sec for sec in _canonical()["sections"] if sec["id"] == "kernel")
+        out = _payload(gd.handler(section="assemble"))
+        assert out["kernel"] == kernel["rules"]
+        assert all(rule["when"] and rule["except"] and rule["scenarios"] and rule["prove"]
+                   for rule in out["kernel"])
+        assert out["note"].startswith("The kernel's five habits apply to every step")
+        assert len(gd.SECTION_NOTE) <= 400
+
+    def test_the_kernel_section_delivers_its_rules_once(self):
+        out = _payload(gd.handler(section="kernel"))
+        assert out["rules"] == next(sec for sec in _canonical()["sections"]
+                                    if sec["id"] == "kernel")["rules"]
+        assert "kernel" not in out
+
     @pytest.mark.parametrize("section_id", _IDS)
     def test_each_section_returns_its_own_rules_and_nothing_else(self, section_id):
         canonical = {sec["id"]: sec for sec in _canonical()["sections"]}[section_id]
@@ -180,6 +196,12 @@ class TestOneSection:
 # ── one recipe ──────────────────────────────────────────────────────────────
 
 class TestOneRecipe:
+    def test_a_direct_recipe_read_carries_the_canonical_kernel(self):
+        kernel = next(sec for sec in _canonical()["sections"] if sec["id"] == "kernel")
+        out = _payload(gd.handler(recipe="model-parametric-family"))
+        assert out["kernel"] == kernel["rules"]
+        assert out["note"].startswith("The kernel's five habits apply to every step")
+
     @pytest.mark.parametrize("recipe_id", _RECIPE_IDS)
     def test_a_recipe_comes_back_whole_and_equals_the_canonical_record(self, recipe_id):
         canonical = {r["id"]: r for sec in _canonical()["sections"] for r in sec["recipes"]}
@@ -193,11 +215,17 @@ class TestOneRecipe:
         assert out["sha256"] == index["sha256"]
         assert out["resource_uri"] == index["resource_uri"]
 
-    def test_the_note_says_the_steps_are_ordered_and_what_the_bar_is(self):
-        # a recipe is a SEQUENCE; a client that reads its steps as a menu picks one and skips the
-        # read-backs, so the ordering and the read-back are what the note has to say.
+    def test_the_note_says_a_recipe_is_one_worked_construction_not_a_macro(self):
+        # a client that reads a recipe as a macro replays its steps verbatim and skips the
+        # read-backs; the note says what a recipe is, that a blocked read_back blocks only what
+        # depends on it, and what the bar and the exemplar are.
         note = _payload(gd.handler(recipe=_RECIPE_IDS[0]))["note"]
-        assert "ORDERED" in note and "read_back" in note and "'bar'" in note
+        assert "one worked construction, not a macro" in note
+        assert "'use_when'" in note and "read_back" in note and "'bar'" in note
+        assert "blocks only the steps that depend on it" in note
+        assert "optional document to X-ray" in note
+        assert "ORDERED" not in note
+        assert len(gd.RECIPE_NOTE) <= 400
 
     def test_a_recipe_read_carries_no_rules(self):
         out = _payload(gd.handler(recipe=_RECIPE_IDS[0]))
@@ -408,6 +436,11 @@ def _call(server, arguments):
 
 
 class TestWireContract:
+    def test_description_leads_with_truthful_no_argument_discovery(self, server):
+        description = _entry(server)["description"]
+        assert description.startswith("Call with no arguments first for the index and five kernel rules")
+        assert len(_payload(_call(server, {}))["kernel"]) == 5
+
     def test_the_tool_is_in_tools_list_read_only_and_strict(self, server):
         entry = _entry(server)
         assert entry["annotations"]["readOnlyHint"] is True

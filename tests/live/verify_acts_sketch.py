@@ -717,6 +717,18 @@ _SKETCHWORK = [
      ("radial_mixed_completed_deleted", lambda p: p["parameter"])),
     ("sketch_get", _mixed_radial_cleanup_args,
      lambda p: p.get("truncated") is False and _radial_state(p, [10, 10, 10], []), None),
+    ("sketch_dimension", {"dimensions": [
+        {"dim_type": "radius", "entity_one": "circle:0", "value": "12 mm"},
+        {"dim_type": "radius", "entity_one": "circle:1", "value": "8 mm"}],
+        "sketch_name": "RetainedDims"},
+     lambda p: p.get("dimensioned") == 2 and len(p.get("results") or []) == 2
+     and (p.get("result_note") or "").count("'solved' is each REFERENCED") == 1
+     and all("'solved' is each REFERENCED" not in (r.get("note") or "")
+             for r in p["results"])
+     and [(r["solved"][0]["ref"], r["solved"][0]["radius_mm"])
+          for r in p["results"]] == [("circle:0", 12), ("circle:1", 8)], None),
+    ("sketch_get", {"sketch_name": "RetainedDims", "include_entities": True},
+     lambda p: p.get("truncated") is False and _radial_state(p, [12, 8, 10], [8, 12]), None),
     ("sketch_create", {"plane": "xy", "name": "AutoCon"}, "ok", None),
     ("sketch_add_geometry", {"geometry": [{"kind": "rectangle", "x1": 600, "y1": 560,
                                            "x2": 700, "y2": 600}],

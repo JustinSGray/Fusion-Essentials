@@ -409,7 +409,7 @@ def _refresh_pin(document_pin):
 
 def _complete_open_documents():
     """Return a complete doc_get census and active handle, or a refusal."""
-    is_error, payload = facade("call")("doc_get", {})
+    is_error, payload = facade("call")("doc_get", {"max_results": 1000})
     if is_error or not isinstance(payload, dict):
         return None, None, "doc_get did not return a document census"
     rows = payload.get("open_documents")

@@ -22,6 +22,19 @@ from verify_core import (
 from verify_layout import _DRIFT_CHUNKS, drift_row
 
 
+def _kernel_rules_present(p, field="kernel"):
+    """Check the five kernel rules and their applicability fields in a guidance reply."""
+    rules = p.get(field) or []
+    return ([r.get("id") for r in rules] == [
+        "declare-acceptance-and-interfaces", "sequence-is-the-design",
+        "encode-intended-changeability", "build-and-observe-in-milestones",
+        "compare-the-artifact-with-acceptance"]
+        and all(r.get("when") and r.get("do") and r.get("except") and r.get("scenarios")
+                and r.get("prove")
+                and all(step.get("tool") and step.get("observe") for step in r["prove"])
+                for r in rules))
+
+
 def _subject_visible(name, visible):
     """Read effective body visibility from the scoped design tree."""
     def check(p):
@@ -83,12 +96,31 @@ def _scratch_opened_beside_it(p):
     count and the same address."""
     rows = [r for r in (p.get("open_documents") or []) if r.get("is_active")]
     here = _home_address(p) if len(rows) == 1 else None
+    _RECALL["scratch_open_index"] = rows[0].get("open_index") if len(rows) == 1 else None
     return _measured("the scratch document opened BESIDE the story document",
                      {"open_count": p.get("open_count"), "open_before": _RECALL["open_before"],
                       "scratch": here, "story": _RECALL["story_doc"]},
                      _num(p.get("open_count"))
                      and p["open_count"] == _RECALL["open_before"] + 1
                      and here is not None and here != _RECALL["story_doc"])
+
+
+def _scratch_active_in_capped_census(p):
+    """Require the active scratch's full-read handle and original slot in one capped row."""
+    rows = p.get("open_documents") or []
+    row = rows[0] if len(rows) == 1 else {}
+    return _measured("the active scratch survives a one-row document census",
+                     {"row": row, "active": p.get("active"), "open_count": p.get("open_count"),
+                      "truncated": p.get("truncated")},
+                     len(rows) == 1 and row.get("is_active") is True
+                     and row.get("document_handle") == _RECALL.get("scratch_doc")
+                     and (p.get("active") or {}).get("document_handle") == _RECALL.get("scratch_doc")
+                     and type(row.get("open_index")) is int
+                     and row["open_index"] == _RECALL.get("scratch_open_index")
+                     and row["open_index"] > 0
+                     and type(p.get("open_count")) is int
+                     and p["open_count"] == _RECALL.get("open_before") + 1
+                     and p.get("truncated") is True)
 
 
 def _handle_args(ctx, key, name, expression):
@@ -241,7 +273,9 @@ _SCRATCH_DOCUMENT = [
     ("doc_get", {"include": ["default", "versions", "used_in"]},
      _home_cloud_identity_unavailable, ("story_doc", _recall("story_doc", _story_address))),
     ("doc_new", {}, _new_document, None),
-    ("doc_get", {}, _scratch_opened_beside_it, ("scratch_doc", _home_address)),
+    ("doc_get", {"max_results": 1000}, _scratch_opened_beside_it,
+     ("scratch_doc", _recall("scratch_doc", _home_address))),
+    ("doc_get", {"max_results": 1}, _scratch_active_in_capped_census, None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "story_doc", "the story document")},
      _activated(), None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "scratch_doc", "the scratch document")},
@@ -506,16 +540,21 @@ _OVERTURE = [
     # beside the content hash that says which version answered.
     ("sys_get_guidance", {},
      lambda p: (p.get("recipes") and all(r.get("id") and r.get("use_when") for r in p["recipes"])
-                and all("steps" not in r for r in p["recipes"])), None),
+                and all("steps" not in r for r in p["recipes"])
+                and _kernel_rules_present(p)), None),
     ("sys_get_guidance", {"section": "assemble"},
      lambda p: ({"connected-reference-path", "exercise-the-mechanism"}
                 <= {r.get("id") for r in (p.get("rules") or [])}
+                and _kernel_rules_present(p)
                 and len(p.get("sha256") or "") == 64
                 and all(c in "0123456789abcdef" for c in p.get("sha256") or "")), None),
-    # and the third read: ONE recipe whole - the ordered steps, each with what to read back, and
+    ("sys_get_guidance", {"section": "kernel"},
+     lambda p: (_kernel_rules_present(p, "rules") and "kernel" not in p), None),
+    # the recipe read: ONE recipe whole - the ordered steps, each with what to read back, and
     # the bar. This is the id cam_get's strategies note tells a caller to ask for.
     ("sys_get_guidance", {"recipe": "manufacture-choose-a-strategy"},
      lambda p: (p["recipe"]["id"] == "manufacture-choose-a-strategy"
+                and _kernel_rules_present(p)
                 and len(p["recipe"]["steps"]) >= 3
                 and all(s.get("tool") and s.get("read_back") for s in p["recipe"]["steps"])
                 and p["recipe"]["bar"]["measure"] and p["recipe"]["bar"]["eyes"]), None),
@@ -1022,7 +1061,7 @@ def _reload_handle(value):
 
 def _reload_census(call, phase="census"):
     try:
-        is_error, payload = call("doc_get", {})
+        is_error, payload = call("doc_get", {"max_results": 1000})
     except Exception as e:
         return None, f"{phase} doc_get did not answer: {e}"
     if is_error or not isinstance(payload, dict) or payload.get("truncated") is not False:

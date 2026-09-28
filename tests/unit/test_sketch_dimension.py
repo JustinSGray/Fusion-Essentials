@@ -602,6 +602,28 @@ class TestSolvedReadBack:
     def _rows(self, out):
         return {row["ref"]: row for row in out["results"][0]["solved"]}
 
+    def test_batch_explains_solved_once_and_keeps_each_readback_and_partial_remedy(
+            self, monkeypatch):
+        self._rich(monkeypatch, moves=((0, 0, 0.1),))
+        entry = {"dim_type": "distance", "entity_one": "line:0", "entity_two": "line:1"}
+        complete = _payload(sd.handler(dimensions=[entry, entry]))
+        assert complete["dimensioned"] == 2
+        assert "'solved' is each REFERENCED" in complete["result_note"]
+        assert "'solved' is each REFERENCED" not in str(complete["results"])
+        assert complete["results"][0]["solved"][0]["start_mm"] == [0.0, 1.0, 0.0]
+        assert complete["results"][1]["solved"][0]["start_mm"] == [0.0, 2.0, 0.0]
+
+        partial = _payload(sd.handler(dimensions=[
+            entry, {"dim_type": "distance", "entity_one": "line:99", "entity_two": "line:1"},
+            entry]))
+        assert partial["dimensioned"] == 1 and partial["failed"]["index"] == 1
+        assert partial["not_attempted"] == 1
+        assert "Stopped at dimensions[1]" in partial["note"]
+        assert "line:99" in partial["failed"]["error"]
+        assert "'solved' is each REFERENCED" in partial["result_note"]
+        assert "'solved' is each REFERENCED" not in str(partial["results"])
+        assert partial["results"][0]["solved"][0]["start_mm"] == [0.0, 3.0, 0.0]
+
     def test_a_line_reports_its_span_midpoint_and_length(self, monkeypatch):
         self._rich(monkeypatch)
         out = _payload(sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0",

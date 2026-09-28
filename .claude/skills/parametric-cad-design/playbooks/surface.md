@@ -1,49 +1,47 @@
 ## Surface
 
-**skin-first-solid-later** - Build the skin as surfaces - sweep, loft, patch - then trim, stitch once with a stated tolerance and thicken once; the solid comes last when the outer form is the product; not for a form one solid feature already describes. Prove: `design_get`: Stitch and Thicken rows after every surface row, not between them.
+**skin-first-solid-later** - Consider surfaces when their sections and boundaries express the form well; stitch or thicken at boundaries that support the intended edits when the outer form is the product; not for a solid or Form representation that better serves the same requirements. Prove: `design_get`: with tree_bodies=true, the selected body is_solid after relevant edits; `model_inspect`: body bounds against the intended dimensions.
 
-**extend-before-trim** - Extend the cutting surface a few millimetres past the body first, so the trim never lands on an edge when one surface will trim another; not for a cutter that already overhangs. Prove: `design_get`: an Extend row immediately before the Trim row.
+**extend-before-trim** - Provide enough intersection for the intended trim and possible edits; extend only when the existing cutter does not provide it when one surface will trim another; not for a cutter that already overhangs. Prove: `model_inspect`: the retained body's bounds against the intended extent; `find_geometry`: retained face and edge locations; preservation beyond these observations remains unverified; `view_screenshot`: the retained region against the intended boundary.
 
-**blend-by-split-and-loft** - Split the faces where the blend starts, delete the faces between, and loft between the split edges; a fillet only where the transition is a constant radius when two skins must meet with a smooth transition; not for a constant-radius corner. Prove: `find_geometry`: no crease: adjacent face normals agree along the seam.
+**blend-by-split-and-loft** - Consider split-and-loft or a radius-controlled fillet; choose the construction for the required continuity and shape controls when two skins must meet with a smooth transition; not for a transition with no smoothness requirement. Prove: `model_measure_continuity`: gap, normal angle and curvature jump sampled along the seam against the required continuity.
 
-**master-skin-derived-into-parts** - Keep the skin in a master document with named skeleton sketches; each part derives it and closes it with a boundary fill, then adds its own walls, bosses and clips when several parts share one outer form; not for a single-part shell. Prove: `design_get`: each part's timeline starts with a derive row then a BoundaryFill row.
+**master-skin-derived-into-parts** - Consider a shared master skin when several parts must follow the same form; choose same-document or derived ownership for the intended reuse and revision process when several parts share one outer form; not for independently designed forms that merely touch. Prove: `model_measure_between`: the mating surfaces still agree after a shared-form change and update.
 
 **peel-a-solid-to-a-skin** - Delete the faces you do not want; the remaining skin is the surface to build on when the quickest form is a solid but only some faces are wanted; not for a solid you will keep whole. Prove: `design_get`: the tree's body row reads is_solid false after the delete.
 
 ### Recipes
 
-#### A swept and surfaced bottle
+#### One bottle skin assembled from surfaces
 
-Use when a container whose section changes along a curved spine, its neck narrower than the body.
+Use when a changing-section container; prepare compatible body/neck profiles, rails, a crown profile and any required closure surfaces.
 
-1. `sketch_create` - 'Bottle_Bottom' on XY: an ellipse dimensioned by its radii. Read back: fully constrained.
-2. `sketch_create` - 'Bottle_Profiles' on XZ: spine arc, offset rail, cv_spline neck. Read back: the arc and offset dimensions.
-3. `model_loft` - loft the ellipse to the neck section with the rails, as_surface true. Read back: is_solid false.
-4. `sketch_create` - 'Bottle_Crown' on XZ: the shoulder profile, body radius to neck. Read back: fully constrained.
-5. `surface_revolve` - revolve the profile about the bottle axis. Read back: a second surface body.
-6. `surface_extend` - extend the NECK until it crosses the crown. Read back: the distance.
-7. `surface_trim` - trim ONLY where the crown crosses the body, keeping that cell. Read back: the cells removed.
-8. `model_stitch` - stitch the two at 0.1 mm. Read back: became_solid true.
-9. `model_shell` - shell to the wall, opening the mouth. Read back: volume dropped.
-10. `model_fillet` - chord-length fillets on the shoulder. Read back: face count grew.
-11. `model_offset_face` - offset the mouth face -0.05 mm. Read back: the distance landed.
+1. `model_loft` - loft the body skin from the prepared sections and rails with as_surface=true. Read back: the surface body and its intended boundaries.
+2. `surface_revolve` - form the crown from its prepared profile and axis. Read back: the crown surface.
+3. `surface_extend` - extend the cutter only if the intended intersection needs it. Read back: the resulting reach.
+4. `surface_trim` - trim to the intended meeting boundary. Read back: the retained regions.
+5. `model_stitch` - stitch enclosing surfaces within the permitted joining error. Read back: whether it closed and the free edges left; resolve missing boundaries before shelling.
+6. `model_measure_continuity` - measure any seam whose continuity is required. Read back: sampled gap, normal angle and curvature jump against that requirement.
+7. `model_shell` - form the required wall and mouth opening. Read back: the resulting body and opening.
+8. `model_measure_between` - check wall and mouth interfaces. Read back: the dimensions against the requirement.
+9. `view_screenshot` - inspect the form. Read back: the intended silhouette and visible transitions.
 
-Bar - measure: became_solid true, a Shell row after the stitch, one body. Eyes: a smooth leaning body with a crowned shoulder and no facet at the crown.
+Bar - measure: the enclosing body and wall meet the chosen dimensions; claim continuity only where model_measure_continuity has measured the seam. Eyes: the skin and crown meet without an unintended visible break.
 Exemplar: Bottle (urn:adsk.wipprod:dm.lineage:NX9msEStSlaONb6W4KI4ZA) - Sweep1 with a rail, Top_Crown on projected edges, Extend 5 mm before Trim, Stitch 0.10 mm, chord fillets, OffsetFaces -0.05 mm. Access: Autodesk Design Samples, read only
 
-#### One skin, several parts
+#### One shared skin derived into parts
 
-Use when a product whose top, base and middle share one outer surface.
+Use when separate part documents must follow one master skin; prepare the master's sections/rails and each part's closing boundaries.
 
-1. `sketch_create` - named skeleton sketches in the master: side, top and section profiles as cv_splines smooth to dimensioned guides. Read back: each sketch named; zero profiles is expected.
-2. `model_loft` - loft the skin between the section profiles with the side and top profiles as rails. Read back: a surface body.
-3. `model_mirror` - mirror the half skin about the symmetry plane. Read back: two surface bodies.
-4. `model_stitch` - stitch the halves. Read back: one surface body; became_solid false is fine for a skin.
-5. `doc_insert_derive` - in each part document, derive the master's skin body. Read back: the derived body and its source version.
-6. `surface_extrude` - extrude the parting line into a surface through the skin. Read back: a surface body.
-7. `surface_fill` - boundary fill with the skin and the parting surface as the tools, keeping the part's cell. Read back: one solid body.
-8. `model_shell` - shell to the wall thickness. Read back: the volume dropped as expected.
-9. `model_offset_face` - offset the mating faces for fit clearance. Read back: the distance landed.
+1. `model_loft` - create the master skin from the prepared references with as_surface=true. Read back: the intended surface body.
+2. `model_mirror` - mirror a half skin when this construction uses symmetry. Read back: the matching skin geometry.
+3. `model_stitch` - join the required skin pieces. Read back: the intended body and open boundaries.
+4. `doc_save_as` - save the master in the agreed destination. Read back: the source document identity.
+5. `doc_insert_derive` - derive the skin into each prepared part document. Read back: the body and source identity.
+6. `surface_extrude` - create a closing surface from the prepared boundary. Read back: the surface intersects the intended skin region.
+7. `surface_fill` - keep the intended enclosed cell. Read back: the resulting solid.
+8. `model_shell` - form the required wall. Read back: the wall and openings.
+9. `model_measure_between` - measure mating interfaces. Read back: the intended fit; revise only where its specified clearance requires it.
 
-Bar - measure: each part's design_get starts with a derive row and a BoundaryFill row, and model_inspect gives one solid. Eyes: the parts assemble into the skin with no step at the parting line.
+Bar - measure: parts meet their wall and interface requirements; verify shared-form changes if that dependency is claimed. Eyes: the parts assemble into the intended form with the specified interface gaps.
 Exemplar: Mouse ASM (urn:adsk.wipprod:dm.lineage:u9j3iHSpRTq4-_zqT1ukdw) - the Mouse master's five named profiles; Base, Middle and Top each open with Context1 (derive) and BoundaryFill1. Access: Autodesk Design Samples, read only

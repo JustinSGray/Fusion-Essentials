@@ -389,7 +389,7 @@ Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/m
 | ⚠ | `sys_execute_script` | Run Fusion API Python in the live session; prefer a typed tool (sys_find_tool). |
 | · | `sys_find_tool` | Search this server's tools by keyword when you don't know the name; sys_capability_map lists the families. |
 | · | `sys_get_api_doc` | Search installed Fusion API declarations and full docs |
-| · | `sys_get_guidance` | Read this server's packaged CAD DESIGN GUIDANCE: no argument gives the index, 'section' its rules, 'recipe' one recipe whole |
+| · | `sys_get_guidance` | Call with no arguments first for the index and five kernel rules |
 | · | `sys_get_preferences` | Read the APPLICATION's preferences: app.preferences, which belong to no document.
 Produces: preferences -> sys_set_preferences. |
 | · | `sys_get_selection` | Read the user's CURRENT selection in Fusion.

@@ -300,6 +300,11 @@ def _shared_coordinate_clause(sketch, dt, operands):
 _ENTRY_FIELDS = ("dim_type", "entity_one", "entity_two", "value", "surface", "is_driving",
                  "tangent_side_one", "tangent_side_two")
 
+_SOLVED_NOTE = ("When present, 'solved' is each REFERENCED entity's geometry read back after the solve, "
+                "with the distance it moved (moved_mm) getting there; geometry the solve "
+                "moved elsewhere in the sketch is not covered - read that back with "
+                "sketch_get(include_entities=true).")
+
 
 def handler(dimensions=None, sketch_name: str = "", component: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
@@ -319,8 +324,9 @@ def handler(dimensions=None, sketch_name: str = "", component: str = "") -> dict
                         + (", ".join(n for n in _common.all_sketch_names(design) if n)
                            or "(none)") + ". Use sketch_get.")
         return error("No sketch to dimension. Create one first with sketch_create.")
-    return _sketch_batch.run_batch(entries, lambda i, e: _one(sketch, e), "dimensions",
-                                   "dimensioned", safe(lambda: sketch.name))
+    return _sketch_batch.run_batch(
+        entries, lambda i, e: _one(sketch, e), "dimensions", "dimensioned",
+        safe(lambda: sketch.name), result_note=_SOLVED_NOTE)
 
 
 def _one(sketch, entry):
@@ -532,10 +538,6 @@ def _one(sketch, entry):
     solved, moves = _solved_block(pairs, before)
     if solved:
         out["solved"] = solved
-        out["note"] += (" 'solved' is each REFERENCED entity's geometry read back after the solve, "
-                        "with the distance it moved (moved_mm) getting there; geometry the solve "
-                        "moved elsewhere in the sketch is not covered - read that back with "
-                        "sketch_get(include_entities=true).")
     # DISTANCE family only: a parameter's value is in DATABASE units, so an angular dimension's is
     # radians and no length threshold applies to it.
     jump = _moved_warning(moves, eval_cm, gap_before) if dt in _DISTANCE_TYPES else None

@@ -2441,11 +2441,49 @@ class TestActualSchemaBinding:
 
 
 class TestDocumentHandleLifecycleRows:
+    def test_capped_scratch_row_uses_the_preceding_full_read(self, monkeypatch):
+        recall = {"story_doc": "session:story", "open_before": 2}
+        monkeypatch.setattr(verify_core, "_RECALL", recall)
+        monkeypatch.setattr(verify_acts_doc, "_RECALL", recall)
+        full_step, capped_step = verify_acts_doc._SCRATCH_DOCUMENT[2:4]
+        assert full_step[1] == {"max_results": 1000}
+        assert capped_step[1] == {"max_results": 1}
+        full = {
+            "active": {"document_handle": "session:scratch"},
+            "open_count": 3, "truncated": False,
+            "open_documents": [
+                {"document_handle": "session:story", "open_index": 0},
+                {"document_handle": "session:other", "open_index": 1},
+                {"document_handle": "session:scratch", "open_index": 2, "is_active": True},
+            ],
+        }
+        assert full_step[2](full)
+        key, extract = full_step[3]
+        assert key == "scratch_doc" and extract(full) == "session:scratch"
+        assert recall["scratch_doc"] == "session:scratch"
+        capped = {
+            "active": {"document_handle": "session:scratch"},
+            "open_count": 3, "truncated": True,
+            "open_documents": [
+                {"document_handle": "session:scratch", "open_index": 2, "is_active": True},
+            ],
+        }
+        assert capped_step[2](capped)
+        assert full_step[2](capped)
+        wrong_handle = dict(capped, open_documents=[dict(capped["open_documents"][0],
+                                                      document_handle="session:other")])
+        wrong_index = dict(capped, open_documents=[dict(capped["open_documents"][0],
+                                                     open_index=1)])
+        with pytest.raises(AssertionError, match="active scratch survives"):
+            capped_step[2](wrong_handle)
+        with pytest.raises(AssertionError, match="active scratch survives"):
+            capped_step[2](wrong_index)
+
     def test_scratch_rows_pin_wrong_tab_close_and_recovery(self):
         rows = verify_acts_doc._SCRATCH_DOCUMENT
         names = [row[0] for row in rows]
         assert names == [
-            "doc_get", "doc_new", "doc_get", "doc_activate", "doc_activate",
+            "doc_get", "doc_new", "doc_get", "doc_get", "doc_activate", "doc_activate",
             "doc_activate", "param_add", "param_get", "doc_activate", "param_get",
             "doc_activate", "doc_close", "param_add",
             "param_get", "doc_get", "param_add", "param_get", "param_delete",
@@ -2453,25 +2491,26 @@ class TestDocumentHandleLifecycleRows:
         ]
         ctx = {"story_doc": "session:A", "scratch_doc": "session:B",
                "recovered_doc": "session:B"}
-        wrong_args = rows[6][1](ctx)
+        assert rows[3][1] == {"max_results": 1}
+        wrong_args = rows[7][1](ctx)
         assert wrong_args["expect_document"] == "session:B"
-        assert rows[6][2].fragments == ("active_document_changed", "doc_activate")
-        assert rows[7][2].fragments == ("HandleWrong",)
-        assert rows[8][1](ctx)["name"] == "session:B"
-        assert rows[9][0] == "param_get" and rows[9][1]["name"] == "HandleWrong"
-        assert rows[9][2].fragments == ("HandleWrong",)
-        assert rows[10][1](ctx)["name"] == "session:A"
-        stale_args = rows[12][1]({"scratch_doc": "session:B"})
+        assert rows[7][2].fragments == ("active_document_changed", "doc_activate")
+        assert rows[8][2].fragments == ("HandleWrong",)
+        assert rows[9][1](ctx)["name"] == "session:B"
+        assert rows[10][0] == "param_get" and rows[10][1]["name"] == "HandleWrong"
+        assert rows[10][2].fragments == ("HandleWrong",)
+        assert rows[11][1](ctx)["name"] == "session:A"
+        stale_args = rows[13][1]({"scratch_doc": "session:B"})
         assert stale_args["expect_document"] == "session:B"
-        assert rows[12][2].fragments == ("unknown_document_handle", "doc_get")
-        assert rows[13][2].fragments == ("HandleClosed",)
-        recovered_args = rows[15][1](ctx)
+        assert rows[13][2].fragments == ("unknown_document_handle", "doc_get")
+        assert rows[14][2].fragments == ("HandleClosed",)
+        recovered_args = rows[16][1](ctx)
         assert recovered_args["expect_document"] == "session:A"
         assert verify_acts_doc._param_added("HandleRecovered", 2)(
             {"added": True, "parameter": {"name": "HandleRecovered",
              "value": 2, "value_units": "mm"}})
-        assert rows[17][2].__name__ == "check"
-        assert rows[18][2].fragments == ("HandleRecovered",)
+        assert rows[18][2].__name__ == "check"
+        assert rows[19][2].fragments == ("HandleRecovered",)
 
 
     def test_reload_probe_requires_fresh_handle_and_restores_home(self):
@@ -2529,4 +2568,5 @@ class TestDocumentHandleLifecycleRows:
                           "expect_document": "session:old"}]
         assert fresh == [{"name": "ReloadRecovered", "expression": "2 mm",
                           "expect_document": "session:new"}]
+        assert all(args == {"max_results": 1000} for tool, args in calls if tool == "doc_get")
         assert not [tool for tool, _args in calls if tool in ("doc_close", "doc_activate")]

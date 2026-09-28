@@ -308,6 +308,24 @@ class TestGuards:
 
 
 class TestCaps:
+    @pytest.mark.parametrize("cap", [1, 50])
+    def test_active_after_cap_replaces_last_row_with_original_address(self, _install, cap):
+        clean = [_Doc(f"D{i}", data_file=_DataFile()) for i in range(cap)]
+        dirty = _Doc("Dirty", modified=True, data_file=_DataFile())
+        active = _Doc("Active", saved=False, data_file=None)
+        _install(active, clean + [dirty, active])
+        out = _payload(dg.handler(**({"max_results": cap} if cap == 1 else {})))
+        rows = out["open_documents"]
+        expected_handle = dg._write_guard.document_handle(active)
+        assert len(rows) == cap
+        assert [r["open_index"] for r in rows] == list(range(cap - 1)) + [cap + 1]
+        assert rows[-1]["name"] == "Active" and rows[-1]["is_active"] is True
+        assert rows[-1]["document_handle"] == expected_handle
+        assert out["active"]["document_handle"] == expected_handle
+        assert out["open_count"] == out["summary"]["open_count"] == cap + 2
+        assert out["truncated"] is True
+        assert {e["name"] for e in out["summary"]["exceptions"]} == {"Dirty", "Active"}
+
     def test_under_cap_untruncated_and_unchanged(self, _install):
         active = _Doc("Main", data_file=_DataFile())
         others = [_Doc(f"D{i}", data_file=_DataFile()) for i in range(5)]

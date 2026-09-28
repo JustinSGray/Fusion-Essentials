@@ -353,8 +353,9 @@ def _launch(prompt, run_dir, model, deny, tool_search, cwd):
     init_seen = False
     try:
         with open(transcript, "r", encoding="utf-8", errors="replace") as rf:
-            while proc.poll() is None and not ended:
-                time.sleep(2)
+            while not ended:
+                if proc.poll() is None:
+                    time.sleep(2)
                 while True:
                     pos = rf.tell()
                     line = rf.readline()
@@ -364,20 +365,33 @@ def _launch(prompt, run_dir, model, deny, tool_search, cwd):
                         rf.seek(pos)
                         break
                     if not init_seen and line.strip():
-                        init_seen = True
                         try:
                             init = json.loads(line)
                         except ValueError:
                             init = {}
-                        if init.get("type") == "system" and not init.get("tools"):
-                            ended = "spawned with no tools"
-                        else:
-                            print(f"  executor up ({len(init.get('tools') or [])} tools)", flush=True)
+                        if init.get("type") == "system" and init.get("subtype") == "init":
+                            init_seen = True
+                            servers = init.get("mcp_servers") or []
+                            fusion = [row for row in servers if isinstance(row, dict)
+                                      and row.get("name") == "fusion-essentials"]
+                            tools = init.get("tools") or []
+                            if len(fusion) != 1 or fusion[0].get("status") != "connected":
+                                status = fusion[0].get("status") if len(fusion) == 1 else "missing"
+                                ended = f"blocked init: fusion-essentials status {status}"
+                            elif not tool_search and not any(isinstance(tool, str) and
+                                                             tool.startswith(MCP_PREFIX) for tool in tools):
+                                ended = "blocked init: no fusion-essentials tools"
+                            else:
+                                print(f"  executor up ({len(tools)} tools)", flush=True)
                     live.read(line, time.time())
                 now = time.time()
-                if not init_seen and now - start > INIT_DEADLINE_S:
-                    ended = f"no init event within {INIT_DEADLINE_S} s"
-                if limit and live.idle_s(now) >= limit:
+                if not ended and not init_seen and now - start > INIT_DEADLINE_S:
+                    ended = f"blocked init: no init event within {INIT_DEADLINE_S} s"
+                if not ended and proc.poll() is not None:
+                    ended = "blocked init: no system init event" if not init_seen else ""
+                    if not ended:
+                        break
+                if not ended and limit and live.idle_s(now) >= limit:
                     ended = f"stalled: no tool call for {int(live.idle_s(now) / 60)} min at {live.calls} calls"
                 if now - last_beat >= HEARTBEAT_S:
                     print(f"  [{int(now - start)}s] {live.calls} tool calls, idle {int(live.idle_s(now))}s",
@@ -552,11 +566,15 @@ def main():
         calls, tokens, final = audit(os.path.join(run_dir, "transcript.jsonl"))
         with open(os.path.join(run_dir, "report.txt"), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(final)
-        saved = save_result(f"{scenario_id}_{nn}", project, folder, run_dir, call)
+        blocked_init = ended.startswith("blocked init:")
+        saved = ({"name": f"{scenario_id}_{nn}", "document_id": None, "web_url": None,
+                  "error": "save skipped: " + ended, "screenshot": None} if blocked_init else
+                 save_result(f"{scenario_id}_{nn}", project, folder, run_dir, call))
         rec.update({"staged": staged, "started": started, "seconds": int(time.time() - t0),
                     "calls": calls, "output_tokens": tokens, "ended": ended,
-                    "outcome": outcome, "executor_exit": returncode,
-                    "execution_state": ("completed" if outcome == "executor_completed" else
+                    "outcome": ("blocked_init" if blocked_init else outcome), "executor_exit": returncode,
+                    "execution_state": ("blocked_init" if blocked_init else
+                                        "completed" if outcome == "executor_completed" else
                                         ("staged_only" if calls == 0 else "partial_failed")),
                     "call_times_s": call_times, "saved": saved})
         with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as fh:
@@ -567,9 +585,11 @@ def main():
             if new_index:
                 fh.write(INDEX_HEADER)
             fh.write(index_row(rec))
-        print(f"  ended: {ended}  outcome: {outcome}  calls: {calls}  output tokens: {tokens}  "
+        print(f"  ended: {ended}  outcome: {rec['outcome']}  calls: {calls}  output tokens: {tokens}  "
               f"seconds: {rec['seconds']}\n  saved: {saved['web_url'] or saved['error']}\n"
               f"== report ==\n{final or '(no final message)'}", flush=True)
+        if blocked_init:
+            break
     return cli_status
 
 

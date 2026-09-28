@@ -615,6 +615,112 @@ _MOTION += [
     ("doc_close", lambda c: {"name": _ctx_get(c, "reset_scratch", "the driven-reset scratch"),
                              "save_changes": False,
                              "expect_document": _ctx_get(c, "reset_story", "the story document")},
+    _document_closed, None),
+]
+
+# ASSEMBLY-FIRST-OCCURRENCE-CAPTURE-REVERT-1: first root child's pending pose can be lost on
+# capture while ground-to-parent; a second root child keeps its separate pending pose.
+_MOTION += [
+    ("doc_get", {"max_results": 1000}, _home_document,
+     ("capture_story", _recall("capture_story", _home_address))),
+    ("doc_new", lambda c: {"expect_document": _ctx_get(c, "capture_story", "the story document")},
+     _new_document, ("capture_locked", _recall("capture_locked", lambda p: p["document_handle"]))),
+] + [
+    (t, (lambda a: (lambda c: a))(args) if t == "sketch_add_geometry" else args, e, s)
+    for t, args, e, s in _box("CapA") + _box("CapB", ox=40)
+] + [
+    ("design_activate_component", {"occurrence": "root"}, "ok", None),
+    ("assembly_get", {"include": ["poses"]},
+     lambda p: (lambda r: _measured("two fresh root children, first ground-to-parent",
+                                   {n: (v.get("ground_to_parent"), v.get("origin"))
+                                    for n, v in r.items()},
+                                   len(r) == 2 and r.get("CapA:1", {}).get("ground_to_parent") is True
+                                   and r.get("CapA:1", {}).get("origin") == [0, 0, 0]
+                                   and r.get("CapB:1", {}).get("origin") == [0, 0, 0]))(
+         {r.get("name"): r for r in p.get("occurrences") or []}), None),
+    ("assembly_move", {"occurrence": "CapB:1", "dx": 40},
+     lambda p: p.get("moved") is True and "first root occurrence" not in (p.get("note") or ""), None),
+    ("assembly_move", {"occurrence": "CapA:1", "dx": 100, "dy": 200, "rotate_deg": 30},
+     lambda p: _measured("locked first-root move discloses capture risk",
+                         {"moved": p.get("moved"), "position": p.get("position"),
+                          "note": p.get("note")},
+                         p.get("moved") is True
+                         and "'CapA:1' is the first root occurrence and is ground-to-parent"
+                         in (p.get("note") or "")
+                         and "capture can reset this pending move" in (p.get("note") or "")
+                         and "assembly_ground(occurrence='CapA:1', ground_to_parent=false)"
+                         in (p.get("note") or "")), None),
+    ("assembly_get", {"include": ["poses"]},
+     lambda p: (lambda r: _measured("locked A and later B have separate placed poses",
+                                   {n: (v.get("origin"), v.get("x_axis")) for n, v in r.items()},
+                                   len(r) == 2 and r.get("CapA:1", {}).get("origin") == [100, 200, 0]
+                                   and r.get("CapA:1", {}).get("x_axis") == [0.866, 0.5, 0]
+                                   and r.get("CapB:1", {}).get("origin") == [40, 0, 0]
+                                   and r.get("CapB:1", {}).get("x_axis") == [1, 0, 0]))(
+         {r.get("name"): r for r in p.get("occurrences") or []}), None),
+    ("assembly_capture_position", {"action": "capture"},
+     _refused("MOVED 1 occurrence(s)", "CapA:1", "does NOT hold"), None),
+    ("assembly_get", {"include": ["poses"]},
+     lambda p: (lambda r: _measured("capture reverts only locked first A, later B stays placed",
+                                   {n: (v.get("origin"), v.get("x_axis")) for n, v in r.items()},
+                                   len(r) == 2 and r.get("CapA:1", {}).get("origin") == [0, 0, 0]
+                                   and r.get("CapA:1", {}).get("x_axis") == [1, 0, 0]
+                                   and r.get("CapB:1", {}).get("origin") == [40, 0, 0]
+                                   and r.get("CapB:1", {}).get("x_axis") == [1, 0, 0]))(
+         {r.get("name"): r for r in p.get("occurrences") or []}), None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "capture_story", "the story document"),
+                                "expect_document": _ctx_get(c, "capture_locked", "the locked scratch")},
+     "ok", None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "capture_locked", "the locked scratch"),
+                             "save_changes": False,
+                             "expect_document": _ctx_get(c, "capture_story", "the story document")},
+     _document_closed, None),
+    ("doc_new", lambda c: {"expect_document": _ctx_get(c, "capture_story", "the story document")},
+     _new_document,
+     ("capture_released", _recall("capture_released", lambda p: p["document_handle"]))),
+] + [
+    (t, (lambda a: (lambda c: a))(args) if t == "sketch_add_geometry" else args, e, s)
+    for t, args, e, s in _box("CapA") + _box("CapB", ox=40)
+] + [
+    ("design_activate_component", {"occurrence": "root"}, "ok", None),
+    ("assembly_get", {"include": ["poses"]},
+     lambda p: (lambda r: _measured("released-control starts with locked first A",
+                                   {n: (v.get("ground_to_parent"), v.get("origin"))
+                                    for n, v in r.items()},
+                                   len(r) == 2 and r.get("CapA:1", {}).get("ground_to_parent") is True
+                                   and r.get("CapA:1", {}).get("origin") == [0, 0, 0]))(
+         {r.get("name"): r for r in p.get("occurrences") or []}), None),
+    ("assembly_ground", {"occurrence": "CapA:1", "ground_to_parent": False},
+     lambda p: p.get("isGroundToParent") is False, None),
+    ("assembly_move", {"occurrence": "CapA:1", "dx": 100, "dy": 200, "rotate_deg": 30},
+     lambda p: p.get("moved") is True and "first root occurrence" not in (p.get("note") or ""), None),
+    ("assembly_get", {"include": ["poses"]},
+     lambda p: (lambda r: _measured("released A placed before capture; B remains at home",
+                                   {n: (v.get("ground_to_parent"), v.get("origin"), v.get("x_axis"))
+                                    for n, v in r.items()},
+                                   len(r) == 2 and r.get("CapA:1", {}).get("ground_to_parent") is False
+                                   and r.get("CapA:1", {}).get("origin") == [100, 200, 0]
+                                   and r.get("CapA:1", {}).get("x_axis") == [0.866, 0.5, 0]
+                                   and r.get("CapB:1", {}).get("origin") == [0, 0, 0]))(
+         {r.get("name"): r for r in p.get("occurrences") or []}), None),
+    ("assembly_capture_position", {"action": "capture"}, _captured, None),
+    ("assembly_get", {"include": ["poses"]},
+     lambda p: (lambda r: _measured("released A pose survives capture; B stays at home",
+                                   {n: (v.get("ground_to_parent"), v.get("origin"), v.get("x_axis"))
+                                    for n, v in r.items()},
+                                   len(r) == 2 and r.get("CapA:1", {}).get("ground_to_parent") is False
+                                   and r.get("CapA:1", {}).get("origin") == [100, 200, 0]
+                                   and r.get("CapA:1", {}).get("x_axis") == [0.866, 0.5, 0]
+                                   and r.get("CapB:1", {}).get("origin") == [0, 0, 0]
+                                   and r.get("CapB:1", {}).get("x_axis") == [1, 0, 0]))(
+         {r.get("name"): r for r in p.get("occurrences") or []}), None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "capture_story", "the story document"),
+                                "expect_document": _ctx_get(c, "capture_released",
+                                                            "the released scratch")},
+     "ok", None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "capture_released", "the released scratch"),
+                             "save_changes": False,
+                             "expect_document": _ctx_get(c, "capture_story", "the story document")},
      _document_closed, None),
 ]
 

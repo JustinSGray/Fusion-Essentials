@@ -102,8 +102,9 @@ def map_text(doc):
             continue
         parts.append(f"- `{sec['id']}` - {sec['use_when']}")
     parts += ["", "## Recipes", "",
-              "A recipe `<id>` is `sys_get_guidance(recipe=\"<id>\")` - ordered steps, a read-back "
-              "per step, a bar for done. Its prefix names the playbook it belongs to.", ""]
+              "A recipe `<id>` is `sys_get_guidance(recipe=\"<id>\")` - one worked construction: its "
+              "prerequisites, steps each with a read-back, a bar for done. Its prefix names the "
+              "playbook it belongs to.", ""]
     for rec in loader.recipes(doc):
         parts.append(f"- `{rec['id']}` - {rec['use_when']}")
     return "\n".join(parts).rstrip() + "\n"

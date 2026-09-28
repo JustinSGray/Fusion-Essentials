@@ -2847,7 +2847,7 @@ _CLOUD_DRAWING = [
      and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "drawing_persist_source", "the original source session")},
      _activated(SOURCE_DOC), None),
-    ("doc_get", {}, _drawing_persistence_absent, None),
+    ("doc_get", {"max_results": 1000}, _drawing_persistence_absent, None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_persist_saved", "the saved drawing version")["version_id"],
                             "force_api_open": True, "expect_document": c["drawing_persist_source"]},
      _drawing_persistence_reopened,
@@ -2893,7 +2893,7 @@ _CLOUD_DRAWING = [
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "drawing_persist_source", "the source session")},
      _activated(SOURCE_DOC), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(
+    ("doc_get", {"max_results": 1000}, lambda p: _drawing_persistence_absent(
         p, "drawing_persist_reopened", "drawing_persist_source", SOURCE_DOC), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_two_saved", "the saved drawing")["version_id"],
                             "force_api_open": True, "expect_document": c["drawing_persist_source"]},
@@ -2941,7 +2941,7 @@ _CLOUD_DRAWING = [
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "drawing_persist_source", "the source session")},
      _activated(SOURCE_DOC), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(
+    ("doc_get", {"max_results": 1000}, lambda p: _drawing_persistence_absent(
         p, "drawing_two_reopened", "drawing_persist_source", SOURCE_DOC), None),
     ("param_get", {"name": "CloudPlateH"}, _drawing_parameter(10.0), None),
     ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
@@ -2969,7 +2969,8 @@ _CLOUD_DRAWING = [
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "home_doc", "the home document")},
      _activated(), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(p, "drawing_persist_source", "home_doc", None), None),
+    ("doc_get", {"max_results": 1000},
+     lambda p: _drawing_persistence_absent(p, "drawing_persist_source", "home_doc", None), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_two_saved", "the older drawing")["version_id"],
                             "force_api_open": True, "expect_document": c["home_doc"]},
      _drawing_persistence_reopened(
@@ -3010,7 +3011,8 @@ _CLOUD_DRAWING = [
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "home_doc", "the home document")},
      _activated(), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(p, "drawing_update_opened", "home_doc", None), None),
+    ("doc_get", {"max_results": 1000},
+     lambda p: _drawing_persistence_absent(p, "drawing_update_opened", "home_doc", None), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_source_changed", "the changed source")["version_id"],
                             "force_api_open": True, "expect_document": c["home_doc"]},
      _drawing_source_reopened("drawing_source_changed", "drawing_persist_source"),
@@ -3041,7 +3043,8 @@ _CLOUD_DRAWING = [
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "home_doc", "the home document")},
      _activated(), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(p, "drawing_source_restore_session", "home_doc", None), None),
+    ("doc_get", {"max_results": 1000},
+     lambda p: _drawing_persistence_absent(p, "drawing_source_restore_session", "home_doc", None), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_two_saved", "the older drawing")["version_id"],
                             "force_api_open": True, "expect_document": c["home_doc"]},
      _drawing_persistence_reopened(
@@ -3088,7 +3091,8 @@ _CLOUD_DRAWING = [
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "home_doc", "the home document")},
      _activated(), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(p, "drawing_restore_opened", "home_doc", None), None),
+    ("doc_get", {"max_results": 1000},
+     lambda p: _drawing_persistence_absent(p, "drawing_restore_opened", "home_doc", None), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_source_restored", "the restored source")["version_id"],
                             "force_api_open": True, "expect_document": c["home_doc"]},
      _drawing_source_reopened("drawing_source_restored", "drawing_source_restore_session"),
@@ -3144,7 +3148,7 @@ _CLOUD_DRAWING = [
      _document_closed, None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "drawing_final_source", "the source session")},
      _activated(SOURCE_DOC), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(
+    ("doc_get", {"max_results": 1000}, lambda p: _drawing_persistence_absent(
         p, "drawing_final_opened", "drawing_final_source", SOURCE_DOC), None),
     ("doc_close", lambda c: {"name": _ctx_get(c, "drawing_final_source", "the source session"),
                              "expect_document": c["drawing_final_source"], "save_changes": False},
@@ -3463,7 +3467,8 @@ _CLOUD_CAM_PERSISTENCE = [
      and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "cam_persist_home", "the home session")},
      _activated(), None),
-    ("doc_get", {}, _cam_persistence_document("cam_persist_home", absent_key="cam_persist_owned"), None),
+    ("doc_get", {"max_results": 1000},
+     _cam_persistence_document("cam_persist_home", absent_key="cam_persist_owned"), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "cam_persist_urn", "the saved coupon"),
                             "force_api_open": True, "expect_document": c["cam_persist_home"]},
      lambda p: _opened(_CAM_PERSIST_DOC, lambda: _RECALL.get("cam_persist_urn"))(p)
@@ -3494,5 +3499,6 @@ _CLOUD_CAM_PERSISTENCE = [
      and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "cam_persist_home", "the home session")},
      _activated(), None),
-    ("doc_get", {}, _cam_persistence_document("cam_persist_home", absent_key="cam_persist_reopened"), None),
+    ("doc_get", {"max_results": 1000},
+     _cam_persistence_document("cam_persist_home", absent_key="cam_persist_reopened"), None),
 ]

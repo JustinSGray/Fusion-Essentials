@@ -1139,7 +1139,7 @@ _SHEET_SELECTED = _SHEET_BUILD + [
     ("doc_activate", lambda c: {"name": _ctx_get(c, "sm_home", "original story session")},
      "ok", None),
     _dwell(4.0),
-    ("doc_get", {}, _story_restored, None),
+    ("doc_get", {"max_results": 1000}, _story_restored, None),
 ]
 
 
@@ -1160,7 +1160,7 @@ def _position_variant(position):
         ("doc_activate", lambda c: {"name": _ctx_get(c, "sm_home", "original story session")},
          "ok", None),
         _dwell(4.0),
-        ("doc_get", {}, _story_restored, None),
+        ("doc_get", {"max_results": 1000}, _story_restored, None),
     ]
 
 
@@ -1376,6 +1376,6 @@ _SHEET_CLEANUP = [
                              "save_changes": False}, _closed_one, None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "sm_home", "original story session")}, "ok", None),
     _dwell(4.0),
-    ("doc_get", {}, _story_restored, None),
+    ("doc_get", {"max_results": 1000}, _story_restored, None),
 ]
 
