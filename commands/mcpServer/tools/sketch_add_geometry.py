@@ -78,6 +78,7 @@ _KIND_REF_TOKEN = {"cv_spline": "cv_spline",
 # How many landed segments a broken-chain error names before it summarizes the rest - a chain can
 # hold hundreds of points, and the error crosses the wire.
 _MAX_NAMED_SEGMENTS = 6
+_DRAW_MORE_NOTE = "Draw more with sketch_add_geometry, or view_screenshot to view the sketch."
 
 # Which params each kind requires (in user units / degrees / counts).
 _REQUIRED = {
@@ -557,6 +558,42 @@ _ENTRY_FIELDS = ("kind", "x1", "y1", "x2", "y2", "cx", "cy", "radius", "minor", 
                  "create_angle_dimension", "is_construction")
 
 
+def _batch_receipt_fields(results, sketch, entries, units):
+    """Return one final sketch state and one copy of each batch guidance note."""
+    notes = []
+    for row in results:
+        row.pop("units", None)
+        if row.get("compute_deferred"):
+            continue
+        note = row.pop("note", None)
+        kind = row.get("kind")
+        if kind in ("circle", "arc") and row.get("center_point"):
+            note = "Each row's center_point identifies its centre sketch point."
+        elif kind == "cv_spline" and "degree" in row:
+            requested = entries[row["index"]].get("degree")
+            requested = 3 if requested is None else int(requested)
+            if requested != row["degree"]:
+                row["degree_requested"] = requested
+                note = ("Built degree differs from degree_requested; add control points for a "
+                        "higher degree. Use sketch_get(include_entities=true) for cv_spline ids.")
+        if note and note != _DRAW_MORE_NOTE:
+            prefix = kind
+            if kind in _RECT_KINDS:
+                prefix += f" constraints_added={row.get('constraints_added')}"
+            note = f"{prefix}: {note}"
+        if note and note not in notes:
+            notes.append(note)
+    try:
+        state = _sketch_summary(sketch)
+    except Exception:
+        state = None
+    if state is None:
+        notes.append("Final sketch state could not be read; use sketch_get to inspect it.")
+    readback = "Read sketch_get(include_entities=true) with entity_offset for current ids and available handles."
+    return {"units": units, "sketch_state": state,
+            "result_note": " ".join([readback, *notes])}
+
+
 def handler(geometry=None, sketch_name: str = "", component: str = "", units: str = "mm") -> dict:
     """See TOOL_DESCRIPTION."""
     entries, eerr = _sketch_batch.entries_or_error(geometry, "geometry", _ENTRY_FIELDS)
@@ -581,11 +618,15 @@ def handler(geometry=None, sketch_name: str = "", component: str = "", units: st
             return error(f"No sketch named '{requested}'. Use sketch_get to list them, "
     "or sketch_create first.")
         return error("No sketch to draw on. Create one first with sketch_create.")
-    return _sketch_batch.run_batch(entries, lambda i, e: _one(sketch, e, k, units), "geometry",
-                                   "drawn", safe(lambda: sketch.name))
+    multi = len(entries) > 1
+    return _sketch_batch.run_batch(
+        entries, lambda i, e: _one(sketch, e, k, units, include_summary=not multi),
+        "geometry", "drawn", safe(lambda: sketch.name),
+        result_fields=(lambda results: _batch_receipt_fields(results, sketch, entries, units))
+        if multi else None)
 
 
-def _one(sketch, entry, k, units):
+def _one(sketch, entry, k, units, include_summary=True):
     """(result, error) for ONE geometry entry drawn on `sketch`; required params per 'kind' are in
     _REQUIRED."""
     kind = (entry.get("kind") or "").strip().lower()
@@ -704,9 +745,10 @@ def _one(sketch, entry, k, units):
     "label": label,
     "kind": kind,
     "units": units,
-    "sketch": _sketch_summary(sketch),
-    "note": "Draw more with sketch_add_geometry, or view_screenshot to view the sketch.",
     }
+    if include_summary:
+        out["sketch"] = _sketch_summary(sketch)
+    out["note"] = _DRAW_MORE_NOTE
     if delta is not None:
         out["curves_added"] = delta
     if kind in _RECT_KINDS:

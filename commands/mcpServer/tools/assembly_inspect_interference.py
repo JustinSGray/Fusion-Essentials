@@ -212,7 +212,8 @@ def handler(include_coincident_faces: bool = False) -> dict:
             f"Cannot certify interference-free: {'; '.join(reasons)}. "
             f"{analyzed} placed-body pair(s) WERE analysed and none interfere; "
             f"no pass was formed over the whole assembly. {' '.join(remedies)}")
-    note = ("No interference - every part fits." if clear else
+    note = ("No interference found among the compared solid bodies; coincident faces "
+            + ("included" if include_coincident_faces else "excluded") + "." if clear else
             f"{len(items)} interfering occurrence pair(s) - bodies overlap or meet at coincident "
             "faces. Each lists the two occurrences and readable overlap volume from analysed body "
             "pairs; fix positioning/sizing/joints. (A "

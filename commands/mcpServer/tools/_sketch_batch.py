@@ -34,7 +34,7 @@ def entries_or_error(raw, name, allowed):
     return raw, None
 
 
-def run_batch(entries, one, name, verb, sketch_name, *, result_note=""):
+def run_batch(entries, one, name, verb, sketch_name, *, result_note="", result_fields=None):
     """Run one sketch batch and report completed, retained, failed, and unattempted entries."""
     results = []
     retained = []
@@ -84,6 +84,8 @@ def run_batch(entries, one, name, verb, sketch_name, *, result_note=""):
             note += (f" Stopped at {name}[{failed['index']}]: {failed['error']} The entries before "
                      f"it are in the sketch; {payload['not_attempted']} after it were not attempted.")
     payload["note"] = note
+    if result_fields:
+        payload = {**(result_fields(results) or {}), **payload}
     if result_note:
         payload["result_note"] = result_note
     return ok(payload)

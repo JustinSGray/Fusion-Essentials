@@ -7,7 +7,8 @@ import adsk.core
 import adsk.fusion
 
 from conftest import (BRepBody, BRepFace, FakeFeature, FakeTimeline, FakeTimelineObject,
-                      FakeValueInput, MakeComp, Profile, Sketch, _NamedCollection, error_message,
+                      FakeValueInput, MakeComp, Profile, Sketch, _FakeObjectCollection,
+                      _NamedCollection, error_message,
                       install, load_tool, make_bbox, make_design, payload)
 
 
@@ -546,4 +547,91 @@ def test_linked_alias_address_is_refused_before_mutation(scene, monkeypatch):
     assert "original Extrude" in error_message(result)
     assert result["details"]["mutation_attempted"] is False
     assert alias.setter_args is None
+    assert scene.timeline.markerPosition == 3
+
+
+def _four_profiles(scene):
+    """A counted native getter with four profiles of one sketched feature."""
+    sketch = scene.profiles[0].parentSketch
+    sketch.entityToken = "original-sketch-token"
+    collection = _FakeObjectCollection()
+    collection.objectType = "adsk::core::ObjectCollection"
+    for i in range(4):
+        collection.add(Profile(entity_token=f"four-profile-{i}", parent_sketch=sketch))
+    scene.feature._profile = collection
+    return collection
+
+
+def test_four_profile_getter_allows_verified_extent_and_discloses_sketch(scene):
+    _four_profiles(scene)
+    result = payload(mod.handler(feature="Extrude1", action="extent", extent="symmetric",
+                                 distance=8))
+    assert result["edited"] is True
+    assert result["definition_before"]["profile_sketch"] == "Original"
+    assert result["definition_after"]["profile_sketch"] == "Original"
+    assert result["linked_scope_verified_at_edit"] is True
+    assert scene.feature.extentOne.distance.value == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize("args,expected_operation", [
+    ({"action": "operation", "operation": "cut", "target_bodies": ["Body1"]}, "cut"),
+    ({"action": "participants", "target_bodies": ["Body1"]}, "cut"),
+    ({"action": "profile", "profile": "profile-1"}, "new"),
+])
+def test_four_profile_owner_keeps_existing_edit_actions(scene, args, expected_operation):
+    _four_profiles(scene)
+    if args["action"] == "participants":
+        scene.feature.operation = adsk.fusion.FeatureOperations.CutFeatureOperation
+    result = payload(mod.handler(feature="Extrude1", **args))
+    assert result["edited"] is True
+    assert result["definition_before"]["profile_sketch"] == "Original"
+    assert result["definition_after"]["operation"] == expected_operation
+    if args["action"] == "profile":
+        assert result["definition_after"]["profile_sketch"] == "Replacement"
+    else:
+        assert result["definition_after"]["profile_sketch"] == "Original"
+
+
+@pytest.mark.parametrize("broken,fragment", [
+    ("empty", "empty or unreadable"),
+    ("unreadable", "empty or unreadable"),
+    ("non_profile", "non-profile member"),
+    ("missing_sketch_identity", "unreadable sketch identity"),
+    ("mixed_sketch", "spans sketches"),
+    ("unreadable_owner", "unreadable component owner"),
+    ("foreign", "outside its owning component"),
+    ("linked", "Linked profile collections"),
+])
+def test_collection_with_unverified_members_or_links_refuses_before_mutation(scene, broken,
+                                                                             fragment):
+    collection = _four_profiles(scene)
+    if broken == "empty":
+        collection._items.clear()
+    elif broken == "unreadable":
+        collection = _NamedCollection(raises="collection unreadable")
+        collection.objectType = "adsk::core::ObjectCollection"
+        scene.feature._profile = collection
+    elif broken == "non_profile":
+        collection._items[2] = object()
+    elif broken == "missing_sketch_identity":
+        del scene.profiles[0].parentSketch.entityToken
+    elif broken == "mixed_sketch":
+        other = scene.profiles[1].parentSketch
+        other.entityToken = "replacement-sketch-token"
+        collection._items[2].parentSketch = other
+    elif broken == "unreadable_owner":
+        other = Sketch(name="Original", entity_token="orphan-sketch-token")
+        collection._items[2].parentSketch = other
+    elif broken == "foreign":
+        foreign = MakeComp(name="Other", entity_token="other-token")
+        other = Sketch(name="Original", parent_component=foreign,
+                       entity_token="foreign-sketch-token")
+        collection._items[2].parentSketch = other
+    elif broken == "linked":
+        scene.feature.linkedFeatures = _NamedCollection([object()])
+    result = mod.handler(feature="Extrude1", action="extent", extent="symmetric", distance=8)
+    assert result["isError"] is True
+    assert fragment in error_message(result)
+    assert result["details"]["mutation_attempted"] is False
+    assert scene.feature.setter_args is None
     assert scene.timeline.markerPosition == 3

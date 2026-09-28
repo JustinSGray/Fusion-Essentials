@@ -1359,7 +1359,33 @@ class TestBatch:
         assert (out["drawn"], out["requested"]) == (2, 2)
         assert [r["index"] for r in out["results"]] == [0, 1]
         assert [r["kind"] for r in out["results"]] == ["circle", "line"]
+        assert out["units"] == "mm" and out["sketch_state"]["circle_count"] == 1
+        assert all("sketch" not in r and "units" not in r for r in out["results"])
+        assert out["results"][0]["center_point"] == "point:0"
+        assert "circle: " in out["result_note"] and "Draw more" in out["result_note"]
         assert s.sketchCircles.count == 1 and s.sketchLines.count == 1
+
+    def test_dense_batch_keeps_each_effect_and_hoists_final_state(self, monkeypatch):
+        s = FakeSketch(); _install_draw(monkeypatch, s)
+        out = _payload(sk.handler(geometry=[
+            {"kind": "point", "cx": i, "cy": 0} for i in range(193)]))
+        assert (out["drawn"], out["requested"]) == (193, 193)
+        assert [r["index"] for r in out["results"]] == list(range(193))
+        assert all(r["kind"] == "point" and r["label"] == f"point ({i},0)"
+                   and "sketch" not in r and "units" not in r and "note" not in r
+                   for i, r in enumerate(out["results"]))
+        assert out["sketch_state"]["point_count"] == s.sketchPoints.count == 193
+        assert out["result_note"].count("Draw more") == 1
+        assert "sketch_get(include_entities=true)" in out["result_note"]
+
+        rects = _payload(sk.handler(geometry=[
+            {"kind": "rectangle", "x1": i * 10, "y1": 0, "x2": i * 10 + 5, "y2": 5}
+            for i in range(200)]))
+        assert [r["index"] for r in rects["results"]] == list(range(200))
+        assert all(r["curves_added"] == 4 and r["constraints_added"] == 4
+                   and "note" not in r for r in rects["results"])
+        assert rects["result_note"].count("rectangle constraints_added=4:") == 1
+        assert rects["sketch_state"]["line_count"] == 800
 
     def test_a_second_entry_that_fails_leaves_the_first_one_drawn(self, monkeypatch):
         s = FakeSketch(); _install_draw(monkeypatch, s)
@@ -1371,8 +1397,41 @@ class TestBatch:
         assert out["failed"] == {"index": 1, "error": "polygon needs sides >= 3."}
         assert out["not_attempted"] == 1
         assert "polygon needs sides >= 3." in out["note"]
+        assert out["sketch_state"]["circle_count"] == 1
+        assert [r["index"] for r in out["results"]] == [0]
         # the circle really is in the sketch, and the third entry never ran
         assert s.sketchCircles.count == 1 and s.sketchLines.count == 0
+
+    def test_final_state_read_failure_keeps_partial_receipt(self, monkeypatch):
+        s = FakeSketch(); _install_draw(monkeypatch, s)
+        monkeypatch.setattr(sk, "_sketch_summary", lambda _s: (_ for _ in ()).throw(RuntimeError("unreadable")))
+        out = _payload(sk.handler(geometry=[
+            {"kind": "circle", "cx": 0, "cy": 0, "radius": 5}, self._BAD_POLYGON]))
+        assert out["drawn"] == 1 and out["requested"] == 2
+        assert out["failed"]["index"] == 1 and out["not_attempted"] == 0
+        assert out["results"][0]["index"] == 0 and out["sketch_state"] is None
+        assert "could not be read" in out["result_note"]
+        assert s.sketchCircles.count == 1
+
+    def test_multi_entry_warnings_keep_item_facts(self, monkeypatch):
+        s = FakeSketch(); _install_draw(monkeypatch, s)
+        monkeypatch.setattr(sk, "_effective_spline_degree", lambda _s: 2)
+        out = _payload(sk.handler(geometry=[
+            {"kind": "cv_spline", "points": [[0, 0], [1, 1], [2, 0]], "degree": 5},
+            {"kind": "cv_spline", "points": [[3, 0], [4, 1], [5, 0]], "degree": 3}]))
+        assert [(r["degree_requested"], r["degree"]) for r in out["results"]] == [(5, 2), (3, 2)]
+        assert out["result_note"].count("Built degree differs") == 1
+        assert "sketch_get(include_entities=true)" in out["result_note"]
+        assert all("note" not in r for r in out["results"])
+
+        stuck = _DeferStuck(); _install_draw(monkeypatch, stuck)
+        deferred = _payload(sk.handler(geometry=[
+            {"kind": "circle", "cx": 0, "cy": 0, "radius": 5},
+            {"kind": "circle", "cx": 10, "cy": 0, "radius": 5}]))
+        assert deferred["drawn"] == 2
+        assert deferred["sketch_state"]["compute_deferred"] is True
+        assert all(r["compute_deferred"] is True and "compute DEFERRED" in r["note"]
+                   for r in deferred["results"])
 
     def test_a_first_entry_that_fails_is_an_error_naming_it(self, monkeypatch):
         s = FakeSketch(); _install_draw(monkeypatch, s)

@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 211  |  **description breadcrumbs:** 318  |  **note/error breadcrumbs:** 680
+**Tools:** 211  |  **description breadcrumbs:** 319  |  **note/error breadcrumbs:** 679
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -40,7 +40,7 @@ close orphans, factor duplicated guards into shared helpers.
 - `design_get`  <- 55  (desc 11, note 44)
 - `find_geometry`  <- 55  (desc 14, note 41)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
-- `view_screenshot`  <- 36  (desc 5, note 31)
+- `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 33  (desc 15, note 18)
 - `model_inspect`  <- 26  (desc 4, note 22)
 - `data_get`  <- 25  (desc 10, note 15)
@@ -316,8 +316,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Grounding SNAPPED '' back to its timeline placement ( mm, was  mm) - the prior free move is discarded. To keep a moved position, leave the part free and capture the position instead.
 
 ### `assembly_inspect_interference`
-- No interference - every part fits.
 - interfering occurrence pair(s) - bodies overlap or meet at coincident faces. Each lists the two occurrences and readable overlap volume from analysed body pairs; fix positioning/sizing/joints. (A s...
+- No interference found among the compared solid bodies; coincident faces
 - No active design to analyze.
 - Cannot check interference: this design exposes
 - comparable solid entit
@@ -3965,7 +3965,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - No active design. Create or open a document first (see doc_new).
 - No sketch to draw on. Create one first with sketch_create.
 - '. Use sketch_get to list them, or sketch_create first.
-- Draw more with sketch_add_geometry, or view_screenshot to view the sketch.
 - Rectangle drawn. NO horizontal/vertical constraint took, so its sides are held only by their coordinates - a later edit can skew it. Add them with sketch_constrain (horizontal / vertical) before di...
 - horizontal/vertical constraint(s) applied to its sides, as the UI does - the constructor itself lands none. Its corners already share points; what remains free is position and size, so dimension th...
 - Control-point spline drawn - constrain or dimension it as 'cv_spline:<index>' (sketch_get lists the index).
@@ -3975,6 +3974,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Closed path drawn and a profile forms. The seam is WELDED - the closing segment ends on the first segment's start point, so the loop shares that point instead of carrying two at the same coordinate...
 - drawn. Its centre is a sketch point of its own: center_point=
 - - address points by that ref rather than by counting the ones you drew.
+- Each row's center_point identifies its centre sketch point.
+- Built degree differs from degree_requested; add control points for a higher degree. Use sketch_get(include_entities=true) for cv_spline ids.
 - Conic drawn. Address it as 'conic:<index>' - sketch_get(include_entities=true) lists the index. Closed by a chord between its endpoints it forms a profile that extrudes to a solid.
 - Elliptical arc drawn. Address it as 'elliptical_arc:<index>' - sketch_get(include_entities=true) lists the index. A 180 deg arc closed by a line across its diameter forms a profile that extrudes to...
 - Roles: center_rectangle x2,y2 = half-extents. conic cx,cy = apex. overall_slot x1,y1/x2,y2 = tips, center_point_slot = centre and cap. slot radius = half-width.

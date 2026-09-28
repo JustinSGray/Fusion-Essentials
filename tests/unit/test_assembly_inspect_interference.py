@@ -427,6 +427,12 @@ class TestInterferenceHandler:
         world([_occ("A:1", bodies=[a]), _occ("B:1", bodies=[b])], pair_volumes={})
         out = payload(ai.handler())
         assert out["passed"] is True and out["measured"]["interference_count"] == 0
+        assert out["note"] == ("No interference found among the compared solid bodies; "
+                               "coincident faces excluded.")
+        with_contacts = payload(ai.handler(include_coincident_faces=True))
+        assert with_contacts["passed"] is True
+        assert with_contacts["note"] == ("No interference found among the compared solid bodies; "
+                                         "coincident faces included.")
 
     def test_under_two_comparable_entities_REFUSES_rather_than_passing(self, world):
         a = _solid("A", (0, 0, 0), (1, 1, 1))

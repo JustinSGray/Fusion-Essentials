@@ -605,6 +605,40 @@ def _peg_faces_per_instance(p):
                      {"occurrences": got}, got == ["Peg:1", "Peg:2"])
 
 
+def _separated_block_poses(p):
+    """Read two 10 mm bodies whose world centers are 50 mm apart along X."""
+    rows = {r.get("name"): r for r in p.get("occurrences", [])}
+    a, b = rows.get("BlockA:1", {}), rows.get("BlockB:1", {})
+    ca, cb = a.get("bbox_center", []), b.get("bbox_center", [])
+    return _measured("separated scratch bodies have independent world poses",
+                     {"a": a, "b": b},
+                     a.get("body_count") == b.get("body_count") == 1
+                     and a.get("bbox_size") == b.get("bbox_size") == [10, 10, 10]
+                     and len(ca) == len(cb) == 3
+                     and all(_near(y - x, d, 0.001) for x, y, d in
+                             zip(ca, cb, [50, 0, 0])))
+
+
+def _separated_interference(include_coincident_faces):
+    """Check a complete clear result under one coincident-face policy."""
+    def check(p):
+        m = p.get("measured") or {}
+        note = p.get("note") or ""
+        policy = "included" if include_coincident_faces else "excluded"
+        return _measured("separated scratch bodies: clear overlap, no fit claim",
+                         {"measured": m, "note": note},
+                         p.get("passed") is True and m.get("analysis_complete") is True
+                         and m.get("interference_count") == 0
+                         and m.get("pairs_analyzed") == 0 and m.get("pairs_pruned") == 1
+                         and m.get("pairs_omitted") == 0
+                         and p.get("tolerance_used", {}).get("coincident_faces_included")
+                         is include_coincident_faces
+                         and "compared solid bodies" in note
+                         and "coincident faces " + policy in note
+                         and "fits" not in note.lower())
+    return check
+
+
 def _interference_pair_named(p):
     """assembly_inspect_interference on the Peg/BlockA/BlockB rig: each of Peg's two instances
     interferes with its OWN block, named exactly - no '(or N more instance(s))' guess."""
@@ -2316,7 +2350,22 @@ def _extrude_edit_rows():
     edit("ee_scope", {"action": "profile", "profile": {"sketch": "EditPocketB", "profile_index": 0}})
     inspect("EditScope:Body1", _extrude_edit_mass(1982, "x", (10000 - 18 * 7.5) / 1982))
     inspect("EditScope:Body2", _extrude_edit_mass(2000))
-    edit("ee_scope", {"action": "extent", "extent": "through_all", "direction": "positive"})
+    write("model_edit_extrude", lambda c: {
+        "feature": _ctx_get(c, "ee_scope", "Extrude"),
+        "action": "extent", "extent": "through_all", "direction": "positive"},
+        lambda p: _measured("linked source remains the addressed edit feature",
+                            p.get("linked_component_aliases"),
+                            _extrude_edit_landed(p) is True
+                            and p.get("linked_component_aliases") == ["EditProfile"]))
+    inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", -450 / 1910))
+    inspect("EditScope:Body2", _extrude_edit_mass(2000))
+    write("model_edit_extrude", lambda c: {
+        "feature": "EditProfile/" + _ctx_get(c, "ee_scope", "Extrude").split("/")[-1],
+        "action": "extent", "extent": "distance", "distance": 5},
+        _refused("no feature named", "EditProfile"))
+    rows.append(("find_geometry", {"target": "EditProfile:Body1", "kind": "planar_face",
+                                   "units": "mm", "max_results": 6}, _extrude_edit_roof, None))
+    inspect("EditProfile:Body2", _extrude_edit_mass(482))
     inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", -450 / 1910))
     inspect("EditScope:Body2", _extrude_edit_mass(2000))
     edit("ee_scope", {"action": "participants", "target_bodies": ["EditScope:Body2"]})
@@ -2369,6 +2418,91 @@ def _extrude_edit_rows():
         inspect("EditScope:Body3", _extrude_edit_mass(1000))
         rows.append(("find_geometry", {"target": "EditProfile:Body1", "kind": "planar_face",
                                        "units": "mm", "max_results": 6}, _extrude_edit_roof, None))
+
+    def four_state(label, bodies, dimensions, fragment_volumes=()):
+        def check(p):
+            mass = p.get("mass") or {}
+            got = {row.get("body"): row.get("volume") for row in mass.get("per_body") or []}
+            fragments = [volume for name, volume in got.items() if name not in bodies]
+            spans = sorted(p.get(axis) for axis in ("x", "y", "z")
+                           if isinstance(p.get(axis), (int, float)))
+            good = (p.get("kind") == "occurrence" and p.get("units") == "mm"
+                    and mass.get("accuracy_used") == "very_high"
+                    and mass.get("per_body_truncated") is False
+                    and mass.get("per_body_count") == len(bodies) + len(fragment_volumes) == len(got)
+                    and set(bodies).issubset(got) and len(spans) == 3
+                    and all(_near(got[name], volume, 0.005) for name, volume in bodies.items())
+                    and all(isinstance(volume, (int, float)) for volume in fragments)
+                    and all(_near(a, b, 0.005) for a, b in
+                            zip(sorted(fragments), sorted(fragment_volumes)))
+                    and all(_near(a, b, 0.01) for a, b in zip(spans, sorted(dimensions)))
+                    and _near(mass.get("volume"), sum(bodies.values()) + sum(fragment_volumes), 0.005))
+            return _measured(label + " independent material and bounds",
+                             {"bodies": got, "volume": mass.get("volume"), "dimensions": spans}, good)
+        return check
+
+    def four_read(bodies, dimensions, label, fragment_volumes=()):
+        rows.append(("model_inspect", {**_combine_inspect("G18Four:1"), "per_body": True},
+                     four_state(label, bodies, dimensions, fragment_volumes), None))
+        rows.append(("model_inspect", {**_combine_inspect("G18EditDecoy:1"), "per_body": True},
+                     four_state(label + " decoy", {"Body1": 500}, (5, 10, 10)), None))
+
+    def four_edit(args, operation, sketch, participants):
+        def check(p):
+            landed = _extrude_edit_landed(p)
+            after = p.get("definition_after") or {}
+            return _measured("four-profile definition readback", after,
+                             landed is True and p.get("action") == args["action"]
+                             and after.get("operation") == operation
+                             and after.get("profile_sketch") == sketch
+                             and after.get("extent") == "symmetric"
+                             and after.get("participants") == participants)
+        write("model_edit_extrude", lambda c, args=args: {
+            "feature": _ctx_get(c, "ee_four", "four-profile Extrude"), **args}, check)
+
+    # A literal root keeps the owned mixed-plane fixture outside the story layout.
+    rows.append(("design_activate_component", {"occurrence": "root"}, "ok", None))
+    write("model_create_component", {"name": "G18EditDecoy", "activate": True}, _made_component)
+    rectangle("G18DecoyProfile", (100, 100), (110, 110))
+    write("model_extrude", {"sketch_name": "G18DecoyProfile", "distance": 5,
+                            "operation": "new"}, _extruded)
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "G18Four", "activate": True}, _made_component)
+    for name, low, high in (("G18StockA", (190, -30), (235, 0)),
+                            ("G18StockB", (190, 0), (235, 30))):
+        rectangle(name, low, high)
+        write("model_extrude", {"sketch_name": name, "distance": 20,
+                                "symmetric": True, "operation": "new"}, _extruded)
+    rectangle("G18Replacement", (205, 0), (215, -10), "xz")
+    write("sketch_create", {"name": "G18FourProfile", "plane": "xz"})
+    write("sketch_add_geometry", {"sketch_name": "G18FourProfile", "geometry": [
+        {"kind": "rectangle", "x1": 190, "y1": 0, "x2": 235, "y2": -6},
+        {"kind": "rectangle", "x1": 194, "y1": 0, "x2": 200, "y2": -40}]})
+    write("model_extrude", {"sketch_name": "G18FourProfile", "profile_index": "all",
+                            "distance": 45, "symmetric": True, "operation": "new"},
+          lambda p: _measured("four-profile source selection", p,
+                              p.get("extruded") is True and p.get("profiles_extruded") == 4
+                              and sorted(p.get("profile_index") or []) == [0, 1, 2, 3]),
+          ("ee_four", _recall("ee_four", lambda p: "G18Four/" + p["feature"])))
+    four_read({"Body1": 54000, "Body2": 54000, "Body3": 42660},
+              (45, 90, 60), "four-profile initial")
+    four_edit({"action": "extent", "extent": "symmetric", "distance": 30},
+              "new", "G18FourProfile", [])
+    four_read({"Body1": 54000, "Body2": 54000, "Body3": 28440},
+              (45, 60, 60), "four-profile extent")
+    four_edit({"action": "operation", "operation": "cut",
+               "target_bodies": ["G18Four:Body1"]}, "cut", "G18FourProfile", ["Body1"])
+    four_read({"Body2": 54000}, (40, 45, 60),
+              "four-profile scoped cut", (1680, 14700, 27000))
+    four_edit({"action": "participants", "target_bodies": ["G18Four:Body2"]},
+              "cut", "G18FourProfile", ["Body2"])
+    four_read({"Body1": 54000}, (40, 45, 60),
+              "four-profile participant switch", (1680, 14700, 27000))
+    four_edit({"action": "profile", "profile": {"sketch": "G18Replacement",
+                                                "profile_index": 0}},
+              "cut", "G18Replacement", ["Body2"])
+    four_read({"Body1": 54000, "Body2": 51000}, (40, 45, 60),
+              "four-profile scalar replacement")
     rows += [
         ("doc_activate", lambda c: {"name": _ctx_get(c, "ee_story", "story"),
                                     "expect_document": _ctx_get(c, "ee_doc", "scratch")}, "ok", None),
@@ -5248,6 +5382,10 @@ _RESIZE = [
      _extruded, None),
     ("design_activate_component",
      lambda c: _interference_pin(c, {"occurrence": "root"}), "ok", None),
+    ("assembly_get", {"include": ["poses"]}, _separated_block_poses, None),
+    ("assembly_inspect_interference", {}, _separated_interference(False), None),
+    ("assembly_inspect_interference", {"include_coincident_faces": True},
+     _separated_interference(True), None),
     ("model_create_component",
      lambda c: _interference_pin(c, {"name": "Peg", "activate": True}), _made_component, None),
     ("sketch_create",

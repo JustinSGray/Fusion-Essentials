@@ -1337,12 +1337,14 @@ def _paging_rows():
     write("sketch_create", {"plane": "xy", "name": "PagingPoints"})
     write("sketch_add_geometry", {"sketch_name": "PagingPoints", "geometry": [
         {"kind": "point", "cx": 2100 + i * 2, "cy": -200} for i in range(200)]},
-        lambda p: len(p.get("results") or []) == 200
-        and p["results"][-1]["sketch"]["point_count"] == 201)
+        lambda p: p.get("drawn") == 200 and len(p.get("results") or []) == 200
+        and [r["index"] for r in p["results"]] == list(range(200))
+        and p["sketch_state"]["point_count"] == 201)
     write("sketch_add_geometry", {"sketch_name": "PagingPoints", "geometry": [
         {"kind": "point", "cx": 2100 + i * 2, "cy": -200} for i in range(200, 250)]},
-        lambda p: len(p.get("results") or []) == 50
-        and p["results"][-1]["sketch"]["point_count"] == 251)
+        lambda p: p.get("drawn") == 50 and len(p.get("results") or []) == 50
+        and [r["index"] for r in p["results"]] == list(range(50))
+        and p["sketch_state"]["point_count"] == 251)
     read("sketch_get", {"sketch_name": "PagingPoints", "include_entities": True},
          lambda p: (p["counts"]["points"] == 251
                     and [e["id"] for e in p["entities"]] == [f"point:{i}" for i in range(50)]
@@ -1397,6 +1399,67 @@ def _paging_rows():
     read("find_geometry", {"kind": "construction_point", "name": "PagedPoint230"},
          lambda p: p.get("match_count") == 1
          and p["matches"][0].get("position") == [2558.0, -200.0, 0.0])
+    write("sketch_create", {"plane": "xy", "name": "ReceiptPoints"})
+    write("sketch_add_geometry", {"sketch_name": "ReceiptPoints", "geometry": [
+        {"kind": "point", "cx": 3100 + i, "cy": -300} for i in range(193)]},
+        lambda p: (p.get("drawn"), p.get("requested")) == (193, 193)
+        and p.get("sketch") == "ReceiptPoints" and p.get("units") == "mm"
+        and [r["index"] for r in p["results"]] == list(range(193))
+        and p["results"][-1]["label"] == "point (3292,-300)"
+        and all(r["kind"] == "point" and "sketch" not in r and "note" not in r
+                for r in p["results"])
+        and p["sketch_state"]["point_count"] == 194
+        and p["result_note"].count("Draw more") == 1
+        and "sketch_get(include_entities=true)" in p["result_note"])
+    read("sketch_get", {"sketch_name": "ReceiptPoints"},
+         lambda p: p["counts"]["points"] == 194)
+    write("sketch_add_geometry", {"sketch_name": "ReceiptPoints", "geometry": [
+        {"kind": "point", "cx": 3300, "cy": -300},
+        {"kind": "polygon", "cx": 0, "cy": 0, "radius": 5, "sides": 2},
+        {"kind": "point", "cx": 3301, "cy": -300}]},
+        lambda p: (p.get("drawn"), p.get("requested")) == (1, 3)
+        and p.get("failed", {}).get("index") == 1 and p.get("not_attempted") == 1
+        and [r["index"] for r in p["results"]] == [0]
+        and p["sketch_state"]["point_count"] == 195)
+    read("sketch_get", {"sketch_name": "ReceiptPoints"},
+         lambda p: p["counts"]["points"] == 195)
+    write("sketch_create", {"plane": "xy", "name": "ReceiptMixed"})
+    write("sketch_add_geometry", {"sketch_name": "ReceiptMixed", "geometry": [
+        {"kind": "circle", "cx": 3500, "cy": -300, "radius": 5},
+        {"kind": "rectangle", "x1": 3530, "y1": -310, "x2": 3550, "y2": -290},
+        {"kind": "cv_spline", "points": [[3600, -300], [3610, -280], [3620, -300]],
+         "degree": 5}]},
+        lambda p: (p.get("drawn"), p.get("requested")) == (3, 3)
+        and [r["index"] for r in p["results"]] == [0, 1, 2]
+        and [r["kind"] for r in p["results"]] == ["circle", "rectangle", "cv_spline"]
+        and p["results"][0].get("center_point", "").startswith("point:")
+        and p["results"][1].get("curves_added") == 4
+        and p["results"][1].get("constraints_added", 0) > 0
+        and (p["results"][2].get("degree_requested"), p["results"][2].get("degree")) == (5, 2)
+        and p["result_note"].count("rectangle constraints_added=") == 1
+        and "Built degree differs" in p["result_note"]
+        and p["sketch_state"]["line_count"] == 6
+        and p["sketch_state"]["circle_count"] == 1,
+        ("receipt_mixed", _recall("receipt_mixed", lambda p: {
+            "center": p["results"][0]["center_point"],
+            "constraints": p["results"][1]["constraints_added"]})))
+    read("sketch_get", {"sketch_name": "ReceiptMixed", "include_entities": True},
+         lambda p: p["counts"]["circles"] == 1 and p["counts"]["lines"] == 6
+         and sum(e["type"] == "line" and e.get("construction") is False
+                 for e in p["entities"]) == 4
+         and sum(e["type"] == "line" and e.get("construction") is True
+                 for e in p["entities"]) == 2
+         and p["counts"]["cv_splines"] == 1
+         and p["constraint_count"] == _ctx_get(
+             _RECALL, "receipt_mixed", "mixed receipt")["constraints"]
+         and any(e["id"] == "circle:0" and e.get("center") == {"x": 3500.0, "y": -300.0}
+                 and abs(e.get("radius", 0) - 5) < 0.001 for e in p["entities"])
+         and any(e["id"] == _ctx_get(_RECALL, "receipt_mixed", "mixed receipt")["center"]
+                 and e.get("position") == {"x": 3500.0, "y": -300.0} for e in p["entities"])
+         and any(e["id"] == "cv_spline:0" and e.get("control_point_count") == 3
+                 and e.get("control_points") == [
+                     {"x": 3600.0, "y": -300.0}, {"x": 3610.0, "y": -280.0},
+                     {"x": 3620.0, "y": -300.0}] for e in p["entities"]))
     rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "paging_home", "home"),
                                          "expect_document": _ctx_get(c, "paging_doc", "paging")},
               _activated(), None),

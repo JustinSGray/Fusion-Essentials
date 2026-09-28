@@ -262,9 +262,50 @@ def _health(design):
     return None if result is None else {"errors": result[0], "warnings": result[1]}
 
 
+def _profile_source(feature, component):
+    """The native profile and one verified owning sketch, or a refusal."""
+    profile = _common._native_of(safe(lambda: feature.profile))
+    if isinstance(profile, adsk.fusion.Profile):
+        sketch = _common._native_of(safe(lambda: profile.parentSketch))
+        if _common.same_component(component, safe(lambda: sketch.parentComponent)) is not True:
+            return profile, sketch, False, ("The feature does not own its profile; address the "
+                                           "original Extrude, not its linked alias.")
+        return profile, sketch, False, None
+    if safe(lambda: profile.objectType) != "adsk::core::ObjectCollection":
+        return profile, None, False, "The feature's profile is unreadable; inspect its definition."
+    size = counted(lambda: profile.count)
+    if size is None or size <= 0:
+        return profile, None, True, ("The feature's profile collection is empty or unreadable; "
+                                     "inspect its definition.")
+    sketch, identity = None, None
+    for i in range(size):
+        member = _common._native_of(safe(lambda i=i: profile.item(i)))
+        if not isinstance(member, adsk.fusion.Profile):
+            return profile, None, True, ("The feature's profile collection has an unreadable or "
+                                         "non-profile member; inspect its definition.")
+        owner_sketch = _common._native_of(safe(lambda: member.parentSketch))
+        owner_identity = _common.native_identity(owner_sketch)
+        if owner_identity is None:
+            return profile, None, True, ("The feature's profile collection has an unreadable "
+                                         "sketch identity; inspect its definition.")
+        same_owner = _common.same_component(component, safe(lambda: owner_sketch.parentComponent))
+        if same_owner is None:
+            return profile, None, True, ("The feature's profile collection has an unreadable "
+                                         "component owner; inspect its definition.")
+        if same_owner is False:
+            return profile, None, True, ("The feature's profile collection includes a profile "
+                                         "outside its owning component; inspect the source Extrude.")
+        if identity is not None and owner_identity != identity:
+            return profile, None, True, ("The feature's profile collection spans sketches; "
+                                         "inspect the source Extrude.")
+        sketch, identity = owner_sketch, owner_identity
+    return profile, sketch, True, None
+
+
 def _definition(feature):
     """The definition fields readable at the feature's edit position."""
-    return {"profile_sketch": safe(lambda: feature.profile.parentSketch.name),
+    _, sketch, _, _ = _profile_source(feature, safe(lambda: feature.parentComponent))
+    return {"profile_sketch": safe(lambda: sketch.name),
             "operation": next((name for name, enum in _common.OPERATIONS.items()
                                if safe(lambda: feature.operation) ==
                                getattr(adsk.fusion.FeatureOperations, enum)), None),
@@ -303,12 +344,14 @@ def _target_error(feature, label):
 
 def _linked_scope_error(feature, component, components, index):
     """Refuse foreign-profile aliases and unverified linked-feature structures while rolled."""
-    profile = _common._native_of(safe(lambda: feature.profile))
-    if _common.same_component(component, safe(lambda: profile.parentSketch.parentComponent)) is not True:
-        return "The feature does not own its profile; address the original Extrude, not its linked alias."
+    profile, _, collection, refusal = _profile_source(feature, component)
+    if refusal:
+        return refusal
     links = safe(lambda: list(feature.linkedFeatures))
     if links is None or len(links) > 1:
         return "Linked features are unreadable or exceed the supported one-alias scope."
+    if collection and links:
+        return "Linked profile collections are unverified; inspect the source Extrude."
     for linked in links:
         owner = safe(lambda: linked.parentComponent)
         reciprocal = safe(lambda: list(linked.linkedFeatures))
