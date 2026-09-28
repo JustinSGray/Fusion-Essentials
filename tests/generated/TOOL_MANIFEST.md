@@ -158,7 +158,7 @@ Produces: feature, area_after. |
 | ⚠ | `sketch_delete_entity` | Delete ONE sketch entity, constraint, dimension or text, named as '<type>:<index>'. |
 | ✎ | `sketch_dimension` | Add dimensional constraints to one sketch, each optionally driven to a value. |
 | ✎ | `sketch_edit_curve` | Edit an EXISTING sketch curve in place |
-| · | `sketch_get` | List sketches or read one: curve/constraint state and profile handles for model_extrude. |
+| · | `sketch_get` | Read sketches, curves, constraints and profile handles for model_extrude. |
 | ✎ | `sketch_insert_svg` | Import an SVG into a sketch at (x,y).
 Produces: curves_added, sketch_extent. |
 | ✎ | `sketch_move` | MOVE existing sketch entities by one transform. |

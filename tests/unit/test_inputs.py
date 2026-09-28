@@ -1186,17 +1186,14 @@ class TestAxisRefFace:
 # component only, case-insensitive EXACT, and refuses a name two axes share.
 
 class _FakeConstructionAxis:
-    """A construction axis: a NAME plus .geometry, an InfiniteLine3D (origin + direction) - the
-    shape that tells a datum axis from a bounded edge's Line3D. Its geometry reads component-LOCAL
-    while native and WORLD through the createForAssemblyContext proxy, which is the split a world
-    lift exists for. Also stands in for the ConstructionAxis type the TargetRef extension tests bind
-    (one fake per live type per file)."""
+    """A named construction axis with native geometry and optional placement context."""
     def __init__(self, name="Axis1", origin=None, direction=None, component=None, proxy=None,
-                 assembly_context=None):
+                 assembly_context=None, native=None):
         self.name = name
         self.geometry = types.SimpleNamespace(origin=origin, direction=direction)
         self.component = component
         self.assemblyContext = assembly_context
+        self.nativeObject = native
         self.proxied_into = []
         if proxy is not None:
             def _for_context(occ, p=proxy):
@@ -1233,8 +1230,11 @@ def axis_env(monkeypatch):
         monkeypatch.setattr(inp._common, "design", lambda: design)
         monkeypatch.setattr(inp._common, "target_component", lambda _d=None: active)
 
-        def place(comp, *full_paths):
-            placed[id(comp)] = [make_occurrence(path=p) for p in full_paths]
+        def place(comp, *full_paths, matrices=None):
+            transforms = matrices or [FakeMatrix3D(t=(5, 0, 0)) for _ in full_paths]
+            placed[id(comp)] = [make_occurrence(path=p, component=comp, transform2=m)
+                                for p, m in zip(full_paths, transforms)]
+            return placed[id(comp)]
 
         return types.SimpleNamespace(active=active, root=root, design=design, place=place)
 
@@ -1331,17 +1331,36 @@ class TestAxisRefFaceEntity:
 # its existing path.
 
 def _datum_in(component, local_origin, world_origin=None, name="Spin"):
-    """(axis, its assembly-context proxy) - a datum whose LOCAL geometry differs from what the
-    proxy reads, i.e. a component placed away from the origin."""
+    """(axis, proxy) with native-local geometry and a placed proxy origin."""
     proxy = (_FakeConstructionAxis(name, origin=FakePoint(*world_origin),
                                    direction=FakeVector3D(0, 0, 1), assembly_context="OCC")
              if world_origin is not None else None)
     axis = _FakeConstructionAxis(name, origin=FakePoint(*local_origin),
                                  direction=FakeVector3D(0, 0, 1), component=component, proxy=proxy)
+    if proxy is not None:
+        proxy.nativeObject = axis
     return axis, proxy
 
 
 class TestAxisLineOfWorldSpace:
+    def test_rotated_axis_uses_native_direction_and_placed_origin(self, axis_env):
+        env = axis_env()
+        owner = MakeComp(name="AxisOwner", entity_token="TOKEN:AxisOwner")
+        half = math.sqrt(0.5)
+        native = _FakeConstructionAxis("Slope", origin=FakePoint(-1, 0, 3),
+                                       direction=FakeVector3D(half, 0, half), component=owner)
+        occ = env.place(owner, "AxisOwner:1",
+                        matrices=[FakeMatrix3D(deg=30, t=(2, 0, 1.2))])[0]
+        proxy = _FakeConstructionAxis("Slope", origin=FakePoint(1.133974596, -0.5, 4.2),
+                                      direction=FakeVector3D(half, 0, half), component=owner,
+                                      assembly_context=occ, native=native)
+        for axis in (native, proxy):
+            (origin, direction), err = inp.axis_line_of("rotate_axis", axis)
+            assert err is None
+            assert (origin.x, origin.y, origin.z) == pytest.approx((1.133974596, -0.5, 4.2))
+            assert (direction.x, direction.y, direction.z) == pytest.approx(
+                (0.612372436, 0.353553391, 0.707106781))
+
     def test_a_datum_in_a_placed_component_is_lifted_through_its_occurrence(self, axis_env):
         env = axis_env()
         wheel = MakeComp(name="Wheel", entity_token="TOKEN:Wheel")
@@ -1350,9 +1369,9 @@ class TestAxisLineOfWorldSpace:
         pair, err = inp.axis_line_of("rotate_axis", axis)
         assert err is None
         point, _direction = pair
-        # the PROXY's world origin - the component-local (0,0,0) would pivot about the world origin
+        # Native geometry takes the occurrence translation into world space.
         assert (point.x, point.y, point.z) == (5, 0, 0)
-        assert axis.proxied_into == ["Wheel:1"] or len(axis.proxied_into) == 1
+        assert axis.proxied_into == []
 
     def test_a_root_owned_datum_is_used_as_is(self, axis_env):
         # The datum's owner and the design's root are DISTINCT wrappers sharing one entityToken -
@@ -1366,23 +1385,29 @@ class TestAxisLineOfWorldSpace:
         assert err is None and (pair[0].x, pair[0].y) == (2, 2)
         assert axis.proxied_into == []            # local IS world on the root - no lift attempted
 
-    def test_a_proxied_datum_is_read_directly_even_where_its_component_is_placed_twice(self, axis_env):
-        # A proxy already reads WORLD (and createForAssemblyContext on one RAISES), so the early
-        # return is the ONLY route for a datum handed in from a multiply-placed component: without
-        # it the ambiguity refusal fires on a reference that names its instance already.
+    def test_a_proxied_datum_uses_its_explicit_context_when_placed_twice(self, axis_env):
         env = axis_env()
         wheel = MakeComp(name="Wheel", entity_token="TOKEN:Wheel")
-        axis = _FakeConstructionAxis("Spin", origin=FakePoint(9, 0, 0),
-                                     direction=FakeVector3D(0, 0, 1), component=wheel,
-                                     assembly_context="Assy:1+Wheel:2")
-        env.place(wheel, "Assy:1+Wheel:1", "Assy:1+Wheel:2")
-        pair, err = inp.axis_line_of("rotate_axis", axis)
+        native = _FakeConstructionAxis("Spin", origin=FakePoint(0, 0, 0),
+                                       direction=FakeVector3D(0, 0, 1), component=wheel)
+        _, second = env.place(wheel, "Assy:1+Wheel:1", "Assy:1+Wheel:2",
+                              matrices=[FakeMatrix3D(t=(5, 0, 0)),
+                                        FakeMatrix3D(t=(9, 0, 0))])
+        proxy = _FakeConstructionAxis("Spin", origin=FakePoint(9, 0, 0),
+                                      direction=FakeVector3D(0, 0, 1), component=wheel,
+                                      assembly_context=second, native=native)
+        pair, err = inp.axis_line_of("rotate_axis", proxy)
         assert err is None and pair[0].x == 9
 
     def test_a_datum_already_in_context_is_not_re_proxied(self, axis_env):
-        axis_env()
+        env = axis_env()
+        wheel = MakeComp(name="Wheel", entity_token="TOKEN:Wheel")
+        native = _FakeConstructionAxis("Spin", origin=FakePoint(0, 0, 0),
+                                       direction=FakeVector3D(0, 0, 1), component=wheel)
+        occ = env.place(wheel, "Wheel:1", matrices=[FakeMatrix3D(t=(7, 0, 0))])[0]
         axis = _FakeConstructionAxis("Spin", origin=FakePoint(7, 0, 0),
-                                     direction=FakeVector3D(0, 0, 1), assembly_context="OCC")
+                                     direction=FakeVector3D(0, 0, 1), component=wheel,
+                                     assembly_context=occ, native=native)
         pair, err = inp.axis_line_of("rotate_axis", axis)
         assert err is None and pair[0].x == 7
         assert axis.proxied_into == []

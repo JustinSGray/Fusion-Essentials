@@ -620,7 +620,8 @@ def test_curve_state_counts_ignore_points_text_and_the_xray_cap():
         assert result["constraint_count"] == 0
     result = _payload(sd.handler(sketch_name="State", include_entities=True))
     assert result["truncated"] is True
-    assert not any(e.get("fixed") for e in result["entities"])
+    assert not any(e.get("fixed") for e in result["entities"] if e["type"] == "line")
+    assert sum(e.get("fixed") is True for e in result["entities"]) == 3
 
 
 def test_curve_state_failure_is_independent_per_flag_and_census():
@@ -907,9 +908,66 @@ class TestXrayCaps:
         _install(s)
         out = _payload(sd.handler(sketch_name="Dense", include_entities=True))
         assert out["truncated"] is True
-        assert len(out["entities"]) == sd._XRAY_CAP
+        assert len(out["entities"]) == sd._ENTITY_PAGE_DEFAULT == 50
         # the counts summary stays honest (uncapped) even though the array is capped
         assert out["counts"]["lines"] == sd._XRAY_CAP + 20
+        larger = _payload(sd.handler(sketch_name="Dense", include_entities=True,
+                                     max_results=1000))
+        assert len(larger["entities"]) == sd._XRAY_CAP
+        assert larger["entity_pages"]["lines"]["next_offset"] == 200
+
+    def test_entity_offset_pages_each_collection_without_renumbering(self):
+        lines = [FakeLine(f"l{i}", i, 0, i + 1, 0) for i in range(201)]
+        points = [FakeSketchPoint(f"p{i}", i, 1) for i in range(251)]
+        s = FakeSketch("Paged", lines=lines, points=points,
+                       constraints=[HorizontalConstraint(lines[0])],
+                       dimensions=[FakeDim("d1", 2.0, "20 mm")])
+        s.originPoint = points[0]
+        _install(s)
+        first = _payload(sd.handler(sketch_name="Paged", include_entities=True))
+        second = _payload(sd.handler(sketch_name="Paged", include_entities=True,
+                                     entity_offset=50, max_results=50))
+        later = _payload(sd.handler(sketch_name="Paged", include_entities=True,
+                                    entity_offset=200, max_results=200))
+        first_ids = {row["id"] for row in first["entities"]}
+        second_ids = {row["id"] for row in second["entities"]}
+        later_ids = {row["id"] for row in later["entities"]}
+        assert len(first_ids) == len(second_ids) == 100 and len(later_ids) == 52
+        assert first_ids.isdisjoint(second_ids) and second_ids.isdisjoint(later_ids)
+        assert first_ids.isdisjoint(later_ids)
+        assert {"line:0", "point:0", "line:49", "point:49"} <= first_ids
+        assert {"line:50", "point:50", "line:99", "point:99"} <= second_ids
+        assert {"line:200", "point:200", "point:230", "point:250"} <= later_ids
+        assert first["entity_pages"]["points"] == {
+            "count": 251, "offset": 0, "next_offset": 50}
+        assert second["entity_pages"]["points"] == {
+            "count": 251, "offset": 50, "next_offset": 100}
+        assert later["entity_pages"]["points"] == {
+            "count": 251, "offset": 200, "next_offset": None}
+        assert later["entity_pages"]["lines"] == {
+            "count": 201, "offset": 200, "next_offset": None}
+        assert later["entity_pages"]["arcs"] == {
+            "count": 0, "offset": 200, "next_offset": None}
+        assert next(row for row in later["entities"] if row["id"] == "point:230")[
+            "position"] == {"x": 2300, "y": 10}
+        assert "handle" in next(row for row in later["entities"] if row["id"] == "point:230")
+        assert first["counts"] == second["counts"] == later["counts"]
+        assert first["constraints"] == second["constraints"] == later["constraints"]
+        assert first["dimensions"] == second["dimensions"] == later["dimensions"]
+        assert first["constraint_count"] == later["constraint_count"] == 1
+        assert first["dimension_count"] == later["dimension_count"] == 1
+        assert first["truncated"] is second["truncated"] is later["truncated"] is True
+
+    def test_entity_offset_past_end_returns_empty_pages_with_true_counts(self):
+        s = FakeSketch("PastEnd", points=[FakeSketchPoint(f"p{i}", i, 0)
+                                            for i in range(251)])
+        _install(s)
+        out = _payload(sd.handler(sketch_name="PastEnd", include_entities=True,
+                                  entity_offset=400))
+        assert out["entities"] == []
+        assert out["entity_pages"]["points"] == {
+            "count": 251, "offset": 400, "next_offset": None}
+        assert out["counts"]["points"] == 251 and out["truncated"] is True
 
     def test_constraints_at_cap_truncates_and_flags(self):
         lines = [FakeLine(f"l{i}", 0, 0, 1, 1) for i in range(2)]

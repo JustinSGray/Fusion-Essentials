@@ -571,10 +571,13 @@ def _landed_angle(obj, want_rad, asked, m):
 
 
 def _geometry_readback(knd, design, obj, inv_k):
-    """The CREATED datum's real geometry (not an echo of the input), read through _datum_geometry so
-    it sits in the same space as the caller's handles. Construction geometry carries no healthState,
-    so this read is the effect check. {} when the geometry cannot be read."""
-    g = _datum_geometry(design, obj)
+    """The created datum's geometry in caller space, or {} when it cannot be read."""
+    if knd == "axis":
+        g, _ = _inputs._datum_world_line(
+            safe(lambda: obj.name) or "created axis", obj,
+            occurrence=safe(lambda: design.activeOccurrence))
+    else:
+        g = _datum_geometry(design, obj)
     if g is None:
         return {}
     if knd == "plane":

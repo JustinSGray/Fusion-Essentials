@@ -551,6 +551,12 @@ def _profiles(sketch, f):
 
 
 _XRAY_CAP = 200   # a dense sketch can carry hundreds of entities/constraints/dimensions; bound each
+_ENTITY_PAGE_DEFAULT = 50
+_ENTITY_COLLECTIONS = (("line", "lines"), ("arc", "arcs"), ("circle", "circles"),
+                       ("ellipse", "ellipses"), ("elliptical_arc", "elliptical_arcs"),
+                       ("conic", "conics"), ("spline", "splines"),
+                       ("cv_spline", "cv_splines"), ("fixed_spline", "fixed_splines"),
+                       ("point", "points"), ("text", "texts"))
 
 
 def _dimension_value(raw, is_angle, f):
@@ -561,10 +567,8 @@ def _dimension_value(raw, is_angle, f):
     return _round(math.degrees(raw), 1.0) if is_angle else _round(raw, f)
 
 
-def _entity_xray(sketch, f, unit, max_results=_XRAY_CAP):
-    """(entities, constraints, dimensions, construction_count, driving_dim_count, truncated), each
-    array independently capped at max_results and the two counts taken over the UNCAPPED walk.
-    f is the cm -> display-unit factor applied to every length value, `unit` its name."""
+def _entity_xray(sketch, f, unit, counts, entity_offset=0, entity_limit=_ENTITY_PAGE_DEFAULT):
+    """Entity pages, capped constraint/dimension rows, and uncapped construction/driving counts."""
     tok2id = _build_token_map(sketch)
     entities, construction_count = _entities(sketch, f)
 
@@ -593,13 +597,18 @@ def _entity_xray(sketch, f, unit, max_results=_XRAY_CAP):
         })
     driving_dims = sum(1 for d in dimensions if d.get("driving"))
 
-    cap = max(1, int(max_results))
-    entities_out = entities[:cap]
-    constraints_out = constraints[:cap]
-    dimensions_out = dimensions[:cap]
+    end = entity_offset + entity_limit
+    entities_out = [row for row in entities
+                    if entity_offset <= int(row["id"].rpartition(":")[2]) < end]
+    entity_pages = {plural: {"count": counts[plural], "offset": entity_offset,
+                             "next_offset": end if end < counts[plural] else None}
+                    for _kind, plural in _ENTITY_COLLECTIONS}
+    constraints_out = constraints[:_XRAY_CAP]
+    dimensions_out = dimensions[:_XRAY_CAP]
     truncated = (len(entities_out) < len(entities) or len(constraints_out) < len(constraints)
                  or len(dimensions_out) < len(dimensions))
-    return (entities_out, constraints_out, dimensions_out, construction_count, driving_dims, truncated)
+    return (entities_out, constraints_out, dimensions_out, construction_count, driving_dims,
+            truncated, entity_pages)
 
 
 # The occurrence half of the 'component' scope's vocabulary, resolved through the SHARED
@@ -979,7 +988,7 @@ def _transform_wire(tool):
 
 
 def handler(sketch_name: str = "", include_entities: bool = False, units: str = "mm",
-            component: str = "") -> dict:
+            component: str = "", entity_offset: int = 0, max_results: int = 0) -> dict:
     """Read one sketch: light overview by default, the full entity/constraint/dimension X-ray with
     include_entities=true. 'component' scopes the name to one component. Lengths/areas are reported
     in 'units' (mm default; area = units^2)."""
@@ -1087,8 +1096,9 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
                        "include_entities=true.")
         return ok(out)
 
-    entities, constraints, dimensions, construction_count, driving_dims, truncated = _entity_xray(
-        sketch, f, unit)
+    entity_limit = min(max_results or _ENTITY_PAGE_DEFAULT, _XRAY_CAP)
+    entities, constraints, dimensions, construction_count, driving_dims, truncated, entity_pages = (
+        _entity_xray(sketch, f, unit, counts, entity_offset, entity_limit))
     framed = safe(lambda: _frame_context(sketch, design, host_occurrence))
     placed = bool(framed) and framed[1] == WORLD_SPACE
     _entity_handles(sketch, entities,
@@ -1112,12 +1122,14 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
         note += (" A constraint entity of '?' has no id in this payload - nothing listed in "
                  "'entities' matches it.")
     if truncated:
-        note += (f" entities/constraints/dimensions each capped at {_XRAY_CAP}; counts above "
-                 "(constraint_count/dimension_count/counts) are the full, uncapped totals.")
+        note += (f" Entity collections page {entity_limit} each; entity_pages gives each count and "
+                 "next_offset. Constraints/dimensions remain capped at 200; their counts above "
+                 "are uncapped.")
     out.update({
         "driving_dimension_count": driving_dims,
         "construction_count": construction_count,
         "entities": entities,
+        "entity_pages": entity_pages,
         "constraints": constraints,
         "dimensions": dimensions,
         "truncated": truncated,

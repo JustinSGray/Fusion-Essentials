@@ -6,6 +6,7 @@ one tool input, so a tool references existing geometry through a handle or typed
 of a hand-rolled ``name``/``index``. ``resolve_inputs(...)`` resolves every declared input at once."""
 
 import math
+import types
 
 import adsk.core
 import adsk.fusion
@@ -2283,27 +2284,36 @@ def _proxy_or_refuse(label, ent, occ, fix_hint):
                   f"the model is unknown. {fix_hint}")
 
 
-def _datum_world_line(name, ent):
+def _datum_world_line(name, ent, occurrence=None):
     """(the datum axis's line in WORLD space, error) for a ConstructionAxis."""
-    # MEASURED: a ConstructionAxis has NO worldGeometry, and its `.geometry` is COMPONENT-LOCAL for
-    # a native datum - off by the owning component's placement, so a caller treating it as world
-    # turns about the wrong line. The leaf op here is reading .geometry off the proxy.
+    # MEASURED: a rotated axis proxy reads a WORLD origin but a LOCAL direction. Lift both fields
+    # from native geometry through one placement; the proxy's mixed frame cannot be used as a line.
     des = _common.design()
     root = _common.safe(lambda: des.rootComponent) if des else None
-    occ, err = single_placement(f"'{name}': that construction axis", ent, root, des)
-    if err:
-        return None, err
+    context = _common.safe(lambda: ent.assemblyContext)
+    native = _common.safe(lambda: ent.nativeObject) if context is not None else ent
+    if native is None:
+        return None, f"'{name}': that construction axis's native geometry could not be read."
+    occ = context or occurrence
     if occ is None:
-        # already a proxy (it reads WORLD), or root-owned (local IS world)
-        return _common.safe(lambda: ent.geometry), None
-    proxy = _common.safe(lambda: ent.createForAssemblyContext(occ))
-    g = _common.safe(lambda: proxy.geometry) if proxy is not None else None
-    if g is None:
+        occ, err = single_placement(f"'{name}': that construction axis", native, root, des)
+        if err:
+            return None, err
+    g = _common.safe(lambda: native.geometry)
+    if occ is None:
+        return g, None
+    owner = entity_component(native)
+    m = _joints.component_world_matrix(des, owner, occ) if des is not None else None
+    origin = _common.safe(lambda: g.origin.copy()) if g is not None else None
+    direction = _common.safe(lambda: g.direction.copy()) if g is not None else None
+    if (m is None or origin is None or direction is None
+            or _common.safe(lambda: origin.transformBy(m)) is not True
+            or _common.safe(lambda: direction.transformBy(m)) is not True):
         path = _common.safe(lambda: occ.fullPathName) or "its one occurrence"
         return None, (f"'{name}': that construction axis could not be read in the assembly's space "
                       f"({path}), so where it sits in the model is unknown. Pass a world axis "
                       "(x/y/z) or a handle at a straight edge.")
-    return g, None
+    return types.SimpleNamespace(origin=origin, direction=direction), None
 
 
 def _line_from_ends(name, sp, ep):

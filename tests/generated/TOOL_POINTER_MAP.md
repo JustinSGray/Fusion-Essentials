@@ -4114,6 +4114,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - returned no curves and the sketch still holds  curve(s), so nothing changed. Re-read sketch_get(include_entities=true) for the current ids and pick a point ON the curve.
 
 ### `sketch_get`
+- 'entity_offset' must be a nonnegative integer, got
+- 'entity_offset' requires sketch_name and include_entities=true.
+- 'max_results' must be a nonnegative integer for an entity X-ray, got
 - ), so a row's 'component' does not identify which one holds it, and this list does not tell those rows apart. 'placements' lists every occurrence path placing a component of one of the names just l...
 - More than one component wears the same name here (
 - No active design (open or create a document with design geometry).

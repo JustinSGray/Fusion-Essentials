@@ -10,7 +10,8 @@ sketch geometry and user parameters, never bodies.
 from verify_core import (
     EXPORT_DIR, SVG96_PATH, SVG_PATH, _ctx_get, _datum_plane, _dim_measures, _extruded,
     _made_component, _param_added, _param_favorited, _params_listed, _refused, _svg96_extent,
-    _watch_all, _measured, _RECALL, _recall)
+    _watch_all, _measured, _RECALL, _recall, _home_document, _home_address,
+    _new_document, _document_closed, _activated)
 from verify_layout import _px, _py
 
 
@@ -1313,3 +1314,98 @@ _SKETCHWORK = [
     ("sketch_get", {"sketch_name": "ProjTargetRoot", "include_entities": True},
      _mixed_curve_state(False), None),
 ]
+
+
+def _paging_rows():
+    """Page a large sketch and consume a late point in an owned document."""
+    rows = [("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("doc_get", {}, _home_document, ("paging_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "paging_home", "home")},
+             _new_document, ("paging_doc", lambda p: p["document_handle"]))]
+
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: {
+            **(args(c) if callable(args) else args),
+            "expect_document": _ctx_get(c, "paging_doc", "paging document")},
+            check, save))
+
+    def read(name, args, check, save=None):
+        rows.append((name, lambda c, args=args: args(c) if callable(args) else dict(args),
+                     check, save))
+
+    # A fresh sketch owns point:0 as its origin; all pages use absolute indices.
+    write("sketch_create", {"plane": "xy", "name": "PagingPoints"})
+    write("sketch_add_geometry", {"sketch_name": "PagingPoints", "geometry": [
+        {"kind": "point", "cx": 2100 + i * 2, "cy": -200} for i in range(200)]},
+        lambda p: len(p.get("results") or []) == 200
+        and p["results"][-1]["sketch"]["point_count"] == 201)
+    write("sketch_add_geometry", {"sketch_name": "PagingPoints", "geometry": [
+        {"kind": "point", "cx": 2100 + i * 2, "cy": -200} for i in range(200, 250)]},
+        lambda p: len(p.get("results") or []) == 50
+        and p["results"][-1]["sketch"]["point_count"] == 251)
+    read("sketch_get", {"sketch_name": "PagingPoints", "include_entities": True},
+         lambda p: (p["counts"]["points"] == 251
+                    and [e["id"] for e in p["entities"]] == [f"point:{i}" for i in range(50)]
+                    and p["entities"][0].get("origin") is True
+                    and p["entity_pages"]["points"] == {
+                        "count": 251, "offset": 0, "next_offset": 50}
+                    and p["constraint_count"] == 0 and p["dimension_count"] == 0),
+         ("paging_first_ids", _recall("paging_first_ids", lambda p: [
+             e["id"] for e in p["entities"]])))
+    read("sketch_get", {"sketch_name": "PagingPoints", "include_entities": True,
+                        "entity_offset": 50, "max_results": 50},
+         lambda p: ([e["id"] for e in p["entities"]]
+                    == [f"point:{i}" for i in range(50, 100)]
+                    and not set(e["id"] for e in p["entities"]) & set(_ctx_get(
+                        _RECALL, "paging_first_ids", "the first point page"))
+                    and p["entity_pages"]["points"] == {
+                        "count": 251, "offset": 50, "next_offset": 100}),
+         ("paging_second_ids", _recall("paging_second_ids", lambda p: [
+             e["id"] for e in p["entities"]])))
+    read("sketch_get", {"sketch_name": "PagingPoints", "include_entities": True,
+                        "max_results": -1}, _refused("max_results", "-1"))
+    read("sketch_get", {"sketch_name": "PagingPoints", "include_entities": True,
+                        "entity_offset": 200, "max_results": 200},
+         lambda p: ([e["id"] for e in p["entities"]]
+                    == [f"point:{i}" for i in range(200, 251)]
+                    and not set(e["id"] for e in p["entities"]) & set(_ctx_get(
+                        _RECALL, "paging_first_ids", "the first point page"))
+                    and not set(e["id"] for e in p["entities"]) & set(_ctx_get(
+                        _RECALL, "paging_second_ids", "the second point page"))
+                    and p["entity_pages"]["points"] == {
+                        "count": 251, "offset": 200, "next_offset": None}
+                    and next(e for e in p["entities"] if e["id"] == "point:230")
+                    ["position"] == {"x": 2558.0, "y": -200.0}
+                    and bool(next(e for e in p["entities"] if e["id"] == "point:230")
+                             ["handle"])),
+         ("paging_point230", _recall("paging_point230", lambda p: next(
+             e for e in p["entities"] if e["id"] == "point:230"))))
+    read("sketch_get", {"sketch_name": "PagingPoints", "include_entities": True,
+                        "entity_offset": 400},
+         lambda p: p["entities"] == [] and p["counts"]["points"] == 251
+         and p["entity_pages"]["points"] == {
+             "count": 251, "offset": 400, "next_offset": None})
+    read("sketch_get", {"sketch_name": "PagingPoints", "include_entities": True,
+                        "entity_offset": -1}, _refused("entity_offset"))
+    write("model_construction", lambda c: {"kind": "point", "mode": "at_point",
+                                           "name": "PagedPoint230", "points": [
+                                               _ctx_get(c, "paging_point230", "the late point row")
+                                               ["handle"]]},
+          lambda p: p.get("at_operand") is True
+          and abs((p.get("world") or {}).get("x", 0) - 2558) < 0.001
+          and abs((p.get("world") or {}).get("y", 0) + 200) < 0.001)
+    read("find_geometry", {"kind": "construction_point", "name": "PagedPoint230"},
+         lambda p: p.get("match_count") == 1
+         and p["matches"][0].get("position") == [2558.0, -200.0, 0.0])
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "paging_home", "home"),
+                                         "expect_document": _ctx_get(c, "paging_doc", "paging")},
+              _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "paging_doc", "paging"),
+                                      "save_changes": False,
+                                      "expect_document": _ctx_get(c, "paging_home", "home")},
+              _document_closed, None)]
+    return rows
+
+
+_SKETCH_PAGING = _paging_rows()
+_SKETCHWORK += _SKETCH_PAGING

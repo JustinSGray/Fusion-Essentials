@@ -15,6 +15,8 @@ import math
 import re
 import types
 
+import pytest
+
 from conftest import (BRepEdge, BRepFace, Circle3D, Cone, Cylinder, FakeMatrix3D, FakePoint,
                       FakeSketchPoint, FakeUnitsManager, FakeVector3D, Line3D, MakeComp, Plane,
                       Sketch, _Vertex, install, load_tool, make_design, make_occurrence)
@@ -925,6 +927,24 @@ class TestAxisCircularFaceWorldFrame:
         out = _payload(cn.handler(kind="axis", mode="circular_face"))
         assert out["frame"] == "world"
         assert out["aligned_to_face_axis"] is True
+
+    def test_edge_axis_discloses_rotated_world_direction(self, monkeypatch):
+        sub, occ = _install_sub_placed(
+            rotation_deg=30.0, occ_kwargs={"transform2": FakeMatrix3D(deg=30, t=(2, 0, 1.2))})
+        monkeypatch.setattr(cn._common.design(), "activeOccurrence", occ)
+        sub.constructionAxes.result_component = sub
+        half = math.sqrt(0.5)
+        sub.constructionAxes.result_geometry = _axis_geometry(
+            (half, 0, half), (-1, 0, 3))
+        sub.constructionAxes.proxy_geometry = _axis_geometry(
+            (half, 0, half), (1.133974596, -0.5, 4.2))
+        _stub_resolve(monkeypatch, cn._AXIS, ("edge", object()))
+        monkeypatch.setattr(cn, "_lifted", lambda *_args: ([object()], None))
+        out = _payload(cn.handler(kind="axis", mode="edge", axis="ProbeXZ/line:0"))
+        assert out["geometry"]["direction"] == pytest.approx(
+            [0.612372436, 0.353553391, 0.707106781], abs=1e-6)
+        assert list(out["geometry"]["origin"].values()) == pytest.approx(
+            [11.339745962, -5.0, 42.0], abs=1e-5)
 
     def test_an_unreadable_occurrence_transform_leaves_frame_component_and_alignment_unchecked(
             self, monkeypatch):

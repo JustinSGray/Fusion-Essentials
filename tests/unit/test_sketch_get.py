@@ -87,11 +87,14 @@ class TestSketchGetRouting:
 
         class FakeDetail:
             @staticmethod
-            def handler(sketch_name="", include_entities=False, units="mm", component=""):
+            def handler(sketch_name="", include_entities=False, units="mm", component="",
+                        entity_offset=0, max_results=0):
                 seen["name"] = sketch_name
                 seen["include_entities"] = include_entities
                 seen["units"] = units
                 seen["component"] = component
+                seen["entity_offset"] = entity_offset
+                seen["max_results"] = max_results
                 return {"isError": False, "content": [{"type": "text", "text": "{}"}]}
 
         # The handler resolves the engine by NAME in the module table on every call, so installing
@@ -102,14 +105,24 @@ class TestSketchGetRouting:
         monkeypatch.setattr(sketches, "_list_sketches", _never("the summary walk"))
 
         res = sketches.handler(sketch_name="Emblem", include_entities=True, units="in",
-                                          component="Frame")
+                                          component="Frame", entity_offset=200, max_results=50)
         assert seen.get("name") == "Emblem"     # routed to the detail engine with the name
         assert seen.get("include_entities") is True   # the zoom flag is threaded through
         assert seen.get("units") == "in"        # the units param is threaded through too
         # the scope reaches the engine that resolves it - dropped here, a scoped read of a shared
         # name would come back refused as ambiguous with the scope the caller gave ignored
         assert seen.get("component") == "Frame"
+        assert seen.get("entity_offset") == 200
+        assert seen.get("max_results") == 50
         assert res["isError"] is False
+
+    def test_invalid_named_xray_page_size_is_refused(self, monkeypatch):
+        _no_detail_engine(monkeypatch)
+        for value in (True, 1.5, "50", -1):
+            result = sketches.handler(sketch_name="Paged", include_entities=True,
+                                      max_results=value)
+            assert result["isError"] is True
+            assert "max_results" in result["message"] and repr(value) in result["message"]
 
     def test_whitespace_name_treated_as_no_name(self, monkeypatch):
         called = {}
@@ -121,6 +134,19 @@ class TestSketchGetRouting:
         _no_detail_engine(monkeypatch)          # a blank-ish name is not a name to look up
         sketches.handler(sketch_name="   ")
         assert called.get("summary") is True     # blank-ish name -> summary, not detail
+
+    def test_invalid_or_unscoped_entity_offset_is_refused(self, monkeypatch):
+        monkeypatch.setattr(sketches, "_list_sketches", _never("the summary walk"))
+        for offset in (-1, 1.5, True):
+            result = sketches.handler(sketch_name="Paged", include_entities=True,
+                                      entity_offset=offset)
+            assert result["isError"] is True
+            assert "entity_offset" in result["message"] and repr(offset) in result["message"]
+        for kwargs in ({"sketch_name": "Paged", "include_entities": False},
+                       {"sketch_name": "", "include_entities": True}):
+            result = sketches.handler(entity_offset=200, **kwargs)
+            assert result["isError"] is True
+            assert "include_entities=true" in result["message"]
 
 
 _comp_serial = iter(range(1, 10_000))

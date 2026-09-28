@@ -2113,12 +2113,16 @@ def _datum_operand_rows():
     write("model_construction", lambda c: {"kind": "axis", "axis": _ctx_get(c, "dop_line", "line")},
           _refused("did not resolve", "find_geometry"))
     acquire("sketch_line", 10, 0, lambda: [_frame_world(10, 0)], save=_fg("dop_piece"))
+    write("design_activate_component", {"occurrence": "OperandBench:1"})
     write("model_construction", lambda c: {"kind": "axis", "name": "OperandPieceAxis",
                                            "axis": _ctx_get(c, "dop_piece", "first piece")},
-          _operand_axis(lambda: _operand_frame_read()["x_world"], through=False))
-    # the piece as a free turn's axis: its own points stay put, one off it swings a quarter turn.
+          lambda p: p.get("component") == "OperandBench"
+          and _operand_axis(lambda: _operand_frame_read()["x_world"], through=False)(p),
+          ("dop_axis", lambda p: p["handle"]))
+    write("design_activate_component", {"occurrence": "root"})
+    # The created datum, consumed by handle, turns about the piece's WORLD line.
     write("assembly_move", lambda c: {"occurrence": "OperandBench:1", "rotate_deg": 90,
-                                      "rotate_axis": _ctx_get(c, "dop_piece", "first piece")},
+                                      "rotate_axis": _ctx_get(c, "dop_axis", "piece axis")},
           _moved_occurrence())
     read("find_geometry", {"target": "OperandBench", "kind": "sketch_point", "max_results": 100},
          _swung_about_the_piece)
