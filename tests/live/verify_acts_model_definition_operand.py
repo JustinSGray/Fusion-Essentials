@@ -903,5 +903,3 @@ def _datum_operand_rows():
 
 
 _DATUM_OPERANDS = _datum_operand_rows()
-
-

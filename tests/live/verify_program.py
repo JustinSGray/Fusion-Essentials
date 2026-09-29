@@ -32,11 +32,11 @@ from verify_acts_sheet import (_SHEET, _SHEET_CAM_READ, _SHEET_DRAWING,
                                _SHEET_CLEANUP, _SHEET_SELECTED, _SHEET_POSITIONS,
                                _SHEET_CAM_REFRESH, _SHEET_CAM_RESTORE)
 from verify_acts_sheet_flange import _SHEET_FLANGE
-from verify_families import family_names
+from verify_families import FAMILY_GROUPS, FAMILY_SLOTS, family_names, fixture_steps
 from verify_core import CLOUD_LINK_CRASH_REVIEW, CLOUD_TIER, _DWELL, _PLANE_VIEW, _SKETCH_PLANE, _watch
 from verify_layout import (
-    _CHUNK_OF, _COMPONENTS, _PATTERNED, _PLACED_BOX, _SLOTS, _framed, _place_points, _place_slots,
-    _place_walk, _placed, _sketch_reading_order, _sketches_first)
+    _CHUNK_OF, _COMPONENTS, _PATTERNED, _PLACED_BOX, _SLOTS, _family_slots, _framed,
+    _place_points, _place_walk, _placed, _sketch_reading_order, _sketches_first)
 
 
 # --- the judged acts: family fixtures locally produce the inputs each narrative consumes --------
@@ -228,31 +228,49 @@ def _sketch_owners(program):
     return owners
 
 
-_SKETCH_OWNER = _sketch_owners(_ACT_PROGRAM)
-_SKETCH_PHASE, _ACT_PROGRAM = _sketches_first(
-    _ACT_PROGRAM, after=_SKETCH_HOIST_EXCLUDED)
-_LAYOUT_PROGRAM = (_ACT_PROGRAM[:3]
-                   + [("ACT 1c - EVERY OTHER SKETCH", None, _SKETCH_PHASE, [])]
-                   + _ACT_PROGRAM[3:])
+def _sketch_blocks(phase, owners):
+    """Return sketch phase rows grouped under their original act."""
+    owned, pending, block, owner = {}, [], [], None
+    for step in phase:
+        if step[0] in ("model_create_component", "design_activate_component"):
+            pending.append(step)
+            continue
+        if step[0] == "sketch_create":
+            if block:
+                owned.setdefault(owner, []).extend(block)
+            owner = owners[step[1]["name"]]
+            block, pending = pending + [step], []
+        else:
+            block.append(step)
+    owned.setdefault(owner, []).extend(block + pending)
+    return owned
 
-# Every act runs through the layout pass and then the framing pass, so a part added to the story
-# later gets a slot of its own and a camera row without anyone remembering to give it either. Only
-# the narrative is laid out: a fallback act rebuilds a story-less world at the origin, and the two
-# never run together.
-_SLOTS.update(_place_slots(_LAYOUT_PROGRAM))
 
-# ...then walk the sketch phase in reading order. This runs AFTER the cells are dealt because it
-# needs to know which sketches got one: an origin-anchored sketch has no cell and sits a metre from
-# the field, so it is drawn with the others of its kind rather than in the middle of a row. The
-# re-order preserves the packer's order over the placed chunks, so _SLOTS stays true.
+def _family_sources(acts, sketches):
+    """Return each family's own authored rows and fixture producers."""
+    owners = family_names(acts)
+    sources = {family: [] for family, _prefixes in FAMILY_GROUPS}
+    for family in sources:
+        setup = fixture_steps(family, raw=True)
+        if setup:
+            sources[family].append((family + " setup", None, setup, []))
+    for name, pre, narrative, fallback in acts:
+        family = owners[name]
+        before = fixture_steps(family, before_act=name, raw=True)
+        if before:
+            sources[family].append((name + " setup", None, before, []))
+        if sketches.get(name):
+            sources[family].append((name + " sketches", None, sketches[name], []))
+        sources[family].append((name, pre, narrative, fallback))
+    return sources
 
 
-def _placed_boxes(program, slots):
+def _placed_boxes(program, slots, home=None):
     """{chunk: [x0, x1, y0, y1]} once every chunk is in its slot - what the framing pass reads to
     tell whether the next subject is already on screen."""
     box = {}
     for _name, _pre, narr, _fb in program:
-        for step, chunk, _cursor, frame in _place_walk(_placed(narr, slots), home_out=_CHUNK_OF):
+        for step, chunk, _cursor, frame in _place_walk(_placed(narr, slots), home_out=home):
             if chunk is None or not isinstance(step[1], dict):
                 continue
             for x, y in _place_points(step[1], frame, step[0]):
@@ -266,62 +284,131 @@ def _placed_boxes(program, slots):
     return {c: [v if v is not None else 0.0 for v in b] for c, b in box.items()}
 
 
-_SKETCH_PHASE = _sketch_reading_order(_SKETCH_PHASE, _SLOTS)
-_PLACED_BOX.update(_placed_boxes(_LAYOUT_PROGRAM, _SLOTS))
-_COMPONENTS.update(s[1]["name"] for _n, _p, narr, _f in _LAYOUT_PROGRAM for s in narr
-                   if s[0] == "model_create_component" and isinstance(s[1], dict) and s[1].get("name"))
-_PATTERNED.update(c for _n, _p, narr, _f in _LAYOUT_PROGRAM
-                  for st, c, _cur, _fr in _place_walk(narr)
-                  if st[0].startswith("model_pattern_") and c)
-_SKETCH_PLANE.update({s[1]["name"]: s[1].get("plane") for _n, _p, narr, _f in _LAYOUT_PROGRAM
-                      for s in narr if s[0] == "sketch_create" and isinstance(s[1], dict)
-                      and s[1].get("name") and s[1].get("plane") in _PLANE_VIEW})
-
-def _sketch_blocks(phase):
-    """Return the placed sketch phase rows grouped under their original act."""
-    owned, pending, block, owner = {}, [], [], None
-    for step in phase:
-        if step[0] in ("model_create_component", "design_activate_component"):
-            pending.append(step)
-            continue
-        if step[0] == "sketch_create":
-            if block:
-                owned.setdefault(owner, []).extend(block)
-            owner = _SKETCH_OWNER[step[1]["name"]]
-            block, pending = pending + [step], []
-        else:
-            block.append(step)
-    owned.setdefault(owner, []).extend(block + pending)
-    return owned
+def _family_frame_layout(program, slots):
+    """Return frame inputs from only one family's rows and local producers."""
+    home = {}
+    boxes = _placed_boxes(program, slots, home)
+    components = {step[1]["name"] for _name, _pre, rows, _fb in program for step in rows
+                  if step[0] == "model_create_component" and isinstance(step[1], dict)
+                  and step[1].get("name")}
+    patterned = {chunk for _name, _pre, rows, _fb in program
+                 for step, chunk, _cursor, _frame in _place_walk(rows)
+                 if step[0].startswith("model_pattern_") and chunk}
+    planes = {step[1]["name"]: step[1]["plane"]
+              for _name, _pre, rows, _fb in program for step in rows
+              if step[0] == "sketch_create" and isinstance(step[1], dict)
+              and step[1].get("name") and step[1].get("plane") in _PLANE_VIEW}
+    return {"home": home, "boxes": boxes, "components": components,
+            "patterned": patterned, "planes": planes}
 
 
-def _local_sketch_focus(steps):
-    """Keep each checked sketch frame on subjects already built in its own document."""
-    known, out = set(), []
-    for step in steps:
-        tool, args = step[:2]
-        if tool == "model_create_component" and isinstance(args, dict):
-            known.update((args["name"], args["name"] + ":1"))
-        elif tool == "sketch_create" and isinstance(args, dict):
-            known.add(args["name"])
-        if tool == "view_set" and isinstance(args, dict) and args.get("focus"):
-            focus = args["focus"]
-            kept = [name for name in (focus if isinstance(focus, list) else [focus])
-                    if name in known]
-            if not kept:
-                raise ValueError("sketch frame has no local subject: " + repr(focus))
-            if len(kept) != len(focus if isinstance(focus, list) else [focus]):
-                local = kept if isinstance(focus, list) else kept[0]
-                step = (tool, dict(args, focus=local, orientation=_watch(local)[1]["orientation"])) + step[2:]
+_HOIST_FRAMES = {
+    "ACT 2 - SOLIDS": {
+        "SweepProf": (["SweepPath", "SweepProf"], "iso-top-right"),
+        "PvBlkS": (["PvBlkS", "SweepPath", "SweepProf", "SweepProfWide", "SweepPathArc"],
+                   "iso-top-right"),
+        "PrecisionLug": (["PrecisionLug", "SweepPath", "SweepProf", "SweepProfWide",
+                          "SweepPathArc", "PvBlkS"], "iso-top-right"),
+        "LoftBase": (["LoftBase"], "top"),
+        "Spine": (["Spine", "GuideBase", "LoftBase"], "top"),
+        "BayS": (["BayS", "Plate-upper", "Plate-lower", "Spine", "DupeMark", "GuideBase",
+                  "LoftBase"], "top"),
+    },
+    "ACT 3 - SURFACES": {
+        "SH2": (["SH1", "SH2", "SRevSplineS"], "iso-top-right"),
+        "BlendA": (["BlendA"], "top"),
+    },
+    "ACT 5 - DETAILS": {
+        "EmbossBlockS": (["EmbossBlockS"], "top"),
+        "PipeSplitPath": (["PipeSplitS", "PipeSplitPath"], "top"),
+    },
+    "ACT 7b - MOTION BENCH": {
+        "BallProf": (["BallProf"], "front"),
+        "TorusProf": (["TorusProf"], "front"),
+        "GrpBS": (["GrpAS", "GrpBS"], "top"),
+        "PinS": (["PinS"], "top"),
+        "JBaseS": (["JBaseS", "AsbPinS"], "top"),
+    },
+}
+
+
+def _checked_sketch_frames(owner, rows, slots, layout):
+    """Place hoisted sketches and attach their authored checked camera frames."""
+    out, framed, known = [], set(), set()
+    specs = _HOIST_FRAMES.get(owner, {})
+    for step in _placed(rows, slots):
         out.append(step)
+        if step[0] == "model_create_component" and isinstance(step[1], dict):
+            known.update((step[1]["name"], step[1]["name"] + ":1"))
+        elif step[0] == "sketch_create" and isinstance(step[1], dict):
+            known.add(step[1]["name"])
+        if (step[0] not in ("sketch_add_geometry", "sketch_add_3d_line")
+                or not isinstance(step[1], dict)):
+            continue
+        sketch = step[1].get("sketch_name")
+        if sketch not in specs or sketch in framed:
+            continue
+        focus, orientation = specs[sketch]
+        if not set(focus) <= known:
+            raise ValueError("sketch frame has absent local focus: " + repr(sketch))
+        camera = _watch(list(focus), planes=layout["planes"])
+        out.append((camera[0], dict(camera[1], orientation=orientation), camera[2], camera[3]))
+        framed.add(sketch)
+    if framed != set(specs):
+        raise ValueError("sketch frames missing local rows: " + repr(sorted(set(specs) - framed)))
     return out
 
 
-_LOCAL_SKETCHES = {name: _local_sketch_focus(rows) for name, rows in
-                   _sketch_blocks(_framed(_placed(_SKETCH_PHASE, _SLOTS))).items()}
-ACTS = [(name, pre, _LOCAL_SKETCHES.get(name, []) + _framed(_placed(narr, _SLOTS)),
-         _framed(fb) if fb is not None else fb)
-        for name, pre, narr, fb in _ACT_PROGRAM]
+def compile_program(raw_program):
+    """Compile owned acts from independent family geometry and frame inputs."""
+    owners = family_names(raw_program)
+    phases, kept_by_name, raw_sketches = {}, {}, {}
+    for family, _prefixes in FAMILY_GROUPS:
+        family_acts = [act for act in raw_program if owners[act[0]] == family]
+        sketch_owners = _sketch_owners(family_acts)
+        phase, kept = _sketches_first(family_acts, after=_SKETCH_HOIST_EXCLUDED)
+        phases[family] = phase
+        kept_by_name.update((act[0], act) for act in kept)
+        raw_sketches.update((name, rows) for name, rows in
+                            _sketch_blocks(phase, sketch_owners).items() if name is not None)
+    kept_program = [kept_by_name[act[0]] for act in raw_program]
+    raw_sources = _family_sources(kept_program, raw_sketches)
+    slots = {family: _family_slots(family, source)
+             for family, source in raw_sources.items()}
+    local_rows = {name: _sketch_reading_order(rows, slots[owners[name]])
+        for name, rows in raw_sketches.items()}
+    sources = _family_sources(kept_program, local_rows)
+    frames = {family: _family_frame_layout(source, slots[family])
+              for family, source in sources.items()}
+    local_sketches = {name: _checked_sketch_frames(name, rows, slots[owners[name]],
+                                                   frames[owners[name]])
+                      for name, rows in local_rows.items()}
+    acts = [(name, pre, local_sketches.get(name, []) +
+             _framed(_placed(narr, slots[owners[name]]), frames[owners[name]]),
+             _framed(fb, frames[owners[name]]) if fb is not None else fb)
+            for name, pre, narr, fb in kept_program]
+    return {"acts": acts, "kept": kept_program, "phases": phases,
+            "sketches": local_sketches, "slots": slots, "frames": frames,
+            "sources": sources}
+
+
+_RAW_ACT_PROGRAM = _ACT_PROGRAM
+_COMPILED = compile_program(_RAW_ACT_PROGRAM)
+_ACT_PROGRAM = _COMPILED["kept"]
+_SKETCH_PHASE = [step for family, _prefixes in FAMILY_GROUPS
+                 for step in _COMPILED["phases"][family]]
+_LOCAL_SKETCHES = _COMPILED["sketches"]
+_FAMILY_FRAME = _COMPILED["frames"]
+FAMILY_SLOTS.update(_COMPILED["slots"])
+ACTS = _COMPILED["acts"]
+
+# Diagnostic maps are unions; compilation above reads only family-local inputs.
+for _layout in _FAMILY_FRAME.values():
+    _CHUNK_OF.update(_layout["home"])
+    _PLACED_BOX.update(_layout["boxes"])
+    _COMPONENTS.update(_layout["components"])
+    _PATTERNED.update(_layout["patterned"])
+    _SKETCH_PLANE.update(_layout["planes"])
 FAMILY_PROGRAM = family_names(ACTS)
 
 # The CAPABILITY each act declares. An act whose capability the start-of-run probe did not read as

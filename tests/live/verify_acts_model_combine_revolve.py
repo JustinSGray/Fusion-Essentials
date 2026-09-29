@@ -858,5 +858,3 @@ def _revolve_participant_rows():
 
 
 _REVOLVE_PARTICIPANTS = _revolve_participant_rows()
-
-

@@ -45,12 +45,17 @@ class TestToolVerifyComplete:
                           + "\n  ".join(both))
 
 
-def _footprints(verify, steps_of):
-    """{chunk: [x0, x1, y0, y1]} over the acts, reading whichever step list steps_of returns. An
-    axis a chunk never constrains (a sketch drawn edge-on) reads as zero extent at the origin, which
-    is where its plane sits."""
+def _families(verify):
+    """Return authored acts grouped by their owned document."""
+    return {family: [act for act in verify._ACT_PROGRAM
+                     if verify.FAMILY_PROGRAM[act[0]] == family]
+            for family in set(verify.FAMILY_PROGRAM.values())}
+
+
+def _footprints(verify, program, steps_of):
+    """Return chunk footprints for one owned document."""
     box = {}
-    for name, _pre, narr, _fb in verify._ACT_PROGRAM:
+    for name, _pre, narr, _fb in program:
         for step, chunk, _cursor, frame in verify._place_walk(steps_of(narr)):
             args = step[1]
             if chunk is None or not isinstance(args, dict):
@@ -71,8 +76,7 @@ def _hits(a, b):
 
 
 class TestToolVerifyLayout:
-    """The layout pass gives every chunk of the story a cell of its own. These are the properties a
-    viewer depends on - one subject per frame - and the ones a new chunk can silently break."""
+    """Check each owned document's authored layout and camera references."""
 
     def test_coordinate_makers_have_a_readable_placement(self):
         verify = _load_verify()
@@ -93,32 +97,38 @@ class TestToolVerifyLayout:
             "verify_layout._place_points:\n  " + "\n  ".join(missing))
 
     def test_no_two_placed_chunks_share_ground(self):
-        # A declared JOINT GROUP is exempt: its members are one assembly, dealt one cell and one
-        # offset on purpose, and a joint is about to stack them anyway. The invariant is that two
-        # INDEPENDENT chunks never share ground.
+        # Joint partners intentionally share ground; independent chunks do not.
         verify = _load_verify()
-        box = _footprints(verify, lambda narr: verify._placed(narr, verify._SLOTS))
         fam = verify._JOINT_FAMILY
-        placed = sorted((c, b) for c, b in box.items() if c in verify._SLOTS)
-        clashes = [f"{a} {box[a]} overlaps {b} {box[b]}"
-                   for i, (a, _ba) in enumerate(placed)
-                   for b, _bb in placed[i + 1:]
-                   if _hits(box[a], box[b])
-                   and not (a in fam and fam[a] == fam.get(b))]
+        clashes = []
+        for family, program in _families(verify).items():
+            box = _footprints(verify, program,
+                              lambda narr: verify._placed(narr, verify._SLOTS))
+            placed = sorted((c, b) for c, b in box.items() if c in verify._SLOTS)
+            clashes.extend(f"{family}: {a} {box[a]} overlaps {b} {box[b]}"
+                           for i, (a, _ba) in enumerate(placed)
+                           for b, _bb in placed[i + 1:]
+                           if _hits(box[a], box[b])
+                           and not (a in fam and fam[a] == fam.get(b)))
         assert not clashes, (
-            "placed chunks land on each other, so a frame on one shows the other - the packer in "
-            "tool_verify._place_slots must give each its own cell:\n  " + "\n  ".join(clashes))
+            "independent authored chunks overlap, so a frame on one shows the other:\n  "
+            + "\n  ".join(clashes))
 
     def test_no_placed_chunk_lands_on_a_pinned_one(self):
         # measured against the pinned chunks' own footprints, not against the pin constant - the
         # bracket, the vise and the CAM stock are what a stray cell would actually land on.
         verify = _load_verify()
-        box = _footprints(verify, lambda narr: verify._placed(narr, verify._SLOTS))
-        pinned = {c: b for c, b in box.items() if c not in verify._SLOTS}
-        assert pinned, "no chunk is pinned - the origin world would be free to wander"
-        clashes = [f"{c} {b} lands on pinned {p} {pinned[p]}"
-                   for c, b in sorted(box.items()) if c in verify._SLOTS
-                   for p in sorted(pinned) if _hits(b, pinned[p])]
+        clashes = []
+        saw_pinned = False
+        for family, program in _families(verify).items():
+            box = _footprints(verify, program,
+                              lambda narr: verify._placed(narr, verify._SLOTS))
+            pinned = {c: b for c, b in box.items() if c not in verify._SLOTS}
+            saw_pinned |= bool(pinned)
+            clashes.extend(f"{family}: {c} {b} lands on pinned {p} {pinned[p]}"
+                           for c, b in sorted(box.items()) if c in verify._SLOTS
+                           for p in sorted(pinned) if _hits(b, pinned[p]))
+        assert saw_pinned, "no chunk is pinned - the origin world would be free to wander"
         assert not clashes, (
             "placed chunks land on the origin world, where the bracket, the vise and the CAM "
             "stock live and cannot move:\n  " + "\n  ".join(clashes))
@@ -127,18 +137,19 @@ class TestToolVerifyLayout:
         # the failure this catches is silent and green: two sketches whose solids must overlap (the
         # combine pair) drift apart, the combine still runs, and it joins nothing.
         verify = _load_verify()
-        authored = _footprints(verify, lambda narr: narr)
         split = []
-        for name, _pre, narr, _fb in verify._ACT_PROGRAM:
-            for _step, chunk, cursor, _frame in verify._place_walk(narr):
-                if not chunk or not cursor or chunk == cursor:
-                    continue
-                if chunk not in authored or cursor not in authored:
-                    continue
-                if not _hits(authored[chunk], authored[cursor]):
-                    continue
-                if verify._SLOTS.get(chunk, (0, 0)) != verify._SLOTS.get(cursor, (0, 0)):
-                    split.append(f"{name}: {cursor} and {chunk} are one body but move apart")
+        for family, program in _families(verify).items():
+            authored = _footprints(verify, program, lambda narr: narr)
+            for name, _pre, narr, _fb in program:
+                for _step, chunk, cursor, _frame in verify._place_walk(narr):
+                    if not chunk or not cursor or chunk == cursor:
+                        continue
+                    if chunk not in authored or cursor not in authored:
+                        continue
+                    if not _hits(authored[chunk], authored[cursor]):
+                        continue
+                    if verify._SLOTS.get(chunk, (0, 0)) != verify._SLOTS.get(cursor, (0, 0)):
+                        split.append(f"{family}/{name}: {cursor} and {chunk} move apart")
         assert not split, (
             "chunks that share ground and address each other were placed in different cells:\n  "
             + "\n  ".join(sorted(set(split))))
@@ -148,17 +159,20 @@ class TestToolVerifyLayout:
         # act deleted is a hard failure - and one that only shows up live, after three minutes of
         # run.
         verify = _load_verify()
-        gone, offenders = {}, []
-        for name, _pre, narr, _fb in verify._ACT_PROGRAM:
-            for step in narr:
-                args = step[1] if isinstance(step[1], dict) else {}
-                if step[0] == "design_delete_occurrence" and isinstance(args.get("occurrence"), str):
-                    gone.setdefault(args["occurrence"], name)
-                if step[0] == "view_set" and args.get("focus"):
-                    focus = args["focus"]
-                    for nm in (focus if isinstance(focus, list) else [focus]):
-                        if nm in gone:
-                            offenders.append(f"{name}: frames '{nm}', deleted in {gone[nm]}")
+        offenders = []
+        for family, program in _families(verify).items():
+            gone = {}
+            for name, _pre, narr, _fb in program:
+                for step in narr:
+                    args = step[1] if isinstance(step[1], dict) else {}
+                    if step[0] == "design_delete_occurrence" and isinstance(args.get("occurrence"), str):
+                        gone.setdefault(args["occurrence"], name)
+                    if step[0] == "view_set" and args.get("focus"):
+                        focus = args["focus"]
+                        for nm in (focus if isinstance(focus, list) else [focus]):
+                            if nm in gone:
+                                offenders.append(
+                                    f"{family}/{name}: frames '{nm}', deleted in {gone[nm]}")
         assert not offenders, (
             "camera rows name entities the story has already deleted - view_set refuses a focus it "
             "cannot resolve:\n  " + "\n  ".join(offenders))

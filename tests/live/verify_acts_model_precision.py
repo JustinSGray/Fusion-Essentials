@@ -625,5 +625,3 @@ def _precision_rows():
 
 
 _PRECISION_READS = _precision_rows()
-
-

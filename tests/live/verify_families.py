@@ -8,7 +8,7 @@ from verify_acts_model import _DETAILS, _SOLIDS
 from verify_acts_motion import _MOTION, _VISE
 from verify_acts_sketch import _SKELETON
 from verify_core import _DWELL
-from verify_layout import _SLOTS, _placed
+from verify_layout import _placed
 
 
 FAMILY_GROUPS = (
@@ -34,6 +34,7 @@ FAMILY_GROUPS = (
     ("sheet_flange", ("ACT 12g",)),
     ("finale", ("FINALE",)),
 )
+FAMILY_SLOTS = {}
 
 
 def family_names(acts):
@@ -92,16 +93,18 @@ _MANUFACTURE = ("view_switch_workspace", {"workspace": "manufacture"}, "ok", Non
 _DESIGN = ("view_switch_workspace", {"workspace": "design"}, "ok", None)
 
 
-def fixture_steps(family, before_act=None, entitled=True):
+def fixture_steps(family, before_act=None, entitled=True, raw=False, slots=None):
     """Return local producer rows for one family boundary."""
+    selected = None if raw else (FAMILY_SLOTS[family] if slots is None else slots)
+    place = (lambda rows: list(rows)) if raw else (lambda rows: _placed(rows, selected))
     if before_act is not None:
         if before_act.startswith("ACT 10e") and family == "part_cam":
-            rows = [_DESIGN] + _placed(_SWARF_RIG, _SLOTS) + [
-                _MANUFACTURE] + _placed(_CAM_SCOPE, _SLOTS)
-            return rows + (_placed(_CAM_EXTENSION, _SLOTS) if entitled else [])
+            rows = [_DESIGN] + place(_SWARF_RIG) + [
+                _MANUFACTURE] + place(_CAM_SCOPE)
+            return rows + (place(_CAM_EXTENSION) if entitled else [])
         if before_act.startswith("ACT 10c15") and family == "hub_cam" and entitled:
-            return [_DESIGN] + _placed(_SWARF_RIG, _SLOTS) + [
-                _MANUFACTURE] + _placed(_CAM_EXTENSION, _SLOTS)
+            return [_DESIGN] + place(_SWARF_RIG) + [
+                _MANUFACTURE] + place(_CAM_EXTENSION)
         if family == "swarf_cam" and before_act.startswith("ACT 10b2"):
             return [_MANUFACTURE]
         if family == "hub_cam" and before_act.startswith("ACT 10c4"):
@@ -112,10 +115,10 @@ def fixture_steps(family, before_act=None, entitled=True):
         if family != "solids":
             rows += _through(_SOLIDS, "joint_create_origin", "StockCenter")
         if family == "details":
-            rows += _placed(_component_block(_SOLIDS, "DatumBench", "find_geometry",
-                                             "kind", "cylinder_face"), _SLOTS)
+            rows += place(_component_block(_SOLIDS, "DatumBench", "find_geometry",
+                                           "kind", "cylinder_face"))
         if family == "resize":
-            rows += _placed(_component_block(_SOLIDS, "DatumBench", "model_extrude"), _SLOTS)
+            rows += place(_component_block(_SOLIDS, "DatumBench", "model_extrude"))
             rows.append(("design_activate_component", {"occurrence": "root"}, "ok", None))
         if family in ("part_cam", "showcase"):
             rows += STOCK_VISE
@@ -128,7 +131,7 @@ def fixture_steps(family, before_act=None, entitled=True):
                             and row[1].get("action") == "capture")
             rows += [row for row in _VISE[len(STOCK_VISE):captured + 1]
                      if row[0] not in (_DWELL, "view_set", "view_screenshot")]
-            rows += showcase_shapes()
+            rows += showcase_shapes(raw=raw, slots=selected)
         return rows
     if family in ("swarf_cam", "hub_cam"):
         return [_MANUFACTURE,
@@ -143,7 +146,7 @@ def fixture_steps(family, before_act=None, entitled=True):
     return []
 
 
-def showcase_shapes():
+def showcase_shapes(raw=False, slots=None):
     """Build the four measured cameos without replaying the modelling benches."""
     ball = next(i for i, row in enumerate(_MOTION)
                 if row[0] == "model_create_component" and row[1].get("name") == "BallSphere")
@@ -158,4 +161,4 @@ def showcase_shapes():
             + _component_block(_MOTION, "MateSeat", "design_recompute")
             + _component_block(_SOLIDS, "FeatureCameo", "model_draft")
             + list(_SOLIDS[face:orbit + 1]))
-    return _placed(rows, _SLOTS)
+    return list(rows) if raw else _placed(rows, FAMILY_SLOTS["showcase"] if slots is None else slots)

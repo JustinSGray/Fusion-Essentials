@@ -93,12 +93,7 @@ _DOWNLOAD_STAGE_PREFIX = ".fusion-download-"
 
 
 def _lit(args):
-    """`args` as a CALLABLE ignoring ctx - a literal dict the layout pass cannot read.
-
-    The packer deals a cell to every chunk whose steps pin a world coordinate, reading a step's dict
-    arguments to find them. These acts build in a document of their own, where an authored x is not
-    a place in the story field, so their coordinates are handed over as callables and no cell is
-    dealt for a component that never appears in that field."""
+    """Return authored document-local arguments without chunk translation."""
     return lambda _ctx, _a=args: dict(_a)
 
 

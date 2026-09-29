@@ -1120,5 +1120,3 @@ _SOLIDS = [
     *_LOFT_EDITOR,
     *_LOFT_PARTICIPANTS,
 ]
-
-

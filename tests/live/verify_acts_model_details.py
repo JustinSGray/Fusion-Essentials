@@ -1113,4 +1113,3 @@ _DETAILS = [
         "surface": _ctx_get(c, "post_wall", "thread post wall")}],
         "sketch_name": "W3Pt"}, "refused", None),
 ]
-

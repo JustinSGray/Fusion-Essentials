@@ -815,5 +815,3 @@ def _loft_participants_rows():
 
 
 _LOFT_PARTICIPANTS = _loft_participants_rows()
-
-

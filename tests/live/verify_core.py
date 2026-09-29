@@ -2383,7 +2383,7 @@ _SKETCH_PLANE = {}
 _PLANE_VIEW = {"xy": "top", "xz": "front", "yz": "right"}
 
 
-def _watch(occurrence):
+def _watch(occurrence, planes=None):
     """A camera row: orient and FRAME the occurrence, so a viewer watching the run sees the chunk
     about to be exercised fill the viewport instead of sitting as a speck in a corner. The story
     world is metres wide (every cameo gets its own grid slot) while the parts are tens of
@@ -2394,14 +2394,15 @@ def _watch(occurrence):
     foreshortened to near nothing, and text on it cannot be read at all. Anything with a body in it
     keeps iso, where a solid reads as a solid."""
     names = occurrence if isinstance(occurrence, list) else [occurrence]
+    planes_by_name = _SKETCH_PLANE if planes is None else planes
     flat = not any(str(n).endswith(":1") for n in names)
     view = "iso-top-right"
     if flat:
-        planes = {_SKETCH_PLANE.get(str(n)) for n in names}
-        planes.discard(None)
+        on_planes = {planes_by_name.get(str(n)) for n in names}
+        on_planes.discard(None)
         # one shared plane: look straight down its normal. Mixed planes have no such view, so iso
         # at least shows all of them at an angle rather than one of them edge-on.
-        view = _PLANE_VIEW.get(planes.pop(), "top") if len(planes) == 1 else "iso-top-right"
+        view = _PLANE_VIEW.get(on_planes.pop(), "top") if len(on_planes) == 1 else "iso-top-right"
     return ("view_set", {"action": "orient", "orientation": view, "focus": occurrence},
             _smooth_off, None)
 

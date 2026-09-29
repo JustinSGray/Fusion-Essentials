@@ -52,7 +52,7 @@ WHERE THE ROWS ARE. This module is the surface every consumer imports; the harne
 siblings, and a step is edited in the one it belongs to:
 
   verify_core.py      the wire, the step kinds, the value predicates, the scratch fixtures
-  verify_layout.py    the sketch hoist, the slot packer, the framing pass
+  verify_layout.py    the sketch hoist, authored anchors, and framing pass
   verify_acts_doc.py / _sketch / _model_* / _motion / _mesh / _cam / _hub / _cloud   the step rows
   cloud_config.py     the OPT-IN cloud tier's local config (gitignored); absent, the tier is skipped
   verify_program.py   the judged acts, run through those passes, plus STEPS/STORY/EXCLUDED
@@ -112,9 +112,8 @@ from verify_layout import (  # noqa: F401
     _DRIFT_CHUNKS, _DRIFT_TOL_MM, layout_drift_mm, layout_placed_as_measured, drift_row,
     _FRAME_PATTERN_WIDEN, _framed, _frame_box, _frame_cluster, _expand, _inside,
     _frame_neighbourhood, _PLACE_PAIRS, _PLACE_DELTA_TOOLS, _PLACE_XYZ, _PLACE_POINTS,
-    _PLACE_NAMES, _PLACE_FRAMES, _PLACE_WITH, _JOINT_GROUPS, _JOINT_FAMILY, _PLACE_ANCHORED,
-    _ORIGIN_RELATIVE_TOOLS, _PIN_HALF, _FIELD_X0, _FIELD_Y0, _FIELD_WIDTH, _FIELD_GUTTER,
-    _place_owner, _place_num, _place_points, _place_walk, _place_shift, _place_slots, _placed,
+    _PLACE_NAMES, _PLACE_FRAMES, _JOINT_GROUPS, _JOINT_FAMILY,
+    _place_owner, _place_num, _place_points, _place_walk, _place_shift, _placed,
     _px, _py, _SLOTS)
 
 from verify_acts_doc import (  # noqa: F401

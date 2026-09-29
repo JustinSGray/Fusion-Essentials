@@ -6,8 +6,7 @@
 The world the CAM competence beats address, built through the tools instead of kept as a saved
 document. Its three dimensioned sketches read is_fully_constrained true before a feature consumes
 them, which is the sketch recipes' own bar; the two setups at the bottom are the names a machining
-beat addresses. The hub is authored a metre out along X on the XZ plane, and a chunk holding an XZ
-sketch is left exactly where it was written - see verify_layout._place_slots.
+beat addresses. The hub is authored a metre out along X on the XZ plane and stays there.
 """
 
 import time

@@ -19,6 +19,8 @@ TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(TESTS_DIR, "live"))
 import tool_verify  # noqa: E402
 import verify_layout  # noqa: E402
+import verify_program  # noqa: E402
+from verify_families import fixture_steps  # noqa: E402
 
 
 @pytest.fixture
@@ -130,7 +132,8 @@ class TestPlacementFrame:
         program = [("act", None, [
             ("sketch_create", {"name": "XZOnly", "plane": "xz"}, "ok", None),
             ("sketch_add_geometry", self._POINTS, "ok", None)], None)]
-        assert verify_layout._place_slots(program) == {}
+        assert verify_layout._family_slots("act", program) == {}
+        assert verify_layout._placed(program[0][2], {}) == program[0][2]
 
     def test_definition_scratch_queries_stay_with_local_stock_in_composed_act(self):
         rows = next(rows for name, _pre, rows, _fallback in tool_verify.ACTS
@@ -183,14 +186,11 @@ def test_redistributed_sketch_frames_name_subjects_in_their_own_act():
             elif tool == "view_set" and args.get("focus"):
                 focus = args["focus"]
                 assert set(focus if isinstance(focus, list) else [focus]) <= known
+        assert rows[-1][:2] == ("design_activate_component", {"occurrence": "root"})
 
     details = verify_program._LOCAL_SKETCHES["ACT 5 - DETAILS"]
     assert any(row[0] == "view_set" and row[1].get("focus") == ["EmbossBlockS"]
                and row[1].get("orientation") == "top" for row in details)
-
-    with pytest.raises(ValueError, match="no local subject"):
-        verify_program._local_sketch_focus([
-            ("view_set", {"focus": "AbsentSketch"}, "ok", None)])
 
     duplicate = [(name, None, [("sketch_create", {"name": "Shared", "plane": "xy"},
                                "ok", None)], []) for name in ("ACT X", "ACT Y")]
@@ -242,31 +242,6 @@ class TestPatternSuffix:
         monkeypatch.setitem(verify_layout._PLACED_BOX, "Part11", [0.0, 100.0, 0.0, 100.0])
         rows = verify_layout._framed(_made("Neighbor") + _made("Part11"))
         assert _frames(rows)[-1] == ["Part11:1"]
-
-
-class TestCollisionRefusal:
-    def test_a_second_row_still_blocked_is_refused(self, monkeypatch):
-        monkeypatch.setattr(verify_layout, "_PLACE_ANCHORED",
-                            tuple(verify_layout._PLACE_ANCHORED) + ("Blocker",))
-        program = [("blocked", None,
-                    _component("Blocker", (200.0, 220.0), (1100.0, 500.0))
-                    + _component("Target", (1300.0, 1300.0), (1320.0, 1320.0)), None)]
-        with pytest.raises(ValueError, match="Target"):
-            verify_layout._place_slots(program)
-
-    def test_a_cell_wider_than_the_field_is_refused(self):
-        program = [("wide", None,
-                    _component("TooWide", (1200.0, 500.0), (2200.0, 520.0)), None)]
-        with pytest.raises(ValueError, match="TooWide"):
-            verify_layout._place_slots(program)
-
-
-class TestJointGroupLocking:
-    def test_locking_one_joint_member_keeps_every_member_on_authored_ground(self):
-        program = [("joint", None,
-                    _component("BallSphere", (-10.0, -10.0), (10.0, 10.0))
-                    + _component("BallPost", (500.0, 500.0), (520.0, 520.0)), None)]
-        assert verify_layout._place_slots(program) == {}
 
 
 class TestSketchHoistOwner:
@@ -350,3 +325,70 @@ class TestNonactivatingSketchOwner:
                 elif tool == "sketch_create":
                     owners[args["name"]] = active
             assert owners == {"ASketch": "A", "BSketch": "B"}
+
+
+def _argument_signature(value):
+    if callable(value):
+        return (value.__code__.co_code, _argument_signature(value.__defaults__),
+                tuple(_argument_signature(cell.cell_contents)
+                      for cell in (value.__closure__ or ())))
+    if isinstance(value, dict):
+        return tuple(sorted((key, _argument_signature(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_argument_signature(item) for item in value)
+    return value
+
+
+def _act_arguments(acts):
+    return {name: tuple(tuple((row[0], _argument_signature(row[1])) for row in lane)
+                        for lane in (narrative, fallback or []))
+            for name, _pre, narrative, fallback in acts}
+
+
+def _fixture_arguments(acts, slots):
+    owners = verify_program.family_names(acts)
+    result = {}
+    for family in set(owners.values()):
+        setup = fixture_steps(family, slots=slots[family])
+        result[family, "setup"] = tuple((row[0], _argument_signature(row[1])) for row in setup)
+    for name in owners:
+        family = owners[name]
+        for entitled in (False, True):
+            before = fixture_steps(family, before_act=name, entitled=entitled,
+                                   slots=slots[family])
+            result[family, name, entitled] = tuple(
+                (row[0], _argument_signature(row[1])) for row in before)
+    return result
+
+
+def test_removing_or_reordering_families_cannot_move_retained_rows_or_frames():
+    raw = verify_program._RAW_ACT_PROGRAM
+    owners = verify_program.family_names(raw)
+    original = _act_arguments(verify_program.ACTS)
+    original_fixtures = _fixture_arguments(verify_program.ACTS, verify_program.FAMILY_SLOTS)
+    for excluded in ("sketch", "surfaces", "details"):
+        subset = [act for act in raw if owners[act[0]] != excluded]
+        compiled = verify_program.compile_program(subset)
+        assert _act_arguments(compiled["acts"]) == {
+            name: rows for name, rows in original.items() if owners[name] != excluded}
+        assert _fixture_arguments(compiled["acts"], compiled["slots"]) == {
+            key: rows for key, rows in original_fixtures.items() if key[0] != excluded}
+    reversed_program = verify_program.compile_program(list(reversed(raw)))
+    assert _act_arguments(reversed_program["acts"]) == original
+    assert _fixture_arguments(reversed_program["acts"], reversed_program["slots"]) == original_fixtures
+
+
+def test_same_sketch_name_in_separate_family_documents_has_local_owner():
+    def act(name, plane):
+        return (name, None, [
+            ("sketch_create", {"name": "Shared", "plane": plane}, "ok", None),
+            ("sketch_add_geometry", {"sketch_name": "Shared", "geometry": [
+                {"kind": "line", "x1": 0.0, "y1": 0.0, "x2": 20.0, "y2": 0.0}]}, "ok", None)], [])
+    compiled = verify_program.compile_program([
+        act("ACT 4 - MESH", "xy"), act("ACT 6b - NESTING", "xz")])
+    assert [name for name, *_rest in compiled["acts"]] == ["ACT 4 - MESH", "ACT 6b - NESTING"]
+    assert all(any(row[0] == "sketch_create" and row[1]["name"] == "Shared"
+                   for row in narrative)
+               for _name, _pre, narrative, _fallback in compiled["acts"])
+    assert compiled["frames"]["mesh"]["planes"]["Shared"] == "xy"
+    assert compiled["frames"]["nesting"]["planes"]["Shared"] == "xz"
