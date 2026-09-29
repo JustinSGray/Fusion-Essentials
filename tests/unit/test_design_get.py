@@ -149,6 +149,9 @@ def test_loft_definition_discloses_ordered_sections_without_rolling(definition_s
     s = definition_scene
     loft = s.hole
     loft.objectType = "adsk::fusion::LoftFeature"
+    members = adsk.fusion.LoftEdgeAlignments
+    loft.startLoftEdgeAlignment = members.AlignEdgesLoftEdgeAlignment
+    loft.endLoftEdgeAlignment = members.AlignToSurfaceLoftEdgeAlignment
     sketches = [SimpleNamespace(name=name, parentComponent=s.component)
                 for name in ("Start", "Middle", "End")]
     profiles = [SimpleNamespace(objectType="adsk::fusion::Profile", entityToken=f"profile-{i}",
@@ -169,6 +172,8 @@ def test_loft_definition_discloses_ordered_sections_without_rolling(definition_s
                  (1, "profile-1", "Middle", "Cradle"),
                  (2, "profile-2", "End", "Cradle")]
     assert out["is_solid"] is True and out["is_closed"] is False
+    assert out["start_alignment"] == "align_edges"
+    assert out["end_alignment"] == "align_surface"
     assert s.timeline.markerPosition == 0 and s.timeline._moves == [] and s.row._rolls == []
     del profiles[1].parentSketch
     unknown = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]

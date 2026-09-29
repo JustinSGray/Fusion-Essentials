@@ -1033,6 +1033,15 @@ def _definition_thread(feature, factor):
 
 def _definition_loft(feature):
     """A bounded ordered read of a Loft's current sections and controls."""
+    def alignment(side):
+        actual = safe(lambda: getattr(feature, side + "LoftEdgeAlignment"))
+        family = safe(lambda: adsk.fusion.LoftEdgeAlignments)
+        for key, name in _inputs.LOFT_EDGE_ALIGNMENT_MEMBERS.items():
+            member = safe(lambda n=name: getattr(family, n))
+            if member is not None and actual == member:
+                return key
+        return None
+
     collection = safe(lambda: feature.loftSections)
     count = _common.counted(lambda: collection.count)
     cap = 64
@@ -1052,6 +1061,8 @@ def _definition_loft(feature):
             "operation": safe(lambda: feature.operation),
             "is_solid": _common.read_flag(lambda: feature.isSolid),
             "is_closed": _common.read_flag(lambda: feature.isClosed),
+            "start_alignment": alignment("start"),
+            "end_alignment": alignment("end"),
             "guide_count": _common.counted(lambda: feature.centerLineOrRails.count)}
 
 

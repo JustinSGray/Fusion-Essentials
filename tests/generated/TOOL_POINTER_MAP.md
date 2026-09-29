@@ -14,8 +14,8 @@ close orphans, factor duplicated guards into shared helpers.
 - none detected in the scanned literals.
 
 ### Orphans (no incoming breadcrumb detected in this map)
-**Read/Acquire (9)** - higher concern, a check-your-work tool nothing points to:
-  `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `model_compute_holder`, `model_measure_continuity`, `model_measure_relation`, `sys_get_api_doc`
+**Read/Acquire (8)** - higher concern, a check-your-work tool nothing points to:
+  `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `model_compute_holder`, `model_measure_relation`, `sys_get_api_doc`
 
 **Edit (56)** - usually leaf actions, scan for genuine gaps:
   `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
@@ -3241,7 +3241,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '. Use: new, join, cut, intersect.
 - No active design. Create or open a document first (see doc_new).
 - Loft needs at least 2 sections (got
+- An open edge surface Loft supports operation='new' only.
 - centerLineOrRails takes a centerline OR rails, not both.
+- An open edge surface Loft takes two sections without rails or centerline.
 - Loft reported success but the feature owns no result body - nothing was built.
 - 'target_bodies' was empty; name one or more solid bodies, or omit it.
 - 'target_bodies' only applies to cut/intersect operations.
@@ -3249,11 +3251,16 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Could not start loft:
 - Could not add loft sections:
 - Could not set loft centerline/rails:
+- Loft was built, but its
+- edge alignment did not read back as '
 - Loft was built, but the post-loft body census or result-body identity is unreadable; scoped material effect is unverified.
 - ; scoped material effect failed verification.
 - Loft reported success but this
 - changed nothing - every solid body in '
 - ' measures the volume it had before and none was consumed, so the lofted shape does not overlap any of them. Check the profiles bracket the target body (an 'intersect' whose target lies entirely IN...
+- ] needs a readable assembly context; choose sections with a readable owning component.
+- ] has no readable owning component; choose native sections owned by one component.
+- ] has a proxy context outside its owning component or its identity could not be read; use an open edge handle and an open sketch curve in the same component.
 - 'target_bodies' includes a body whose native identity is unreadable.
 - 'target_bodies' repeats one body; list each participant once.
 - 'target_bodies' includes a body with a
@@ -3261,7 +3268,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'target_bodies' includes a body whose owner or name is unreadable.
 - Could not set loft solid/surface mode:
 - Could not set target_bodies before loft:
+- ] belongs to a different or unreadable component; choose sections owned by the same component.
 - 'rail_continuity' is set on B-Rep edge rails, and rails[] is a  - pass find_geometry edge handles, or drop 'rail_continuity'.
+- 'profiles'[] has a proxy context outside its owning component or its identity could not be read; use an open edge handle and an open sketch curve in the same component.
 - Loft reported success but this  changed nothing - every solid body in '' measures the volume it had before and none was consumed, so the lofted shape does not overlap any of them. Check the profile...
 
 ### `model_measure_between`

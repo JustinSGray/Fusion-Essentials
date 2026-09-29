@@ -6,7 +6,7 @@
 import math
 
 from verify_core import (
-    _RECALL, _ctx_get, _datum_plane, _document_closed, _extruded, _home_address, _home_document, _lofted, _made_component, _measured, _near, _num, _new_document, _prof, _recall, _refused)
+    _RECALL, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _measured, _near, _num, _new_document, _prof, _recall, _refused)
 
 
 
@@ -815,3 +815,192 @@ def _loft_participants_rows():
 
 
 _LOFT_PARTICIPANTS = _loft_participants_rows()
+
+
+def _loft_alignment_census(p):
+    """Return host body identities and Loft timeline rows when both slices read."""
+    bodies = ((p.get("tree") or {}).get("tree") or {}).get("bodies")
+    timeline = (p.get("timeline") or {}).get("timeline")
+    if not isinstance(bodies, list) or not isinstance(timeline, list):
+        return None
+    return {"bodies": sorted((b.get("name"), b.get("handle")) for b in bodies),
+            "lofts": sorted((r.get("name"), r.get("health")) for r in timeline
+                            if r.get("component") == "LoftEdgeAlign"
+                            and r.get("type") == "LoftFeature")}
+
+
+def _loft_alignment_face(p):
+    """Return the source face's independent area, position and cylinder geometry."""
+    row = (p.get("matches") or [{}])[0]
+    return {key: row.get(key) for key in ("kind", "area", "position", "radius", "axis")}
+
+
+def _loft_alignment_world(x, y):
+    """Return the placed host's world query point in mm."""
+    angle = math.radians(25)
+    return [100 + math.cos(angle) * x - math.sin(angle) * y,
+            50 + math.sin(angle) * x + math.cos(angle) * y, 0]
+
+
+def _loft_alignment_rows():
+    """Demonstrate open-edge alignment through owned-component public geometry reads."""
+    rows = []
+    host, decoy = "LoftEdgeAlign", "LoftEdgeDecoy"
+    rows.append(("design_activate_component", {"occurrence": "root"}, "ok", None))
+    rows.append(("model_create_component", {"name": host, "activate": True,
+                                            "x": 100, "y": 50, "rotate_deg": 25},
+                 _made_component, None))
+    rows.append(("model_construction", {"kind": "plane", "plane": "xy",
+                                         "offset": 30, "name": "LoftAlignTop"},
+                 _datum_plane("xy"), None))
+    rows.append(("design_activate_component", {"occurrence": "root"}, "ok", None))
+    rows.append(("model_create_component", {"name": decoy, "activate": True},
+                 _made_component, None))
+    rows.extend([
+        ("sketch_create", {"plane": "xy", "name": "LoftAlignWitnessS"}, "ok", None),
+        ("sketch_add_geometry", {"sketch_name": "LoftAlignWitnessS", "geometry": [
+            {"kind": "rectangle", "x1": 3000, "y1": 3000, "x2": 3010, "y2": 3010}]},
+         "ok", None),
+        ("model_extrude", {"sketch_name": "LoftAlignWitnessS", "distance": 10},
+         _extruded, ("la_witness", lambda p: p["result_bodies"][0])),
+        ("model_inspect", lambda c: {"target": decoy + ":" +
+             _ctx_get(c, "la_witness", "Loft witness"), "include": ["mass"], "units": "cm"},
+         lambda p: _measured("unrelated Loft witness before alignment",
+                             (p.get("mass") or {}).get("volume"),
+                             _near((p.get("mass") or {}).get("volume"), 1.0, 0.001)), None),
+    ])
+
+    cases = (("start_g1_free", 2600, "start", "tangent", "free", 322.7386),
+             ("start_g1_edges", 2660, "start", "tangent", "align_edges", 346.3860),
+             ("end_g2_free", 2720, "end", "smooth", "free", 321.6790),
+             ("end_g2_surface", 2780, "end", "smooth", "align_surface", 347.9951))
+    for label, x, side, condition, alignment, expected_area in cases:
+        source, target = label + "Source", label + "Target"
+        source_key, edge_key, loft_key = label + "Body", label + "Edge", label + "Loft"
+        shape_key = label + "SourceShape"
+        rows.extend([
+            ("design_activate_component", {"occurrence": host + ":1"}, "ok", None),
+            ("sketch_create", {"plane": "xy", "name": source}, "ok", None),
+            ("sketch_add_geometry", {"sketch_name": source, "component": host,
+                                      "geometry": [{"kind": "arc", "cx": x, "cy": 1,
+                                                    "x1": x + 8, "y1": 1,
+                                                    "sweep_deg": 90}]}, "ok", None),
+            ("model_extrude", {"sketch_name": source, "component": host,
+                               "distance": -10, "as_surface": True},
+             lambda p: p.get("is_solid") is False and len(p.get("result_bodies") or []) == 1,
+             (source_key, lambda p: p["result_bodies"][0])),
+            ("find_geometry", lambda c, key=source_key: {
+                "target": host + ":" + _ctx_get(c, key, "alignment source body"),
+                "kind": "cylinder_face", "units": "mm", "max_results": 1},
+             lambda p: _measured("a single quarter-cylinder source face before Loft",
+                                  p.get("matches"), p.get("match_count") == 1
+                                  and _near((p["matches"][0]).get("area"), 125.664, 0.5)),
+             (shape_key, _recall(shape_key, _loft_alignment_face))),
+            ("find_geometry", lambda c, key=source_key, near=x: {
+                "target": host + ":" + _ctx_get(c, key, "alignment source body"),
+                "kind": "arc_edge", "radius": 8,
+                "nearest_to": _loft_alignment_world(near + 6, 7),
+                "units": "mm", "max_results": 1},
+             lambda p: _measured("one top connected arc edge", p.get("matches"),
+                                  p.get("match_count") == 2 and p.get("returned") == 1
+                                  and _near((p["matches"][0]).get("length"), 12.566, 0.05)
+                                  and _near(((p["matches"][0]).get("position") or
+                                             [None, None, None])[2], 0, 0.05)),
+             _fg(edge_key)),
+            ("sketch_create", {"plane": "LoftAlignTop", "name": target}, "ok", None),
+            ("sketch_add_geometry", {"sketch_name": target, "component": host,
+                                      "geometry": [{"kind": "arc", "cx": x + 5, "cy": 1,
+                                                    "x1": x + 11, "y1": 1,
+                                                    "sweep_deg": 90}]}, "ok", None),
+            ("design_activate_component", {"occurrence": decoy + ":1"}, "ok", None),
+            ("model_loft", lambda c, s=side, cond=condition, mode=alignment,
+                           edge=edge_key, target=target: {
+                "profiles": ([_ctx_get(c, edge, "connected source edge"), target + "/arc:0"]
+                             if s == "start" else
+                             [target + "/arc:0", _ctx_get(c, edge, "connected source edge")]),
+                "component": host, "as_surface": True, "operation": "new",
+                s: cond, s + "_alignment": mode},
+             lambda p, s=side, cond=condition, mode=alignment: _measured(
+                 "owned open-edge Loft control", p,
+                 p.get("lofted") is True and p.get("is_solid") is False
+                 and p.get("section_kinds") == (["open_edge", "curve"] if s == "start"
+                                                  else ["curve", "open_edge"])
+                 and (p.get("ends") or {}).get(s) == cond
+                 and p.get(s + "_alignment") == mode
+                 and len(p.get("result_bodies") or []) == 1),
+             (loft_key, lambda p: {"feature": host + "/" + p["feature"],
+                                   "body": host + ":" + p["result_bodies"][0]})),
+            ("design_get", lambda c, key=loft_key: {
+                "include": ["definition"],
+                "feature": _ctx_get(c, key, "aligned Loft")["feature"]},
+             lambda p, s=side, mode=alignment: _measured(
+                 "Loft definition in its source component", p.get("definition"),
+                 (p.get("definition") or {}).get("component") == host
+                 and (p.get("definition") or {}).get("section_count") == 2
+                 and (p.get("definition") or {}).get(s + "_alignment") == mode
+                 and (p.get("definition") or {}).get("is_solid") is False), None),
+            ("find_geometry", lambda c, key=loft_key: {
+                "target": _ctx_get(c, key, "aligned Loft")["body"],
+                "kind": "nurbs_face", "units": "mm", "max_results": 1},
+             lambda p, want=expected_area, mode=alignment, s=side: _measured(
+                 "aligned Loft body area independently differs from Free",
+                 p.get("matches"), p.get("match_count") == 1
+                 and _near((p["matches"][0]).get("area"), want, 5)
+                 and (mode == "free" or
+                      (p["matches"][0]).get("area", 0) >
+                      _RECALL.get(s + "_free_area", float("inf")) + 15)),
+             ((side + "_free_area", _recall(side + "_free_area",
+               lambda p: p["matches"][0]["area"])) if alignment == "free" else None)),
+            ("model_measure_continuity", lambda c, edge=edge_key, key=loft_key: {
+                "edges": [_ctx_get(c, edge, "connected source edge")],
+                "against": _ctx_get(c, key, "aligned Loft")["body"],
+                "samples": 9, "units": "mm"},
+             lambda p, cond=condition: _measured(
+                 "nine sampled points on the connected Loft seam", p.get("edges"),
+                 len(p.get("edges") or []) == 1
+                 and (p["edges"][0]).get("samples") == 9
+                 and _num((p["edges"][0]).get("max_gap"))
+                 and p["edges"][0]["max_gap"] < 0.02
+                 and _num((p["edges"][0]).get("max_normal_angle_deg"))
+                 and p["edges"][0]["max_normal_angle_deg"] < 0.5
+                 and (cond != "smooth" or
+                      (_num((p["edges"][0]).get("max_curvature_jump"))
+                       and p["edges"][0]["max_curvature_jump"] < 0.01))), None),
+            ("find_geometry", lambda c, key=source_key: {
+                "target": host + ":" + _ctx_get(c, key, "alignment source body"),
+                "kind": "cylinder_face", "units": "mm", "max_results": 1},
+             lambda p, key=shape_key: _measured("original connected sheet remains unchanged",
+                                  p.get("matches"), p.get("match_count") == 1
+                                  and _loft_alignment_face(p) == _RECALL.get(key)
+                                  and _near((p["matches"][0]).get("area"), 125.664, 0.5)), None),
+        ])
+    rows.extend([
+        ("design_get", {"include": ["tree", "timeline"], "component": host,
+                        "tree_bodies": True, "tree_handles": True, "max_results": 2000},
+         lambda p: _measured("alignment guard baseline census", _loft_alignment_census(p),
+                             _loft_alignment_census(p) is not None),
+         ("la_guard_census", _recall("la_guard_census", _loft_alignment_census))),
+        ("model_loft", lambda c: {"profiles": ["end_g2_surfaceTarget/arc:0",
+                            _ctx_get(c, "end_g2_surfaceEdge", "connected source edge")],
+                            "component": host, "as_surface": True, "end": "smooth",
+                            "start_alignment": "align_edges"},
+         _refused("start_alignment"), None),
+        ("design_get", {"include": ["tree", "timeline"], "component": host,
+                        "tree_bodies": True, "tree_handles": True, "max_results": 2000},
+         lambda p: _measured("invalid alignment left feature and body census unchanged",
+                             _loft_alignment_census(p),
+                             _loft_alignment_census(p) is not None
+                             and _loft_alignment_census(p) == _RECALL.get("la_guard_census")), None),
+    ])
+    rows.extend([
+        ("model_inspect", lambda c: {"target": decoy + ":" +
+             _ctx_get(c, "la_witness", "Loft witness"), "include": ["mass"], "units": "cm"},
+         lambda p: _measured("unrelated Loft witness still has its original volume",
+                             (p.get("mass") or {}).get("volume"),
+                             _near((p.get("mass") or {}).get("volume"), 1.0, 0.001)), None),
+        ("design_activate_component", {"occurrence": "root"}, "ok", None),
+    ])
+    return rows
+
+
+_LOFT_ALIGNMENT = _loft_alignment_rows()

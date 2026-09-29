@@ -21,7 +21,7 @@ from verify_acts_model_combine_revolve import (
 from verify_acts_model_precision import (
     _FINE_ANGLE_DEG, _HOLE_ACTIVE, _HOLE_ACTIVE_X0, _HOLE_HOST, _HOLE_VOLUME, _HOLE_X0, _PRECISION_READS, _control_top_args, _fine_angle_param, _fine_angle_plane, _hole_active_handle, _hole_active_tree, _hole_body_state, _hole_created, _hole_cylinder_args, _hole_cylinders, _hole_face_bounds, _hole_host_tree, _hole_inspect_args, _hole_lower_handle, _hole_timeline, _hole_upper_handle, _radius_body_size, _radius_filtered_handle, _scoped_bore_args, _scoped_hole_args, _scoped_top_args, _sweep_brep_list_edited, _sweep_dependent_survived, _sweep_edit_at_volume, _sweep_inspected_at_volume, _unscoped_hole_args)
 from verify_acts_model_sweep import (
-    _LOFT_EDITOR, _LOFT_PARTICIPANTS, _SWEEP_EDIT_MODES)
+    _LOFT_ALIGNMENT, _LOFT_EDITOR, _LOFT_PARTICIPANTS, _SWEEP_EDIT_MODES)
 
 _SOLIDS = [
     # The sketch acts have already drawn the whole scratch field by now, so a whole-model fit is a
@@ -1119,4 +1119,5 @@ _SOLIDS = [
     *_SWEEP_EDIT_MODES,
     *_LOFT_EDITOR,
     *_LOFT_PARTICIPANTS,
+    *_LOFT_ALIGNMENT,
 ]

@@ -50,7 +50,7 @@ generates both from `_inputs.py` and each helper's `MAP_BLURB`; don't edit betwe
 | `GeometryHandleList` | several faces/edges by handles (fillet/drill THESE) |
 | `JointOriginRef` | a Joint Origin by assembly_get handle OR name (bare if unique, else '<occ>:<JO name>'); refuses ambiguity |
 | `LoftEndCondition` | a loft end's condition, refused where the section at that end cannot take it |
-| `LoftSectionList` | an ORDERED list of loft sections: profile, one closed edge, an end sketch point, an open sketch curve |
+| `LoftSectionList` | an ORDERED list of loft sections: profile, one edge, an end sketch point, an open sketch curve |
 | `OccurrenceRef` | an assembly occurrence by entityToken handle (exact) or fullPathName/name (refuses ambiguity) |
 | `OccurrenceRefList` | several occurrences (entityToken handles or fullPathNames/names) |
 | `PlaneRef` | a plane: xy/xz/yz alias, construction-plane name/handle, or planar-face handle |

@@ -805,6 +805,10 @@ class _EndLofts:
         feature = FakeFeature(name="Loft1", bodies=[BRepBody("Blend1", is_solid=False)])
         feature.isSolid = False
         feature.loftSections = _NamedCollection(list(self._ends))
+        for side in ("start", "end"):
+            prop = side + "LoftEdgeAlignment"
+            if hasattr(inp, prop):
+                setattr(feature, prop, getattr(inp, prop))
         rails = self._rails if self._rails is not None else [
             r.edgeCondition for r in inp.centerLineOrRails.rails]
         feature.centerLineOrRails = _NamedCollection(
@@ -825,11 +829,22 @@ class TestSectionsAndEnds:
         paths = _Paths({id(edges["OPEN"]): False, id(open_curve): False, id(closed_curve): True})
         monkeypatch.setattr(adsk.fusion, "Path", paths, raising=False)
 
-        def build(lofts, tokens=None):
+        def build(lofts, tokens=None, open_owner=False):
             comp = MakeComp(name="Blend", bodies=(), mesh_bodies=(), sketches=[
                 make_sketch(name="Nose", points=[FakeSketchPoint()]),
                 make_sketch(name="Sec", splines=[open_curve, closed_curve])])
             comp.features = _FakeFeatures(loft=lofts)
+            if open_owner:
+                sec = comp.sketches.itemByName("Sec")
+                sec.parentComponent = comp
+                open_curve.parentSketch = sec
+                open_curve.assemblyContext = None
+                edges["OPEN"].body = BRepBody("SourceSheet", is_solid=False,
+                                               parent_component=comp)
+                edges["OPEN"].assemblyContext = None
+                edges["OPEN"].faces = _NamedCollection([BRepFace("SourceFace")])
+                comp.features.createPath = lambda ent, chain: types.SimpleNamespace(
+                    entity=ent, count=1, isClosed=False)
             install(so, make_design(comp=comp, tokens={**edges, "P": Profile("0"),
                                                        **(tokens or {})}))
             return lofts
@@ -865,14 +880,91 @@ class TestSectionsAndEnds:
     def test_a_tangent_end_on_a_profile_is_refused_before_the_loft_starts(self, rig):
         lofts = rig.build(_EndLofts([]))
         msg = error_message(so.handler(profiles=["P", "E1"], start="tangent"))
-        assert "a tangent end needs a closed edge section, but section 0 is a profile" in msg
+        assert "a tangent end needs a closed edge or an open edge section" in msg
         assert lofts.last_input is None
 
-    def test_an_open_edge_is_refused_as_a_section(self, rig):
+    def test_an_open_edge_with_unreadable_owner_is_refused(self, rig):
         lofts = rig.build(_EndLofts([]))
         msg = error_message(so.handler(profiles=["E0", "OPEN"]))
-        assert "'profiles'[1]: an edge section is ONE closed edge" in msg
+        assert "'profiles'[1]: an open edge section needs a readable assembly context" in msg
         assert lofts.last_input is None
+
+    def test_owned_open_edge_proxy_context_reaches_surface_loft(self, rig):
+        lofts = rig.build(_EndLofts([_built_end("LoftFreeEndCondition"),
+                                    _built_end("LoftSmoothEndCondition")]), open_owner=True)
+        rig.edges["OPEN"].assemblyContext = types.SimpleNamespace(
+            component=rig.edges["OPEN"].body.parentComponent, fullPathName="Blend:1")
+        out = payload(so.handler(profiles=["Sec/spline:0", "OPEN"], as_surface=True,
+                                 end="smooth"))
+        assert out["section_kinds"] == ["curve", "open_edge"]
+        assert out["ends"]["end"] == "smooth"
+        assert lofts.last_input is not None
+
+    def test_owned_open_edge_aligns_only_its_explicit_surface_end(self, rig):
+        members = adsk.fusion.LoftEdgeAlignments
+        lofts = rig.build(_EndLofts([_built_end("LoftFreeEndCondition"),
+                                    _built_end("LoftSmoothEndCondition")]), open_owner=True)
+        out = payload(so.handler(profiles=["Sec/spline:0", "OPEN"], as_surface=True,
+                                 end="smooth", end_alignment="align_edges"))
+        assert out["section_kinds"] == ["curve", "open_edge"]
+        assert out["end_alignment"] == "align_edges"
+        assert lofts.last_input.endLoftEdgeAlignment is members.AlignEdgesLoftEdgeAlignment
+        assert not hasattr(lofts.last_input, "startLoftEdgeAlignment")
+        rig.edges["OPEN"].assemblyContext = types.SimpleNamespace(
+            component=rig.edges["OPEN"].body.parentComponent, fullPathName="Blend:1")
+        proxied = payload(so.handler(profiles=["Sec/spline:0", "OPEN"], as_surface=True,
+                                     end="smooth", end_alignment="align_edges"))
+        assert proxied["section_kinds"] == ["curve", "open_edge"]
+        for kwargs in ({"end": "free"}, {"as_surface": False},
+                       {"operation": "join"}, {"start_alignment": "align_edges"}):
+            rejected = {"profiles": ["Sec/spline:0", "OPEN"], "as_surface": True,
+                        "end": "smooth", "end_alignment": "align_edges", **kwargs}
+            assert so.handler(**rejected)["isError"] is True
+
+    def test_open_edge_refuses_two_faces_or_foreign_section_before_feature_creation(self, rig):
+        lofts = rig.build(_EndLofts([]), open_owner=True)
+        args = {"profiles": ["OPEN", "Sec/spline:0"], "as_surface": True,
+                "start": "tangent"}
+        rig.edges["OPEN"].faces = _NamedCollection([BRepFace("A"), BRepFace("B")])
+        assert "one adjacent surface face" in error_message(so.handler(**args))
+        assert lofts.last_input is None
+
+        rig.edges["OPEN"].faces = _NamedCollection([BRepFace("A")])
+        other = MakeComp(name="Other", bodies=())
+        other.features = types.SimpleNamespace(createPath=lambda ent, chain:
+                                               types.SimpleNamespace(entity=ent, count=1,
+                                                                     isClosed=False))
+        rig.open_curve.parentSketch.parentComponent = other
+        assert "'profiles'[1] belongs to a different" in error_message(so.handler(**args))
+        assert lofts.last_input is None
+
+        rig.open_curve.assemblyContext = object()
+        assert "'profiles'[1] has a proxy context outside" in error_message(
+            so.handler(**args))
+        assert lofts.last_input is None
+
+        rig.open_curve.assemblyContext = None
+        rig.edges["OPEN"].assemblyContext = types.SimpleNamespace(
+            component=MakeComp(name="WrongPlacement", bodies=()))
+        assert "assembly context differs from its owning component" in error_message(
+            so.handler(**args))
+        assert lofts.last_input is None
+
+    def test_open_edge_alignment_ignored_by_feature_is_reported_as_failure(self, rig):
+        members = adsk.fusion.LoftEdgeAlignments
+
+        class Ignored(_EndLofts):
+            def add(self, inp):
+                feature = super().add(inp)
+                feature.endLoftEdgeAlignment = members.FreeEdgesLoftEdgeAlignment
+                return feature
+
+        rig.build(Ignored([_built_end("LoftFreeEndCondition"),
+                           _built_end("LoftSmoothEndCondition")]), open_owner=True)
+        msg = error_message(so.handler(profiles=["Sec/spline:0", "OPEN"], as_surface=True,
+                                       end="smooth", end_alignment="align_edges"))
+        assert "Loft was built, but its end edge alignment did not read back" in msg
+        assert "design_delete_feature" in msg
 
     def test_a_section_that_resolves_to_nothing_names_both_remedies(self, rig):
         lofts = rig.build(_EndLofts([]), tokens={"SPLIT": [BRepEdge(None), BRepEdge(None)]})

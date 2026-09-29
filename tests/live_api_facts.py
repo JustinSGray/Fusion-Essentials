@@ -502,6 +502,11 @@ ENUMS = {
         "PreferLinearDiameterDimensionPreferenceType": 1,
         "AvoidLinearDiameterDimensionPreferenceType": 2,
     },
+    "fusion.LoftEdgeAlignments": {
+        "FreeEdgesLoftEdgeAlignment": 0,
+        "AlignEdgesLoftEdgeAlignment": 1,
+        "AlignToSurfaceLoftEdgeAlignment": 2,
+    },
     "fusion.LoftRailEdgeConditions": {
         "G0LoftRailEdgeCondition": 0,
         "G1LoftRailEdgeCondition": 1,

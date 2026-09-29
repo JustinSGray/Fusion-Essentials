@@ -65,7 +65,7 @@ Produces: feature -> design_delete_feature. |
 | ✎ | `model_fillet` | Round (fillet) edges; model_chamfer bevels |
 | ✎ | `model_hole` | Drill a Hole feature; multiple points share one feature. |
 | · | `model_inspect` | Measure a target: the bounding box by default, mass or mesh stats through 'include'. |
-| ✎ | `model_loft` | Loft through ordered sections; target_bodies scopes cut/intersect |
+| ✎ | `model_loft` | Loft ordered sections; align open-edge surface to open sketch curve with G1/G2 |
 | · | `model_measure_between` | Measure the distance or angle between two targets; a distance of 0 is touching. |
 | · | `model_measure_continuity` | Measure gap, normal angle and curvature jump across each edge's seam; a one-faced edge reads against the 'against' body. |
 | · | `model_measure_relation` | Judge a geometric relation between two entities.

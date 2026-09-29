@@ -3840,19 +3840,26 @@ def _single_path(ent):
 
 
 # The section kinds, as a refusal names them.
-LOFT_SECTION_KINDS = {"profile": "a profile", "edge": "a closed edge", "point": "a sketch point",
+LOFT_SECTION_KINDS = {"profile": "a profile", "edge": "a closed edge",
+                      "open_edge": "an open edge", "point": "a sketch point",
                       "curve": "an open sketch curve"}
+
+LOFT_EDGE_ALIGNMENT_MEMBERS = {
+    "free": "FreeEdgesLoftEdgeAlignment",
+    "align_edges": "AlignEdgesLoftEdgeAlignment",
+    "align_surface": "AlignToSurfaceLoftEdgeAlignment",
+}
 
 
 class LoftSectionList(ProfileRefList):
     """ORDERED loft sections, each as (what LoftSections.add takes, its kind, the entity named)."""
 
-    MAP_HINT = ("an ORDERED list of loft sections: profile, one closed edge, an end sketch point, "
+    MAP_HINT = ("an ORDERED list of loft sections: profile, one edge, an end sketch point, "
                 "an open sketch curve")
 
     def contract_note(self) -> str:
-        return ("Profile/closed-edge 'handle's, {sketch, profile_index}, '<sketch>/<type>:<i>' "
-                "open curves or end points, in order.")
+        return ("Ordered profile/edge handles; {sketch, profile_index}; "
+                "'<sketch>/<type>:<i>' curves/end points.")
 
     def resolve(self, raw, component=""):
         if raw in (None, "", []):
@@ -3872,6 +3879,11 @@ class LoftSectionList(ProfileRefList):
         if inner:
             return None, (f"'{self.name}'[{inner[0]}]: a sketch point is a loft's first or last "
                           "section, never one between.")
+        inner_edges = [i for i, (_e, kind, _src) in enumerate(out)
+                       if kind == "open_edge" and 0 < i < len(out) - 1]
+        if inner_edges:
+            return None, (f"'{self.name}'[{inner_edges[0]}]: an open edge must be the first or last "
+                          "section with a tangent or smooth end.")
         return (out, None) if out else (None, f"'{self.name}': no valid sections resolved.")
 
     def _section(self, item, scope):
@@ -3906,13 +3918,29 @@ class LoftSectionList(ProfileRefList):
                           "{sketch, profile_index}.")
         if _isinstance(ent, adsk.fusion.BRepEdge):
             path, closed = _single_path(ent)
-            if closed is None:
-                return None, "a path over this edge did not read as one curve."
-            if not closed:
-                return None, ("an edge section is ONE closed edge, such as a tube's rim, and this "
-                              "edge is open. For an opening bounded by several edges, project it "
-                              "into a sketch (sketch_project) and loft its profile.")
-            return (path, "edge", ent), None
+            if closed is True:
+                return (path, "edge", ent), None
+            unread = object()
+            context = _common.safe(lambda: ent.assemblyContext, unread)
+            if context is unread:
+                return None, "an open edge section needs a readable assembly context."
+            owner = _common.safe(lambda: ent.body.parentComponent)
+            if owner is None:
+                return None, "the open edge's owning component is unreadable."
+            if context is not None and _common.same_component(
+                    _common.safe(lambda: context.component), owner) is not True:
+                return None, ("the open edge's assembly context differs from its owning component "
+                              "or its identity could not be read.")
+            faces = _common.counted(lambda: ent.faces.count)
+            if faces != 1:
+                return None, (f"an open edge section needs one adjacent surface face; "
+                              f"this edge reports {faces if faces is not None else 'an unreadable count'}.")
+            owned_path = _common.safe(lambda: owner.features.createPath(ent, False))
+            owned_count = _common.counted(lambda: owned_path.count)
+            owned_closed = _common.read_flag(lambda: owned_path.isClosed)
+            if owned_count != 1 or owned_closed is not False:
+                return None, "the owning component did not build a one-curve open edge Path."
+            return (owned_path, "open_edge", ent), None
         prof, err = _resolve_one_profile(self.name, item, False, scope, self.scope_input)
         return (None, err) if err else ((prof, "profile", prof), None)
 
@@ -3920,9 +3948,9 @@ class LoftSectionList(ProfileRefList):
 # condition -> the section kinds it is offered on. Measured: a tangent end on a section that is not
 # an edge raises; point ends build on sketch points and the direction end on open curves and profiles.
 LOFT_END_CONDITIONS = {
-    "free": ("profile", "edge", "curve"),
-    "tangent": ("edge",),
-    "smooth": ("edge",),
+    "free": ("profile", "edge", "open_edge", "curve"),
+    "tangent": ("edge", "open_edge"),
+    "smooth": ("edge", "open_edge"),
     "direction": ("profile", "curve"),
     "point_sharp": ("point",),
     "point_tangent": ("point",),
