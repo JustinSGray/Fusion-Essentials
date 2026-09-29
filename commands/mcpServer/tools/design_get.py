@@ -29,7 +29,7 @@ app = adsk.core.Application.get()
 # The deeper slices an agent can opt into (the default returns NONE of these in full - only summaries).
 _SLICES = ("mode", "tree", "timeline", "configurations", "materials", "appearances", "attributes",
            "metadata", "definition", "datums")
-_FEATURE = _inputs.FeatureRef("feature", description="Hole/Thread.")
+_FEATURE = _inputs.FeatureRef("feature", description="Hole/Thread/Loft.")
 _DEFINITION_UNREAD = object()
 
 # The orientation slice's name in include=: any deep include omits that slice unless 'default' rides
@@ -1031,8 +1031,32 @@ def _definition_thread(feature, factor):
                        if full is not True else None)}
 
 
+def _definition_loft(feature):
+    """A bounded ordered read of a Loft's current sections and controls."""
+    collection = safe(lambda: feature.loftSections)
+    count = _common.counted(lambda: collection.count)
+    cap = 64
+    rows = []
+    for index in range(min(count or 0, cap)):
+        section = safe(lambda i=index: collection.item(i))
+        entity = safe(lambda s=section: s.entity)
+        sketch = safe(lambda e=entity: e.parentSketch)
+        rows.append({"index": index,
+                     "kind": safe(lambda e=entity: e.objectType.rsplit("::", 1)[-1]),
+                     "profile_handle": safe(lambda e=entity: e.entityToken),
+                     "source_sketch": safe(lambda s=sketch: s.name),
+                     "source_component": safe(lambda s=sketch: s.parentComponent.name),
+                     "end_condition": safe(lambda s=section: s.endCondition.objectType)})
+    return {**_definition_identity(feature), "section_count": count, "sections": rows,
+            "truncated": count is None or count > cap,
+            "operation": safe(lambda: feature.operation),
+            "is_solid": _common.read_flag(lambda: feature.isSolid),
+            "is_closed": _common.read_flag(lambda: feature.isClosed),
+            "guide_count": _common.counted(lambda: feature.centerLineOrRails.count)}
+
+
 def _slice_definition(feature, units):
-    """Read one typed Hole or Thread definition and a Hole's actual hidden child thread."""
+    """Read one typed feature definition without moving the timeline."""
     values, refusal = _inputs.resolve_inputs([_FEATURE, _inputs.UNITS],
                                             {"feature": feature, "units": units})
     if refusal:
@@ -1041,11 +1065,14 @@ def _slice_definition(feature, units):
         return None, error("include=['definition'] requires 'feature'; use include=['timeline'] to find it.")
     entity, label = values["feature"]
     kind = safe(lambda: entity.objectType)
-    if kind not in ("adsk::fusion::HoleFeature", "adsk::fusion::ThreadFeature"):
+    if kind not in ("adsk::fusion::HoleFeature", "adsk::fusion::ThreadFeature",
+                    "adsk::fusion::LoftFeature"):
         return None, error(f"'{label}' has unsupported definition type {kind!r}; this slice reads "
-                           "HoleFeature and ThreadFeature. Use include=['timeline'] or model_inspect.")
+                           "HoleFeature, ThreadFeature and LoftFeature. Use include=['timeline'] or model_inspect.")
     factor = 1 / _common.scale(values["units"])
-    if kind == "adsk::fusion::ThreadFeature":
+    if kind == "adsk::fusion::LoftFeature":
+        out = _definition_loft(entity)
+    elif kind == "adsk::fusion::ThreadFeature":
         out = _definition_thread(entity, factor)
     else:
         extent = safe(lambda: entity.extentDefinition)
@@ -1070,7 +1097,10 @@ def _slice_definition(feature, units):
                "thread": (_definition_thread(child, factor)
                           if child is not _DEFINITION_UNREAD and child is not None else None)}
     out["units"] = (units or "mm").strip().lower()
-    out["note"] = ("tapped=false or thread_present=false means absent; applicable=false means "
+    out["note"] = ("Loft sections are in order; null fields are unreadable. Use profile_handle "
+                   "with model_edit_loft; model_inspect reads material."
+                   if kind == "adsk::fusion::LoftFeature" else
+                   "tapped=false or thread_present=false means absent; applicable=false means "
                    "inapplicable. Other null fields are unknown. Measure tapped bore geometry "
                    "with find_geometry/model_inspect; full-length threads imply no numeric length.")
     return out, None

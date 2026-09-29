@@ -82,6 +82,7 @@ def handler(plane: str = "xy", name: str = "", on_face: str = "") -> dict:
     payload = {
         "created": True,
         "sketch_name": final_name,
+        "component": safe(lambda: sketch.parentComponent.name),
         "on": desc,
         "plane": _plane_name(sketch),
         "frame": frame,

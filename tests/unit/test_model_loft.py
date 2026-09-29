@@ -128,6 +128,214 @@ class TestLoft:
         lf.add = _add
         return lf
 
+    def _scoped_design(self, monkeypatch, *, move_selected=True, move_other=False,
+                       unread_shape=False, input_cls=_FakeLoftInput):
+        selected = BRepBody("SelectedStock", volume=2.04)
+        other = BRepBody("UnselectedOverlap", volume=1.44)
+        foreign = BRepBody("ForeignOverlap", volume=0.9)
+        host = MakeComp(name="Host", bodies=[selected, other], entity_token="host")
+        other_comp = MakeComp(name="Foreign", bodies=[foreign], entity_token="foreign")
+        for body in (selected, other):
+            body.parentComponent = host
+        foreign.parentComponent = other_comp
+        lofts = _FakeLoftFeatures(result_bodies=[selected], input_cls=input_cls)
+        host.features = _FakeFeatures(loft=lofts)
+        design = make_design(comp=host, all_components=[host, other_comp],
+                             tokens={"H0": Profile("0"), "H1": Profile("1")})
+        install(so, design)
+        monkeypatch.setattr(so._geom, "body_shape", lambda body: (
+            None if unread_shape and body is foreign else
+            {"volume_cm3": body.volume, "bounds_cm": [body.volume]}))
+        base_add = lofts.add
+
+        def add(inp):
+            if move_selected:
+                selected.volume = 1.09530556
+            if move_other:
+                other.volume = 1.0
+            return base_add(inp)
+
+        lofts.add = add
+        return lofts, selected, other, foreign
+
+    @pytest.mark.parametrize("operation", ["new", "join"])
+    def test_target_bodies_refused_for_non_boolean_scope(self, monkeypatch, operation):
+        lofts, *_ = self._scoped_design(monkeypatch)
+        msg = error_message(so.handler(profiles=["H0", "H1"], operation=operation,
+                                       target_bodies=["Host:SelectedStock"]))
+        assert "only applies to cut/intersect" in msg
+        assert lofts.last_input is None
+
+    def test_duplicate_or_foreign_participant_refused_before_add(self, monkeypatch):
+        lofts, *_ = self._scoped_design(monkeypatch)
+        duplicate = error_message(so.handler(profiles=["H0", "H1"], operation="cut",
+                                             target_bodies=["SelectedStock", "Host:SelectedStock"]))
+        foreign = error_message(so.handler(profiles=["H0", "H1"], operation="cut",
+                                           target_bodies=["Foreign:ForeignOverlap"]))
+        assert "repeats one body" in duplicate
+        assert "different owner" in foreign
+        assert lofts.last_input is None
+
+    def test_unread_participant_owner_refused_before_add(self, monkeypatch):
+        lofts, selected, *_ = self._scoped_design(monkeypatch)
+        selected.parentComponent = None
+        msg = error_message(so.handler(profiles=["H0", "H1"], operation="cut",
+                                       target_bodies=["Host:SelectedStock"]))
+        assert "unreadable owner" in msg
+        assert lofts.last_input is None
+
+    def test_scoped_cut_verifies_selected_effect_and_outside_preservation(self, monkeypatch):
+        lofts, selected, *_ = self._scoped_design(monkeypatch)
+        out = _payload(so.handler(profiles=["H0", "H1"], operation="cut",
+                                  target_bodies=["Host:SelectedStock"]))
+        assert lofts.last_input.participantBodies == [selected]
+        assert out["scoped_to_bodies"] == ["Host:SelectedStock"]
+        assert out["outside_body_changes"] == []
+        assert out["volume_delta_cm3"] == round(1.09530556 - 2.04, 6)
+
+    @pytest.mark.parametrize("move_selected,move_other,expected", [
+        (False, False, "selected bodies changed no solid volume"),
+        (True, True, "non-target bodies changed")])
+    def test_scoped_cut_refuses_no_effect_or_outside_change(self, monkeypatch, move_selected,
+                                                              move_other, expected):
+        self._scoped_design(monkeypatch, move_selected=move_selected, move_other=move_other)
+        msg = error_message(so.handler(profiles=["H0", "H1"], operation="cut",
+                                       target_bodies=["Host:SelectedStock"]))
+        assert expected in msg and "Loft was built" in msg
+
+    def test_new_feature_body_cannot_mask_unchanged_selected_stock(self, monkeypatch):
+        lofts, selected, *_ = self._scoped_design(monkeypatch, move_selected=False)
+        added = BRepBody("Added", volume=0.1, parent_component=selected.parentComponent)
+        original_add = lofts.add
+
+        def add(inp):
+            selected.parentComponent.bRepBodies._items.append(added)
+            lofts._result_bodies = [selected, added]
+            return original_add(inp)
+
+        lofts.add = add
+        msg = error_message(so.handler(profiles=["H0", "H1"], operation="cut",
+                                       target_bodies=["Host:SelectedStock"]))
+        assert "selected bodies changed no solid volume or gained volume" in msg
+        assert "Loft was built" in msg
+
+    def test_unread_census_refuses_before_add(self, monkeypatch):
+        lofts, *_ = self._scoped_design(monkeypatch, unread_shape=True)
+        msg = error_message(so.handler(profiles=["H0", "H1"], operation="cut",
+                                       target_bodies=["Host:SelectedStock"]))
+        assert "census" in msg and "nothing was lofted" in msg
+        assert lofts.last_input is None
+
+    def test_unread_post_census_reports_built_but_unverified(self, monkeypatch):
+        self._scoped_design(monkeypatch)
+        original = so._edit_feature_common.all_shapes
+        calls = []
+
+        def census(design, allow_empty_solids=False):
+            calls.append(1)
+            return original(design, allow_empty_solids=allow_empty_solids) if len(calls) == 1 else None
+
+        monkeypatch.setattr(so._edit_feature_common, "all_shapes", census)
+        msg = error_message(so.handler(profiles=["H0", "H1"], operation="cut",
+                                       target_bodies=["Host:SelectedStock"]))
+        assert "Loft was built" in msg and "unverified" in msg
+
+    def test_measured_empty_solid_is_distinct_from_unread_census(self, monkeypatch):
+        empty = BRepBody("ConsumedStock", volume=0, area=0, edges=[])
+        empty.isValid = True
+        empty.lumps = _NamedCollection([])
+        host = MakeComp(name="Host", bodies=[empty])
+        design = make_design(comp=host, all_components=[host])
+        monkeypatch.setattr(so._geom, "body_shape", lambda _body: None)
+        assert so._edit_feature_common.all_shapes(design) is None
+        census = so._edit_feature_common.all_shapes(design, allow_empty_solids=True)
+        shape = next(iter(census.values()))["shape"]
+        assert shape == {"empty": True, "solid": True, "area_cm2": 0.0,
+                         "volume_cm3": 0.0, "face_count": 0, "edge_count": 0,
+                         "lump_count": 0}
+        assert "bounds_cm" not in shape and "face_signature" not in shape
+        del empty.area
+        assert so._edit_feature_common.all_shapes(design, allow_empty_solids=True) is None
+
+    def test_scoped_cut_accepts_measured_empty_selected_result(self, monkeypatch):
+        lofts, selected, *_ = self._scoped_design(monkeypatch)
+        base_shape = so._geom.body_shape
+        monkeypatch.setattr(so._geom, "body_shape", lambda body: (
+            None if body is selected and body.volume == 0 else base_shape(body)))
+        selected.isValid = True
+        selected.area = 0
+        selected.edges = _NamedCollection([])
+        selected.lumps = _NamedCollection([])
+
+        def add(inp):
+            selected.volume = 0
+            return _FakeLoftFeatures.add(lofts, inp)
+
+        lofts.add = add
+        out = _payload(so.handler(profiles=["H0", "H1"], operation="cut",
+                                  target_bodies=["Host:SelectedStock"]))
+        assert out["scoped_to_bodies"] == ["Host:SelectedStock"]
+        assert out["outside_body_changes"] == []
+        assert out["volume_delta_cm3"] == -2.04
+
+    def test_non_target_becoming_empty_is_still_an_outside_change(self, monkeypatch):
+        lofts, selected, other, _ = self._scoped_design(monkeypatch)
+        other.isValid = True
+        other.area = 0
+        other.edges = _NamedCollection([])
+        other.lumps = _NamedCollection([])
+        base_shape = so._geom.body_shape
+        monkeypatch.setattr(so._geom, "body_shape", lambda body: (
+            None if body is other and body.volume == 0 else base_shape(body)))
+
+        def add(inp):
+            selected.volume = 1.09530556
+            other.volume = 0
+            return _FakeLoftFeatures.add(lofts, inp)
+
+        lofts.add = add
+        msg = error_message(so.handler(profiles=["H0", "H1"], operation="cut",
+                                       target_bodies=["Host:SelectedStock"]))
+        assert "non-target bodies changed" in msg and "Host:UnselectedOverlap" in msg
+
+    def test_prior_measured_empty_body_does_not_block_later_scoped_cut(self, monkeypatch):
+        lofts, selected, *_ = self._scoped_design(monkeypatch)
+        empty = BRepBody("ConsumedStock", volume=0, area=0, edges=[])
+        empty.isValid = True
+        empty.lumps = _NamedCollection([])
+        empty.parentComponent = selected.parentComponent
+        selected.parentComponent.bRepBodies._items.append(empty)
+        base_shape = so._geom.body_shape
+        monkeypatch.setattr(so._geom, "body_shape", lambda body: (
+            None if body is empty else base_shape(body)))
+        out = _payload(so.handler(profiles=["H0", "H1"], operation="cut",
+                                  target_bodies=["Host:SelectedStock"]))
+        assert out["outside_body_changes"] == []
+        assert out["volume_delta_cm3"] == round(1.09530556 - 2.04, 6)
+
+    def test_explicit_empty_selection_with_component_is_refused(self, monkeypatch):
+        lofts, *_ = self._scoped_design(monkeypatch)
+        msg = error_message(so.handler(profiles=["H0", "H1"], operation="cut",
+                                       target_bodies=[], component="Host"))
+        assert "'target_bodies' was empty" in msg
+        assert lofts.last_input is None
+
+    def test_participant_setter_refusal_is_error(self, monkeypatch):
+        class RefusingInput(_FakeLoftInput):
+            @property
+            def participantBodies(self):
+                return None
+
+            @participantBodies.setter
+            def participantBodies(self, _bodies):
+                raise RuntimeError("scope rejected")
+
+        lofts, *_ = self._scoped_design(monkeypatch, input_cls=RefusingInput)
+        msg = error_message(so.handler(profiles=["H0", "H1"], operation="cut",
+                                       target_bodies=["Host:SelectedStock"]))
+        assert "Could not set target_bodies before loft" in msg
+        assert "scope rejected" in msg and lofts.last_input is not None
+
     def test_three_profiles_added_in_order(self):
         lf, (p0, p1, p2) = self._profiles_design()
         out = _payload(so.handler(profiles=["H0", "H1", "H2"]))

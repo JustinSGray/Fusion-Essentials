@@ -111,11 +111,13 @@ class TestCreateSketchPlaneRef:
         # occurrence that places its owner.
         s = FakeSketch()
         d = _install_draw(monkeypatch, s, subs=[("Tower", ["Datum_A"], ["Tower:1"])])
-        _payload(sk.handler(plane="Datum_A"))
+        s.parentComponent = d.rootComponent
+        out = _payload(sk.handler(plane="Datum_A"))
         landed = d.rootComponent.sketches.added
         native = d.allComponents.itemByName("Tower").constructionPlanes.itemByName("Datum_A")
         assert landed.native is native
         assert landed.context.fullPathName == "Tower:1"
+        assert out["component"] == "Root"  # consumed support does not change sketch ownership
 
     def test_a_datum_name_two_components_share_is_refused_with_its_candidates(self, monkeypatch):
         s = FakeSketch()
@@ -211,6 +213,8 @@ class TestCreateFrameNote:
         _install_draw(monkeypatch, TestCreateFrameParity._framed())
         out = _payload(sk.handler(plane="xz"))
         assert "frame.space='world'" in out["note"]
+        assert "datum point need not equal this origin" in out["note"]
+        assert "'component' is sketch owner" in out["note"]
         assert "world -Z" not in out["note"]
         assert "sketch_get" not in out["note"]        # sketch_get's own description carries that.
 

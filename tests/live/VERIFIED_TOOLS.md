@@ -29,10 +29,10 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source 204a8b10de4c2bfa9c50e096211ab22cde26f9a34314b17d3bc998eac38909e4 | Fusion 2706.0.97 | verified 2026-09-28
-Loaded: implementation 00303c86f1165911e867aba93bae8704f1f6b22bdb3ebcc145533b8135746654 | schema 41b0ea1fcb18f5c0af60463e0c5021cfe6ac940d6e1e4c1b3fdd94a84c689ae6 | load 443dba6a85934c9da5b369d520897ef4 | session 4cc8bd8ec306421c984664d456bea274
+Stamp: source 335572adac5ae3059570340979bb0b83ec2979da8401dcbf03e504cbdc4d9aa8 | Fusion 2706.0.97 | verified 2026-09-28
+Loaded: implementation c186071ffd97f9c79582e7be0eace8a26f81441c6aefe9a642649bb70664ef04 | schema 099c9c73945f1f0b85fd0d919b2f8e36560d7c1d982a64e76b57714439f9cd55 | load e697825b3e7c4aa39c89ac21215d9b7f | session 75c20a7b06f74f0f859b159889a16ad3
 
-202 covered / 1 called / 5 refusals-only / 4 skipped(reason) / 0 pending
+203 covered / 1 called / 5 refusals-only / 4 skipped(reason) / 0 pending
 
 | act | mode |
 |---|---|
@@ -217,6 +217,7 @@ Loaded: implementation 00303c86f1165911e867aba93bae8704f1f6b22bdb3ebcc145533b813
 | model_draft | covered | draft a cameo face |
 | model_edit_body | covered |  |
 | model_edit_extrude | covered |  |
+| model_edit_loft | covered |  |
 | model_edit_sweep | covered |  |
 | model_emboss | covered | raise then engrave a circular profile on a scratch block's top face, each checked against the volume direction; a zero depth refused |
 | model_extrude | covered | extrude the block, JOIN the stepped half and the boss onto it and CUT the pocket down from the step floor, each depth an expression off the driver; then a three-bay frame with 'all' whose payload NAMES the regions enclosed by another selected one - the bays that filled with material. Then the hub's three cuts: the keyway symmetric about the axis plane, the inclined flat cut from the tilted sketch, and the flange pocket where 'all' takes TWO regions and neither encloses the other - the sector and the round pocket beside it, both cutting something a viewer can see |

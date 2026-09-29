@@ -11,7 +11,10 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from . import _assert, _common, _geom, _inputs, _sketch_detail, _sweep_common
+from . import _assert, _common, _inputs, _sketch_detail, _sweep_common
+from ._edit_feature_common import (all_shapes as _all_shapes,
+                                   feature_body_keys as _feature_body_keys,
+                                   health as _health, same_feature as _same_feature)
 from ._common import counted, error, ok, safe
 
 
@@ -87,61 +90,6 @@ def _participant_keys(feature, operation):
     """Native participant identities after a setter, or None when unreadable."""
     bodies = _participants(feature, operation)
     return None if bodies is None else {_common.native_identity(body) for body in bodies}
-
-
-def _all_shapes(design):
-    """Native body snapshots across components, or None on an unreadable census."""
-    components = safe(lambda: list(design.allComponents))
-    if not components:
-        return None
-    rows = {}
-    for component in components:
-        bodies = safe(lambda c=component: c.bRepBodies)
-        count = counted(lambda: bodies.count)
-        if count is None:
-            return None
-        for i in range(count):
-            body = safe(lambda i=i: bodies.item(i))
-            key = _common.native_identity(body)
-            shape = _geom.body_shape(body)
-            if key is None or shape is None or key in rows:
-                return None
-            rows[key] = {"component": safe(lambda c=component: c.name),
-                         "body": safe(lambda b=body: b.name), "shape": shape}
-    return rows
-
-
-def _feature_body_keys(feature):
-    """Native identities of result bodies, or None on an unreadable collection."""
-    bodies = safe(lambda: feature.bodies)
-    count = counted(lambda: bodies.count)
-    if count is None:
-        return None
-    keys = {_common.native_identity(safe(lambda i=i: bodies.item(i))) for i in range(count)}
-    return None if None in keys else keys
-
-
-def _health(design, marker):
-    """Evaluated timeline errors and warnings, or None when a state cannot be read."""
-    timeline = safe(lambda: design.timeline)
-    states = adsk.fusion.FeatureHealthStates
-    known = (states.HealthyFeatureHealthState, states.WarningFeatureHealthState,
-             states.ErrorFeatureHealthState)
-    if any(safe(lambda i=i: timeline.item(i).healthState) not in known for i in range(marker)):
-        return None
-    errors, warnings, total = _common.timeline_health(design, limit=marker)
-    return {"errors": errors, "warnings": warnings} if total == marker else None
-
-
-def _same_feature(design, token, feature, index, count):
-    """Whether the saved feature still occupies its original timeline row."""
-    found = safe(lambda: design.findEntityByToken(token))
-    if found is None:
-        return None
-    return (any(entity == feature for entity in found)
-            and safe(lambda: feature.isValid) is True
-            and counted(lambda: feature.timelineObject.index) == index
-            and counted(lambda: design.timeline.count) == count)
 
 
 def _operand_owner(entity):

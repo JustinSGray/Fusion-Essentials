@@ -2,7 +2,7 @@
 
 _Auto-generated from the live registry by `tests/gen_manifest.py`. Do not edit by hand — re-run the generator after adding/renaming a tool or kind. `--check` fails the suite if this is stale. This is the batch form of the `sys_find_tool` live lookup: the one place to see what already exists before building it._
 
-**Tools:** 212  |  **Input-kinds:** 29  |  write-status: `·` read · `✎` write · `⚠` destructive
+**Tools:** 213  |  **Input-kinds:** 29  |  write-status: `·` read · `✎` write · `⚠` destructive
 
 ## Input kinds — reference EXISTING geometry/structure with these (don't hand-roll a name/index)
 
@@ -57,6 +57,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 Produces: feature -> design_delete_feature, faces_drafted, faces_moved, faces_compared. |
 | ✎ | `model_edit_body` | Copy, move, or make a child component for a BRep or mesh body |
 | ✎ | `model_edit_extrude` | Edit solid Extrude; refs from design_get/sketch_get. |
+| ✎ | `model_edit_loft` | Edit interior sections of an open unguided solid NEW Loft |
 | ✎ | `model_edit_sweep` | Edit Sweep profile/path |
 | ✎ | `model_emboss` | Stamp sketch profiles or text onto faces; a negative 'depth' engraves.
 Produces: feature -> design_delete_feature. |
@@ -64,7 +65,7 @@ Produces: feature -> design_delete_feature. |
 | ✎ | `model_fillet` | Round (fillet) edges; model_chamfer bevels |
 | ✎ | `model_hole` | Drill a Hole feature; multiple points share one feature. |
 | · | `model_inspect` | Measure a target: the bounding box by default, mass or mesh stats through 'include'. |
-| ✎ | `model_loft` | Loft through ordered sections; model_stitch closes a surface loft. |
+| ✎ | `model_loft` | Loft through ordered sections; target_bodies scopes cut/intersect |
 | · | `model_measure_between` | Measure the distance or angle between two targets; a distance of 0 is touching. |
 | · | `model_measure_continuity` | Measure gap, normal angle and curvature jump across each edge's seam; a one-faced edge reads against the 'against' body. |
 | · | `model_measure_relation` | Judge a geometric relation between two entities.

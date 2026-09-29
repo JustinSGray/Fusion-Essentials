@@ -62,9 +62,10 @@ COMPONENT_LOCAL_SPACE = "component_local"
 # The one sentence each space owes the caller, keyed by frame['space'].
 FRAME_SPACE_NOTE = {
     WORLD_SPACE: (
-        "'frame' maps sketch coords to WORLD (frame.space='world'): sketch (0,0) sits at "
-        "frame.origin_mm, +X runs along frame.x_world, +Y along frame.y_world, and frame.normal is "
-        "the plane's world normal - place geometry from those, not by eye."),
+        "'frame' maps sketch coords to WORLD (frame.space='world'): origin_mm is sketch (0,0); "
+        "x_world/y_world are its axes, normal is its plane normal. Use this frame for geometry. "
+        "A datum point need not equal this origin; compare normals and signed offsets. "
+        "'component' is sketch owner, not necessarily datum owner."),
     COMPONENT_LOCAL_SPACE: (
         "'frame' is COMPONENT-LOCAL, not world (frame.space='component_local'): no single "
         "placement of this sketch resolved, so the in-plane axes are published as frame.x_local / "
@@ -1053,6 +1054,7 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
     face, marker_clause = face_support(sketch, design) if sits_on_a_face else (None, None)
     out = {
         "sketch": safe(lambda: sketch.name),
+        "component": safe(lambda: sketch.parentComponent.name),
         "plane": _plane_name(sketch),
         # The only DOF signal the API exposes - no DOF count, no over-constrained flag.
         "is_fully_constrained": bool(fully) if fully is not None else None,

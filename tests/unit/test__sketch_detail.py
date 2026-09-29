@@ -329,9 +329,12 @@ class TestSubComponentResolution:
     root component (rootComponent.sketches.itemByName returns None for a sub-component sketch)."""
 
     def test_finds_sketch_in_active_sub_component(self):
-        _install_subcomponent(_rich_sketch())
+        sketch = _rich_sketch()
+        design = _install_subcomponent(sketch)
+        sketch.parentComponent = design.activeComponent
         out = _payload(sd.handler(sketch_name="S4", include_entities=True))     # S4 lives ONLY in the sub-component
         assert out["sketch"] == "S4"
+        assert out["component"] == "Sub"
         assert any(e["id"] == "circle:0" for e in out["entities"])
 
     def test_unknown_name_lists_sub_component_sketches(self):

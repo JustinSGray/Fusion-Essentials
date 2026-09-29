@@ -17,6 +17,7 @@ from . import _geom
 from . import _inputs
 from . import _assert
 from . import _sketch_detail
+from . import _edit_feature_common
 from ._surface_common import _OPERATION_KEYS, _feature_operation, _result_body_report
 
 app = adsk.core.Application.get()
@@ -26,6 +27,7 @@ app = adsk.core.Application.get()
 # is refused with the remedy spelled as this tool's own 'component' input.
 _LOFT_PROFILES = _inputs.LoftSectionList("profiles", required=True, scope_input="component")
 _LOFT_RAILS = _inputs.GeometryHandleList("rails", require="any", required=False)
+_TARGET_BODIES = _inputs.BodyRefList("target_bodies", kind="solid", scope_input="component")
 _LOFT_CENTERLINE = _inputs.GeometryHandle("centerline", require="any", required=False)
 _LOFT_START = _inputs.LoftEndCondition("start")
 _LOFT_END = _inputs.LoftEndCondition("end")
@@ -79,9 +81,36 @@ def _resolve_guides(design, raw, kind, label, guide_component=""):
 def _cut_check_bodies(comp):
     """The solid bodies a cut/intersect loft can act on: every solid directly in the feature's host
     component, resolved ONCE before the mutation and re-read afterwards (_geom.volumes keys on
-    id()). A loft takes no participant-body scoping, so there is no narrower sample."""
+    id()). Used when the caller did not select participants."""
     return [b for b in _common.iter_collection(safe(lambda: comp.bRepBodies))
             if safe(lambda b=b: b.isSolid)]
+
+
+def _scoped_effect(before, after, selected, result_keys):
+    """(selected volume delta or None, outside changes, error) for a scoped boolean loft."""
+    outside = []
+    for key in before.keys() - selected:
+        if key not in after or before[key]["shape"] != after[key]["shape"]:
+            row = before[key]
+            outside.append(f"{row['component']}:{row['body']}")
+    created = after.keys() - before.keys()
+    selected_owners = {before[key]["component"] for key in selected}
+    for key in created - result_keys:
+        row = after[key]
+        outside.append(f"{row['component']}:{row['body']} (new, unattributed)")
+    for key in created & result_keys:
+        row = after[key]
+        if row["component"] not in selected_owners:
+            outside.append(f"{row['component']}:{row['body']} (new, foreign owner)")
+    if outside:
+        return None, sorted(outside), "non-target bodies changed"
+    before_volume = sum(before[key]["shape"]["volume_cm3"] for key in selected)
+    after_selected = (selected & after.keys()) | created
+    after_volume = sum(after[key]["shape"]["volume_cm3"] for key in after_selected)
+    delta = after_volume - before_volume
+    if delta >= -_common.NO_VOLUME_CHANGE_CM3:
+        return None, [], "selected bodies changed no solid volume or gained volume"
+    return (round(delta, 6) if len(after_selected) == len(selected) else None), [], None
 
 
 def _end_specs(secs, start, end, is_closed):
@@ -200,7 +229,8 @@ def _read_back(design, feature, secs, specs, rails):
 
 def handler(profiles=None, rails=None, centerline="", operation="new",
             as_surface=None, is_closed=None, component: str = "",
-            guide_component: str = "", start=None, end=None, rail_continuity=None) -> dict:
+            guide_component: str = "", start=None, end=None, rail_continuity=None,
+            target_bodies=None) -> dict:
     """Loft a body through an ORDERED list of sections, optionally shaped by rails OR a centerline."""
     op_key = (operation or "new").strip().lower()
     if op_key not in _OPERATION_KEYS:
@@ -245,6 +275,39 @@ def handler(profiles=None, rails=None, centerline="", operation="new",
     # features.createInput raises 'InternalValidationError : bSet', so the feature - and its body
     # - is built on the sketch's owner, not the active component.
     root = _inputs.profile_host_component(secs[0][2], None, target_component(design))
+    scoped_bodies, scoped_before, scoped_keys, scoped_labels = None, None, None, None
+    if target_bodies is not None:
+        if target_bodies in ("", []):
+            return error("'target_bodies' was empty; name one or more solid bodies, or omit it.")
+        if op_key not in ("cut", "intersect"):
+            return error("'target_bodies' only applies to cut/intersect operations.")
+        scoped_bodies, berr = _TARGET_BODIES.resolve(target_bodies, component)
+        if berr:
+            return error(berr)
+    if scoped_bodies is not None:
+        scoped_keys, scoped_labels = set(), []
+        for body in scoped_bodies:
+            key = _common.native_identity(body)
+            if key is None:
+                return error("'target_bodies' includes a body whose native identity is unreadable.")
+            if key in scoped_keys:
+                return error("'target_bodies' repeats one body; list each participant once.")
+            owner = safe(lambda b=body: b.parentComponent)
+            same = _common.same_component(owner, root)
+            if same is not True:
+                reason = "unreadable" if same is None else "different"
+                return error(f"'target_bodies' includes a body with a {reason} owner; choose a "
+                             "solid body in the loft profile's component.")
+            owner_name, body_name = safe(lambda: owner.name), safe(lambda b=body: b.name)
+            if not owner_name or not body_name:
+                return error("'target_bodies' includes a body whose owner or name is unreadable.")
+            scoped_keys.add(key)
+            scoped_labels.append(f"{owner_name}:{body_name}")
+        scoped_before = _edit_feature_common.all_shapes(design, allow_empty_solids=True)
+        if (scoped_before is None or not scoped_keys <= scoped_before.keys()
+                or any(not row["component"] or not row["body"] for row in scoped_before.values())):
+            return error("The design-wide body census or a selected body is unreadable; "
+                         "nothing was lofted.")
     op = _feature_operation(op_key)
     try:
         loft_input = root.features.loftFeatures.createInput(op)
@@ -293,10 +356,17 @@ def handler(profiles=None, rails=None, centerline="", operation="new",
         if cerr:
             return error(cerr)
 
+    if scoped_bodies is not None:
+        try:
+            loft_input.participantBodies = list(scoped_bodies)
+        except Exception as e:
+            return error(f"Could not set target_bodies before loft: {e}")
+
     # cut/intersect MATERIAL evidence: the volumes the operation must move, sampled BEFORE the add.
     # A loft whose swept shape misses the body still reports a healthy feature, so only this
     # before/after pair can say material actually changed.
-    check_bodies = _cut_check_bodies(root) if op_key in ("cut", "intersect") else []
+    check_bodies = (_cut_check_bodies(root) if scoped_bodies is None
+                    and op_key in ("cut", "intersect") else [])
     vol_before = _geom.volumes(check_bodies)
     # A join is told "grew a body" from "made a second one" by the host's body NAMES before the add.
     bodies_before = _common.component_body_names(root) if op_key == "join" else None
@@ -312,6 +382,21 @@ def handler(profiles=None, rails=None, centerline="", operation="new",
         return error(_common.no_feature_error(design, "Loft"))
 
     volume_delta_cm3 = None
+    outside_body_changes = None
+    if scoped_bodies is not None:
+        scoped_after = _edit_feature_common.all_shapes(design, allow_empty_solids=True)
+        result_keys = _edit_feature_common.feature_body_keys(feature)
+        if (scoped_after is None or result_keys is None
+                or any(not row["component"] or not row["body"] for row in scoped_after.values())):
+            return error("Loft was built, but the post-loft body census or result-body identity "
+                         "is unreadable; scoped material effect is unverified. "
+                         + _common.failed_effect_remedy(design, feature))
+        volume_delta_cm3, outside_body_changes, scoped_error = _scoped_effect(
+            scoped_before, scoped_after, scoped_keys, result_keys)
+        if scoped_error:
+            detail = f" ({', '.join(outside_body_changes[:5])})" if outside_body_changes else ""
+            return error(f"Loft was built, but {scoped_error}{detail}; scoped material effect "
+                         "failed verification. " + _common.failed_effect_remedy(design, feature))
     # These live outside the census branch: the empty-result gate below reads them to decide whether
     # material movement was PROVEN, and an un-run census must read as "proved nothing", not as an
     # absent variable. readable=False is exactly that case - no body's volume read at both ends.
@@ -337,7 +422,8 @@ def handler(profiles=None, rails=None, centerline="", operation="new",
     # An empty result set is a failure except for a cut/intersect PROVEN to have moved material: a
     # body consumed whole, or a volume delta that READ and cleared the no-change band. A census
     # whose volumes never read buys no exemption.
-    moved = bool(consumed) or (readable and abs(delta) >= _common.NO_VOLUME_CHANGE_CM3)
+    moved = ((scoped_bodies is not None and outside_body_changes == []) or bool(consumed)
+             or (readable and abs(delta) >= _common.NO_VOLUME_CHANGE_CM3))
     if not body_names and not moved:
         return error("Loft reported success but the feature owns no result body - nothing was "
                      "built. " + _common.failed_effect_remedy(design, feature))
@@ -388,11 +474,15 @@ def handler(profiles=None, rails=None, centerline="", operation="new",
     # moved" rather than "the measurement could not be taken", so the key is simply absent instead.
     if volume_delta_cm3 is not None:
         payload["volume_delta_cm3"] = volume_delta_cm3
+    if scoped_bodies is not None:
+        payload["scoped_to_bodies"] = scoped_labels
+        payload["outside_body_changes"] = outside_body_changes
+        payload["note"] += " 'scoped_to_bodies' lists the configured participants; material scope was verified by body shapes."
     return ok(payload)
 
 
 TOOL_DESCRIPTION = (
-"Loft through ordered sections; model_stitch closes a surface loft."
+"Loft through ordered sections; target_bodies scopes cut/intersect. model_stitch closes a surface loft."
 )
 
 tool = (
@@ -404,6 +494,7 @@ tool = (
     .add_input_property("as_surface", {"type": "boolean"})
     .add_input_property("is_closed", {"type": "boolean"})
     .add_input_property(*_sketch_detail.COMPONENT_SCOPE)
+    .add_input_property(*_TARGET_BODIES.as_property())
     .add_input_property(*_GUIDE_SCOPE)
     .add_input_property(*_LOFT_START.as_property())
     .add_input_property(*_LOFT_END.as_property())

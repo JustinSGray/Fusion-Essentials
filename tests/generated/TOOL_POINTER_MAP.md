@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 212  |  **description breadcrumbs:** 321  |  **note/error breadcrumbs:** 684
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 688
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -37,12 +37,12 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
-- `design_get`  <- 56  (desc 11, note 45)
+- `design_get`  <- 58  (desc 12, note 46)
 - `find_geometry`  <- 55  (desc 14, note 41)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 33  (desc 15, note 18)
-- `model_inspect`  <- 28  (desc 5, note 23)
+- `model_inspect`  <- 29  (desc 5, note 24)
 - `data_get`  <- 25  (desc 10, note 15)
 - `doc_open`  <- 25  (desc 5, note 20)
 - `sketch_create`  <- 25  (desc 7, note 18)
@@ -1568,10 +1568,12 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Could not read the timeline:
 - The active design is not a Configured Design (it has no configuration table) - e.g. a design with Variant A/Variant B style options.
 - include=['attributes'] needs 'attribute_group' - the group to read (the same group design_edit_timeline(action='set_attribute') wrote with). Leave 'attribute_key' empty to get every key in that group.
+- Loft sections are in order; null fields are unreadable. Use profile_handle with model_edit_loft; model_inspect reads material.
 - tapped=false or thread_present=false means absent; applicable=false means inapplicable. Other null fields are unknown. Measure tapped bore geometry with find_geometry/model_inspect; full-length thr...
+- adsk::fusion::LoftFeature
 - include=['definition'] requires 'feature'; use include=['timeline'] to find it.
 - ' has unsupported definition type
-- ; this slice reads HoleFeature and ThreadFeature. Use include=['timeline'] or model_inspect.
+- ; this slice reads HoleFeature, ThreadFeature and LoftFeature. Use include=['timeline'] or model_inspect.
 - Definition inventory only. Use find_geometry(kind=construction_axis/construction_plane/construction_point, target=<occurrence>, name=<exact name>) for world geometry and a placed handle. Narrow wit...
 - Light nodes: name, component, body_count, child_count. Narrow: name_filter, component=<name>, max_depth, max_results. tree_handles=true adds handle/full_path/source ids. children_truncated = a leve...
 - lists at most  (per_body_truncated past that); one component has no narrower scope, so read the rest with model_inspect(target='<body>').
@@ -1579,7 +1581,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Each params[].value is in Fusion internal units (cm / radians) - params[].expression carries the authored unit. Full records: param_get(include_model_parameters=true).
 - A group is ONE row here, carrying member_count and is_collapsed; a COLLAPSED group's members are not listed, though summary.states counts them (an exception from one carries index null - address it...
 - part_number and description are writable with design_set_metadata; id and revision_id are reads only - no tool here writes them.
-- '' has unsupported definition type ; this slice reads HoleFeature and ThreadFeature. Use include=['timeline'] or model_inspect.
+- '' has unsupported definition type ; this slice reads HoleFeature, ThreadFeature and LoftFeature. Use include=['timeline'] or model_inspect.
 - 'default' keeps overview; include=. 'max_depth'/'component'/'name_filter'/'max_results'/'tree_bodies'/'tree_handles' scope the tree; 'group'/'include_suppressed'/'timeline_params' the timeline; 'li...
 
 ### `design_move_occurrence`
@@ -2998,6 +3000,16 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Two-sided through_all with cut/intersect participant assignment is unsupported. Use separate one-sided features or the Fusion UI.
 - Editing '':  The feature was not deleted; inspect design_get(include=['timeline']). Observed edit state is in 'details'.
 
+### `model_edit_loft`
+- Loft section changed on the same feature. Inspect model_inspect.
+- 'section_index' must be a nonnegative integer (got
+- action='retarget' requires 'profile'.
+- 'profile' is unused for action='remove'; remove it.
+- ' has unreadable timeline identity; nothing was edited.
+- ; roll after it with design_edit_timeline.
+- 's evaluated-health census is unreadable; nothing was edited.
+- Inspect design_get(include=['timeline']); observed state is in details.
+
 ### `model_edit_sweep`
 - Sweep operand changed on the same feature. Boolean edits retain the current participants; newly reached bodies are excluded. Inspect model_inspect.
 - ' has unreadable timeline identity; nothing was edited.
@@ -3231,13 +3243,24 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Loft needs at least 2 sections (got
 - centerLineOrRails takes a centerline OR rails, not both.
 - Loft reported success but the feature owns no result body - nothing was built.
+- 'target_bodies' was empty; name one or more solid bodies, or omit it.
+- 'target_bodies' only applies to cut/intersect operations.
+- The design-wide body census or a selected body is unreadable; nothing was lofted.
 - Could not start loft:
 - Could not add loft sections:
 - Could not set loft centerline/rails:
+- Loft was built, but the post-loft body census or result-body identity is unreadable; scoped material effect is unverified.
+- ; scoped material effect failed verification.
 - Loft reported success but this
 - changed nothing - every solid body in '
 - ' measures the volume it had before and none was consumed, so the lofted shape does not overlap any of them. Check the profiles bracket the target body (an 'intersect' whose target lies entirely IN...
+- 'target_bodies' includes a body whose native identity is unreadable.
+- 'target_bodies' repeats one body; list each participant once.
+- 'target_bodies' includes a body with a
+- owner; choose a solid body in the loft profile's component.
+- 'target_bodies' includes a body whose owner or name is unreadable.
 - Could not set loft solid/surface mode:
+- Could not set target_bodies before loft:
 - 'rail_continuity' is set on B-Rep edge rails, and rails[] is a  - pass find_geometry edge handles, or drop 'rail_continuity'.
 - Loft reported success but this  changed nothing - every solid body in '' measures the volume it had before and none was consumed, so the lofted shape does not overlap any of them. Check the profile...
 

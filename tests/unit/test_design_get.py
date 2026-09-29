@@ -14,6 +14,7 @@ import os
 import sys
 from types import SimpleNamespace
 
+import adsk.fusion
 import pytest
 
 from conftest import (FakeOccurrence, FakeTimeline, FakeTimelineObject, FakeFeature,
@@ -142,6 +143,50 @@ def test_definition_keeps_feature_ref_ambiguity_refusal(definition_scene):
     refused = dg.handler(include=["definition"], feature="Hole4")
     assert refused["isError"] is True and "matches 2" in error_message(refused)
     assert _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]["component"] == "Cradle"
+
+
+def test_loft_definition_discloses_ordered_sections_without_rolling(definition_scene):
+    s = definition_scene
+    loft = s.hole
+    loft.objectType = "adsk::fusion::LoftFeature"
+    sketches = [SimpleNamespace(name=name, parentComponent=s.component)
+                for name in ("Start", "Middle", "End")]
+    profiles = [SimpleNamespace(objectType="adsk::fusion::Profile", entityToken=f"profile-{i}",
+                                parentSketch=sketch)
+                for i, sketch in enumerate(sketches)]
+    sections = [SimpleNamespace(entity=profile,
+                                endCondition=SimpleNamespace(objectType="FreeEnd"))
+                for profile in profiles]
+    loft.loftSections = SimpleNamespace(count=3, item=lambda i: sections[i])
+    loft.centerLineOrRails = SimpleNamespace(count=0)
+    loft.operation = adsk.fusion.FeatureOperations.NewBodyFeatureOperation
+    loft.isSolid, loft.isClosed = True, False
+    out = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]
+    assert out["section_count"] == 3 and out["truncated"] is False
+    assert [(row["index"], row["profile_handle"], row["source_sketch"],
+             row["source_component"]) for row in out["sections"]] == [
+                 (0, "profile-0", "Start", "Cradle"),
+                 (1, "profile-1", "Middle", "Cradle"),
+                 (2, "profile-2", "End", "Cradle")]
+    assert out["is_solid"] is True and out["is_closed"] is False
+    assert s.timeline.markerPosition == 0 and s.timeline._moves == [] and s.row._rolls == []
+    del profiles[1].parentSketch
+    unknown = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]
+    assert unknown["sections"][1]["source_sketch"] is None
+    assert unknown["sections"][1]["source_component"] is None
+
+
+def test_loft_definition_caps_section_list(definition_scene):
+    s = definition_scene
+    s.hole.objectType = "adsk::fusion::LoftFeature"
+    s.hole.loftSections = SimpleNamespace(
+        count=70, item=lambda i: SimpleNamespace(
+            entity=SimpleNamespace(objectType="adsk::fusion::Profile", entityToken=f"p{i}"),
+            endCondition=SimpleNamespace(objectType="FreeEnd")))
+    s.hole.centerLineOrRails = SimpleNamespace(count=0)
+    out = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]
+    assert out["section_count"] == 70 and out["truncated"] is True
+    assert len(out["sections"]) == 64 and out["sections"][-1]["index"] == 63
 
 
 # ── ROUTER composition: stub the slice SEAMS (not the source-tool internals) ────────────────────────
