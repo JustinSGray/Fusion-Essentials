@@ -1,12 +1,7 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""MCP building block: sweep a sketch profile along a path into a solid (or surface).
-
-  model_sweep -> drive a cross-section profile along a path (model edges or a path sketch) to make a
-                 3D body: pipes, handrails, cables, moulding, extrusions that follow a curve. Solid by
-                 default; an open-curve profile makes a SURFACE (no end caps). WRITES.
-"""
+"""Sweep a profile or solid tool body along a path."""
 
 import adsk.core
 import adsk.fusion
@@ -21,12 +16,14 @@ from . import _inputs
 from . import _outputs
 from . import _sketch_detail
 from . import _sweep_common
+from . import _surface_common
 
 app = adsk.core.Application.get()
 
 # scope_input: the {sketch, profile_index} form addresses a sketch BY NAME, and Fusion numbers
 # sketches per component from 1, so a name two components carry is refused, naming 'component'.
 _TARGET_BODIES = _inputs.BodyRefList("target_bodies", required=False)
+_SOLID_BODY = _inputs.BodyRef("solid_body", kind="solid")
 
 # orientation keyword -> adsk.fusion.SweepOrientationTypes attribute.
 _ORIENTATIONS = {
@@ -48,8 +45,156 @@ def _cut_check_bodies(comp):
             if safe(lambda b=b: b.isSolid)]
 
 
+def _host_body_keys(host):
+    """Return native body keys and fresh bodies, or None when the census is unreadable."""
+    coll = safe(lambda: host.bRepBodies)
+    count = _common.counted(lambda: coll.count)
+    if count is None:
+        return None
+    found = {}
+    for i in range(count):
+        body = safe(lambda i=i: coll.item(i))
+        key = _common.native_identity(body)
+        if key is None or key in found:
+            return None
+        found[key] = body
+    return found
+
+
+def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
+                 target_bodies, component):
+    """Sweep one solid body on an owner-local path, retaining its source."""
+    if op_key not in ("new", "new_body"):
+        return error("'solid_body' supports operation='new' only.")
+    if orient_key != "perpendicular":
+        return error("'solid_body' uses perpendicular orientation; omit 'orientation'.")
+    if as_surface:
+        return error("'solid_body' makes a solid; omit as_surface or set it false.")
+    if target_bodies not in (None, "", []):
+        return error("'target_bodies' applies to profile cut/join/intersect, not solid_body new.")
+    if not isinstance(path, str) or not path.strip().lower().startswith("sketch:"):
+        return error("'solid_body' needs an owner-local 'sketch:<name>' path; draw the path "
+                     "in the body's component.")
+    path_name = path.split(":", 1)[1].strip()
+    if not path_name:
+        return error("'path' needs a sketch name after 'sketch:'.")
+
+    scope = None
+    if component:
+        scope, serr = _inputs._body_scope(design, component, "component")
+        if serr:
+            return error(serr)
+    body, berr = _SOLID_BODY.resolve(solid_body, scope=scope)
+    if berr:
+        return error(berr)
+    unread = object()
+    context = safe(lambda: body.assemblyContext, unread)
+    if context is unread:
+        return error("'solid_body' has no readable assembly context; reacquire its body handle.")
+    if context is not None and safe(lambda: body.nativeObject) is None:
+        return error("'solid_body' proxy has no native body; reacquire its body handle.")
+    source = _common._native_of(body)
+    host = safe(lambda: source.parentComponent)
+    if (host is None or _common.same_component(
+            safe(lambda: host.parentDesign.rootComponent), safe(lambda: design.rootComponent))
+            is not True):
+        return error("'solid_body' must belong to this design's native component, not a linked source.")
+    if context is not None and _common.same_component(safe(lambda: context.component), host) is not True:
+        return error("'solid_body' proxy context does not match its native owner or could not be "
+                     "read; reacquire a body handle from that component.")
+    if scope is not None:
+        scoped_host = safe(lambda: scope[0].component) or scope[0]
+        if _common.same_component(scoped_host, host) is not True:
+            return error(f"'component' '{component}' does not own 'solid_body'. Use its owner "
+                         "or omit component and pass a body handle.")
+    if safe(lambda: source.isSolid) is not True:
+        return error("'solid_body' is not a readable closed solid; choose a solid body handle.")
+    source_key = _common.native_identity(source)
+    source_shape = _geom.body_shape(source)
+    source_name = safe(lambda: source.name)
+    before = _host_body_keys(host)
+    if source_key is None or source_shape is None or before is None or source_key not in before:
+        return error("'solid_body' identity or shape is unreadable in its owner; no sweep was made.")
+    named = [sk for sk in _common.iter_collection(safe(lambda: host.sketches))
+             if safe(lambda sk=sk: sk.name) == path_name]
+    if len(named) != 1:
+        return error(f"'path' sketch '{path_name}' must name exactly one sketch in the "
+                     f"solid body's component; found {len(named)}.")
+    sweep_path, path_label, patherr = build_path(host, path)
+    if patherr:
+        return error(patherr)
+    path_curves = _common.counted(lambda: sweep_path.count)
+    if path_curves is None or path_curves < 1:
+        return error("The solid sweep path has no readable curves; draw one connected path.")
+    sketch_curves = _common.path_sketch_curve_count(host, path)
+    sweeps = host.features.sweepFeatures
+    op = adsk.fusion.FeatureOperations.NewBodyFeatureOperation
+    try:
+        sweep_input = sweeps.createInputForSolid(source, sweep_path, op)
+    except Exception as exc:
+        return error(f"Could not start solid-body sweep: {exc}")
+    if sweep_input is None or _common.native_identity(safe(lambda: sweep_input.solidBody)) != source_key:
+        return error("Solid sweep input did not retain the requested tool body; no sweep was made.")
+    perpendicular = adsk.fusion.SweepSolidOrientationTypes.PerpendicularSolidOrientationType
+    if safe(lambda: sweep_input.solidOrientation) != perpendicular:
+        return error("Solid sweep input did not retain perpendicular orientation; no sweep was made.")
+    try:
+        feature = sweeps.add(sweep_input)
+    except Exception as exc:
+        return error(f"Solid-body sweep failed: {exc}")
+    if feature is None:
+        return error(_common.no_feature_error(design, "Solid sweep"))
+
+    after = _host_body_keys(host)
+    created, face_count, readable = _surface_common._created_bodies(feature)
+    created_keys = {_common.native_identity(b) for b in created}
+    new_keys = set(after or ()) - set(before)
+    if (after is None or not readable or face_count < 1 or None in created_keys
+            or len(new_keys) != 1 or created_keys != new_keys):
+        return error("Solid sweep was built, but its new result body could not be identified "
+                     "from created faces and the owner's body census. "
+                     + _common.failed_effect_remedy(design, feature))
+    key = next(iter(new_keys))
+    feature_keys = {_common.native_identity(b) for b in _common.result_bodies(feature)}
+    result = after[key]
+    result_shape = _geom.body_shape(result)
+    if key not in feature_keys or result_shape is None or result_shape["solid"] is not True \
+            or result_shape["volume_cm3"] <= 0 or result_shape == source_shape:
+        return error("Solid sweep was built, but its result is not a verified new solid body. "
+                     + _common.failed_effect_remedy(design, feature))
+    if source_key not in after or _geom.body_shape(after[source_key]) != source_shape:
+        return error("Solid sweep was built, but its source tool body's geometry was not retained. "
+                     + _common.failed_effect_remedy(design, feature))
+    health = safe(lambda: feature.healthState)
+    states = adsk.fusion.FeatureHealthStates
+    if health not in (states.HealthyFeatureHealthState, states.WarningFeatureHealthState):
+        return error("Solid sweep was built, but feature health is unreadable or failed. "
+                     + _common.failed_effect_remedy(design, feature))
+    if safe(lambda: feature.solidOrientation) != perpendicular:
+        return error("Solid sweep was built, but its perpendicular orientation did not persist. "
+                     + _common.failed_effect_remedy(design, feature))
+    result_name = safe(lambda: result.name)
+    if not result_name:
+        return error("Solid sweep was built, but the new result body has no readable name. "
+                     + _common.failed_effect_remedy(design, feature))
+    note = "Solid body swept into a new result; its source tool body retains its geometry."
+    if health == states.WarningFeatureHealthState:
+        note += " Feature warning: " + str(safe(lambda: feature.errorOrWarningMessage) or "details unreadable") + "."
+    warning = _common.path_chain_warning(path_curves, sketch_curves, "sweep")
+    if warning:
+        note += " " + warning
+    return ok({"swept": True, "feature": safe(lambda: feature.name),
+               "operation": op_key, "component": safe(lambda: host.name),
+               "path": path_label, "path_curves": path_curves,
+               "path_sketch_curves": sketch_curves, "orientation": "perpendicular",
+               "as_surface": False, "open_profile": False, "is_solid": True,
+               "solid_body": source_name, "source_retained": True,
+               "result_bodies": [result_name], "note": note})
+
+
 def handler(profile=None, path=None, operation: str = "new", orientation: str = "perpendicular",
-            as_surface: bool = False, target_bodies=None, component: str = "") -> dict:
+            as_surface: bool = False, target_bodies=None, component: str = "",
+            solid_body=None) -> dict:
     """See TOOL_DESCRIPTION."""
     op_key = (operation or "new").strip().lower()
     if op_key not in _common.OPERATIONS:
@@ -61,6 +206,11 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
     design = _common.design()
     if not design:
         return error("No active design. Create or open a document first (see doc_new).")
+    if solid_body not in (None, "", []):
+        if profile not in (None, "", []):
+            return error("Choose 'profile' or 'solid_body', not both.")
+        return _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
+                            target_bodies, component)
     comp = target_component(design)
 
     profile_arg, want_solid, open_profile, host, _source_sketch, perr = _sweep_common.resolve_profile(
@@ -205,17 +355,18 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
 
 
 TOOL_DESCRIPTION = (
-"Sweep a profile along a path.\n"
+"Sweep profile or solid body.\n"
 + _outputs.produces_block(RETURNS)
 )
 
 sweep_tool = (
     Tool.create_simple(name="model_sweep", description=TOOL_DESCRIPTION)
     .add_input_property("profile", {"type": ["string", "object"]})
+    .add_input_property("solid_body", _SOLID_BODY.schema())
     .add_input_property("path", {"type": ["string", "array"], "items": {"type": "string"},
-            "description": "An edge 'handle' (chains across TANGENT connections only; the 'path' "
-                           "count is the truth), or 'sketch:<name>'."})
-    .add_input_property(*_inputs.boolean_op(default="new").as_property())
+            "description": "Edge handle: TANGENT connections only; 'path' count is the truth. "
+                           "Or 'sketch:<name>'."})
+    .add_input_property(*_inputs.boolean_op(default="new", description="").as_property())
     .add_input_property("orientation", {"type": "string", "enum": ["perpendicular", "parallel"]})
     .add_input_property("as_surface", {"type": "boolean"})
     .add_input_property("target_bodies", _TARGET_BODIES.schema())

@@ -6,7 +6,7 @@
 import math
 
 from verify_core import (
-    _RECALL, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _measured, _near, _num, _new_document, _prof, _recall, _refused)
+    _RECALL, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _measured, _near, _num, _new_document, _prof, _recall, _refused, _watch)
 
 
 
@@ -33,6 +33,166 @@ def _sweep_mode_box_equal(left, right, tol=0.0001):
                and math.isfinite(left[side][axis]) and math.isfinite(right[side][axis])
                and abs(left[side][axis] - right[side][axis]) <= tol
                for side in ("min", "max") for axis in ("x", "y", "z"))
+
+
+def _solid_tool_expected(case, role):
+    """Return analytic world bounds and volume in millimeters for the owned tool sweep."""
+    angle = math.radians(25)
+    co, si = math.cos(angle), math.sin(angle)
+    x, y = 3200, 500
+    if role == "source":
+        half = 2.5 * (co + si)
+        lo, hi, volume = (x - half, y - half, 0), (x + half, y + half, 5), 125
+    else:
+        lo = (x - 2.5 * (co + si), y - 2.5 * (co + si), 0)
+        hi = (x + 22.5 * co + 2.5 * si, y + 22.5 * si + 2.5 * co, 5)
+        volume = 625
+    return {"min": dict(zip(("x", "y", "z"), lo)),
+            "max": dict(zip(("x", "y", "z"), hi)), "volume": volume}
+
+
+def _solid_tool_mass(case, role, previous=None):
+    """Check measured volume and placed bounds against the tool sweep geometry."""
+    def check(p):
+        got, expected = _sweep_mode_shape(p), _solid_tool_expected(case, role)
+        old = _RECALL.get(previous) if previous else None
+        valid = (p.get("kind") == "body" and p.get("units") == "mm"
+                 and _near(got["volume"], expected["volume"], 1.0)
+                 and _sweep_mode_box_equal(got, expected, 0.3)
+                 and (previous is None or got == old))
+        return _measured(f"{case} solid tool {role} independent volume and world bounds",
+                         {"actual": got, "expected": expected, "before": old}, valid)
+    return check
+
+
+def _solid_tool_census(p):
+    """Return the owner's body identities and every SweepFeature row's (name, health), or None on an unreadable or truncated read."""
+    bodies = ((p.get("tree") or {}).get("tree") or {}).get("bodies")
+    timeline = (p.get("timeline") or {}).get("timeline")
+    if (not isinstance(bodies, list) or not isinstance(timeline, list)
+            or (p.get("timeline") or {}).get("truncated")):
+        return None
+    return {"bodies": sorted((b.get("name"), b.get("handle")) for b in bodies),
+            "sweeps": sorted((r.get("name"), r.get("health")) for r in timeline
+                             if r.get("type") == "SweepFeature")}
+
+
+def _solid_tool_health(host, key):
+    """Check the new sweep's own timeline row in its owner reads healthy."""
+    def check(p):
+        timeline = p.get("timeline") or {}
+        feature = (_RECALL.get(key) or {}).get("feature")
+        rows = [r for r in timeline.get("timeline") or []
+                if r.get("name") == feature and r.get("component") == host
+                and r.get("type") == "SweepFeature"]
+        # A healthy timeline row is published without its health key.
+        return _measured("new solid sweep timeline health", rows,
+                         bool(feature) and not timeline.get("truncated") and len(rows) == 1
+                         and rows[0].get("health", "healthy") == "healthy")
+    return check
+
+
+def _solid_tool_rows():
+    """Exercise NewBody solid sweeps through placed proxy handles and independent geometry."""
+    # A curved solid sweep in a component offset along x builds an empty feature that reads
+    # healthy (measured on 2706.0.97, also through the raw API), so the owned story uses the
+    # straight path; the tool refuses that empty result.
+    cases = (("straight", "SolidToolStraight", 3200),)
+    rows = [("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("model_create_component", {"name": "SolidToolWitness", "activate": True,
+                                        "x": 3225, "y": 520}, _made_component, None),
+            ("sketch_create", {"plane": "xy", "name": "SolidToolWitnessS"}, "ok", None),
+            ("sketch_add_geometry", {"sketch_name": "SolidToolWitnessS", "geometry": [
+                {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]}, "ok", None),
+            ("model_extrude", {"sketch_name": "SolidToolWitnessS", "distance": 10},
+             _extruded, ("st_witness", lambda p: p["result_bodies"][0])),
+            ("model_inspect", lambda c: _combine_inspect(
+                "SolidToolWitness:1:" + _ctx_get(c, "st_witness", "witness")),
+             lambda p: _measured("unrelated solid sweep witness before", p.get("mass"),
+                                 _near((p.get("mass") or {}).get("volume"), 1000, 0.01)),
+             ("st_witness_shape", _recall("st_witness_shape", _sweep_mode_shape)))]
+    # Host-named sketches share the host's camera group, so the hand frame below owns the story.
+    for case, host, x in cases:
+        source, path, body_key = host + "S", host + "Path", "st_" + case + "_body"
+        rows.extend([
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("model_create_component", {"name": host, "activate": True,
+                                        "x": x, "y": 500, "rotate_deg": 25}, _made_component, None),
+            ("sketch_create", {"plane": "xy", "name": source}, "ok", None),
+            ("sketch_add_geometry", {"sketch_name": source, "component": host,
+                                     "geometry": [{"kind": "rectangle", "x1": -2.5, "y1": -2.5,
+                                                   "x2": 2.5, "y2": 2.5}]}, "ok", None),
+            ("sketch_create", {"plane": "xy", "name": path}, "ok", None),
+            ("sketch_add_geometry", {"sketch_name": path, "component": host,
+                                     "geometry": [{"kind": "line", "x1": 0, "y1": 0,
+                                                   "x2": 20, "y2": 0}]}, "ok", None),
+            ("model_extrude", {"sketch_name": source, "component": host, "distance": 5},
+             _extruded, (body_key, lambda p: p["result_bodies"][0])),
+            ("model_inspect", lambda c, key=body_key, host=host: _combine_inspect(
+                host + ":1:" + _ctx_get(c, key, "solid tool source")),
+             _solid_tool_mass(case, "source"),
+             ("st_" + case + "_shape", _recall("st_" + case + "_shape", _sweep_mode_shape)))])
+    # The swept result lies beside the witness, so one frame holds both hosts.
+    rows.append(_watch(["SolidToolStraight:1", "SolidToolWitness:1"]))
+    for case, host, x in cases:
+        path, body_key = host + "Path", "st_" + case + "_body"
+        handle_key, result_key = "st_" + case + "_handle", "st_" + case + "_result"
+        rows.extend([
+            ("find_geometry", lambda c, key=body_key, host=host, x=x: {
+                "target": host + ":1:" + _ctx_get(c, key, "solid tool source"),
+                "kind": "planar_face", "nearest_to": [x, 500, 5],
+                "units": "mm", "max_results": 1},
+             lambda p: _measured("placed source face handle for solid sweep", p.get("matches"),
+                                  p.get("returned") == 1 and bool((p.get("matches") or [{}])[0].get("handle"))),
+             _fg(handle_key)),
+            ("design_activate_component", {"occurrence": "SolidToolWitness:1"}, "ok", None),
+            ("model_sweep", lambda c, key=handle_key, path=path, host=host: {
+                "solid_body": _ctx_get(c, key, "placed solid tool handle"),
+                "path": "sketch:" + path, "component": host, "operation": "new"},
+             lambda p, host=host: _measured("owner-local NewBody solid sweep", p,
+                 p.get("swept") is True and p.get("component") == host
+                 and p.get("source_retained") is True and bool(p.get("feature"))
+                 and p.get("orientation") == "perpendicular"
+                 and p.get("path_curves") == 1 and len(p.get("result_bodies") or []) == 1),
+             (result_key, _recall(result_key, lambda p: {"feature": p["feature"],
+                                                         "body": p["result_bodies"][0]}))),
+            ("design_get", {"include": ["timeline"], "max_results": 2000},
+             _solid_tool_health(host, result_key), None),
+            ("model_inspect", lambda c, key=result_key, host=host: _combine_inspect(
+                host + ":1:" + _ctx_get(c, key, "solid sweep result")["body"]),
+             _solid_tool_mass(case, "result"), None),
+            ("model_inspect", lambda c, key=body_key, host=host: _combine_inspect(
+                host + ":1:" + _ctx_get(c, key, "solid tool source")),
+             _solid_tool_mass(case, "source", "st_" + case + "_shape"), None),
+            ("model_inspect", lambda c: _combine_inspect(
+                "SolidToolWitness:1:" + _ctx_get(c, "st_witness", "witness")),
+             lambda p: _measured("unrelated witness unchanged by solid sweep", _sweep_mode_shape(p),
+                 _sweep_mode_shape(p) == _RECALL.get("st_witness_shape")
+                 and _sweep_mode_box_equal(_sweep_mode_shape(p),
+                                           _RECALL.get("st_witness_shape") or {}, 0)), None),
+        ])
+    rows.extend([
+        ("design_get", {"include": ["tree", "timeline"], "component": "SolidToolStraight",
+                        "tree_bodies": True, "tree_handles": True, "max_results": 2000},
+         lambda p: _measured("solid sweep refusal baseline", _solid_tool_census(p),
+                             _solid_tool_census(p) is not None),
+         ("st_guard", _recall("st_guard", _solid_tool_census))),
+        ("model_sweep", lambda c: {"solid_body": "SolidToolStraight:1:" + _ctx_get(
+            c, "st_straight_body", "solid tool source"),
+                                   "path": "sketch:SolidToolStraightPath", "as_surface": True},
+         _refused("as_surface"), None),
+        ("design_get", {"include": ["tree", "timeline"], "component": "SolidToolStraight",
+                        "tree_bodies": True, "tree_handles": True, "max_results": 2000},
+         lambda p: _measured("invalid solid sweep left bodies and features unchanged",
+                             _solid_tool_census(p),
+                             _solid_tool_census(p) is not None
+                             and _solid_tool_census(p) == _RECALL.get("st_guard")), None),
+        ("design_activate_component", {"occurrence": "root"}, "ok", None),
+    ])
+    return rows
+
+
+_SOLID_TOOL = _solid_tool_rows()
 
 
 def _sweep_mode_expected_volume(case, stage):

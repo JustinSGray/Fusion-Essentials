@@ -10,12 +10,210 @@ swallowed configure/add failure must surface).
 import types
 
 import adsk.fusion
+import pytest
 
 from conftest import (load_tool, make_design, install, make_sketch, payload as _payload,
                       error_message, assert_no_active_design, BRepBody, BRepEdge,
-                      FakeFeatures as _SharedFeatures, Line3D, Profile, _NamedCollection)
+                      FakeFeatures as _SharedFeatures, Line3D, Profile, _NamedCollection,
+                      MakeComp, FakePoint, make_bbox, body_proxy)
 
 sw = load_tool("model_sweep")
+
+
+def _solid_tool_world(*, result_same_shape=False, ignored_orientation=False, wrong_context=False,
+                      health="HealthyFeatureHealthState", input_field=None, faces_of_source=False,
+                      reshaped_source=False, second_result=False, feature_omits_result=False,
+                      linked_owner=False):
+    """Return a measured-shape source, a distinct result and one owner-local path."""
+    adsk.fusion.BRepBody = BRepBody
+    perpendicular = adsk.fusion.SweepSolidOrientationTypes.PerpendicularSolidOrientationType
+
+    def body(name, low, high, volume, area):
+        face = types.SimpleNamespace(area=area, centroid=FakePoint(*low))
+        return BRepBody(name, bbox=make_bbox(low, high), volume=volume, area=area,
+                        faces=[face], entity_token=name + "-token")
+
+    source = body("ToolBox", (-.25, -.25, 0), (.25, .25, .5), .125, 1.5)
+    result = (body("SweptBox", (-.25, -.25, 0), (.25, .25, .5), .125, 1.5)
+              if result_same_shape else
+              body("SweptBox", (-.25, -.25, 0), (2.25, .25, .5), .625, 5.5))
+    new = [result] + ([body("SweptTwin", (-.25, -.25, 1), (2.25, .25, 1.5), .625, 5.5)]
+                      if second_result else [])
+    host = MakeComp("ToolHost", bodies=[source], entity_token="host-token")
+    root = MakeComp("Root", entity_token="root-token")
+    host.sketches = _NamedCollection([_sketch("ToolPath", curves=1, owner=host)])
+    sf = FakeSweepFeatures()
+    host.features = FakeFeatures(sf)
+    design = make_design(comp=root, all_components=[root, host])
+    root.parentDesign = host.parentDesign = design
+    if linked_owner:
+        host.parentDesign = types.SimpleNamespace(
+            rootComponent=MakeComp("LinkedRoot", entity_token="linked-root-token"))
+    source.parentComponent = host
+    for made in new:
+        made.parentComponent = host
+    context = types.SimpleNamespace(component=root if wrong_context else host)
+    proxy = body_proxy(source, occurrence=context, entity_token="proxy-token")
+    design._tokens["PX"] = proxy
+    install(sw, design)
+
+    def create(source_body, path, operation):
+        sf.last = types.SimpleNamespace(solidBody=source_body, solidOrientation=perpendicular,
+                                        path=path, operation=operation)
+        if input_field:
+            setattr(sf.last, *input_field)
+        return sf.last
+
+    def add(inp):
+        host.bRepBodies._items.extend(new)
+        if reshaped_source:
+            source.volume = result.volume
+        return types.SimpleNamespace(
+            name="SolidSweep",
+            bodies=_NamedCollection([source] if feature_omits_result else [source, *new]),
+            faces=_NamedCollection([types.SimpleNamespace(body=source if faces_of_source else b)
+                                    for b in new]),
+            healthState=getattr(adsk.fusion.FeatureHealthStates, health) if health else None,
+            solidOrientation=(-1 if ignored_orientation else perpendicular))
+
+    sf.createInputForSolid = create
+    sf.add = add
+    return sf, host, source, result
+
+
+class TestSolidTool:
+    def test_proxy_source_sweeps_in_own_component_and_excludes_source_from_result(self):
+        sf, host, source, result = _solid_tool_world()
+        out = _payload(sw.handler(solid_body="PX", path="sketch:ToolPath"))
+        assert sf.last.solidBody is source
+        assert out["component"] == "ToolHost"
+        assert out["result_bodies"] == ["SweptBox"]
+        assert out["source_retained"] is True
+        assert host.bRepBodies.count == 2 and host.bRepBodies.item(1) is result
+
+    def test_refuses_unmeasured_path_and_boolean_before_feature_creation(self):
+        sf, host, _, _ = _solid_tool_world()
+        for kwargs in ({"path": ["EDGE"]}, {"operation": "cut", "path": "sketch:ToolPath"},
+                       {"orientation": "parallel", "path": "sketch:ToolPath"},
+                       {"as_surface": True, "path": "sketch:ToolPath"}):
+            assert sw.handler(solid_body="PX", **kwargs)["isError"] is True
+        assert sf.last is None and host.bRepBodies.count == 1
+
+    def test_refuses_wrong_proxy_context_and_unchanged_result(self):
+        sf, host, _, _ = _solid_tool_world(wrong_context=True)
+        assert sw.handler(solid_body="PX", path="sketch:ToolPath")["isError"] is True
+        assert sf.last is None and host.bRepBodies.count == 1
+        _solid_tool_world(result_same_shape=True)
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True and "not a verified new solid" in error_message(res)
+
+    def test_a_body_owned_by_a_linked_design_is_refused_before_input(self):
+        sf, host, _, _ = _solid_tool_world(linked_owner=True)
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True and "not a linked source" in error_message(res)
+        assert sf.last is None and host.bRepBodies.count == 1
+
+    def test_ignored_feature_orientation_is_not_reported_as_perpendicular(self):
+        _solid_tool_world(ignored_orientation=True)
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True and "orientation did not persist" in error_message(res)
+
+    def test_error_health_is_refused_and_warning_is_disclosed_in_the_note(self):
+        _solid_tool_world(health="ErrorFeatureHealthState")
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True and "health is unreadable or failed" in error_message(res)
+        _solid_tool_world(health="WarningFeatureHealthState")
+        out = _payload(sw.handler(solid_body="PX", path="sketch:ToolPath"))
+        assert "Feature warning:" in out["note"] and "health" not in out
+
+    def test_created_faces_owned_outside_the_census_delta_name_no_result(self):
+        # feature.bodies lists the source too, so only created-face owners that equal the
+        # owner's census delta name the output.
+        _solid_tool_world(faces_of_source=True)
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True
+        assert "could not be identified from created faces" in error_message(res)
+        assert "result_bodies" not in str(res)
+
+    def test_a_source_whose_shape_changed_is_not_reported_retained(self):
+        _solid_tool_world(reshaped_source=True)
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True
+        assert "source tool body's geometry was not retained" in error_message(res)
+
+    def test_an_input_that_drops_the_body_or_orientation_is_refused_before_add(self):
+        for field, message in (
+                (("solidBody", BRepBody("Other", entity_token="other-token")),
+                 "did not retain the requested tool body"),
+                (("solidOrientation", -1), "did not retain perpendicular orientation")):
+            _, host, _, _ = _solid_tool_world(input_field=field)
+            res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+            assert res["isError"] is True and message in error_message(res)
+            assert host.bRepBodies.count == 1
+
+    def test_unreadable_feature_health_is_refused(self):
+        _solid_tool_world(health=None)
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True and "health is unreadable or failed" in error_message(res)
+
+    def test_two_new_bodies_are_not_reported_as_one_result(self):
+        _solid_tool_world(second_result=True)
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True
+        assert "could not be identified from created faces" in error_message(res)
+        assert "result_bodies" not in str(res)
+
+    def test_a_component_that_does_not_own_the_body_is_refused_before_input(self):
+        # Root is a second component in the design; the body's owner is ToolHost.
+        sf, _, _, _ = _solid_tool_world()
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath", component="Root")
+        assert res["isError"] is True and "does not own 'solid_body'" in error_message(res)
+        assert sf.last is None
+
+    @pytest.mark.parametrize("extra, fragment", [
+        ({"profile": {"sketch": "X"}}, "not both"),
+        ({"target_bodies": ["ToolBox"]}, "'target_bodies' applies to profile")])
+    def test_a_conflicting_input_is_refused_not_dropped(self, extra, fragment):
+        sf, _, _, _ = _solid_tool_world()
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath", **extra)
+        assert res["isError"] is True and fragment in error_message(res)
+        assert sf.last is None
+
+    def test_a_census_body_the_feature_does_not_list_is_not_its_result(self):
+        _solid_tool_world(feature_omits_result=True)
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True
+        assert "not a verified new solid body" in error_message(res)
+
+    def test_two_path_sketches_of_one_name_are_refused_before_input(self):
+        sf, host, _, _ = _solid_tool_world()
+        host.sketches._items.append(_sketch("ToolPath", curves=1, owner=host))
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        message = error_message(res)
+        assert res["isError"] is True
+        assert "must name exactly one sketch" in message and "found 2" in message
+        assert sf.last is None
+
+    def test_an_unreadable_source_shape_is_refused_before_input(self):
+        sf, host, source, _ = _solid_tool_world()
+        source.area = None
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True and "identity or shape is unreadable" in error_message(res)
+        assert sf.last is None and host.bRepBodies.count == 1
+
+    def test_an_unnamed_result_body_is_not_published(self):
+        _, _, _, result = _solid_tool_world()
+        result.name = None
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True and "no readable name" in error_message(res)
+        assert "result_bodies" not in str(res)
+
+    def test_a_path_that_chains_fewer_curves_than_its_sketch_is_disclosed(self):
+        _, host, _, _ = _solid_tool_world()
+        host.sketches = _NamedCollection([_sketch("ToolPath", curves=2, owner=host)])
+        host.features.path_returns = _built_path(1)
+        out = _payload(sw.handler(solid_body="PX", path="sketch:ToolPath"))
+        assert "chained 1 of the sketch's 2 curves" in out["note"]
 
 
 # ── small sweep-shaped fakes ────────────────────────────────────────────────

@@ -3548,6 +3548,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '. Use: perpendicular, parallel.
 - No active design. Create or open a document first (see doc_new).
 - Sweep reported success but created no body. Check that the profile sits on the path and the path forms a valid, connected sweep.
+- Choose 'profile' or 'solid_body', not both.
 - Could not start sweep:
 - . (The path must geometrically connect and the profile should sit on/near the path start.)
 - Could not configure the sweep:
@@ -3560,6 +3561,32 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - measure the volumes they had before and none was consumed, so the profile does not sweep through any of them. A cut/intersect can only affect bodies named in 'target_bodies' - check the path runs t...
 - The sweep feature was rolled back.
 - Remove the empty feature with design_delete_feature.
+- Solid body swept into a new result; its source tool body retains its geometry.
+- 'solid_body' supports operation='new' only.
+- 'solid_body' uses perpendicular orientation; omit 'orientation'.
+- 'solid_body' makes a solid; omit as_surface or set it false.
+- 'target_bodies' applies to profile cut/join/intersect, not solid_body new.
+- 'solid_body' needs an owner-local 'sketch:<name>' path; draw the path in the body's component.
+- 'path' needs a sketch name after 'sketch:'.
+- 'solid_body' has no readable assembly context; reacquire its body handle.
+- 'solid_body' proxy has no native body; reacquire its body handle.
+- 'solid_body' must belong to this design's native component, not a linked source.
+- 'solid_body' proxy context does not match its native owner or could not be read; reacquire a body handle from that component.
+- 'solid_body' is not a readable closed solid; choose a solid body handle.
+- 'solid_body' identity or shape is unreadable in its owner; no sweep was made.
+- ' must name exactly one sketch in the solid body's component; found
+- The solid sweep path has no readable curves; draw one connected path.
+- Solid sweep input did not retain the requested tool body; no sweep was made.
+- Solid sweep input did not retain perpendicular orientation; no sweep was made.
+- Solid sweep was built, but its new result body could not be identified from created faces and the owner's body census.
+- Solid sweep was built, but its result is not a verified new solid body.
+- Solid sweep was built, but its source tool body's geometry was not retained.
+- Solid sweep was built, but feature health is unreadable or failed.
+- Solid sweep was built, but its perpendicular orientation did not persist.
+- Solid sweep was built, but the new result body has no readable name.
+- ' does not own 'solid_body'. Use its owner or omit component and pass a body handle.
+- Could not start solid-body sweep:
+- Solid-body sweep failed:
 - Sweep reported success but this  changed nothing -  measure the volumes they had before and none was consumed, so the profile does not sweep through any of them. A cut/intersect can only affect bod...
 - Sweep reported success but this  changed nothing - every solid body in '' measures the volume it had before and none was consumed, so the swept profile does not overlap any of them. Check the path ...
 

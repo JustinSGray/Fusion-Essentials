@@ -670,6 +670,11 @@ ENUMS = {
         "ParallelOrientationType": 0,
         "PerpendicularOrientationType": 1,
     },
+    "fusion.SweepSolidOrientationTypes": {
+        "PerpendicularSolidOrientationType": 0,
+        "RigidSolidOrientationType": 1,
+        "AlignedSolidOrientationType": 2,
+    },
     "fusion.SymmetricDimensionStrategyTypes": {
         "DefaultSymmetricDimensionStrategyType": 0,
         "EndToEndSymmetricDimensionStrategyType": 1,

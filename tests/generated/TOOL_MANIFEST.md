@@ -93,7 +93,7 @@ Produces: feature. |
 | ✎ | `model_split` | Split a body into pieces, or its faces along a curve.
 Produces: feature -> design_delete_feature, result_count. |
 | ✎ | `model_stitch` | Stitch surface bodies into a solid; 'became_solid' reports whether they closed. |
-| ✎ | `model_sweep` | Sweep a profile along a path.
+| ✎ | `model_sweep` | Sweep profile or solid body.
 Produces: result_bodies, is_solid, path_curves. |
 | ✎ | `model_thread` | Thread an existing cylindrical face; model_hole taps its holes.
 Produces: feature -> design_delete_feature. |
