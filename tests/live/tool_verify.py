@@ -3,21 +3,20 @@
 
 """Live tool verification: every registered tool called at least once against LIVE Fusion.
 
-A deterministic script of direct tools/call requests (no LLM, no SDK) walking a dependency DAG
-that builds its own world in a scratch document and tears it down. The gate: a ledger with zero
+A deterministic script of direct tools/call requests (no LLM, no SDK) walking owned document
+families with local inputs and fresh context. The gate: a ledger with zero
 unexplained rows - every tool is pass / expected-refusal / skipped(reason).
 
-The sweep is the END-TO-END STORY the evals grade agents on, in one document: a parametric
-machined BRACKET is cast, turned solid (stepped top, radiused pocket, through bores, a
-counterbored mounting pattern, a boss, a broken edge), detailed, resized off its one driving
-length, sized into a billet and clamped in a modelled VISE (slider jaw, lead screw on a motion
-link, grip proven by measure), photographed, and finally machined - four operations on the REAL
-part in the REAL fixture, generated to completion (an empty toolpath fails the run), NC posted.
-Cameo fixtures for families with no home on the part ride the same document.
+Each family creates or owns its scratch document. Bracket, stock/vise, and CAM families build
+their declared inputs locally; generation and reads stay together where they share a real job.
+The default run chains every family once and is the only path that can stamp the receipt.
+``--acts`` expands named acts to complete families, runs them independently, writes dated setup,
+narrative, and cleanup evidence under ``outputs/tool-sweep/``, and never stamps a receipt, even
+when the selection covers every act.
 
 The run is not capped by wall clock - what it costs is reported per act and per tool, and a program
 that outgrows one 600 s shell call is walked in CHUNKS that share one receipt (``--run``/``--resume``
-below). A run with zero FAIL/blocked steps writes ``tests/live/VERIFIED_TOOLS.md`` - the tracked receipt: the
+below). A complete unselected run with zero FAIL/blocked steps writes ``tests/live/VERIFIED_TOOLS.md`` - the tracked receipt: the
 per-tool ledger stamped with a SHA-256 of the ``commands/mcpServer/`` source tree, binding that
 run to the exact tool source it exercised. ``--check`` recomputes the hash offline (no Fusion
 needed) and fails on any difference, so a green suite cannot ride on a live run that never saw
@@ -29,18 +28,13 @@ Run:  py -3 tests/live/tool_verify.py            (requires Fusion running + the 
       py -3 tests/live/tool_verify.py --check    (no Fusion: exit 1 when VERIFIED_TOOLS.md is missing
                                                   or its source hash differs from the tree)
       py -3 tests/live/tool_verify.py --json     (also write tests/live/results/verify-<ts>.json)
-      py -3 tests/live/tool_verify.py --keep-open  (leave the story document open for inspection)
-      py -3 tests/live/tool_verify.py --acts "ACT 10a..ACT 10e"  (walk only those acts against the
-                                                  document a --keep-open run left open; no receipt)
-      py -3 tests/live/tool_verify.py --run r1 --acts "ACT 0 - OVERTURE..ACT 9 - THE SHOWCASE"
-      py -3 tests/live/tool_verify.py --run r1 --resume   (the same run, chunk by chunk: each chunk
-                                                  saves ctx/ledger/acts-done and leaves the document
-                                                  open, and the receipt stamps once the whole
-                                                  program has run under that id)
-      py -3 tests/live/tool_verify.py --run r1 --resume --acts "ACT 10c4 - CAM: THE HUB JOB"
-                                                  (a DEVELOPMENT walk: the named acts run again
-                                                  against that run's world with its saved ctx, an
-                                                  edited source is fine, no receipt, state untouched)
+      py -3 tests/live/tool_verify.py --keep-open  (leave only the last family document open)
+      py -3 tests/live/tool_verify.py --acts "ACT 5,ACT 7b"  (run the Details and Motion families
+                                                  in their own documents; dated evidence, no receipt)
+      py -3 tests/live/tool_verify.py --run r1   (full acceptance with per-act checkpoints)
+      py -3 tests/live/tool_verify.py --run r1 --resume   (continue that exact full candidate)
+
+``--resume --acts`` and checkpoints from the former single-document sweep are refused.
 
 Steps are DATA (see STEPS): each row is (tool, args, expect) where args may be a dict or a
 callable(ctx) reading what earlier steps stored, and expect is "ok", "refused" (a deliberate
@@ -59,9 +53,10 @@ siblings, and a step is edited in the one it belongs to:
 
   verify_core.py      the wire, the step kinds, the value predicates, the scratch fixtures
   verify_layout.py    the sketch hoist, the slot packer, the framing pass
-  verify_acts_doc.py / _sketch / _model / _motion / _mesh / _cam / _hub / _cloud   the step rows
+  verify_acts_doc.py / _sketch / _model_* / _motion / _mesh / _cam / _hub / _cloud   the step rows
   cloud_config.py     the OPT-IN cloud tier's local config (gitignored); absent, the tier is skipped
-  verify_program.py   the ordered acts, run through those passes, plus STEPS/STORY/EXCLUDED
+  verify_program.py   the judged acts, run through those passes, plus STEPS/STORY/EXCLUDED
+  verify_families.py  owned act groups and their bounded local input producers
   verify_runner.py    run/run_steps/judged_steps and the receipt (source_hash, --check)
 """
 
@@ -152,7 +147,8 @@ from verify_acts_hub import (  # noqa: F401
     _hub_setups, _hub_tools_landed, _rim_edge, _threaded, _tilt_frame, _tilt_v)
 
 from verify_program import (  # noqa: F401
-    _ACT_PROGRAM, _SKETCH_PHASE, _placed_boxes, ACTS, ACT_NEEDS, POLL_AFTER, STEPS, STORY,
+    _ACT_PROGRAM, _SKETCH_PHASE, _placed_boxes, ACTS, FAMILY_PROGRAM,
+    ACT_NEEDS, POLL_AFTER, STEPS, STORY,
     EXCLUDED, PENDING)
 
 from verify_runner import (  # noqa: F401
@@ -172,28 +168,23 @@ if __name__ == "__main__":
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--keep-open", action="store_true",
-                    help="leave the story document open at the end instead of discarding it")
+                    help="leave only the last requested family's scratch document open for inspection")
     ap.add_argument("--shots", metavar="DIR", default=None,
                     help="write a PNG of the framed view after every framing row, so the framing "
                          "can be judged by looking instead of by trusting its ratio")
     ap.add_argument("--trace", action="store_true",
                     help="print each step (flushed) before it runs, so a Fusion crash names its killer")
     ap.add_argument("--acts", metavar="SPEC", default=None,
-                    help="walk only these acts, in ACTS order, against the document a prior "
-                         "--keep-open run left open: a comma list of act names as printed in the "
-                         "log (\"ACT 10a\", \"FINALE\"), each one act or an \"A..B\" range. Writes "
-                         "no receipt")
+                    help="run the complete owned families containing these named acts, each in "
+                         "fresh scratch documents with local inputs; comma lists and A..B ranges "
+                         "are accepted. Writes dated evidence, never a receipt")
     ap.add_argument("--run", metavar="ID", default=None, dest="run_id",
-                    help="walk the program under this RUN ID, saving the ctx, the ledger so far and "
-                         "the acts done to tests/live/results/run-<ID>.json after every act. A "
-                         "chunk that does not finish the program leaves the document open and "
-                         "writes no receipt")
+                    help="run the full family chain under this ID, saving act progress and exact "
+                         "document ownership to tests/live/results/run-<ID>.json after every act; "
+                         "incomplete chunks write no receipt")
     ap.add_argument("--resume", action="store_true",
-                    help="carry on the --run ID from where its last chunk stopped, against the "
-                         "document that chunk left open. The receipt is stamped once the whole "
-                         "program has run under that id, from the union of its chunks. With "
-                         "--acts it is a development walk: the named acts run again against that "
-                         "run's world with its saved ctx, no receipt, state untouched")
+                    help="continue an unselected full --run ID from its owned-family checkpoint; "
+                         "old single-document checkpoints and --resume --acts are refused")
     args = ap.parse_args()
     shots = args.shots
     if shots:

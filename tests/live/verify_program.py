@@ -3,11 +3,9 @@
 
 """The act program: the ordered acts, the passes they run through, and the ledger tables.
 
-`_ACT_PROGRAM` is (name, precondition, narrative, fallback) per act - a precondition read that
-ERRORS routes that act to its fallback fixture. It is hoisted, laid out and framed at import
-through verify_layout.py, and `ACTS` is the result run() walks. `STEPS` is the flat union the
-completeness lint reads, `STORY` the per-tool shot-list note the receipt carries, `EXCLUDED` the
-tools deliberately not driven unattended, `PENDING` the honest todo.
+`_ACT_PROGRAM` holds each act's precondition, narrative and fallback. Layout and framing run at
+import; hoisted sketch rows return to their consuming act. `ACTS` keeps the judged rows, while
+`FAMILY_PROGRAM` assigns them to owned documents. `STEPS` is the flat completeness union.
 """
 
 from verify_acts_cam import (
@@ -34,18 +32,14 @@ from verify_acts_sheet import (_SHEET, _SHEET_CAM_READ, _SHEET_DRAWING,
                                _SHEET_CLEANUP, _SHEET_SELECTED, _SHEET_POSITIONS,
                                _SHEET_CAM_REFRESH, _SHEET_CAM_RESTORE)
 from verify_acts_sheet_flange import _SHEET_FLANGE
-from verify_core import CLOUD_LINK_CRASH_REVIEW, CLOUD_TIER, _DWELL, _PLANE_VIEW, _SKETCH_PLANE
+from verify_families import family_names
+from verify_core import CLOUD_LINK_CRASH_REVIEW, CLOUD_TIER, _DWELL, _PLANE_VIEW, _SKETCH_PLANE, _watch
 from verify_layout import (
     _CHUNK_OF, _COMPONENTS, _PATTERNED, _PLACED_BOX, _SLOTS, _framed, _place_points, _place_slots,
     _place_walk, _placed, _sketch_reading_order, _sketches_first)
 
 
-# --- the build, as ACTS: one machinable part, end to end, in one unsaved document --------------
-# The sweep is a STORY, not a scratch pile: a bracket is drawn from one driving length, turned
-# solid (stepped top, radiused pocket, through bores, a counterbored pattern, a boss, broken
-# edges), detailed, re-driven parametrically, sized into a billet, clamped in a modelled vise,
-# photographed, machined and discarded. Every covered tool's receipt step is woven into that story
-# where it fits; where it does not, a CAMEO fixture rides inside the SAME document.
+# --- the judged acts: family fixtures locally produce the inputs each narrative consumes --------
 #
 # Each ACT is a dict: name, precondition, narrative, fallback.
 #   precondition: (tool, args) - a live read gating the narrative (the geometry it consumes exists),
@@ -207,39 +201,50 @@ _ACT_PROGRAM = [
     ("FINALE", None, _FINALE, None),
 ]
 
-# Every sketch that can be drawn on bare origin planes is drawn in ACT 1c, before anything is
-# solid - the acts after it model, they do not sketch. The acts named here keep their own steps: the
-# two sketch acts are already sketch-first, the OVERTURE has no geometry, the vise draws every
-# profile on a datum plane derived from the part it is being built around, and the hub's
-# constraints and dimensions stay behind the curves they close, which the hoist would carry away.
+# Keep the sketch pass's measured activation and camera checks, then return each block to its
+# consuming act. A family can create only its own profiles in its own document.
+_SKETCH_HOIST_EXCLUDED = (
+    "ACT 0 - OVERTURE", "ACT 1 - SKETCH + PARAMETERS", "ACT 1b - SKETCH TOOLS",
+    "ACT 7 - THE VISE", "ACT 8b - THE HUB",
+    "ACT 12 - SHEET METAL COUPON", "ACT 12b - SHEET METAL LASER OUTPUT",
+    "ACT 12b1 - SHEET METAL SOURCE UPDATE", "ACT 12b2 - SHEET METAL CAM RESTORE",
+    "ACT 12c - SHEET METAL DRAWING", "ACT 12d - SHEET METAL CLEANUP",
+    "ACT 12e - SHEET METAL SELECTED BEND", "ACT 12f - SHEET METAL FOLD POSITIONS",
+    "ACT 12g - SHEET METAL FLANGE FAMILY")
+
+
+def _sketch_owners(program):
+    """Map sketch names to owner acts, refusing names shared across acts."""
+    owners = {}
+    for name, _pre, narrative, _fallback in program:
+        if name in _SKETCH_HOIST_EXCLUDED:
+            continue
+        for step in narrative:
+            if step[0] == "sketch_create" and isinstance(step[1], dict) and step[1].get("name"):
+                sketch = step[1]["name"]
+                if sketch in owners and owners[sketch] != name:
+                    raise ValueError("sketch " + repr(sketch) + " belongs to two acts")
+                owners[sketch] = name
+    return owners
+
+
+_SKETCH_OWNER = _sketch_owners(_ACT_PROGRAM)
 _SKETCH_PHASE, _ACT_PROGRAM = _sketches_first(
-    _ACT_PROGRAM, after=("ACT 0 - OVERTURE", "ACT 1 - SKETCH + PARAMETERS", "ACT 1b - SKETCH TOOLS",
-                         "ACT 7 - THE VISE", "ACT 8b - THE HUB",
-                         "ACT 12 - SHEET METAL COUPON",
-                          "ACT 12b - SHEET METAL LASER OUTPUT",
-                          "ACT 12b1 - SHEET METAL SOURCE UPDATE",
-                          "ACT 12b2 - SHEET METAL CAM RESTORE",
-                          "ACT 12c - SHEET METAL DRAWING",
-                          "ACT 12d - SHEET METAL CLEANUP",
-                          "ACT 12e - SHEET METAL SELECTED BEND",
-                          "ACT 12f - SHEET METAL FOLD POSITIONS",
-                          "ACT 12g - SHEET METAL FLANGE FAMILY"))
-_ACT_PROGRAM = (_ACT_PROGRAM[:3]
-                + [("ACT 1c - EVERY OTHER SKETCH", None, _SKETCH_PHASE, [])]
-                + _ACT_PROGRAM[3:])
+    _ACT_PROGRAM, after=_SKETCH_HOIST_EXCLUDED)
+_LAYOUT_PROGRAM = (_ACT_PROGRAM[:3]
+                   + [("ACT 1c - EVERY OTHER SKETCH", None, _SKETCH_PHASE, [])]
+                   + _ACT_PROGRAM[3:])
 
 # Every act runs through the layout pass and then the framing pass, so a part added to the story
 # later gets a slot of its own and a camera row without anyone remembering to give it either. Only
 # the narrative is laid out: a fallback act rebuilds a story-less world at the origin, and the two
 # never run together.
-_SLOTS.update(_place_slots(_ACT_PROGRAM))
+_SLOTS.update(_place_slots(_LAYOUT_PROGRAM))
 
 # ...then walk the sketch phase in reading order. This runs AFTER the cells are dealt because it
 # needs to know which sketches got one: an origin-anchored sketch has no cell and sits a metre from
 # the field, so it is drawn with the others of its kind rather than in the middle of a row. The
 # re-order preserves the packer's order over the placed chunks, so _SLOTS stays true.
-_ACT_PROGRAM = [(name, pre, (_sketch_reading_order(narr, _SLOTS) if "ACT 1c" in name else narr), fb)
-                for name, pre, narr, fb in _ACT_PROGRAM]
 
 
 def _placed_boxes(program, slots):
@@ -261,18 +266,63 @@ def _placed_boxes(program, slots):
     return {c: [v if v is not None else 0.0 for v in b] for c, b in box.items()}
 
 
-_PLACED_BOX.update(_placed_boxes(_ACT_PROGRAM, _SLOTS))
-_COMPONENTS.update(s[1]["name"] for _n, _p, narr, _f in _ACT_PROGRAM for s in narr
+_SKETCH_PHASE = _sketch_reading_order(_SKETCH_PHASE, _SLOTS)
+_PLACED_BOX.update(_placed_boxes(_LAYOUT_PROGRAM, _SLOTS))
+_COMPONENTS.update(s[1]["name"] for _n, _p, narr, _f in _LAYOUT_PROGRAM for s in narr
                    if s[0] == "model_create_component" and isinstance(s[1], dict) and s[1].get("name"))
-_PATTERNED.update(c for _n, _p, narr, _f in _ACT_PROGRAM
+_PATTERNED.update(c for _n, _p, narr, _f in _LAYOUT_PROGRAM
                   for st, c, _cur, _fr in _place_walk(narr)
                   if st[0].startswith("model_pattern_") and c)
-_SKETCH_PLANE.update({s[1]["name"]: s[1].get("plane") for _n, _p, narr, _f in _ACT_PROGRAM
+_SKETCH_PLANE.update({s[1]["name"]: s[1].get("plane") for _n, _p, narr, _f in _LAYOUT_PROGRAM
                       for s in narr if s[0] == "sketch_create" and isinstance(s[1], dict)
                       and s[1].get("name") and s[1].get("plane") in _PLANE_VIEW})
 
-ACTS = [(name, pre, _framed(_placed(narr, _SLOTS)), _framed(fb) if fb is not None else fb)
+def _sketch_blocks(phase):
+    """Return the placed sketch phase rows grouped under their original act."""
+    owned, pending, block, owner = {}, [], [], None
+    for step in phase:
+        if step[0] in ("model_create_component", "design_activate_component"):
+            pending.append(step)
+            continue
+        if step[0] == "sketch_create":
+            if block:
+                owned.setdefault(owner, []).extend(block)
+            owner = _SKETCH_OWNER[step[1]["name"]]
+            block, pending = pending + [step], []
+        else:
+            block.append(step)
+    owned.setdefault(owner, []).extend(block + pending)
+    return owned
+
+
+def _local_sketch_focus(steps):
+    """Keep each checked sketch frame on subjects already built in its own document."""
+    known, out = set(), []
+    for step in steps:
+        tool, args = step[:2]
+        if tool == "model_create_component" and isinstance(args, dict):
+            known.update((args["name"], args["name"] + ":1"))
+        elif tool == "sketch_create" and isinstance(args, dict):
+            known.add(args["name"])
+        if tool == "view_set" and isinstance(args, dict) and args.get("focus"):
+            focus = args["focus"]
+            kept = [name for name in (focus if isinstance(focus, list) else [focus])
+                    if name in known]
+            if not kept:
+                raise ValueError("sketch frame has no local subject: " + repr(focus))
+            if len(kept) != len(focus if isinstance(focus, list) else [focus]):
+                local = kept if isinstance(focus, list) else kept[0]
+                step = (tool, dict(args, focus=local, orientation=_watch(local)[1]["orientation"])) + step[2:]
+        out.append(step)
+    return out
+
+
+_LOCAL_SKETCHES = {name: _local_sketch_focus(rows) for name, rows in
+                   _sketch_blocks(_framed(_placed(_SKETCH_PHASE, _SLOTS))).items()}
+ACTS = [(name, pre, _LOCAL_SKETCHES.get(name, []) + _framed(_placed(narr, _SLOTS)),
+         _framed(fb) if fb is not None else fb)
         for name, pre, narr, fb in _ACT_PROGRAM]
+FAMILY_PROGRAM = family_names(ACTS)
 
 # The CAPABILITY each act declares. An act whose capability the start-of-run probe did not read as
 # ENTITLED is not run at all: its steps land in the receipt's skipped(<capability> not entitled)

@@ -170,6 +170,34 @@ class TestDatumOperandStory:
         assert len(chunks) == len(acts._DATUM_OPERANDS) and set(chunks) == {None}
 
 
+def test_redistributed_sketch_frames_name_subjects_in_their_own_act():
+    import verify_program
+
+    for rows in verify_program._LOCAL_SKETCHES.values():
+        known = set()
+        for tool, args, _expect, _save in rows:
+            if tool == "model_create_component":
+                known.update((args["name"], args["name"] + ":1"))
+            elif tool == "sketch_create":
+                known.add(args["name"])
+            elif tool == "view_set" and args.get("focus"):
+                focus = args["focus"]
+                assert set(focus if isinstance(focus, list) else [focus]) <= known
+
+    details = verify_program._LOCAL_SKETCHES["ACT 5 - DETAILS"]
+    assert any(row[0] == "view_set" and row[1].get("focus") == ["EmbossBlockS"]
+               and row[1].get("orientation") == "top" for row in details)
+
+    with pytest.raises(ValueError, match="no local subject"):
+        verify_program._local_sketch_focus([
+            ("view_set", {"focus": "AbsentSketch"}, "ok", None)])
+
+    duplicate = [(name, None, [("sketch_create", {"name": "Shared", "plane": "xy"},
+                               "ok", None)], []) for name in ("ACT X", "ACT Y")]
+    with pytest.raises(ValueError, match="belongs to two acts"):
+        verify_program._sketch_owners(duplicate)
+
+
 class TestSketchView:
     def test_a_hand_frame_written_before_the_planes_were_known_is_rewritten(self, monkeypatch):
         monkeypatch.setitem(tool_verify._SKETCH_PLANE, "FarS", "xz")

@@ -29,8 +29,8 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source 335572adac5ae3059570340979bb0b83ec2979da8401dcbf03e504cbdc4d9aa8 | Fusion 2706.0.97 | verified 2026-09-28
-Loaded: implementation c186071ffd97f9c79582e7be0eace8a26f81441c6aefe9a642649bb70664ef04 | schema 099c9c73945f1f0b85fd0d919b2f8e36560d7c1d982a64e76b57714439f9cd55 | load e697825b3e7c4aa39c89ac21215d9b7f | session 75c20a7b06f74f0f859b159889a16ad3
+Stamp: source 15adf41d8f5838f81faa5e215e83541558323c2d12b4e486e432b8a811fa563f | Fusion 2706.0.97 | verified 2026-09-29
+Loaded: implementation c186071ffd97f9c79582e7be0eace8a26f81441c6aefe9a642649bb70664ef04 | schema 099c9c73945f1f0b85fd0d919b2f8e36560d7c1d982a64e76b57714439f9cd55 | load 6ec41a30d6e84797b6f4c61b77c8f2cf | session e369fda04e3045d98a8b12e581b431f9
 
 203 covered / 1 called / 5 refusals-only / 4 skipped(reason) / 0 pending
 
@@ -39,7 +39,6 @@ Loaded: implementation c186071ffd97f9c79582e7be0eace8a26f81441c6aefe9a642649bb70
 | ACT 0 - OVERTURE | narrative |
 | ACT 1 - SKETCH + PARAMETERS | narrative |
 | ACT 1b - SKETCH TOOLS | narrative |
-| ACT 1c - EVERY OTHER SKETCH | narrative |
 | ACT 2 - SOLIDS | narrative |
 | ACT 3 - SURFACES | narrative |
 | ACT 4 - MESH | narrative |
@@ -48,20 +47,16 @@ Loaded: implementation c186071ffd97f9c79582e7be0eace8a26f81441c6aefe9a642649bb70
 | ACT 6b - NESTING | narrative |
 | ACT 7 - THE VISE | narrative |
 | ACT 7b - MOTION BENCH | narrative |
-| ACT 8 - SWARF CAMEO | narrative |
-| ACT 8b - THE HUB | narrative |
 | ACT 9 - THE SHOWCASE | narrative |
-| ACT 10a - CAM: JOB + GENERATE | narrative |
-| ACT 10b - CAM: DELIVERABLES | narrative |
-| ACT 10b1 - CAM: TEMPLATE MODES | narrative |
-| ACT 10b1b - CAM: TEMPLATE CLEANUP | narrative |
+| ACT 8 - SWARF CAMEO | narrative |
 | ACT 10b2 - CAM: COMPONENT SCOPE | narrative |
 | ACT 10c - CAM: EXTENSION STRATEGIES | skipped(machining_extension not entitled) |
+| ACT 10c6b - CAM: THE 5-AXIS DUMP | narrative |
+| ACT 8b - THE HUB | narrative |
 | ACT 10c4 - CAM: THE HUB JOB | narrative |
 | ACT 10c4b - CAM: THE TURNED PART | narrative |
 | ACT 10c5 - CAM: THE HUB CONTOUR | narrative |
 | ACT 10c6 - CAM: THE DUMP ORACLE | narrative |
-| ACT 10c6b - CAM: THE 5-AXIS DUMP | narrative |
 | ACT 10c7 - CAM: THE MILLING CENSUS | narrative |
 | ACT 10c8 - CAM: THE MILLING CENSUS READ | narrative |
 | ACT 10c8b - CAM: THE LONG FAMILIES | narrative |
@@ -75,6 +70,10 @@ Loaded: implementation c186071ffd97f9c79582e7be0eace8a26f81441c6aefe9a642649bb70
 | ACT 10c13 - CAM: THE ROTARY FAMILIES | skipped(machining_extension not entitled) |
 | ACT 10c14 - CAM: THE ROTARY FAMILIES READ | skipped(machining_extension not entitled) |
 | ACT 10c15 - CAM: THE ADDITIVE BUILD | skipped(machining_extension not entitled) |
+| ACT 10a - CAM: JOB + GENERATE | narrative |
+| ACT 10b - CAM: DELIVERABLES | narrative |
+| ACT 10b1 - CAM: TEMPLATE MODES | narrative |
+| ACT 10b1b - CAM: TEMPLATE CLEANUP | narrative |
 | ACT 10d - CAM: THE SECOND SETUP | narrative |
 | ACT 10e - CAM: MULTI-SETUP POST | narrative |
 | ACT 10f - CAM: THE TREE LEFT BEHIND | narrative |

@@ -26,9 +26,16 @@ import tool_verify  # noqa: E402
 import verify_core  # noqa: E402  probe_capabilities/capability_skip_reason read their tables here
 import verify_runner  # noqa: E402  source_hash reads SRC_ROOT/_HERE off ITS namespace, not the facade
 import verify_acts_doc  # noqa: E402  canonical document-handle lifecycle rows
+from verify_families import family_names, fixture_steps, showcase_shapes  # noqa: E402
 
 _ATTESTATION = {"implementation_fingerprint": "a" * 64, "schema_fingerprint": "b" * 64,
                 "load_id": "fixture-load", "session_id": "fixture-session"}
+
+
+@pytest.fixture(autouse=True)
+def _legacy_runner_fixture(monkeypatch):
+    """These wire stubs declare their own tiny act programs without family ownership."""
+    monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", None)
 
 
 def _registered(names, writes=()):
@@ -318,6 +325,7 @@ class _Harness:
         monkeypatch.setattr(tool_verify, "STORY", {})
         monkeypatch.setattr(tool_verify, "ACT_NEEDS", {})
         monkeypatch.setattr(tool_verify, "ACTS", acts if acts is not None else self.ACTS)
+        monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", None)
         tool_verify._RECALL.clear()
 
     def _call(self, tool, args):
@@ -940,6 +948,7 @@ class TestPredicateKind:
             ("b_get", {}, "ok", None),
             ("c_get", {}, lambda p: p["n"] == 1, None),
         ], None)])
+        monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", None)
 
         assert tool_verify.run(write_json=False) == 0
         assert ledger == {"a_get": "called", "b_get": "called", "c_get": "covered"}
@@ -1223,6 +1232,7 @@ class TestCapabilityTier:
         monkeypatch.setattr(tool_verify, "STORY", {})
         monkeypatch.setattr(tool_verify, "ACT_NEEDS", act_needs)
         monkeypatch.setattr(tool_verify, "ACTS", acts)
+        monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", None)
         assert tool_verify.run(write_json=False) == 0
         return out["ledger"], seen, out["act_modes"]
 
@@ -2049,7 +2059,8 @@ class _DocumentWire:
     """A session whose exact handles and active tab change like the document tools report."""
 
     def __init__(self, drift_after_write=False, drift_after_doc_get=None,
-                 invalid_handle_tool=None, refuse_close=False):
+                 invalid_handle_tool=None, refuse_close=False,
+                 background_after_write=False, doc_open_existing=False):
         self.documents = {
             "session:home": {"name": "Home", "document_id": "urn:home"},
             "session:intruder": {"name": "Intruder", "document_id": "urn:intruder"},
@@ -2059,6 +2070,10 @@ class _DocumentWire:
         self.drift_after_doc_get = drift_after_doc_get
         self.invalid_handle_tool = invalid_handle_tool
         self.refuse_close = refuse_close
+        self.background_after_write = background_after_write
+        self.doc_open_existing = doc_open_existing
+        if doc_open_existing:
+            self.documents["session:intruder"]["document_id"] = "urn:sweep"
         self.seen = []
         self.created = 0
         self.doc_reads = 0
@@ -2088,6 +2103,9 @@ class _DocumentWire:
                 payload.pop("document_handle")
             return False, payload
         if tool == "doc_open":
+            if self.doc_open_existing:
+                self.active = "session:intruder"
+                return False, {"opened": True, "document_handle": self.active}
             self.created += 1
             handle = "session:open%d" % self.created
             self.documents[handle] = {"name": "Drawing", "document_id": args["file_id"]}
@@ -2119,6 +2137,9 @@ class _DocumentWire:
             if expected and expected != self.active:
                 return True, "document mismatch"
         if tool == "model_write":
+            if self.background_after_write:
+                self.documents["session:user"] = {"name": "User", "document_id": "urn:user"}
+                self.background_after_write = False
             if self.drift_after_write:
                 self.active = "session:intruder"
                 self.drift_after_write = False
@@ -2570,3 +2591,241 @@ class TestDocumentHandleLifecycleRows:
                           "expect_document": "session:new"}]
         assert all(args == {"max_results": 1000} for tool, args in calls if tool == "doc_get")
         assert not [tool for tool, _args in calls if tool in ("doc_close", "doc_activate")]
+
+
+class TestOwnedFamilies:
+    """Real family-loop boundaries with a changing exact-handle document wire."""
+
+    @staticmethod
+    def _run(monkeypatch, tmp_path, wire, acts, acts_spec=None, hash_values=None,
+             resume=False, run_id=None, fixture=None, keep_open=False):
+        wrote = []
+        hashes = iter(hash_values or ["0" * 64] * 20)
+        monkeypatch.setattr(tool_verify, "call", wire)
+        monkeypatch.setattr(verify_runner, "time", _Clock(1.0))
+        monkeypatch.setattr(verify_runner, "RESULTS_DIR", str(tmp_path))
+        monkeypatch.setattr(verify_runner, "REPO_ROOT", str(tmp_path))
+        monkeypatch.setattr(verify_runner, "fixture_steps", fixture or (lambda *a, **k: []))
+        monkeypatch.setattr(tool_verify, "health_gate", _attested_health)
+        monkeypatch.setattr(tool_verify, "registered_tools", _registered(
+            ["model_write", "doc_new", "doc_close", "view_switch_workspace"],
+            {"model_write", "doc_new", "doc_close"}))
+        monkeypatch.setattr(tool_verify, "source_hash", lambda *a, **k: next(hashes))
+        monkeypatch.setattr(tool_verify, "write_verified", lambda *a, **k:
+                            wrote.append(True) or "VERIFIED_TOOLS.md")
+        monkeypatch.setattr(tool_verify, "reload_smoke", lambda *a, **k:
+                            _reloaded_attestation())
+        monkeypatch.setattr(tool_verify, "POLL_AFTER", {})
+        monkeypatch.setattr(tool_verify, "ACT_NEEDS", {})
+        monkeypatch.setattr(tool_verify, "EXCLUDED", {})
+        monkeypatch.setattr(tool_verify, "STORY", {})
+        monkeypatch.setattr(tool_verify, "ACTS", acts)
+        monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", family_names(acts))
+        code = tool_verify.run(write_json=False, acts_spec=acts_spec,
+                               resume=resume, run_id=run_id, keep_open=keep_open)
+        evidence = sorted((tmp_path / "outputs" / "tool-sweep").glob("families-*.json"))
+        return code, wrote, json.loads(evidence[-1].read_text()) if evidence else None
+
+    def test_all_selected_families_reset_recall_and_never_stamp(self, monkeypatch, tmp_path):
+        wire = _DocumentWire()
+        acts = [
+            ("ACT 3 - SURFACES", None, [
+                ("model_write", {}, lambda p: p["changed"],
+                 ("foreign", tool_verify._recall("foreign", lambda p: 1)))], []),
+            ("ACT 4 - MESH", None, [
+                ("model_write", {}, lambda p: p["changed"]
+                 and "foreign" not in tool_verify._RECALL, None)], []),
+        ]
+        tool_verify._RECALL["foreign"] = "stale before run"
+        code, wrote, evidence = self._run(
+            monkeypatch, tmp_path, wire, acts, acts_spec="ACT 3,ACT 4")
+        assert code == 0 and not wrote
+        assert evidence["receipt_written"] is False
+        assert [row["phase"] for row in evidence["family_events"]].count("before-census") == 2
+        assert wire.active == "session:home"
+        assert set(wire.documents) == {"session:home", "session:intruder"}
+        assert wire.created == 2
+
+    def test_full_run_uses_same_family_loop_and_stamps(self, monkeypatch, tmp_path):
+        wire = _DocumentWire()
+        acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], []),
+                ("ACT 4 - MESH", None, [("model_write", {}, "ok", None)], [])]
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts)
+        assert code == 0 and wrote == [True]
+        assert evidence["receipt_written"] is True
+        assert wire.created == 2 and wire.active == "session:home"
+        assert set(wire.documents) == {"session:home", "session:intruder"}
+
+    def test_source_drift_cleans_owned_document_and_saves_failure(self, monkeypatch, tmp_path):
+        wire = _DocumentWire()
+        acts = [("ACT 10a - CAM: JOB", None, [("model_write", {}, "ok", None)], []),
+                ("ACT 10b - CAM: DELIVERABLES", None,
+                 [("model_write", {}, "ok", None)], [])]
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts,
+                                           hash_values=["0" * 64, "1" * 64])
+        assert code == 1 and not wrote and evidence["stopped"] is True
+        assert wire.active == "session:home"
+        assert set(wire.documents) == {"session:home", "session:intruder"}
+        assert any(row["phase"] == "cleanup" for row in evidence["family_events"])
+
+    def test_old_single_document_checkpoint_is_refused_before_wire(self, monkeypatch, tmp_path):
+        wire = _DocumentWire()
+        acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], [])]
+        monkeypatch.setattr(verify_runner, "RESULTS_DIR", str(tmp_path))
+        verify_runner.save_run_state("old", {"run": "old", "acts_done": []})
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts,
+                                           run_id="old", resume=True)
+        assert code == 1 and not wrote and evidence is None
+        assert wire.seen == []
+
+    def test_fixture_failure_is_separate_and_restores_home(self, monkeypatch, tmp_path):
+        wire = _DocumentWire()
+        acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], [])]
+        fixture = lambda family, before_act=None, entitled=True: (
+            [("model_write", {}, lambda p: p.get("changed") is False, None)]
+            if before_act is None else [])
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts,
+                                           fixture=fixture, acts_spec="ACT 3")
+        assert code == 1 and not wrote and evidence["stopped"] is True
+        assert evidence["narrative_steps"] == []
+        assert any(row["phase"] == "setup" and row["steps"][0][1] == "FAIL"
+                   for row in evidence["family_events"])
+        assert wire.active == "session:home"
+        assert set(wire.documents) == {"session:home", "session:intruder"}
+
+    def test_keep_open_retains_only_selected_family_document(self, monkeypatch, tmp_path):
+        wire = _DocumentWire()
+        acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], [])]
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts,
+                                           acts_spec="ACT 3", keep_open=True)
+        assert code == 0 and not wrote and evidence["receipt_written"] is False
+        assert wire.active == "session:new1"
+        assert set(wire.documents) == {"session:home", "session:intruder", "session:new1"}
+
+    def test_unrelated_new_tab_survives_family_cleanup(self, monkeypatch, tmp_path):
+        wire = _DocumentWire(background_after_write=True)
+        acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], [])]
+        code, wrote, _evidence = self._run(monkeypatch, tmp_path, wire, acts,
+                                            acts_spec="ACT 3")
+        assert code == 0 and not wrote and wire.active == "session:home"
+        assert set(wire.documents) == {"session:home", "session:intruder", "session:user"}
+
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_doc_open_ownership_distinguishes_new_from_existing(
+            self, monkeypatch, tmp_path, existing):
+        wire = _DocumentWire(doc_open_existing=existing)
+        acts = [("ACT 3 - SURFACES", None, [], [])]
+        fixture = lambda family, before_act=None, entitled=True: (
+            [("doc_open", {"file_id": "urn:sweep"}, "ok", None)]
+            if before_act is None else [])
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts,
+                                           acts_spec="ACT 3", fixture=fixture)
+        assert code == 0 and not wrote and evidence["receipt_written"] is False
+        assert wire.active == "session:home"
+        assert set(wire.documents) == {"session:home", "session:intruder"}
+        closed = [args.get("name") for tool, args in wire.seen if tool == "doc_close"]
+        assert ("session:open2" in closed) is (not existing)
+        assert "session:intruder" not in closed
+
+    def test_narrative_cannot_close_a_preexisting_opened_tab(self, monkeypatch, tmp_path):
+        wire = _DocumentWire(doc_open_existing=True)
+        acts = [("ACT 3 - SURFACES", None, [
+            ("doc_close", {"name": "session:intruder", "save_changes": False}, "ok", None)
+        ], [])]
+        fixture = lambda family, before_act=None, entitled=True: (
+            [("doc_open", {"file_id": "urn:sweep"}, "ok", None)]
+            if before_act is None else [])
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts,
+                                           acts_spec="ACT 3", fixture=fixture)
+        assert code == 1 and not wrote
+        assert evidence["narrative_steps"][0][1] == "blocked"
+        assert "did not open" in evidence["narrative_steps"][0][2]
+        assert wire.active == "session:home"
+        assert set(wire.documents) == {"session:home", "session:intruder"}
+        assert not [args for tool, args in wire.seen
+                    if tool == "doc_close" and args.get("name") == "session:intruder"]
+
+
+def test_resize_fixture_supplies_a_separate_second_solid_before_interference():
+    """The first Resize interference read needs two bodies before its own scratch opens."""
+    rows = fixture_steps("resize")
+    extra = rows[-5:]
+    assert [row[0] for row in extra] == [
+        "model_create_component", "sketch_create", "sketch_add_geometry",
+        "model_extrude", "design_activate_component"]
+    assert extra[0][1]["name"] == "DatumBench"
+    rectangle = extra[2][1]["geometry"][0]
+    assert rectangle["x1"] > 160 and rectangle["x2"] > rectangle["x1"]
+    assert extra[3][1]["sketch_name"] == "DBPad"
+    assert extra[-1][1]["occurrence"] == "root"
+
+
+def test_showcase_fixture_captures_rotated_handle_before_other_modelling():
+    """The HandleS focus uses the captured ScrewTurn pose before cameos are built."""
+    rows = fixture_steps("showcase")
+    jaw = next(i for i, row in enumerate(rows)
+               if row[0] == "joint_create" and row[1].get("name") == "JawSlide")
+    ball = next(i for i, row in enumerate(rows)
+                if row[0] == "model_create_component" and row[1].get("name") == "BallSphere")
+    pose = rows[jaw + 1:ball]
+    assert [row[0] for row in pose] == [
+        "joint_create", "joint_edit", "joint_create_as_built", "joint_motion_link",
+        "joint_drive", "joint_drive", "assembly_get", "model_measure_between",
+        "model_measure_between", "model_inspect", "assembly_capture_position"]
+    assert pose[0][1]["name"] == "ScrewTurn"
+    assert [row[1]["distance"] for row in pose if row[0] == "joint_drive"] == [-4, 6]
+    assert pose[-1][1]["action"] == "capture"
+
+
+def test_showcase_drift_subjects_build_their_original_final_effects():
+    """The four measured cameos need joints, a mate and patterns before drift reads."""
+    rows = showcase_shapes()
+    components = [row[1]["name"] for row in rows if row[0] == "model_create_component"]
+    assert components == ["BallSphere", "BallPost", "AxisPost", "RigidPost",
+                          "TorusRing", "TorusPost", "MateSeat", "MateArm", "FeatureCameo"]
+    assert sum(row[0] == "joint_at_geometry" for row in rows) == 5
+    assert any(row[0] == "assembly_constrain" and len(row[1]["relationships"]) == 2
+               for row in rows)
+    assert any(row[0] == "design_recompute" for row in rows)
+    assert [row[0] for row in rows[-6:]] == [
+        "model_mirror", "model_pattern_rectangular", "model_construction",
+        "model_construction", "model_construction", "model_pattern_circular"]
+    assert rows[-2][1]["name"] == "CameoOrbit"
+
+
+def test_cam_fixtures_initialize_product_then_build_models_in_design():
+    """A fresh CAM document needs Manufacture once before document-tool access."""
+    for family, first_cam in (("swarf_cam", "ACT 10b2"),
+                              ("hub_cam", "ACT 10c4")):
+        setup = fixture_steps(family)
+        assert [(row[0], row[1].get("workspace")) for row in setup] == [
+            ("view_switch_workspace", "manufacture"),
+            ("cam_edit_tools", None),
+            ("view_switch_workspace", "design")]
+        assert fixture_steps(family, before_act=first_cam) == [setup[0]]
+    for family, later in (("hub_cam", "ACT 10c15"),
+                          ("part_cam", "ACT 10e")):
+        rows = fixture_steps(family, before_act=later)
+        first_cam = next(i for i, row in enumerate(rows) if row[0].startswith("cam_"))
+        assert rows[0][1]["workspace"] == "design"
+        switches = [row[1]["workspace"] for row in rows[:first_cam]
+                    if row[0] == "view_switch_workspace"]
+        assert switches[-1] == "manufacture"
+
+
+def test_late_part_cam_fixture_queries_its_placed_frustum_and_gates_extension():
+    """The local top-face query follows its frustum and basic setup survives without extension."""
+    base = fixture_steps("part_cam", before_act="ACT 10e", entitled=False)
+    rectangle = next(geometry for tool, args, _pred, _save in base
+                     if tool == "sketch_add_geometry" and args["sketch_name"] == "FrustumSketch"
+                     for geometry in args["geometry"] if geometry["kind"] == "rectangle")
+    top_face = next(args for tool, args, _pred, save in base
+                    if tool == "find_geometry" and save and save[0] == "scope_top_face")
+    assert top_face["nearest_to"][:2] == [
+        (rectangle["x1"] + rectangle["x2"]) / 2,
+        (rectangle["y1"] + rectangle["y2"]) / 2]
+    assert [args["setup"] for tool, args, _pred, _save in base
+            if tool == "cam_edit_setup"] == ["SwarfSetup2"]
+    full = fixture_steps("part_cam", before_act="ACT 10e", entitled=True)
+    assert [args["setup"] for tool, args, _pred, _save in full
+            if tool == "cam_edit_setup"] == ["SwarfSetup2", "SwarfSetup", "MultiAxisSetup"]
