@@ -5,11 +5,11 @@
 
 import adsk.core
 from . import _assert, _geom
-from ._common import iter_collection, safe
+from ._common import counted, iter_collection, measured, ptxyz, safe
 
 MAP_BLURB = ("rule_row/matching_rules/component_row/sheet_edge_faces/bend_face_count/bend_wall_groups/"
              "flat_pattern_row - scoped rules, component state, a rim edge's faces, cylinder-face "
-             "count, bend walls paired per axis, flat health")
+             "count, bend walls paired per axis, flat health and optional geometry")
 
 _RULE_VALUES = ("thickness", "bendRadius", "gap", "reliefWidth", "reliefDepth",
                 "reliefRemnant", "twoBendReliefSize", "threeBendReliefRadius")
@@ -159,8 +159,54 @@ def bend_wall_groups(body):
     return out
 
 
-def flat_pattern_row(component):
-    """Return the component's flat-pattern presence, health message and flat volume."""
+def _flat_face(face, index):
+    """Return one flat-native face's sampled geometry with unread fields disclosed."""
+    geometry = safe(lambda: face.geometry)
+    point = safe(lambda: face.pointOnFace)
+    normal = safe(lambda: _geom.evaluator_normal_at(face, point, decimals=9))
+    if normal is not None and any(measured(lambda v=v: v) is None for v in normal):
+        normal = None
+    row = {"index": index, "type": safe(lambda: geometry.objectType),
+           "area_cm2": measured(lambda: face.area, places=9),
+           "centroid_cm": ptxyz(safe(lambda: face.centroid), 1),
+           "sample_point_cm": ptxyz(point, 1), "normal_at_sample": normal}
+    unread = [key for key, value in row.items() if value is None]
+    if safe(lambda: geometry.surfaceType) == adsk.core.SurfaceTypes.PlaneSurfaceType:
+        row["plane"] = {"origin_cm": ptxyz(safe(lambda: geometry.origin), 1),
+                        "normal": ptxyz(safe(lambda: geometry.normal), 1)}
+        unread.extend("plane." + k for k, v in row["plane"].items() if v is None)
+    row["unread"] = unread
+    return row
+
+
+def _flat_geometry(flat, limit):
+    """Return bounded flat-native body bounds and faces without certifying development."""
+    body = safe(lambda: flat.flatBody)
+    box = safe(lambda: body.boundingBox)
+    bounds = {"min": ptxyz(safe(lambda: box.minPoint), 1),
+              "max": ptxyz(safe(lambda: box.maxPoint), 1)}
+    faces = safe(lambda: body.faces)
+    total = counted(lambda: faces.count)
+    if total is not None and total < 0:
+        total = None
+    rows, unread_indices = [], []
+    for i in range(min(total, limit) if total is not None else 0):
+        face = safe(lambda i=i: faces.item(i))
+        if face is None:
+            unread_indices.append(i)
+        else:
+            rows.append(_flat_face(face, i))
+    return {"frame": "flatBody native coordinates; not folded-body world coordinates",
+            "development": "unverified", "bounds_cm": bounds,
+            "face_count": total, "returned": len(rows), "limit": limit,
+            "truncated": total > limit if total is not None else None,
+            "partial": total is None or any(v is None for v in bounds.values())
+                       or bool(unread_indices) or any(r["unread"] for r in rows),
+            "unread_face_indices": unread_indices, "faces": rows}
+
+
+def flat_pattern_row(component, geometry_limit=None):
+    """Return flat-pattern state and optionally bounded flat-native geometry."""
     marker = object()
     flat = safe(lambda: component.flatPattern, marker)
     if flat is marker:
@@ -168,6 +214,9 @@ def flat_pattern_row(component):
     if flat is None:
         return {"present": False}
     state, failure = _assert.compute_state(flat)
-    return {"present": True, "healthy": state == "healthy",
+    out = {"present": True, "healthy": state == "healthy",
             "message": failure[1] if failure else None,
             "flat_volume_cm3": safe(lambda: flat.flatBody.volume)}
+    if geometry_limit is not None:
+        out["geometry"] = _flat_geometry(flat, min(32, geometry_limit))
+    return out

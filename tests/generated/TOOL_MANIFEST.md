@@ -373,7 +373,7 @@ Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/m
 |---|---|---|
 | ✎ | `sheet_convert` | Convert a uniform solid to sheet metal; design rule or rule='active' in a ruled component. |
 | ✎ | `sheet_create_flange` | Add a native flange to a sheet body: an edge flange along rim edges, or a base flange from a closed profile |
-| ✎ | `sheet_create_flat_pattern` | Create a developed blank from a sheet body's broad stationary face; one flat pattern per component. |
+| ✎ | `sheet_create_flat_pattern` | Create a native flat pattern; inspect sheet_get features before export |
 | ✎ | `sheet_create_fold` | Fold a sheet body along one sketch line |
 | ✎ | `sheet_create_hem` | Hem a sheet body's rim edge: flat, open, rolled, rope, teardrop or double, each with its own dimensions |
 | ✎ | `sheet_create_join_by_bend` | Join two sheet bodies with a bend between two rim edges (the preview API merges them into one body) |
@@ -381,7 +381,7 @@ Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/m
 | ✎ | `sheet_create_rip` | Rip a sheet body by a face (takes no gap), along an edge or between two vertices (gap from the rule unless given) |
 | ✎ | `sheet_create_unfold` | Unfold a sheet body's bends for cross-bend machining features, then sheet_create_refold |
 | ✎ | `sheet_edit_rule` | Copy a scoped sheet-metal rule into this design, or edit a design-local rule. |
-| · | `sheet_get` | Read sheet-metal rule counts; include rules, library_rules, components or features for detail. |
+| · | `sheet_get` | Read sheet rule counts; include rules, library_rules, components or features (flat geometry) for detail. |
 
 ### sys
 

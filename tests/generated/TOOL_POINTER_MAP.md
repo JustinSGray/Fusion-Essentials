@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 687
+**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 688
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -3908,10 +3908,10 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `sheet_create_flat_pattern`
 - stationary_face must belong to the active design; edit the source document first.
 - stationary_face belongs to an ordinary body. Use sheet_convert first.
-- This component already has a flat pattern. Export it with design_export; do not recreate it.
+- This component already has a flat pattern. Development is unverified; inspect sheet_get(include=['features']) before choosing design_export.
 - Flat-pattern creation returned no pattern. Inspect the component before retrying.
 - A flat pattern may remain, but its source association and nonempty solid were not verified. Inspect the component before retrying.
-- Flat pattern created. Export the folded body's flat with design_export(format='dxf', dxf_flat_pattern=<body handle>).
+- Native flat pattern created. Inspect sheet_get(include=['features']) before choosing design_export with the folded body's dxf_flat_pattern reference.
 - Could not check this component's existing flat pattern:
 - Flat-pattern creation failed:
 - . Select a broad top or bottom face of the sheet.

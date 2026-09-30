@@ -1330,6 +1330,8 @@ class TestBbox:
         assert bb["units"] == "mm"
         assert bb["size"] == {"x": 50.0, "y": 50.0, "z": 50.0}
         assert bb["center"] == {"x": 25.0, "y": 25.0, "z": 25.0}
+        assert "may omit hidden geometry" in bb["scope"]
+        assert "Body extents: model_inspect" in bb["scope"]
 
     def test_bbox_none_when_no_geometry(self):
         root = FakeRoot(top_occs=[], all_count=0, bbox=None)   # empty/sketch-only design

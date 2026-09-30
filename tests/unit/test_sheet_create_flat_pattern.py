@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import pytest
@@ -37,6 +38,7 @@ def test_existing_pattern_is_never_recreated(flat):
     result = mod.handler("face")
     assert result["isError"] is True
     assert "already has a flat pattern" in str(result)
+    assert "unverified" in str(result) and "sheet_get" in str(result)
     comp.createFlatPattern.assert_not_called()
 
 
@@ -46,3 +48,13 @@ def test_empty_flat_is_not_success(flat):
     result = mod.handler("face")
     assert result["isError"] is True
     assert "nonempty solid" in str(result)
+
+
+def test_native_creation_does_not_certify_development(flat):
+    mod, comp, pattern = flat
+    result = mod.handler("face")
+    assert result["isError"] is False
+    out = json.loads(result["content"][0]["text"])
+    assert out["created"] is True and out["flat_volume_cm3"] == 4.8
+    assert out["development"] == "unverified"
+    assert "sheet_get(include=['features'])" in out["note"]

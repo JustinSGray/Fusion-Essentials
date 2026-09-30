@@ -201,6 +201,39 @@ def _retire_reads(tag, targets, sketches, after=False, material_read=_retire_mat
     return rows
 
 
+def _retire_summary(p, after=False):
+    """Compare native summary bounds with independently preserved sketch coordinates."""
+    box = (p.get("design") or {}).get("overall_bbox") or {}
+    size, center = box.get("size") or {}, box.get("center") or {}
+    complete = (box.get("units") == "mm" and all(_num(d.get(k)) for d in (size, center) for k in "xyz"))
+    minimum = center["x"] - size["x"] / 2 if complete else None
+    old = _RECALL.get("retire_summary_min")
+    sketch = _RECALL.get("solid_retire_RetireArc") or {}
+    frame = sketch.get("frame") or {}
+    points = [e.get("position") for e in sketch.get("entities", []) if e.get("type") == "point"]
+    endpoint = {"x": -20.0, "y": 20.0} in points
+    valid = (complete and "may omit hidden geometry" in box.get("scope", "")
+             and "model_inspect" in box.get("scope", "") and endpoint
+             and frame.get("space") == "world" and frame.get("origin_mm") == [100, 0, 0]
+             and frame.get("x_world") == [1, 0, 0] and frame.get("y_world") == [0, 1, 0]
+             and (_near(minimum, 97.49, 0.1) and _num(old) and old < 80 < minimum
+                  if after else _near(minimum, 79.98, 0.1)))
+    if valid and not after:
+        _RECALL["retire_summary_min"] = minimum
+    return _measured("component summary versus extant world sketch point [80,20,0]",
+                     {"summary": box, "prior_min_x": old, "min_x": minimum, "sketch_frame": frame}, valid)
+
+
+def _retire_sketch_visibility(p, after=False):
+    """Record the owned path's visibility without attributing all box changes to visibility."""
+    rows = p.get("sketches") or []
+    path = [r for r in rows if r.get("name") == "RetireArc"]
+    return _measured("surviving path visibility", rows,
+                     p.get("sketch_count") == len(rows) == 2 and p.get("truncated") is not True
+                     and len(path) == 1 and path[0].get("is_visible") is (not after)
+                     and path[0].get("arc_count") == 1 and path[0].get("point_count") == 4)
+
+
 def _empty_solid_rows():
     """Verify the measured curved solid-sweep failure is retired without disturbing its controls."""
     rows = [("doc_get", {}, _home_document, ("retire_home", _home_address)),
@@ -230,10 +263,14 @@ def _empty_solid_rows():
     targets = ["RetireSolid:1", "RetireWitness:1"]
     sketches = [("RetireSolid", "RetireSphere"), ("RetireSolid", "RetireArc"), ("RetireWitness", "RetireWitnessS")]
     rows.extend(_retire_reads("solid_retire", targets, sketches, material_read=_retire_sphere_fixture))
+    rows.extend([("workspace_orient", {}, _retire_summary, None),
+                 ("sketch_get", {"component": "RetireSolid:1"}, _retire_sketch_visibility, None)])
     write("model_sweep", lambda c: {"solid_body": _ctx_get(c, "retire_sphere", "sphere face"),
           "path": "sketch:RetireArc", "component": "RetireSolid", "operation": "new"},
           _refused("new result body could not be identified", "was removed", "checked body shapes were restored"))
     rows.extend(_retire_reads("solid_retire", targets, sketches, after=True, material_read=_retire_sphere_fixture))
+    rows.extend([("workspace_orient", {}, lambda p: _retire_summary(p, True), None),
+                 ("sketch_get", {"component": "RetireSolid:1"}, lambda p: _retire_sketch_visibility(p, True), None)])
     rows.extend([("doc_activate", lambda c: {"name": _ctx_get(c, "retire_home", "story"),
                     "expect_document": _ctx_get(c, "retire_doc", "retirement scratch")}, "ok", None),
                  ("doc_close", lambda c: {"name": _ctx_get(c, "retire_doc", "retirement scratch"), "save_changes": False,

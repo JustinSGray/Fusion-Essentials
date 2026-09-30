@@ -1,7 +1,7 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Create one component's developed sheet-metal blank."""
+"""Create one component's native sheet-metal flat pattern."""
 
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
@@ -29,7 +29,7 @@ def handler(stationary_face=""):
     except Exception as exc:
         return error(f"Could not check this component's existing flat pattern: {exc}")
     if existing is not None:
-        return error("This component already has a flat pattern. Export it with design_export; do not recreate it.")
+        return error("This component already has a flat pattern. Development is unverified; inspect sheet_get(include=['features']) before choosing design_export.")
     try:
         flat = comp.createFlatPattern(face)
     except Exception as exc:
@@ -44,11 +44,11 @@ def handler(stationary_face=""):
     if key is None or _common.native_identity(source) != key or installed is None or solid is not True or not isinstance(volume, (int, float)) or volume <= 0:
         return error("A flat pattern may remain, but its source association and nonempty solid were not verified. Inspect the component before retrying.")
     return ok({"created": True, "component": comp.name, "folded_body": body.name,
-               "flat_volume_cm3": volume, "is_solid": solid,
-               "note": "Flat pattern created. Export the folded body's flat with design_export(format='dxf', dxf_flat_pattern=<body handle>)."})
+               "flat_volume_cm3": volume, "is_solid": solid, "development": "unverified",
+               "note": "Native flat pattern created. Inspect sheet_get(include=['features']) before choosing design_export with the folded body's dxf_flat_pattern reference."})
 
 
-TOOL_DESCRIPTION = "Create a developed blank from a sheet body's broad stationary face; one flat pattern per component."
+TOOL_DESCRIPTION = "Create a native flat pattern; inspect sheet_get features before export. One per component."
 tool = (Tool.create_simple(name="sheet_create_flat_pattern", description=TOOL_DESCRIPTION)
         .add_input_property(*_FACE.as_property()).add_required_input("stationary_face").strict_schema())
 item = Item.create_tool_item(tool=tool, handler=handler, write="write", run_on_main_thread=True,

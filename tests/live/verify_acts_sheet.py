@@ -10,6 +10,7 @@ import re
 
 from cloud_config import FOLDER, PROJECT
 from verify_acts_cam import _operation_row, _op_valid
+from verify_acts_model_sweep import _retire_reads, _retire_compare, _retire_material_state
 from verify_acts_cloud import (_drawing_terminal, _drawing_terminal_payload,
                                _file_settled, _opened, _version_args, _version_record,
                                _version_settled, _version_snapshot, _versioned, _version_current)
@@ -1215,6 +1216,193 @@ def _position_variant(position):
 
 
 _SHEET_POSITIONS = _position_variant("start") + _position_variant("end")
+
+
+def _z_library(p):
+    """Acquire the actual unique library rule reference for both owned coupons."""
+    listing = p.get("library_rules") or {}
+    rows = listing.get("rules") or []
+    hits = [r for r in rows if r.get("name") == "Steel (mm)"]
+    _measured("Z coupon rule library", listing,
+              listing.get("readable") is True and listing.get("truncated") is False
+              and listing.get("total") == len(rows) and len(hits) == 1 and bool(hits[0].get("ref")))
+    _RECALL["z_library"] = hits[0]["ref"]
+    return True
+
+
+def _z_matches(p):
+    """Require every disclosed geometric match and its consumable handle."""
+    rows = p.get("matches")
+    _measured("complete Z geometry acquisition", p,
+              isinstance(rows, list) and p.get("returned") == p.get("match_count") == len(rows)
+              and all(r.get("handle") for r in rows))
+    return rows
+
+
+def _z_corner_edges(radius):
+    """Select both vertical corner edges by measured position, length and direction."""
+    def check(p):
+        rows = _z_matches(p)
+        corners = [(1, 1), (0, 29)] if radius == 1 else [(0, 0), (1, 30)]
+        selected = []
+        for x, y in corners:
+            hits = [r for r in rows if r.get("kind") == "line_edge"
+                    and len(r.get("position", [])) == len(r.get("direction", [])) == 3
+                    and _near(r["position"][0], x, .001) and _near(r["position"][1], y, .001)
+                    and _near(r.get("length"), 20, .001) and _near(abs(r["direction"][2]), 1, .001)]
+            _measured("Z vertical fillet corner", hits, len(hits) == 1)
+            selected.append(hits[0]["handle"])
+        _RECALL["z_edges"] = selected
+        return True
+    return check
+
+
+def _z_radii(radius):
+    """Check independently acquired quarter-cylinder geometry after each corner fillet."""
+    def check(p):
+        rows = _z_matches(p)
+        expected = [1, 1] if radius == 1 else [1, 1, 2, 2]
+        return _measured("Z bend radii and areas", rows,
+                         sorted(r.get("radius", -1) for r in rows) == expected
+                         and all(len(r.get("axis", [])) == 3 and _near(abs(r["axis"][2]), 1, .001)
+                                 and _near(r.get("area"), math.pi * r["radius"] * 10, .002)
+                                 for r in rows))
+    return check
+
+
+def _z_stationary(p):
+    """Acquire the intended broad y=0 flange by its independent geometry."""
+    rows = _z_matches(p)
+    hits = [r for r in rows if r.get("kind") == "planar_face"
+            and len(r.get("position", [])) == len(r.get("normal", [])) == 3
+            and 1 < r["position"][0] < 30 and _near(r["position"][1], 0, .001)
+            and _near(r["position"][2], 10, .001) and (r.get("area") or 0) > 300
+            and _near(r["normal"][1], -1, .001)]
+    _measured("Z stationary flange", hits, len(hits) == 1)
+    _RECALL["z_stationary"] = hits[0]["handle"]
+    return True
+
+
+def _z_applied(owner):
+    """Consume the returned rule reference and independently read the converted body flag."""
+    def check(p):
+        rules = (p.get("rules") or {}).get("rules") or []
+        comps = (p.get("components") or {}).get("components") or []
+        applied = _RECALL.get("z_applied") or {}
+        hits = [r for r in rules if r.get("ref") == applied.get("applied_rule_ref")]
+        bodies = [c.get("bodies") for c in comps if c.get("component") == owner]
+        return _measured("Z applied conversion rule", {"rule": hits, "bodies": bodies},
+                         len(hits) == len(bodies) == 1 and len(bodies[0]) == 1
+                         and bodies[0][0].get("is_sheet_metal") is True
+                         and hits[0].get("name") == applied.get("applied_rule")
+                         and _near((hits[0].get("thickness") or {}).get("value_cm"), .1, 1e-6))
+    return check
+
+
+def _z_flat_geometry(p, limit=32):
+    """Distinguish the measured native Z shape and developed slab without declaring readiness."""
+    listing = p.get("features") or {}
+    rows = listing.get("components") or []
+    _measured("complete flat owner census", listing,
+              listing.get("walk_complete") is True and listing.get("truncated") is False
+              and listing.get("total") == len(rows) == 4)
+    for owner, count, low, high, area in (
+            ("FlatSharp", 10, [-2.9, 0, -3], [3, 2, 0], 6),
+            ("FlatRounded", 6, [0, 0, -.1], [8.6398229715, 2, 0], 17.279645943)):
+        hits = [r.get("flat_pattern") for r in rows if r.get("component") == owner]
+        _measured("unique flat owner", hits, len(hits) == 1)
+        flat, geometry = hits[0], hits[0].get("geometry") or {}
+        faces, box = geometry.get("faces") or [], geometry.get("bounds_cm") or {}
+        valid = (flat.get("present") is True and flat.get("healthy") is True
+                 and geometry.get("development") == "unverified"
+                 and geometry.get("frame") == "flatBody native coordinates; not folded-body world coordinates"
+                 and geometry.get("face_count") == count and geometry.get("returned") == len(faces) == min(count, limit)
+                 and geometry.get("limit") == limit and geometry.get("truncated") is (count > limit)
+                 and geometry.get("partial") is False and geometry.get("unread_face_indices") == []
+                 and all(_near((box.get(side) or {}).get(axis), value, 1e-5)
+                         for side, values in (("min", low), ("max", high)) for axis, value in zip("xyz", values))
+                 and all(f.get("type") == "adsk::core::Plane" and f.get("unread") == []
+                         and isinstance(f.get("sample_point_cm"), dict)
+                         and len(f.get("normal_at_sample", [])) == 3 for f in faces))
+        if limit >= count:
+            broad = [f for f in faces if _near(f.get("area_cm2"), area, 1e-5)]
+            valid = (valid and len(broad) == 2
+                     and all(_near(abs(f["normal_at_sample"][2]), 1, 1e-6) for f in broad)
+                     and sorted(round(f["plane"]["origin_cm"]["z"], 6) for f in broad) == [low[2], high[2]])
+        _measured("independent native flat bounds and broad-plane separation: " + owner, geometry, valid)
+    return True
+
+
+def _z_flat_rows():
+    """Create sharp and radius-corrected Z coupons, inspect their native flats, and close them."""
+    rows = [("doc_get", {"max_results": 1000}, _home_session,
+             ("sm_home", _recall("sm_home", lambda p: p["active"]["document_handle"]))),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "sm_home", "home")}, _coupon_session,
+             ("sm_coupon", _recall("sm_coupon", lambda p: p["document_handle"])))]
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: {**(args(c) if callable(args) else args),
+                     "expect_document": _ctx_get(c, "sm_coupon", "Z coupon")}, check, save))
+    write("model_create_component", {"name": "FlatRuleSeed", "sheet_metal": True})
+    rows.append(("sheet_get", {"include": ["library_rules"], "max_results": 200}, _z_library, None))
+    polygon = [(30, 0), (30, 1), (1, 1), (1, 30), (-29, 30), (-29, 29), (0, 29), (0, 0)]
+    for owner in ("FlatSharp", "FlatRounded"):
+        write("design_activate_component", {"occurrence": "root"})
+        write("model_create_component", {"name": owner, "activate": True})
+        write("sketch_create", {"name": owner + "Z", "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": owner + "Z", "component": owner, "geometry": [
+            {"kind": "line", "x1": a[0], "y1": a[1], "x2": b[0], "y2": b[1]}
+            for a, b in zip(polygon, polygon[1:] + polygon[:1])]})
+        write("model_extrude", {"sketch_name": owner + "Z", "component": owner,
+                                 "distance": 20, "operation": "new"}, _extruded)
+        rows.append(("model_inspect", {"target": owner + ":1", "include": ["default", "mass"],
+                     "per_body": True, "units": "mm", "accuracy": "very_high"},
+                     lambda p: _measured("initial sharp Z volume", p.get("mass"),
+                          _retire_material_state(p) is not None and _near(p["mass"]["volume"], 1760, .001)), None))
+    rows.append(("model_inspect", {"target": "FlatSharp:1", "include": ["default", "mass"], "per_body": True, "accuracy": "very_high"},
+                 _retire_compare("z_sharp_control", _retire_material_state, False), None))
+    for radius in (1, 2):
+        rows.append(("find_geometry", {"target": "FlatRounded:1", "kind": "line_edge", "max_results": 100},
+                     _z_corner_edges(radius), None))
+        write("model_fillet", lambda c, radius=radius: {"edges": _RECALL["z_edges"], "radius": radius,
+                                                        "tangent_chain": False})
+        rows.extend([("find_geometry", {"target": "FlatRounded:1", "kind": "cylinder_face", "max_results": 100},
+                      _z_radii(radius), None),
+                     ("model_inspect", {"target": "FlatSharp:1", "include": ["default", "mass"], "per_body": True, "accuracy": "very_high"},
+                      _retire_compare("z_sharp_control", _retire_material_state, True), None)])
+    for owner in ("FlatSharp", "FlatRounded"):
+        write("sheet_edit_rule", lambda c, owner=owner: {"action": "copy", "rule": _RECALL["z_library"],
+              "name": owner + "Rule", "thickness": "1 mm", "bend_radius": "1 mm", "k_factor": .4},
+              "ok", ("z_rule", _recall("z_rule", lambda p: p["rule"]["ref"])))
+        read_shape = ("model_inspect", {"target": owner + ":1", "include": ["default", "mass"], "per_body": True, "accuracy": "very_high"})
+        rows.append((*read_shape, _retire_compare("z_folded_" + owner, _retire_material_state, False), None))
+        rows.append(("find_geometry", {"target": owner + ":1", "kind": "planar_face", "max_results": 100}, _z_stationary, None))
+        write("sheet_convert", lambda c, owner=owner: {"body": owner, "base_face": _RECALL["z_stationary"],
+              "rule": _RECALL["z_rule"]}, lambda p: p.get("converted") is True,
+              ("z_applied", _recall("z_applied", lambda p: p)))
+        rows.append(("sheet_get", {"include": ["rules", "components"], "max_results": 200},
+                     _z_applied(owner), None))
+        rows.append(("find_geometry", {"target": owner + ":1", "kind": "planar_face", "max_results": 100}, _z_stationary, None))
+        write("sheet_create_flat_pattern", lambda c: {"stationary_face": _RECALL["z_stationary"]},
+              lambda p: _measured("native creation leaves development unverified", p,
+                   p.get("created") is True and p.get("development") == "unverified"
+                   and "sheet_get(include=['features'])" in p.get("note", "")))
+        rows.append((*read_shape, _retire_compare("z_folded_" + owner, _retire_material_state, True), None))
+    sketches = [(owner, owner + "Z") for owner in ("FlatSharp", "FlatRounded")]
+    targets = ["FlatSharp:1", "FlatRounded:1"]
+    rows.extend(_retire_reads("z_flat_read", targets, sketches))
+    rows.extend([("sheet_get", {"include": ["features"], "max_results": 4}, lambda p: _z_flat_geometry(p, 4), None),
+                 ("sheet_get", {"include": ["features"], "max_results": 200}, _z_flat_geometry, None)])
+    write("sheet_create_flat_pattern", lambda c: {"stationary_face": _RECALL["z_stationary"]},
+          _refused("already has a flat pattern", "unverified", "sheet_get"))
+    rows.extend(_retire_reads("z_flat_read", targets, sketches, after=True))
+    write("doc_activate", lambda c: {"name": _ctx_get(c, "sm_home", "home")})
+    rows.extend([("doc_close", lambda c: {"name": _ctx_get(c, "sm_coupon", "Z coupon"), "save_changes": False,
+                 "expect_document": _ctx_get(c, "sm_home", "home")}, _closed_one, None),
+                 ("doc_get", {"max_results": 1000}, _story_restored, None)])
+    return rows
+
+
+_SHEET_POSITIONS += _z_flat_rows()
 
 _SHEET_CAM_READ = [
     ("cam_inspect_toolpaths", {"scope": _CAM_SETUP}, _laser_inspected, None),

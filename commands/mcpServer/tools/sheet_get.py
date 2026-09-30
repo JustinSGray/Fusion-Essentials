@@ -52,7 +52,7 @@ def _hem_kind(hem):
     return cls[:-len("HemFeatureDefinition")].lower() if cls.endswith("HemFeatureDefinition") else cls.lower()
 
 
-def _feature_row(component):
+def _feature_row(component, geometry_limit):
     """Return one component's fold/hem/rip/join/flange counts and flat-pattern state."""
     feats = safe(lambda: component.features)
     def _count(attr):
@@ -64,7 +64,7 @@ def _feature_row(component):
     return {"component": safe(lambda: component.name),
             "folds": _count("foldFeatures"), "hems": hems, "rips": _count("ripFeatures"),
             "joins": _count("joinByBendFeatures"), "flanges": _count("flangeFeatures"),
-            "flat_pattern": _sheet_common.flat_pattern_row(component)}
+            "flat_pattern": _sheet_common.flat_pattern_row(component, geometry_limit=geometry_limit)}
 
 
 def _features(design, limit):
@@ -73,7 +73,7 @@ def _features(design, limit):
     expected = safe(lambda: collection.count) if collection is not None else None
     comps = _common.all_components(design)
     complete = expected is not None and len(comps) == expected
-    return {"components": [_feature_row(c) for c in comps[:limit]],
+    return {"components": [_feature_row(c, min(32, limit)) for c in comps[:limit]],
             "total": len(comps) if complete else None,
             "walk_complete": complete, "truncated": len(comps) > limit}
 
@@ -107,8 +107,8 @@ def handler(include=None, max_results: int = 50) -> dict:
     return ok(out)
 
 
-TOOL_DESCRIPTION = ("Read sheet-metal rule counts; include rules, library_rules, components or "
-                    "features for detail.")
+TOOL_DESCRIPTION = ("Read sheet rule counts; include rules, library_rules, components or "
+                    "features (flat geometry) for detail.")
 
 tool = (Tool.create_simple(name="sheet_get", description=TOOL_DESCRIPTION)
         .add_input_property("include", {"type": "array", "items": {"type": "string",

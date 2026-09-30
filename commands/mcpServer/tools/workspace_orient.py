@@ -108,8 +108,7 @@ def _data_identity(doc):
 
 
 def _overall_bbox(root, design):
-    """The whole-design world-aligned bounding box - size and center in the design's display units,
-    or None when nothing measurable is modelled yet."""
+    """Return native root-component summary bounds in display units, or None when unreadable."""
     bb = safe(lambda: root.boundingBox)
     mn = safe(lambda: bb.minPoint) if bb is not None else None
     mx = safe(lambda: bb.maxPoint) if bb is not None else None
@@ -139,9 +138,7 @@ def _overall_bbox(root, design):
         "units": units,
         "size": size,
         "center": center,
-        # Component.boundingBox SWEEPS sketch + construction geometry (an orphaned datum inflates
-        # it); model_inspect's bbox is solids-only - the two legitimately disagree.
-        "scope": "all geometry incl. sketches/construction - solids-only extents: model_inspect",
+        "scope": "Fusion component summary; may omit hidden geometry. Body extents: model_inspect.",
     }
     if any(v is None for v in list(size.values()) + list(center.values())):
         out["unreadable_values"] = True
