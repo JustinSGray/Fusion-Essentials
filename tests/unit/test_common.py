@@ -2202,17 +2202,6 @@ class TestBuildPathLabel:
         _p, label, err = common.build_path(self._comp(_BuiltPath(3)), ["E1", "E2", "E3"])
         assert err is None and label == "3 edge(s) from 3 handles, used exactly"
 
-    def test_the_docstring_states_the_tangent_continuity_rule(self):
-        # build_path's own docstring is what an author reads before wiring it (the helper-map
-        # catalog line points here): it must promise neither unconditional chaining nor its
-        # opposite (a tangent-continuous CLOSED loop chained all 8 edges from one seed) - only
-        # tangent continuity, and the built count as the answer.
-        doc = common.build_path.__doc__
-        assert "TANGENT connections" in doc
-        assert "sharp corner stops the chain" in doc
-        assert "count is the truth" in doc
-        assert "auto-chain" not in doc.lower()
-        assert "closed loop" not in doc.lower() and "seed edge alone" not in doc
 
 
 class _RecordingCollection:
@@ -2230,10 +2219,7 @@ class _RecordingCollection:
 
 
 class TestBuildPathFromSketch:
-    """The 'sketch:<name>' branch: every non-construction curve handed to Features.createPath as
-    ONE unchained collection (the static Path.create raises on native sketch curves - measured) -
-    not a single-seed chain, which a coincident-but-unmerged join stops short of the whole sketch.
-    A collection call that raises or answers no curve falls back to the seed chain."""
+    """Collection-first paths use a complete seed chain only with exact curve coverage."""
 
     def _comp(self, sketch, seed_chain_built, collection_answer=None):
         """createPath(collection, False) answers collection_answer(coll) (default: a path holding
@@ -2302,6 +2288,56 @@ class TestBuildPathFromSketch:
         p, _label, err = common.build_path(comp, "sketch:PathSketch")
         assert err is None
         assert p.count == 5                        # the construction curve never reached the collection
+
+    @pytest.mark.parametrize('replacement', ['complete', 'foreign', 'duplicate', 'unreadable', 'short'])
+    def test_a_partial_collection_is_replaced_only_by_exact_seed_coverage(self, monkeypatch, replacement):
+        import adsk.core
+
+        sketch = self._sketch(3)
+        curves = list(sketch.sketchCurves)
+        candidate = list(curves)
+        if replacement == 'foreign':
+            candidate[-1] = make_sketch_curve('foreign')
+        elif replacement == 'duplicate':
+            candidate[-1] = candidate[0]
+        elif replacement == 'unreadable':
+            candidate[-1] = None
+        elif replacement == 'short':
+            candidate = candidate[:2]
+        chain = SimpleNamespace(count=len(candidate), item=lambda i: SimpleNamespace(entity=candidate[i]))
+        partial = _BuiltPath(2)
+        comp = self._comp(sketch, chain, collection_answer=lambda c: partial)
+        monkeypatch.setattr(adsk.core.ObjectCollection, 'create',
+                            staticmethod(lambda: _RecordingCollection()))
+        p, _label, err = common.build_path(comp, 'sketch:PathSketch')
+        assert err is None
+        assert p is (chain if replacement == 'complete' else partial)
+        assert comp.seed_calls == [(curves[0], True)]
+
+    def test_construction_first_does_not_seed_the_fallback(self, monkeypatch):
+        import adsk.core
+
+        construction = SimpleNamespace(isConstruction=True)
+        real = make_sketch_curve('real')
+        sketch = make_sketch('PathSketch', lines=[construction, real])
+        comp = self._comp(sketch, _BuiltPath(1), collection_answer=lambda c: _BuiltPath(0))
+        monkeypatch.setattr(adsk.core.ObjectCollection, 'create',
+                            staticmethod(lambda: _RecordingCollection()))
+        p, _label, err = common.build_path(comp, 'sketch:PathSketch')
+        assert err is None and p.count == 1
+        assert comp.seed_calls == [(real, True)]
+
+    def test_all_construction_input_is_refused_without_a_native_path(self, monkeypatch):
+        sketch = make_sketch('PathSketch', lines=[SimpleNamespace(isConstruction=True)])
+        comp = self._comp(sketch, _BuiltPath(1))
+        p, _label, err = common.build_path(comp, 'sketch:PathSketch')
+        assert p is None and 'no non-construction curves' in err
+        assert not comp.seed_calls and not comp.coll_calls
+
+    def test_partial_warning_does_not_invent_a_corner_diagnosis(self):
+        warning = common.path_chain_warning(2, 3, 'sweep')
+        assert '2 of' in warning and 'sketch_get' in warning
+        assert 'sharp' not in warning and 'tangent' not in warning
 
 
 class TestOpenProfileFromSketch:

@@ -332,6 +332,7 @@ class TestSolid:
 
     def test_path_sketch_hands_createpath_the_whole_collection_unchained(self):
         sf, design = _install()
+        design.rootComponent.features.path_returns = _built_path(3)
         _payload(sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch"))
         feats = design.rootComponent.features
         # The path sketch has curves -> createPath is called ONCE with (collection, isChain=False).
@@ -764,7 +765,7 @@ class TestPathCurves:
         out = _payload(sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch"))
         assert out["path_curves"] == 1 and out["path_sketch_curves"] == 3
         assert "chained 1 of the sketch's 3 curves" in out["note"]
-        assert "tangent continuity" in out["note"]
+        assert "sketch_get" in out["note"] and "sharp corner" not in out["note"]
 
     def test_a_full_chain_does_not_warn(self):
         sf, design = _install()

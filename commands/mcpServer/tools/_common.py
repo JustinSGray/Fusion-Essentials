@@ -1329,10 +1329,7 @@ OPERATIONS = {
 # ── the ONE path resolver (sweep / pipe / path pattern / on-path datum) ──────
 
 def build_path(comp, path_raw):
-    """(path, label, error): 'sketch:<name>' chains that sketch's connected curves, ONE edge handle
-    chains from that seed across TANGENT connections (a sharp corner stops the chain, so the built
-    Path's count is the truth), and a JSON list of handles is used exactly. Requesting chaining is
-    not getting it, so the label reports that BUILT count."""
+    """Return (path, label, error): sketch curves, one tangent edge seed, or an exact edge list."""
     # _inputs imports _common, so the edge-handle kind is bound at call time rather than at import.
     from . import _inputs
     if isinstance(path_raw, str) and path_raw.strip().lower().startswith("sketch:"):
@@ -1344,13 +1341,14 @@ def build_path(comp, path_raw):
         cn = safe(lambda: curves.count, 0) if curves else 0
         if not cn:
             return None, None, f"Path sketch '{nm}' has no curves to build a path from."
-        # Every non-construction curve as ONE unchained collection: separately drawn curves keep
-        # their own SketchPoints (a seed chain stops at the first join) and the static Path.create
-        # raises on native sketch curves in every context (measured); this call takes them all.
+        # The collection preserves separately drawn curves; a filleted chain can omit its exit leg.
+        selected = [c for c in iter_collection(curves)
+                    if not bool(safe(lambda c=c: c.isConstruction, False))]
+        if not selected:
+            return None, None, f"Path sketch '{nm}' has no non-construction curves."
         coll = adsk.core.ObjectCollection.create()
-        for c in iter_collection(curves):
-            if not bool(safe(lambda c=c: c.isConstruction, False)):
-                coll.add(c)
+        for c in selected:
+            coll.add(c)
         p = None
         if safe(lambda: coll.count, 0):
             try:
@@ -1359,12 +1357,23 @@ def build_path(comp, path_raw):
                 built = None
             if built is not None and (counted(lambda: built.count) or 0) > 0:
                 p = built
-        if p is None:
-            seed = safe(lambda: curves.item(0))
+        if p is None or (counted(lambda: p.count) or 0) < len(selected):
             try:
-                p = comp.features.createPath(seed, True) # isChain=True: chain the connected curves
+                candidate = comp.features.createPath(selected[0], True)
             except Exception as e:
-                return None, None, f"Could not build a path from sketch '{nm}': {e}"
+                if p is None:
+                    return None, None, f"Could not build a path from sketch '{nm}': {e}"
+                candidate = None
+            if p is None:
+                p = candidate
+            elif candidate is not None and counted(lambda: candidate.count) == len(selected):
+                intended = [native_identity(c) for c in selected]
+                actual = [native_identity(safe(lambda i=i: candidate.item(i).entity))
+                          for i in range(len(selected))]
+                if (None not in intended and None not in actual
+                        and len(set(intended)) == len(selected)
+                        and set(actual) == set(intended)):
+                    p = candidate
         if not p:
             return None, None, f"createPath returned nothing for sketch '{nm}'."
         return p, f"sketch:{nm}", None
@@ -1423,8 +1432,8 @@ def path_chain_warning(path_curves, sketch_curves, action):
     if path_curves is None or sketch_curves is None or path_curves >= sketch_curves:
         return ""
     return (f"WARNING: the path chained {path_curves} of the sketch's {sketch_curves} curves, so "
-           f"the {action} covers only that run - chaining follows tangent continuity and a sharp "
-           f"corner stops it. Make the junction tangent, or {action} each run separately.")
+           f"the {action} covers only that run. Inspect the path with sketch_get; put each intended "
+           "run in a separate path sketch if the full sketch does not connect.")
 
 
 def iter_collection(coll):

@@ -67,10 +67,16 @@ def _solid_tool_mass(case, role, previous=None):
 
 def _solid_tool_census(p):
     """Return the owner's body identities and every SweepFeature row's (name, health), or None on an unreadable or truncated read."""
-    bodies = ((p.get("tree") or {}).get("tree") or {}).get("bodies")
+    tree = p.get("tree") or {}
+    node = tree.get("tree") or {}
+    bodies = node.get("bodies") if node else tree.get("root_bodies")
     timeline = (p.get("timeline") or {}).get("timeline")
     if (not isinstance(bodies, list) or not isinstance(timeline, list)
-            or (p.get("timeline") or {}).get("truncated")):
+            or tree.get("truncated") or tree.get("children_truncated")
+            or tree.get("root_bodies_truncated") or node.get("bodies_truncated")
+            or (p.get("timeline") or {}).get("truncated")
+            or any(not isinstance(b, dict) or not b.get("name") or not b.get("handle")
+                   for b in bodies)):
         return None
     return {"bodies": sorted((b.get("name"), b.get("handle")) for b in bodies),
             "sweeps": sorted((r.get("name"), r.get("health")) for r in timeline
@@ -471,6 +477,131 @@ def _sweep_edit_modes_rows():
 
 
 _SWEEP_EDIT_MODES = _sweep_edit_modes_rows()
+
+
+def _tangent_path_expected(p):
+    """Derive tube volume and terminal point from the independently read, solved sketch."""
+    entities = {e["id"]: e for e in p.get("entities") or []}
+    first, last, arc = (entities.get(key) or {} for key in ("line:0", "line:1", "arc:0"))
+    valid = (p.get("units") == "mm" and not p.get("truncated")
+             and (p.get("counts") or {}).get("lines") == 2
+             and (p.get("counts") or {}).get("arcs") == 1)
+    _measured("filleted path has two solved lines and one arc", p.get("counts"), valid)
+    points = [tuple(row[side][a] for a in ("x", "y"))
+              for row in (first, last) for side in ("start", "end")]
+    center = tuple(arc["center"][a] for a in ("x", "y"))
+    vectors = [tuple(pt[i] - center[i] for i in (0, 1)) for pt in (points[1], points[2])]
+    norms = [math.hypot(*v) for v in vectors]
+    _measured("solved arc joins both line ends", {"norms": norms, "radius": arc.get("radius")},
+              all(_near(n, arc.get("radius"), 0.01) and n > 0 for n in norms))
+    angle = math.acos(max(-1.0, min(1.0, sum(a * b for a, b in zip(*vectors))
+                                   / (norms[0] * norms[1]))))
+    length = math.dist(points[0], points[1]) + arc["radius"] * angle + math.dist(points[2], points[3])
+    return {"volume": math.pi * 4 * length, "end": [*points[3], 0]}
+
+
+def _tangent_path_mass(expected):
+    """Check the swept body's volume and terminal extent against the solved path."""
+    def check(p):
+        want = _RECALL[expected]
+        mass, lo, hi = p.get("mass") or {}, p.get("min_point") or {}, p.get("max_point") or {}
+        valid = (p.get("kind") == "body" and p.get("units") == "mm"
+                 and _near(mass.get("volume"), want["volume"], want["volume"] * 0.003)
+                 and _num(hi.get("x")) and hi["x"] >= want["end"][0] - 0.1
+                 and _num(lo.get("y")) and lo["y"] <= want["end"][1] + 0.1
+                 and _near(lo.get("z"), -2, 0.05) and _near(hi.get("z"), 2, 0.05))
+        return _measured("full path independent tube volume and terminal extent",
+                         {"volume": mass.get("volume"), "min": lo, "max": hi, "expected": want}, valid)
+    return check
+
+
+def _tangent_path_end(expected):
+    """Check an independently found end cap reaches the path's solved terminal point."""
+    def check(p):
+        want = _RECALL[expected]["end"]
+        matches = p.get("matches") or []
+        hits = [r for r in matches if isinstance(r.get("position"), list)
+                and len(r["position"]) == 3
+                and all(_near(a, b, 0.1) for a, b in zip(r["position"], want))
+                and _near(r.get("area"), math.pi * 4, 0.1)]
+        return _measured("sweep end cap reaches independently solved path end",
+                         {"end": want, "matches": matches}, len(hits) == 1)
+    return check
+
+
+def _tangent_path_rows():
+    """Exercise fillet-chain completion, separate coincident lines and construction refusal."""
+    rows = [("doc_get", {}, _home_document, ("tp_story", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "tp_story", "story")},
+             _new_document, ("tp_doc", lambda p: p["document_handle"]))]
+
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: _combine_pin(
+            c, "tp_doc", args(c) if callable(args) else args), check, save))
+
+    write("model_construction", {"kind": "plane", "plane": "yz", "offset": 10,
+                                 "name": "PathStartPlane"}, _datum_plane("yz"))
+    for name, y in (("FilletProfile", -30), ("SeparateProfile", 0)):
+        write("sketch_create", {"plane": "PathStartPlane", "name": name})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [
+            {"kind": "circle", "cx": 0, "cy": y, "radius": 2}]})
+    write("sketch_create", {"plane": "xy", "name": "FilletPath"})
+    write("sketch_add_geometry", {"sketch_name": "FilletPath", "geometry": [
+        {"kind": "polyline", "points": [[10, -30], [220, -30], [260, -55]]}]})
+    write("sketch_edit_curve", {"sketch_name": "FilletPath", "action": "fillet",
+                                "entity_one": "line:0", "entity_two": "line:1", "radius": 20,
+                                "x1": 200, "y1": -30, "x2": 230, "y2": -36})
+    rows.append(("sketch_get", {"sketch_name": "FilletPath", "include_entities": True},
+                 lambda p: bool(_tangent_path_expected(p)),
+                 ("tp_fillet_shape", _recall("tp_fillet_shape", _tangent_path_expected))))
+    write("sketch_create", {"plane": "xy", "name": "SeparatePath"})
+    for start, end in ((10, 30), (30, 50)):
+        write("sketch_add_geometry", {"sketch_name": "SeparatePath", "geometry": [
+            {"kind": "line", "x1": start, "y1": 0, "x2": end, "y2": 0}]})
+    rows.append(("sketch_get", {"sketch_name": "SeparatePath", "include_entities": True},
+                 lambda p: _measured("two separately drawn coincident lines", p.get("counts"),
+                                     (p.get("counts") or {}).get("lines") == 2),
+                 ("tp_separate_shape", _recall("tp_separate_shape", lambda p: {
+                     "volume": math.pi * 4 * 40, "end": [50, 0, 0]}))))
+    for case, curves in (("Fillet", 3), ("Separate", 2)):
+        key = "tp_" + case.lower()
+        write("model_sweep", {"profile": {"sketch": case + "Profile", "profile_index": 0},
+                              "path": "sketch:" + case + "Path"},
+              lambda p, curves=curves: _measured("sweep covers every intended path curve", p,
+                  p.get("swept") is True and p.get("is_solid") is True
+                  and p.get("path_curves") == p.get("path_sketch_curves") == curves
+                  and len(p.get("result_bodies") or []) == 1 and "WARNING" not in p.get("note", "")),
+              (key + "_body", lambda p: p["result_bodies"][0]))
+        rows.append(("model_inspect", lambda c, key=key: {
+            "target": _ctx_get(c, key + "_body", "swept body"), "include": ["default", "mass"],
+            "units": "mm", "accuracy": "very_high"}, _tangent_path_mass(key + "_shape"), None))
+        rows.append(("find_geometry", lambda c, key=key: {
+            "target": _ctx_get(c, key + "_body", "swept body"), "kind": "planar_face",
+            "units": "mm", "max_results": 10}, _tangent_path_end(key + "_shape"), None))
+    write("sketch_create", {"plane": "xy", "name": "ConstructionPath"})
+    write("sketch_add_geometry", {"sketch_name": "ConstructionPath", "geometry": [
+        {"kind": "line", "x1": 10, "y1": 0, "x2": 50, "y2": 0, "is_construction": True}]})
+    rows.append(("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "max_results": 100},
+                 lambda p: _measured("construction refusal baseline", _solid_tool_census(p),
+                                     _solid_tool_census(p) is not None),
+                 ("tp_guard", _recall("tp_guard", _solid_tool_census))))
+    write("model_sweep", {"profile": {"sketch": "SeparateProfile", "profile_index": 0},
+                          "path": "sketch:ConstructionPath"}, _refused("no non-construction curves"))
+    rows.append(("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "max_results": 100},
+                 lambda p: _measured("construction refusal leaves bodies and sweeps unchanged",
+                                     _solid_tool_census(p), _solid_tool_census(p) is not None
+                                     and _solid_tool_census(p) == _RECALL.get("tp_guard")), None))
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "tp_story", "story"),
+                                         "expect_document": _ctx_get(c, "tp_doc", "path scratch")},
+              "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "tp_doc", "path scratch"),
+                                      "save_changes": False,
+                                      "expect_document": _ctx_get(c, "tp_story", "story")},
+              _document_closed, None)]
+    return rows
+
+
+_TANGENT_PATH = _tangent_path_rows()
 
 
 def _loft_edit_definition(sources):

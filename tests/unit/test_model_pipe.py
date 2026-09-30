@@ -648,7 +648,7 @@ class TestPathCurves:
         out = payload(mp.handler(path="sketch:Spine", section_size=20))
         assert out["path_curves"] == 1 and out["path_sketch_curves"] == 5
         assert "chained 1 of the sketch's 5 curves" in out["note"]
-        assert "tangent continuity" in out["note"]
+        assert "sketch_get" in out["note"] and "sharp corner" not in out["note"]
 
     def test_a_construction_curve_is_not_counted(self):
         pf = _wire(sketch_curves=3)
