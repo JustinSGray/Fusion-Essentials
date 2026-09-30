@@ -1,18 +1,4 @@
-"""Unit tests for ``sketch_detail.py`` — read the full structure of one sketch.
-
-sketch_get gives only COUNTS; sketch_get X-rays one sketch: every entity (id, type,
-isConstruction, geometry), every constraint (type + the entity IDs it links, mapped via
-entityToken), and every dimension (name/value/expression). This is the read companion that lets the
-agent reason about a constrained sketch (slots/ellipses/rectangles + their construction geometry +
-relationships).
-
-Pinned here (no live Fusion): the entityToken->id map, the constraint describer (maps a
-constraint's referenced entities back to ids by token), the entity/dimension summarizers, and the
-three spline collections - each walked into _entities() with the same per-kind record idiom as
-arcs/ellipses, mapped into the token map, and reported in the 'counts' block - plus the sketch-text
-records (the read half of sketch_set_text: string, height, font, sketch-space bounding box, at the
-'text:<i>' address sketch_delete_entity and sketch_set_text address).
-"""
+"""Unit tests for sketch X-ray geometry, references, dimensions and state."""
 
 import json
 import math
@@ -387,7 +373,26 @@ class TestEntities:
 
 # ── constraints map to entity ids ───────────────────────────────────────────
 
+@pytest.fixture
+def split_constraint_sketch():
+    first = FakeLine("split", 2.5, 1, 5, 1)
+    second = FakeLine("split", 1, 1, 2.5, 1)
+    foreign = FakeLine("split", 7, 1, 8, 1)
+    sketch = FakeSketch("Split", lines=[first, second], constraints=[
+        HorizontalConstraint(first), HorizontalConstraint(second),
+        TangentConstraint(second, foreign)])
+    _install(sketch)
+    return sketch
+
+
 class TestConstraints:
+    def test_split_constraint_entities_use_identity_not_shared_token(self, split_constraint_sketch):
+        out = _payload(sd.handler(sketch_name=split_constraint_sketch.name, include_entities=True))
+        assert [(c["type"], c["entities"]) for c in out["constraints"]] == [
+            ("horizontal", ["line:0"]), ("horizontal", ["line:1"]),
+            ("tangent", ["line:1", "?"])]
+        assert "'?' has no id in this payload" in out["note"]
+
     def test_perpendicular_links_two_lines(self):
         _install(_rich_sketch())
         out = _payload(sd.handler(sketch_name="S4", include_entities=True))
@@ -1280,14 +1285,14 @@ class TestSplineTokenMap:
 
     def test_fitted_spline_token_mapped(self):
         s = FakeSketch("S", splines=[FakeFittedSpline(tok="TOK-A")])
-        assert sd._build_token_map(s)["TOK-A"] == "spline:0"
+        assert sd.sketch_token_ids(s)["TOK-A"] == ["spline:0"]
 
     def test_control_point_and_fixed_spline_tokens_mapped(self):
         s = FakeSketch("S", cv_splines=[FakeCVSpline(tok="TOK-CV")],
                        fixed_splines=[FakeFixedSpline(tok="TOK-FX")])
-        tok2id = sd._build_token_map(s)
-        assert tok2id["TOK-CV"] == "cv_spline:0"
-        assert tok2id["TOK-FX"] == "fixed_spline:0"
+        tok2id = sd.sketch_token_ids(s)
+        assert tok2id["TOK-CV"] == ["cv_spline:0"]
+        assert tok2id["TOK-FX"] == ["fixed_spline:0"]
 
 
 class TestSplineCounts:
@@ -1337,9 +1342,9 @@ class TestConicFamily:
         assert (arc["major_radius"], arc["minor_radius"]) == (20.0, 10.0)
 
     def test_their_tokens_map_to_those_ids(self):
-        tok2id = sd._build_token_map(self._sketch())
-        assert tok2id["TOK-CN"] == "conic:0"
-        assert tok2id["TOK-EA"] == "elliptical_arc:0"
+        tok2id = sd.sketch_token_ids(self._sketch())
+        assert tok2id["TOK-CN"] == ["conic:0"]
+        assert tok2id["TOK-EA"] == ["elliptical_arc:0"]
 
     def test_the_handler_counts_them(self):
         _install(self._sketch())

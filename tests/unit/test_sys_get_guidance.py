@@ -141,6 +141,20 @@ class TestSectionIndex:
 # ── one section ─────────────────────────────────────────────────────────────
 
 class TestOneSection:
+    def test_model_routes_hole_threads_and_sheet_intent(self):
+        index = _payload(gd.handler())
+        model = next(row for row in index["sections"] if row["id"] == "model")
+        assert "sheet metal" in model["use_when"]
+        rules = {row["id"]: row for row in _payload(gd.handler(section="model"))["rules"]}
+        thread = rules["threads-by-intent"]
+        assert "tapped hole with model_hole(tap=...)" in thread["do"]
+        assert "existing cylindrical face with model_thread" in thread["do"]
+        assert "Hole or Thread definition" in thread["prove"][0]["observe"]
+        sheet = rules["sheet-metal-by-intent"]
+        assert all(tool in sheet["do"] for tool in (
+            "sheet_get", "sheet_create_flange", "sheet_convert", "sheet_create_flat_pattern", "design_export"))
+        assert {step["tool"] for step in sheet["prove"]} == {"sheet_get", "model_inspect"}
+
     def test_a_non_kernel_section_carries_the_canonical_kernel_with_its_scope_and_exceptions(self):
         kernel = next(sec for sec in _canonical()["sections"] if sec["id"] == "kernel")
         out = _payload(gd.handler(section="assemble"))

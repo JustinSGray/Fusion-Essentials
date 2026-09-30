@@ -4559,7 +4559,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `sys_find_tool`
 - No tool or input-kind matched. Try broader/different keywords, or see sys_capability_map for the family overview (breadth) to pick a branch to search.
 - Provide 'query' - keywords to search tool names/descriptions/inputs (and the _inputs.py kinds). E.g. 'profile', 'cam geometry', 'reference a body'.
-- Before adding a tool input that REFERENCES existing geometry/profile/body/etc., use one of these _inputs.py kinds (extend the kind if it's close); don't hand-roll a name/index. See CLAUDE.md 'Input...
+- Kinds describe the references accepted by tool inputs. Use the selected tool's schema to choose a handle, name or index.
 
 ### `sys_get_api_doc`
 - Provide 'searchPattern' (a regex matched against API names/docs).

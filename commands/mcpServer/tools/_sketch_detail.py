@@ -320,12 +320,6 @@ def sketch_token_ids(sketch):
     return ids
 
 
-def _build_token_map(sketch, token_ids=None):
-    """Map entityToken -> the last '<type>:<index>' carrying it, from `token_ids` when given."""
-    ids = sketch_token_ids(sketch) if token_ids is None else token_ids
-    return {tok: refs[-1] for tok, refs in ids.items()}
-
-
 # Dimension class -> the getters naming its sketch entities, in getter order (measured); any other
 # class publishes entities null (a surface dimension anchors on a face or construction plane).
 _DIMENSION_REFS = {
@@ -557,14 +551,8 @@ def _entities(sketch, f):
     return out, construction
 
 
-def _ent_id(ent, tok2id):
-    tok = safe(lambda: ent.entityToken)
-    return tok2id.get(tok, "?") if tok else "?"
-
-
-def _describe_constraint(c, tok2id):
-    """Map one geometric constraint to {type, entities:[ids]}. An attribute may be a single entity
-    or a VECTOR of entities (e.g. PolygonConstraint.lines) - both are expanded to ids."""
+def _describe_constraint(c, sketch, token_ids):
+    """Return a constraint's type and native-identity-matched sketch entity ids."""
     cls = type(c).__name__
     friendly, attrs = _CONSTRAINT_REFS.get(cls, (cls.replace("Constraint", "").lower(), ()))
     ids = []
@@ -575,9 +563,9 @@ def _describe_constraint(c, tok2id):
         items = _vector_items(ent)
         if items is not None:        # a vector of entities (e.g. PolygonConstraint.lines)
             for sub in items:
-                ids.append(_ent_id(sub, tok2id))
+                ids.append(_identical_id(sketch, sub, token_ids))
         else:
-            ids.append(_ent_id(ent, tok2id))
+            ids.append(_identical_id(sketch, ent, token_ids))
     return {"type": friendly, "entities": ids}
 
 
@@ -667,13 +655,12 @@ def _dimension_value(raw, is_angle, f):
 def _entity_xray(sketch, f, unit, counts, entity_offset=0, entity_limit=_ENTITY_PAGE_DEFAULT):
     """Entity pages, capped constraint/dimension rows, and uncapped construction/driving counts."""
     token_ids = sketch_token_ids(sketch)
-    tok2id = _build_token_map(sketch, token_ids)
     entities, construction_count = _entities(sketch, f)
 
     constraints = []
     gc = safe(lambda: sketch.geometricConstraints)
     for i in range(safe(lambda: gc.count, 0) if gc else 0):
-        constraints.append(_describe_constraint(gc.item(i), tok2id))
+        constraints.append(_describe_constraint(gc.item(i), sketch, token_ids))
 
     dimensions = []
     sd = safe(lambda: sketch.sketchDimensions)

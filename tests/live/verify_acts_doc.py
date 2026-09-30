@@ -529,6 +529,12 @@ _OVERTURE = [
     # the other half of this pair).
     ("sys_find_tool", {"query": "revolve"},
      lambda p: "active_document" not in p and p.get("tool_count", 0) > 0, None),
+    ("sys_find_tool", {"query": "body"},
+     lambda p: (p.get("tool_count", 0) > 0
+                and "BodyRef" in {row.get("kind") for row in p.get("kinds", [])}
+                and "tool's schema" in p.get("note", "")
+                and "handle, name or index" in p.get("note", "")
+                and not any(text in p.get("note", "") for text in ("CLAUDE.md", "_inputs.py", "hand-roll"))), None),
     # the introspection FOUND the class in the module it lives in: an adsk submodule that would not
     # import is skipped silently, and the search then answers ok with nothing in it.
     ("sys_get_api_doc", {"searchPattern": "RevolveFeatures", "max_results": 3},
@@ -541,7 +547,19 @@ _OVERTURE = [
     ("sys_get_guidance", {},
      lambda p: (p.get("recipes") and all(r.get("id") and r.get("use_when") for r in p["recipes"])
                 and all("steps" not in r for r in p["recipes"])
+                and any(r.get("id") == "model" and "sheet metal" in r.get("use_when", "")
+                        for r in p.get("sections", []))
                 and _kernel_rules_present(p)), None),
+    ("sys_get_guidance", {"section": "model"},
+     lambda p: (any(r.get("id") == "threads-by-intent"
+                   and "tapped hole with model_hole(tap=...)" in r.get("do", "")
+                   and "existing cylindrical face with model_thread" in r.get("do", "")
+                   for r in p.get("rules", []))
+                and any(r.get("id") == "sheet-metal-by-intent"
+                        and all(tool in r.get("do", "") for tool in (
+                            "sheet_get", "sheet_create_flange", "sheet_convert",
+                            "sheet_create_flat_pattern", "design_export"))
+                        for r in p.get("rules", [])) and _kernel_rules_present(p)), None),
     ("sys_get_guidance", {"section": "assemble"},
      lambda p: ({"connected-reference-path", "exercise-the-mechanism"}
                 <= {r.get("id") for r in (p.get("rules") or [])}

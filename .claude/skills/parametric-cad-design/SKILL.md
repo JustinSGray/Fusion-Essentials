@@ -29,7 +29,7 @@ A playbook `<id>` is the file `playbooks/<id>.md`, or `sys_get_guidance(section=
 
 - `plan` - before the first component exists - naming, variants, what is bought
 - `sketch` - any profile that must survive a size change or drive a feature
-- `model` - turning sketches into a part - order, carving, patterns, frozen bodies
+- `model` - turning sketches into a part - order, carving, patterns, threads, sheet metal, frozen bodies
 - `surface` - a shell, skin or product form that no extrude or revolve describes
 - `assemble` - more than one component - how they are held, joined and moved
 - `validate` - the geometry exists and must be proved against the brief

@@ -7,6 +7,8 @@ input-kind search against the real _inputs module, and the guards (empty query).
 
 import json
 
+import pytest
+
 from conftest import load_tool
 
 ft = load_tool("sys_find_tool")
@@ -37,6 +39,13 @@ def _payload(result):
 
 
 # ── guards ───────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def body_search(monkeypatch):
+    tools = [_item(_tool("model_edit_body", "Move or scale a body", ["body"]))]
+    monkeypatch.setattr(ft, "get_tools", lambda: tools)
+    return _payload(ft.handler(query="body"))
+
 
 class TestGuards:
     def test_empty_query_errors(self):
@@ -101,7 +110,9 @@ class TestKindSearch:
         out = _payload(ft.handler(query="profile", include_kinds=False))
         assert "kinds" not in out
 
-    def test_kinds_note_points_to_convention(self):
-        _install([])
-        out = _payload(ft.handler(query="profile"))
-        assert out.get("kinds") and "hand-roll" in out["note"].lower()
+    def test_kind_results_explain_consumer_references(self, body_search):
+        assert "BodyRef" in {row["kind"] for row in body_search["kinds"]}
+        assert [row["tool"] for row in body_search["tools"]] == ["model_edit_body"]
+        note = body_search["note"]
+        assert "tool's schema" in note and "handle, name or index" in note
+        assert not any(text in note for text in ("CLAUDE.md", "_inputs.py", "hand-roll"))

@@ -29,8 +29,8 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source 250e2aff07b495cd51f6499de75a88f74247fa8792a7e9c32ea37dbf6096e7ce | Fusion 2706.0.97 | verified 2026-09-30
-Loaded: implementation 2232168487db3f87593d92e334b97e179bc27de4cc85835b274cdb26acf30ca2 | schema 436ec0bcdeb01e018a89991a90e376280247edd50247b640db9e15394f04fa47 | load 2292c172abd649fa91aaffb86dbd680b | session 6c19445560a64f20abcb4e99ea6c9851
+Stamp: source 67964448437cd4d3274c2586a973e450a1cc5436574705a56f68a2d36c71e13b | Fusion 2706.0.97 | verified 2026-09-30
+Loaded: implementation ba3db4b96478f40583528c71d376c7197864b34b941f19391fd8d50e9158ace2 | schema 436ec0bcdeb01e018a89991a90e376280247edd50247b640db9e15394f04fa47 | load df3528c030aa488986c8c8975557c236 | session 86f2edfa985b41a2b8c3a93822c83913
 
 203 covered / 1 called / 5 refusals-only / 4 skipped(reason) / 0 pending
 
@@ -273,7 +273,7 @@ Loaded: implementation 2232168487db3f87593d92e334b97e179bc27de4cc85835b274cdb26a
 | sketch_create | covered | draw each part's sketch on its plane; then the hub's five - its turned outline and its keyway on the axis plane, the bolt circle and the flange pocket on XY, and the inclined flat on a datum swung 30 deg off XZ |
 | sketch_delete_entity | covered | delete a helper constraint; count drops - then a sketch text by its index, the deleted string reported back, and the empty index refused |
 | sketch_dimension | covered | drive the part's length, width and boss diameter by parameter expression; the wedge angle facing the sketch origin; offset against a non-parallel line (rotated, and the note says so) with linear_diameter refusing the same shape; line and point measured to a model face; then the dimension bench - a slanted line's horizontal span, a diameter, the gap between two circles on one centre, a line to a circle's near tangent, and an ellipse's two radii - each read back as a measured number, not a call that returned ok |
-| sketch_edit_curve | covered | trim, extend, split, fillet, chamfer and offset on one scratch sketch per action, with length read-backs; split's two halves must carry distinct ids; a chamfer across an offset pair refused |
+| sketch_edit_curve | covered | trim, extend, split, fillet, chamfer and offset on one scratch sketch per action, with length read-backs; split's two halves must carry distinct ids; constrain both halves separately and compare sketch_get's labels with endpoint-selected identities, preserving endpoints, control line and history; a chamfer across an offset pair refused |
 | sketch_get | covered | read the skeleton and the part's own profiles back; then the hub's three PROOFS, each taken before a feature consumes the sketch - is_fully_constrained true with the constraint and dimension counts that closed it, which is the sketch recipes' own bar; and the keyway slot's own census, where WHICH of its three lines is the construction spine is read off the sketch rather than counted on (a solid side line is vertical too and spans the same length, so a dimension addressed at one lands the slot half a width off); a dimension row names the points the sketch_dimension call was given |
 | sketch_insert_svg | covered | import the logo art into a fresh sketch, its landed width measured against the 1/96-inch-per-user-unit convention, then a 96-user-unit square at scale 1 whose measured extent pins BOTH halves of that landing - one inch square, and Y-DOWN from the sketch origin (min y -25.4 mm); the missing file refused |
 | sketch_move | covered | shift a line by a known offset and read the new coordinates back, then spin it 180 deg about its own midpoint - the swap only the endpoints show; the negative-scale mirror and the empty transform refused |

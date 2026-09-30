@@ -838,7 +838,9 @@ STORY = {
                      "which is what says nothing has been cut across it"),
     "sketch_edit_curve": ("trim, extend, split, fillet, chamfer and offset on one scratch sketch "
                           "per action, with length read-backs; split's two halves must carry "
-                          "distinct ids; a chamfer across an offset pair refused"),
+                          "distinct ids; constrain both halves separately and compare sketch_get's "
+                          "labels with endpoint-selected identities, preserving endpoints, control "
+                          "line and history; a chamfer across an offset pair refused"),
     "model_scale": ("uniform x8 and per-axis x*y*z scales with ratio read-backs; unresolvable, "
                     "length, and angle expressions refused; a bare unitless parameter accepted; "
                     "a vertex-anchored scale"),

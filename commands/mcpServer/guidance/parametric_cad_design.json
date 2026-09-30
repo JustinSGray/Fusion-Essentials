@@ -247,7 +247,7 @@
     {
       "id": "model",
       "title": "Model",
-      "use_when": "turning sketches into a part - order, carving, patterns, frozen bodies",
+      "use_when": "turning sketches into a part - order, carving, patterns, threads, sheet metal, frozen bodies",
       "rules": [
         {
           "id": "form-fillets-shell-then-detail",
@@ -299,9 +299,18 @@
           "section": "model",
           "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "machining_job", "parametric_family", "simple_part"],
           "when": "a thread is needed",
-          "do": "use model_thread for a standard call-out, with modeled=true when geometry is required; reserve custom helical construction for a nonstandard form or a demonstrated capability gap",
+          "do": "create a tapped hole with model_hole(tap=...); thread an existing cylindrical face with model_thread. Request modeled=true when helical geometry is required; reserve custom helices for a nonstandard form or a demonstrated capability gap",
           "except": "a thread represented only as an explicitly labelled envelope",
-          "prove": [{"tool": "design_get", "observe": "the Thread feature and readable parameters"}, {"tool": "model_measure_between", "observe": "mating dimensions of the claimed thread geometry"}]
+          "prove": [{"tool": "design_get", "observe": "the Hole or Thread definition, designation and modeled state"}, {"tool": "model_measure_between", "observe": "mating dimensions of the claimed thread geometry"}]
+        },
+        {
+          "id": "sheet-metal-by-intent",
+          "section": "model",
+          "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "machining_job", "parametric_family", "simple_part"],
+          "when": "the part is sheet metal",
+          "do": "read sheet_get for rules and sheet state; use sheet_create_flange for a base or edge flange, or sheet_convert for an existing uniform solid. Create the developed blank with sheet_create_flat_pattern and export it with design_export",
+          "except": "a reference envelope with no fabrication claim",
+          "prove": [{"tool": "sheet_get", "observe": "the applied rule, sheet bodies and flat-pattern state"}, {"tool": "model_inspect", "observe": "the formed part's intended envelope"}]
         },
         {
           "id": "components-when-the-count-is-known",

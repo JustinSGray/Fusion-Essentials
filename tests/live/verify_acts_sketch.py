@@ -15,6 +15,51 @@ from verify_core import (
 from verify_layout import _px, _py
 
 
+def _split_public(stage):
+    """Check constraint attribution against independently acquired curve endpoints and ids."""
+    def check(p):
+        lines = [r for r in p.get("entities", []) if r.get("type") == "line"]
+        expected = {
+            "right": [[_px("EditSplit", x), _py("EditSplit", 0)] for x in (650, 700)],
+            "left": [[_px("EditSplit", x), _py("EditSplit", 0)] for x in (600, 650)],
+            "control": [[_px("EditSplit", 650), _py("EditSplit", y)] for y in (-50, 50)]}
+        selected = {}
+        for name, ends in expected.items():
+            hits = [r for r in lines if sorted([[r.get(end, {}).get(axis) for axis in ("x", "y")]
+                                               for end in ("start", "end")]) == sorted(ends)]
+            if len(hits) != 1:
+                return _measured("split piece endpoints", lines, False)
+            selected[name] = hits[0]["id"]
+        stable = {key: p.get(key) for key in (
+            "counts", "dimension_count", "profile_count", "is_fully_constrained", "compute_deferred")}
+        stable["entities"] = [{k: v for k, v in row.items() if k != "handle"}
+                              for row in p.get("entities", [])]
+        if stage == 0:
+            _RECALL["split_public_geometry"] = stable
+            _RECALL["split_targets"] = [selected["right"], selected["left"]]
+        targets = _RECALL.get("split_targets", [])
+        wanted = [{"type": "horizontal", "entities": [ref]} for ref in targets[:stage]]
+        return _measured("split labels match the constrained endpoint-selected pieces", p.get("constraints"),
+                         p.get("truncated") is False and len(lines) == 3
+                         and len(set(selected.values())) == 3
+                         and targets == [selected["right"], selected["left"]]
+                         and p.get("counts", {}).get("lines") == 3
+                         and p.get("dimension_count") == 0 and p.get("profile_count") == 0
+                         and p.get("is_fully_constrained") is False
+                         and stable == _RECALL.get("split_public_geometry")
+                         and p.get("constraint_count") == stage and p.get("constraints") == wanted)
+    return check
+
+
+def _split_history(p):
+    """Require complete, unchanged feature history around split constraint additions."""
+    timeline = p.get("timeline") or {}
+    return _measured("split constraint history unchanged", timeline,
+                     timeline.get("truncated") is not True
+                     and timeline.get("count") == timeline.get("returned") == len(timeline.get("timeline", []))
+                     and timeline == _RECALL.get("split_history"))
+
+
 def _radial_state(payload, radii, dimension_values):
     circles = [(e.get("id"), e.get("center", {}).get("x"), e.get("center", {}).get("y"),
                 e.get("radius")) for e in payload.get("entities", [])
@@ -285,6 +330,18 @@ _SKETCHWORK = [
                            "x1": 650, "y1": 0},
      lambda p: [r.get("length") for r in p.get("resulting", [])] == [50.0, 50.0]
      and len({r.get("id") for r in p.get("resulting", [])}) == 2, None),
+    ("design_get", {"include": ["timeline"], "max_results": 200}, "ok",
+     ("split_history", _recall("split_history", lambda p: p["timeline"]))),
+    ("sketch_get", {"sketch_name": "EditSplit", "include_entities": True}, _split_public(0),
+     ("split_targets", lambda p: _RECALL["split_targets"])),
+    ("sketch_constrain", lambda c: {"sketch_name": "EditSplit", "constraints": [
+        {"constraint": "horizontal", "entity_one": _ctx_get(c, "split_targets", "endpoint-selected split ids")[0]}]}, "ok", None),
+    ("sketch_get", {"sketch_name": "EditSplit", "include_entities": True}, _split_public(1), None),
+    ("design_get", {"include": ["timeline"], "max_results": 200}, _split_history, None),
+    ("sketch_constrain", lambda c: {"sketch_name": "EditSplit", "constraints": [
+        {"constraint": "horizontal", "entity_one": _ctx_get(c, "split_targets", "endpoint-selected split ids")[1]}]}, "ok", None),
+    ("sketch_get", {"sketch_name": "EditSplit", "include_entities": True}, _split_public(2), None),
+    ("design_get", {"include": ["timeline"], "max_results": 200}, _split_history, None),
     ("sketch_create", {"plane": "xy", "name": "EditCorner"}, "ok", None),
     ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 600, "y1": 0, "x2": 660, "y2": 0}],
                              "sketch_name": "EditCorner"}, "ok", None),
