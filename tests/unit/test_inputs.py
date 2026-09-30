@@ -361,6 +361,8 @@ class TestTokenResolvingToSeveralEntities:
         val, err = inp.BodyRef("body").resolve(handle)
         assert val is None
         assert inp.BODY_MISS in err and "also tried as a handle" in err
+        assert "Pass a face/edge handle from find_geometry on that body" in err
+        assert "Pass a body handle from find_geometry" not in err
         assert "2 entities" in err and "co-located" in err
         assert "sit at the recorded position" in err
         assert "no position locator" not in err
@@ -1868,7 +1870,7 @@ class TestBodyKind:
         _install_kind_bodies(handle_map={"H": surf})
         val, err = inp.BodyRef("target", kind="solid").resolve("H")
         assert val is None
-        assert "must be a SOLID body" in err and "OPEN SURFACE body" in err
+        assert "must be a SOLID body" in err and "points at an OPEN SURFACE body" in err
 
     def test_solid_kind_rejects_a_mesh_with_redirect(self):
         # the headline redirect: solid asked, MESH given -> name the mesh + point at mesh_* / convert
@@ -2129,6 +2131,19 @@ class TestBodyBrepKind:
 # has no end. The word follows _resolve_any_body's own answer about which vocabulary resolved.
 
 class TestRedirectNamesWhatWasPassed:
+    @pytest.fixture
+    def named_surface(self, monkeypatch):
+        monkeypatch.setattr(inp.adsk.fusion, "BRepBody", BRepBody)
+        surface = BRepBody(name="Surf", is_solid=False)
+        root = MakeComp(name="Root", bodies=[surface], mesh_bodies=[])
+        install(inp, MakeDesign(comp=root))
+        return surface
+
+    def test_a_surface_name_has_the_open_surface_article(self, named_surface):
+        val, err = inp.BodyRef("target", kind="solid").resolve("Surf")
+        assert val is None
+        assert "the name 'Surf' resolves to an OPEN SURFACE body" in err
+
     def test_a_name_sourced_wrong_kind_says_NAME_and_quotes_it(self):
         m = MeshBody("ScanData")
         _install_kind_bodies(mesh_named={"ScanData": m})

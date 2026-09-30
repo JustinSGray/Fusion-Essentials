@@ -1129,7 +1129,7 @@ def _loft_scoped_body(case, stage, role, expected, previous=None):
                  and _near(volume, expected, 0.002)
                  and (previous is None or old is not None))
         if valid and old is not None:
-            if role == "SelectedStock":
+            if role == "SelectedStock" and stage == "after":
                 valid = (abs(volume - old["volume"]) > 0.001
                          and abs(area - old["area"]) > 0.001)
             else:
@@ -1249,6 +1249,25 @@ def _loft_participants_rows():
                                            "units": "cm", "accuracy": "very_high"},
                          _loft_scoped_body(case, "before", role, expected),
                          (key, _recall(key, _sweep_mode_shape))))
+        if case == "cut":
+            rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                         _timeline_reads("complete timeline before scoped join refusal", bool),
+                         ("loft_join_before", _recall("loft_join_before", lambda p: p["timeline"]))))
+            write("model_loft", {"profiles": [{"sketch": "LoftBase", "profile_index": 0},
+                                               {"sketch": "LoftTop", "profile_index": 0}],
+                                  "component": host, "operation": "join",
+                                  "target_bodies": ["SelectedStock"]},
+                  _refused("'target_bodies' only applies to cut/intersect operations."))
+            rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                         lambda p: _measured("scoped join refusal leaves timeline unchanged",
+                             p.get("timeline"), bool(_RECALL.get("loft_join_before"))
+                             and p.get("timeline") == _RECALL.get("loft_join_before")), None))
+            for owner, role, expected in roles:
+                rows.append(("model_inspect", {"target": f"{owner}:{role}",
+                                               "include": ["default", "mass"],
+                                               "units": "cm", "accuracy": "very_high"},
+                             _loft_scoped_body(case, "refused", role, expected,
+                                               f"loft_{case}_before_{role}"), None))
         write("model_loft", {"profiles": [{"sketch": "LoftBase", "profile_index": 0},
                                           {"sketch": "LoftTop", "profile_index": 0}],
                              "component": host, "operation": case,

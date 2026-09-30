@@ -61,11 +61,11 @@ Produces: feature -> design_delete_feature, faces_drafted, faces_moved, faces_co
 | ✎ | `model_edit_sweep` | Edit Sweep profile/path |
 | ✎ | `model_emboss` | Stamp sketch profiles or text onto faces; a negative 'depth' engraves.
 Produces: feature -> design_delete_feature. |
-| ✎ | `model_extrude` | Extrude a closed sketch profile into a solid; sketch_get returns profile handles. |
+| ✎ | `model_extrude` | Extrude profiles/curves to solids/surfaces; sketch_get handles. |
 | ✎ | `model_fillet` | Round (fillet) edges; model_chamfer bevels |
 | ✎ | `model_hole` | Drill a Hole feature; multiple points share one feature. |
 | · | `model_inspect` | Measure a target: the bounding box by default, mass or mesh stats through 'include'. |
-| ✎ | `model_loft` | Loft ordered sections; align open-edge surface to open sketch curve with G1/G2 |
+| ✎ | `model_loft` | Loft ordered sections; G1/G2: open surface edge to open sketch curve |
 | · | `model_measure_between` | Measure the distance or angle between two targets; a distance of 0 is touching. |
 | · | `model_measure_continuity` | Measure gap, normal angle and curvature jump across each edge's seam; a one-faced edge reads against the 'against' body. |
 | · | `model_measure_relation` | Judge a geometric relation between two entities.
@@ -371,7 +371,7 @@ Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/m
 
 | | Tool | Summary |
 |---|---|---|
-| ✎ | `sheet_convert` | Convert a uniform solid to sheet metal by a design rule, or rule='active' in a ruled component (preview API). |
+| ✎ | `sheet_convert` | Convert a uniform solid to sheet metal; design rule or rule='active' in a ruled component. |
 | ✎ | `sheet_create_flange` | Add a native flange to a sheet body: an edge flange along rim edges, or a base flange from a closed profile |
 | ✎ | `sheet_create_flat_pattern` | Create a developed blank from a sheet body's broad stationary face; one flat pattern per component. |
 | ✎ | `sheet_create_fold` | Fold a sheet body along one sketch line |

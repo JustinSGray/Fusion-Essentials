@@ -1426,8 +1426,8 @@ def _resolve_any_body(name, raw, source=None, scope=None, scope_input=None):
             return None, (f"'{name}': '{s}' is a component holding {len(bodies)} bodies ({cands}) - "
                           "name one of them, or pass a find_geometry handle.")
         return None, f"'{name}': component '{s}' holds no bodies to act on."
-    return None, (f"'{name}': {BODY_MISS} '{s}'. Pass a body handle from "
-                  "find_geometry, a body name (bare, or '<occurrence-or-component>:<body>'), or a "
+    return None, (f"'{name}': {BODY_MISS} '{s}'. Pass a face/edge handle from "
+                  "find_geometry on that body, a body name (bare, or '<occurrence-or-component>:<body>'), or a "
                   "single-body component/occurrence name "
                   "(see design_get(include=['tree']) / model_extrude output)."
                   + handle_suffix)
@@ -1459,9 +1459,10 @@ class BodyRef(InputKind):
         handle" for a bare name sends the caller after a handle it never gave."""
         label, _ = _BODY_KINDS[self.kind]
         got = _body_kind_label(body)
+        article = "an" if got == "OPEN SURFACE" else "a"
         hint = _BODY_REDIRECTS.get(self.kind, "")
-        via = (f"that handle points at a {got} body" if source == "handle"
-               else f"the name '{raw}' resolves to a {got} body")
+        via = (f"that handle points at {article} {got} body" if source == "handle"
+               else f"the name '{raw}' resolves to {article} {got} body")
         return f"'{self.name}' must be {label}, but {via}. {hint}".strip()
 
     def _check_kind(self, body, raw, source):

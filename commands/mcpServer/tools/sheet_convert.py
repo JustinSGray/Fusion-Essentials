@@ -111,11 +111,10 @@ def handler(body: str = "", base_face: str = "", rule: str = "") -> dict:
                "measured_blank_thickness_cm": thickness_cm,
                "applied_rule_thickness_cm": actual_thickness,
                "volume_cm3_before": before_volume, "volume_cm3_after": safe(lambda: target.volume),
-               "note": "Body isSheetMetal and its active rule read back. Re-read sheet_get rules after conversion; the source rule can be renamed or retained."})
+               "note": "Body isSheetMetal; applied_rule names the active rule. Use applied_rule_ref with sheet_edit_rule; if absent, re-read sheet_get(include=['rules'])."})
 
 
-TOOL_DESCRIPTION = ("Convert a uniform solid to sheet metal by a design rule, or rule='active' in a ruled "
-                    "component (preview API).")
+TOOL_DESCRIPTION = ("Convert a uniform solid to sheet metal; design rule or rule='active' in a ruled component.")
 
 tool = (Tool.create_simple(name="sheet_convert", description=TOOL_DESCRIPTION)
         .add_input_property(*_BODY.as_property())

@@ -241,6 +241,7 @@ def _converted(p):
     return _measured("converted sheet body", {"applied": p.get("applied_rule"),
                      "thickness_cm": p.get("applied_rule_thickness_cm")},
                      p.get("converted") is True and bool(p.get("applied_rule_ref"))
+                     and "Use applied_rule_ref with sheet_edit_rule" in (p.get("note") or "")
                      and _near(p.get("measured_blank_thickness_cm"), 0.15, 1e-6)
                      and _near(p.get("applied_rule_thickness_cm"), 0.15, 1e-6))
 
@@ -252,7 +253,10 @@ def _sheet_body(p):
     row = matches[0] if len(matches) == 1 else {}
     bodies = row.get("bodies") or []
     return _measured("sheet body census", {"component": row},
-                     len(matches) == 1 and row.get("active_rule") == _RECALL.get("sm_applied")
+                     len(matches) == 1
+                     and row.get("active_rule") == (_RECALL.get("sm_applied") or {}).get("applied_rule")
+                     and "use a face/edge handle from find_geometry on the body for sheet_convert"
+                     in ((p.get("components") or {}).get("note") or "")
                      and len(bodies) == 1 and bodies[0].get("is_sheet_metal") is True)
 
 
@@ -884,9 +888,22 @@ def _used_rule_updated(p):
     return _measured("in-use rule K-factor update", {"rule": row,
                      "applied": p.get("applied")},
                      p.get("action") == "update"
-                     and row.get("ref") == "design:" + str(_RECALL.get("sm_applied"))
+                     and row.get("ref") == (_RECALL.get("sm_applied") or {}).get("applied_rule_ref")
                      and _near(row.get("k_factor"), 0.5, 1e-9)
                      and "k_factor" in (p.get("applied") or []))
+
+
+def _applied_rule_read(p, k_factor):
+    """Read the exact converted rule reference and its native name from the independent catalog."""
+    rules = p.get("rules") or {}
+    converted = _RECALL.get("sm_applied") or {}
+    ref = converted.get("applied_rule_ref")
+    matches = [r for r in rules.get("rules") or [] if r.get("ref") == ref]
+    row = matches[0] if len(matches) == 1 else {}
+    return _measured("converted rule reference resolves independently", row,
+                     bool(ref) and rules.get("readable") is True and rules.get("truncated") is False
+                     and len(matches) == 1 and row.get("name") == converted.get("applied_rule")
+                     and _near(row.get("k_factor"), k_factor, 1e-9))
 
 
 def _selected_after_rule(p):
@@ -968,7 +985,9 @@ _SHEET_BUILD = [
      _top_face(3000), _top_handle(3000)),
     ("sheet_convert", lambda c: {"body": _PART, "base_face": _ctx_get(c, "sm_top", "blank top face"),
                                   "rule": "design:" + _RULE},
-     _converted, ("sm_applied", _recall("sm_applied", lambda p: p["applied_rule"]))),
+     _converted, ("sm_applied", _recall("sm_applied", lambda p: p))),
+    ("sheet_get", {"include": ["rules"], "max_results": 200},
+     lambda p: _applied_rule_read(p, 0.42), None),
     ("sheet_get", {"include": ["components"], "max_results": 200}, _sheet_body, None),
     ("find_geometry", {"target": _PART, "kind": "planar_face", "max_results": 20},
      _top_face(3000), _top_handle(3000)),
@@ -1128,8 +1147,10 @@ _SHEET_SELECTED = _SHEET_BUILD + [
      _selected_before_rule,
      ("sm_selected_extents", _recall("sm_selected_extents", lambda p: (p["x"], p["z"])))),
     ("sheet_edit_rule", lambda c: {
-        "action": "update", "rule": "design:" + _ctx_get(c, "sm_applied", "applied rule"),
+        "action": "update", "rule": _ctx_get(c, "sm_applied", "conversion")["applied_rule_ref"],
         "k_factor": 0.5}, _used_rule_updated, None),
+    ("sheet_get", {"include": ["rules"], "max_results": 200},
+     lambda p: _applied_rule_read(p, 0.5), None),
     ("model_inspect", {"target": _PART, "include": ["default", "mass"]},
      _selected_after_rule, None),
     ("sheet_get", {"include": ["components"], "max_results": 200},

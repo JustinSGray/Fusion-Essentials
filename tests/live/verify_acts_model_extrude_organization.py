@@ -341,6 +341,8 @@ def _extrude_edit_rows():
     write("model_create_component", {"name": "EditScope", "activate": True}, _made_component)
     rectangle("EditStock", (0, 0), (10, 10))
     write("model_extrude", {"sketch_name": "EditStock", "distance": 10, "symmetric": True}, _extruded)
+    inspect("EditScope:Body1", placed("symmetric distance 10 is per side",
+                                     (0, 0, -10), (10, 10, 10), 2000))
     for name, z, depth in (("EditUpper", 0, 20), ("EditHidden", 40, 10)):
         if z:
             write("model_construction", {"kind": "plane", "plane": "xy", "offset": z, "name": name})

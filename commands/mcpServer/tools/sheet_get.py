@@ -41,7 +41,7 @@ def _components(design, limit):
     return {"components": [_sheet_common.component_row(c) for c in comps[:limit]],
             "total": len(comps) if complete else None,
             "walk_complete": complete, "truncated": len(comps) > limit,
-            "note": "Component names may repeat; use a body handle from find_geometry for sheet_convert."}
+            "note": "Component names may repeat; use a face/edge handle from find_geometry on the body for sheet_convert."}
 
 
 def _hem_kind(hem):

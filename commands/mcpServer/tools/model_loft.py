@@ -27,7 +27,8 @@ app = adsk.core.Application.get()
 # is refused with the remedy spelled as this tool's own 'component' input.
 _LOFT_PROFILES = _inputs.LoftSectionList("profiles", required=True, scope_input="component")
 _LOFT_RAILS = _inputs.GeometryHandleList("rails", require="any", required=False)
-_TARGET_BODIES = _inputs.BodyRefList("target_bodies", kind="solid", scope_input="component")
+_TARGET_BODIES = _inputs.BodyRefList("target_bodies", kind="solid", scope_input="component",
+                                    description="Cut/intersect only.")
 _LOFT_CENTERLINE = _inputs.GeometryHandle("centerline", require="any", required=False)
 _LOFT_START = _inputs.LoftEndCondition("start")
 _LOFT_END = _inputs.LoftEndCondition("end")
@@ -572,8 +573,8 @@ def handler(profiles=None, rails=None, centerline="", operation="new",
 
 
 TOOL_DESCRIPTION = (
-"Loft ordered sections; align open-edge surface to open sketch curve with G1/G2. "
-"Rails/centerline: handles; check with model_measure_continuity."
+"Loft ordered sections; G1/G2: open surface edge to open sketch curve. "
+"Rails/centerline: handles; model_measure_continuity."
 )
 
 tool = (

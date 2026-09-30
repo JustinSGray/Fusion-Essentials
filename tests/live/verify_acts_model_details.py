@@ -23,6 +23,31 @@ from verify_acts_model_definition_operand import (
 from verify_acts_model_precision import (
     _section_camera, _section_camera_unchanged, _section_census, _section_created, _section_named_clear)
 
+
+def _bodyref_scale_state(p):
+    """Return independent scale-stock bounds and volume when every field reads."""
+    mass = p.get("mass") or {}
+    values = [p.get(axis) for axis in ("x", "y", "z")] + [mass.get("volume")]
+    if (p.get("units") != "mm" or mass.get("accuracy_used") != "very_high"
+            or not all(isinstance(v, (int, float)) and v > 0 for v in values)
+            or not all(isinstance((p.get(key) or {}).get(axis), (int, float))
+                       for key in ("min_point", "max_point") for axis in ("x", "y", "z"))):
+        return None
+    return {"values": values, "min": p["min_point"], "max": p["max_point"]}
+
+
+def _bodyref_surface_state(p):
+    """Return a complete single-surface tree and timeline for refusal comparison."""
+    tree, timeline = p.get("tree") or {}, p.get("timeline") or {}
+    node = tree.get("tree") or {}
+    bodies = node.get("bodies") or []
+    if (tree.get("truncated") is not False or node.get("body_count") != 1 or len(bodies) != 1
+            or bodies[0].get("is_solid") is not False or not bodies[0].get("handle")
+            or not timeline.get("timeline") or timeline.get("truncated")):
+        return None
+    return {"tree": tree, "timeline": timeline}
+
+
 _DETAILS = [
     *_DEFINITION_READS,
     *_DATUM_OPERANDS,
@@ -342,9 +367,30 @@ _DETAILS = [
     # block authored at x=470 doubles to x=940 - it grows AND travels, right out of the frame it was
     # framed in. Every scale that moves it is followed by a fresh frame, or the operation the viewer
     # came to watch happens off screen.
-    ("model_scale", {"bodies": ["ScaleBlock"], "factor": 2},
+    ("model_inspect", {"target": "ScaleBlock", "include": ["default", "mass"],
+                       "units": "mm", "accuracy": "very_high"},
+     lambda p: _measured("solid stock before missing-body refusal", p,
+                         _bodyref_scale_state(p) is not None),
+     ("bodyref_scale_before", _recall("bodyref_scale_before", _bodyref_scale_state))),
+    ("model_scale", {"bodies": ["MissingScaleBody"], "factor": 2},
+     _refused("MissingScaleBody", "Pass a face/edge handle from find_geometry on that body"), None),
+    ("model_inspect", {"target": "ScaleBlock", "include": ["default", "mass"],
+                       "units": "mm", "accuracy": "very_high"},
+     lambda p: _measured("missing-body refusal preserves scale stock", _bodyref_scale_state(p),
+                         bool(_RECALL.get("bodyref_scale_before"))
+                         and _bodyref_scale_state(p) == _RECALL.get("bodyref_scale_before")), None),
+    ("find_geometry", {"target": "ScaleBlock", "kind": "planar_face", "max_results": 1},
+     _matched(1, "planar_face"), _fg("bodyref_scale_face")),
+    ("model_scale", lambda c: {"bodies": [_ctx_get(c, "bodyref_scale_face", "stock face")], "factor": 2},
      lambda p: p.get("scale_check") == "volume_ratio"
      and abs(p.get("volume_ratio", 0) - 8.0) < 1e-6 and "volume_check_skipped" not in p, None),
+    ("model_inspect", {"target": "ScaleBlock", "include": ["default", "mass"],
+                       "units": "mm", "accuracy": "very_high"},
+     lambda p: _measured("face-handle remedy scales the intended stock", _bodyref_scale_state(p),
+                         _bodyref_scale_state(p) is not None and bool(_RECALL.get("bodyref_scale_before"))
+                         and all(_near(got, before * multiplier, 0.001)
+                                 for got, before, multiplier in zip(_bodyref_scale_state(p)["values"],
+                                     _RECALL["bodyref_scale_before"]["values"], (2, 2, 2, 8)))), None),
     _watch("ScaleBlock:1"),
     ("model_scale", {"bodies": ["ScaleBlock"], "x_factor": 3, "y_factor": 2, "z_factor": 1},
      lambda p: abs(p.get("expected_volume_ratio", 0) - 6.0) < 1e-6, None),
@@ -598,6 +644,20 @@ _DETAILS = [
      lambda p: p.get("is_solid") is False, None),
     ("find_geometry", {"target": "ReplRoof", "kind": "planar_face", "max_results": 1}, "ok",
      _fg("repl_sheet")),
+    ("design_get", {"include": ["tree", "timeline"], "component": "ReplRoof",
+                    "tree_bodies": True, "tree_handles": True, "max_results": 1000},
+     lambda p: _measured("surface tree and timeline before wrong-kind refusals", p,
+                         _bodyref_surface_state(p) is not None),
+     ("bodyref_surface_before", _recall("bodyref_surface_before", _bodyref_surface_state))),
+    ("model_scale", {"bodies": ["ReplRoof"], "factor": 2},
+     _refused("the name 'ReplRoof' resolves to an OPEN SURFACE body"), None),
+    ("model_scale", lambda c: {"bodies": [_ctx_get(c, "repl_sheet", "open sheet face")], "factor": 2},
+     _refused("that handle points at an OPEN SURFACE body"), None),
+    ("design_get", {"include": ["tree", "timeline"], "component": "ReplRoof",
+                    "tree_bodies": True, "tree_handles": True, "max_results": 1000},
+     lambda p: _measured("wrong-kind refusals preserve surface tree and timeline", _bodyref_surface_state(p),
+                         bool(_RECALL.get("bodyref_surface_before"))
+                         and _bodyref_surface_state(p) == _RECALL.get("bodyref_surface_before")), None),
     # build the feature on the component that owns the BODY, not the one holding the sheet.
     ("design_activate_component", {"occurrence": "ReplBlock:1"}, "ok", None),
     ("find_geometry", {"target": "ReplBlock", "kind": "planar_face", "nearest_to": [675, 15, 20],

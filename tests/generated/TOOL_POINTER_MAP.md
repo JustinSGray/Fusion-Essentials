@@ -3872,7 +3872,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' isSheetMetal=True but its active rule thickness is
 - cm; measured blank was
 - cm. Inspect sheet_get.
-- Body isSheetMetal and its active rule read back. Re-read sheet_get rules after conversion; the source rule can be renamed or retained.
+- Body isSheetMetal; applied_rule names the active rule. Use applied_rule_ref with sheet_edit_rule; if absent, re-read sheet_get(include=['rules']).
 - ' is in the library. Copy it with sheet_edit_rule first.
 - rule 'active' needs a component that already carries a sheet-metal rule; '
 - ' has none. Name one as 'design:<name>'.
@@ -4027,7 +4027,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - . Use rules, library_rules, components, features, or default.
 - ' must be an integer from 1 to 200.
 - No active design. Create or open a design first.
-- Component names may repeat; use a body handle from find_geometry for sheet_convert.
+- Component names may repeat; use a face/edge handle from find_geometry on the body for sheet_convert.
 
 ### `sketch_add_3d_line`
 - Line drawn in 3D. The end point's non-zero z places it off the sketch's x-y plane. View it from an iso angle with view_screenshot (a top view hides the out-of-plane component).

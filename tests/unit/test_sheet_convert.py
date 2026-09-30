@@ -50,6 +50,16 @@ def test_success_reports_applied_rule_and_measured_thickness(coupon):
     assert out["measured_blank_thickness_cm"] == 0.15
     assert out["applied_rule_thickness_cm"] == 0.15
     assert body.isSheetMetal is True
+    assert "Use applied_rule_ref with sheet_edit_rule" in out["note"]
+    assert "renamed or retained" not in out["note"]
+
+
+def test_missing_applied_rule_ref_points_to_the_rule_read(coupon, monkeypatch):
+    monkeypatch.setattr(mod._sheet_common, "rule_ref_and_index", lambda *_: (None, None))
+    out = payload(mod.handler(body="Blank", base_face="face handle", rule="design:Shop gauge"))
+    assert out["applied_rule_ref"] is None
+    assert out["applied_rule"] == "Shop gauge (Convert)"
+    assert "if absent, re-read sheet_get(include=['rules'])" in out["note"]
 
 
 def test_false_conversion_does_not_report_success(coupon):

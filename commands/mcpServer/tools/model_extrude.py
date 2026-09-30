@@ -946,18 +946,18 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
 
 
 TOOL_DESCRIPTION = (
-"Extrude a closed sketch profile into a solid; sketch_get returns profile handles."
+"Extrude profiles/curves to solids/surfaces; sketch_get handles."
 )
 
 extrude_tool = (
     Tool.create_simple(name="model_extrude", description=TOOL_DESCRIPTION)
     .add_input_property("sketch_name", {"type": "string",
-            "description": "Omit for the latest sketch."})
+            "description": "Default: latest sketch."})
     .add_input_property("profile_index", {"type": ["integer", "string", "array"],
             "items": {"type": "integer"},
-            "description": "Index or list, 'all', a profile handle, or 'text:<i>'."})
+            "description": "Index/list, 'all', profile handle, or 'text:<i>'."})
     .add_input_property("distance", {"type": ["number", "string"],
-            "description": "Depth in 'units' (negative reverses), or an expression."})
+            "description": "Depth in 'units'/expression; negative reverses. symmetric=true: per side for distance extent."})
     .add_input_property("distance2", {"type": ["number", "string"]})
     .add_input_property(*_inputs.UNITS.as_property())
     .add_input_property(*_inputs.boolean_op(default="new").as_property())
