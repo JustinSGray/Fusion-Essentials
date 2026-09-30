@@ -18,10 +18,13 @@ from verify_layout import (
 
 from verify_acts_model_combine_revolve import (
     _COMBINE_COMPLETE, _COMBINE_NONE, _COMBINE_NONROOT_PARTIAL, _COMBINE_PARTIAL, _REVOLVE_PARTICIPANTS, _combine_story_address)
+from verify_acts_model_extrude_organization import (
+    _extrude_edit_dependent)
 from verify_acts_model_precision import (
     _FINE_ANGLE_DEG, _HOLE_ACTIVE, _HOLE_ACTIVE_X0, _HOLE_HOST, _HOLE_VOLUME, _HOLE_X0, _PRECISION_READS, _control_top_args, _fine_angle_param, _fine_angle_plane, _hole_active_handle, _hole_active_tree, _hole_body_state, _hole_created, _hole_cylinder_args, _hole_cylinders, _hole_face_bounds, _hole_host_tree, _hole_inspect_args, _hole_lower_handle, _hole_timeline, _hole_upper_handle, _radius_body_size, _radius_filtered_handle, _scoped_bore_args, _scoped_hole_args, _scoped_top_args, _sweep_brep_list_edited, _sweep_dependent_survived, _sweep_edit_at_volume, _sweep_inspected_at_volume, _unscoped_hole_args)
 from verify_acts_model_sweep import (
-    _LOFT_ALIGNMENT, _LOFT_EDITOR, _LOFT_PARTICIPANTS, _SOLID_TOOL, _SWEEP_EDIT_MODES)
+    _LOFT_ALIGNMENT, _LOFT_EDITOR, _LOFT_PARTICIPANTS, _SOLID_TOOL, _SWEEP_EDIT_MODES,
+    _rolled_back_body)
 
 _SOLIDS = [
     # The sketch acts have already drawn the whole scratch field by now, so a whole-model fit is a
@@ -171,6 +174,17 @@ _SOLIDS = [
     ("sketch_add_geometry", {"geometry": [{"kind": "arc", "cx": 300, "cy": 0,
                                             "x1": 250, "y1": 0, "sweep_deg": 90}],
                              "sketch_name": "SweepPathArc"}, "ok", None),
+    ("sketch_create", {"plane": "xz", "name": "SweepPathDown"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 250, "y1": 0,
+                                           "x2": 250, "y2": 50}],
+                             "sketch_name": "SweepPathDown"}, "ok", None),
+    ("sketch_create", {"plane": "xy", "name": "SweepBasePocket"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [{"kind": "circle", "cx": 255, "cy": 0, "radius": 1}],
+                             "sketch_name": "SweepBasePocket"}, "ok", None),
+    ("sketch_create", {"plane": "xz", "name": "SweepPathSide"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 260, "y1": 0,
+                                           "x2": 260, "y2": -50}],
+                             "sketch_name": "SweepPathSide"}, "ok", None),
     ("sketch_create", {"plane": "xz", "name": "SweepPathBrepSource"}, "ok", None),
     ("sketch_add_geometry", {"geometry": [
         {"kind": "line", "x1": 250, "y1": 0, "x2": 250, "y2": -10},
@@ -181,7 +195,7 @@ _SOLIDS = [
      ("sweep_brep_strip", lambda p: p["result_bodies"][0])),
     ("model_sweep", {"profile": {"sketch": "SweepProf", "profile_index": 0},
                      "path": "sketch:SweepPath"}, _swept,
-     ("sweep_edit_body", lambda p: p["result_bodies"][0])),
+     ("sweep_edit_body", _recall("sweep_edit_body", lambda p: p["result_bodies"][0]))),
     ("find_geometry", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_edit_body", "sweep body"),
                                   "kind": "planar_face", "nearest_to": [250, 0, 50],
                                   "max_results": 1}, _matched(1, "planar_face"), _fg("sweep_end_cap")),
@@ -220,6 +234,59 @@ _SOLIDS = [
     ("model_inspect", lambda c: {"target": _ctx_get(c, "sweep_dependent_handle", "dependent handle"),
                                  "include": ["default", "mass"], "units": "cm"},
      _sweep_dependent_survived(False), None),
+    # A pocket up into the start cap. A downward path leaves it cutting air, so the new warning
+    # fails the check and the prior path curve is swept again.
+    ("model_extrude", lambda c: {"sketch_name": "SweepBasePocket", "distance": 2, "operation": "cut",
+                                 "target_bodies": ["SweepCameo:" + _ctx_get(c, "sweep_edit_body",
+                                                                            "sweep body")]},
+     _extruded, ("sweep_base_pocket", _recall("sweep_base_pocket", lambda p: p["feature"]))),
+    ("model_inspect", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_edit_body", "sweep body"),
+                                 "include": ["mass"], "units": "cm"},
+     _sweep_inspected_at_volume(math.pi * 0.8 ** 2 * 5 - math.pi * 0.1 ** 2 * 0.2),
+     ("sweep_pocketed_volume", _recall("sweep_pocketed_volume", lambda p: p["mass"]["volume"]))),
+    # The restored path sweeps the prior shape into a body of a new name and identity.
+    ("model_edit_sweep", {"feature": "SweepCameo/Sweep1", "action": "path",
+                          "path": "sketch:SweepPathDown"},
+     _refused("New evaluated timeline errors or warnings",
+              "It was rolled back and re-read: path reads SweepPath/line:0 again; the body shapes "
+              "match the pre-edit read. The body now reads as '",
+              "; re-read names and handles held for it."), None),
+    ("model_inspect", {"target": "SweepCameo:1", "include": ["mass"], "units": "cm", "per_body": True},
+     *_rolled_back_body("sweep_pocketed_volume", "sweep_edit_body", renamed=True)),
+    ("model_inspect", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_edit_body", "sweep body"),
+                                 "include": ["mass"], "units": "cm"},
+     lambda p: _measured("rolled-back sweep volume", (p.get("mass") or {}).get("volume"), _near(
+         (p.get("mass") or {}).get("volume"), _RECALL["sweep_pocketed_volume"], 0.0001)), None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000},
+     _extrude_edit_dependent("sweep_base_pocket", "SweepCameo", healthy=True), None),
+    ("model_inspect", lambda c: {"target": _ctx_get(c, "sweep_dependent_handle", "dependent handle"),
+                                 "include": ["default", "mass"], "units": "cm"},
+     _sweep_dependent_survived(False), None),
+    # A parallel straight path 10 mm to the side sweeps the same body: the edit lands, the bodies
+    # read identical before and after, and the call succeeds saying so.
+    ("model_inspect", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_edit_body", "sweep body"),
+                                 "include": ["default", "mass"], "units": "cm"}, "ok",
+     ("sweep_side_before", _recall("sweep_side_before", lambda p: {
+         "volume": p["mass"]["volume"], "min_point": p["min_point"],
+         "max_point": p["max_point"]}))),
+    ("model_edit_sweep", {"feature": "SweepCameo/Sweep1", "action": "path",
+                          "path": "sketch:SweepPathSide"},
+     lambda p: _measured("identical-geometry path edit", {
+         "edited": p.get("edited"), "geometry_changed": p.get("geometry_changed"),
+         "operand_after": p.get("operand_after"), "note": p.get("note")},
+         p.get("edited") is True and p.get("definition_matches") is True
+         and p.get("geometry_changed") is False and p.get("outside_body_changes") == []
+         and p.get("operand_after") == "SweepPathSide/line:0" and "rollback" not in p
+         and "The body geometry reads identical before and after." in str(p.get("note"))), None),
+    ("model_inspect", lambda c: {"target": "SweepCameo:" + _ctx_get(c, "sweep_edit_body", "sweep body"),
+                                 "include": ["default", "mass"], "units": "cm"},
+     lambda p: _measured("sweep body after the identical-geometry edit", {
+         "volume": (p.get("mass") or {}).get("volume"), "min_point": p.get("min_point"),
+         "max_point": p.get("max_point"), "before": _RECALL["sweep_side_before"]},
+         _near((p.get("mass") or {}).get("volume"), _RECALL["sweep_side_before"]["volume"], 0.0001)
+         and all(_near((p.get(corner) or {}).get(axis),
+                       _RECALL["sweep_side_before"][corner][axis], 0.0001)
+                 for corner in ("min_point", "max_point") for axis in "xyz")), None),
     ("model_edit_sweep", {"feature": "SweepCameo/Sweep1", "action": "path",
                           "path": "sketch:SweepPathArc"},
      _sweep_edit_at_volume(math.pi * 0.8 ** 2 * 5 * math.pi / 2), None),

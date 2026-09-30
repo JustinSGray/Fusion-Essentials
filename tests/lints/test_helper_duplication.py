@@ -299,6 +299,11 @@ _DENYLIST = {
     "scope_components": ("_sketch_detail", "def"),
     "scope_component": ("_sketch_detail", "def"),
     "timeline_health": ("_common", "def"),
+    # The ONE sentence a failed edit states its kept/rolled-back/unchanged state in, the ONE marker
+    # clause, and the ONE verified reverse: a copy is how an edit tool claims what no re-read backs.
+    "outcome_clause": ("_common", "def"),
+    "marker_clause": ("_common", "def"),
+    "restore_definition": ("_edit_feature_common", "def"),
     # The ONE token-keyed timeline census a delete or a suppress diffs before and after; a second
     # copy can key on names and lose a namesake, or skip the collapsed groups the caveat names.
     "timeline_census": ("_design_common", "def"),

@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 688
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 685
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -37,7 +37,7 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
-- `design_get`  <- 58  (desc 12, note 46)
+- `design_get`  <- 55  (desc 12, note 43)
 - `find_geometry`  <- 55  (desc 14, note 41)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 6, note 30)
@@ -2983,22 +2983,25 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Body  returned a body but its effect is incomplete or unknown: . Inspect source and destination with design_get(include=['tree']). Partial state:
 
 ### `model_edit_extrude`
-- Definition changed on the same Extrude. Use param_get/param_set for numeric edits.
 - Linked replay may leave mass properties stale. Use design_recompute before mass inspection; it can reset uncaptured joint poses.
+- Definition changed on the same Extrude. Use param_get/param_set for numeric edits.
 - Later timeline items remain unevaluated at the restored marker.
+- The distance kept the feature's negative side; pass direction='positive' to flip it.
+- With no direction and a prior
+- extent, the distance reads
+- ; pass 'direction' to choose.
 - ' has unreadable timeline identity; nothing was edited.
 - ; roll after it with design_edit_timeline.
 - 'target_bodies' repeats one body; list each participant once.
 - 's body geometry could not be read; nothing was edited.
 - The design's component census could not be read; nothing was edited.
 - Other component geometry could not be read; nothing was edited.
+- 's evaluated-health census is unreadable; nothing was edited.
 - ' already uses profile '
 - '; nothing was edited.
-- The feature was not deleted; inspect design_get(include=['timeline']). Observed edit state is in 'details'.
 - An operand does not belong to '
 - ' is not native to its owning component.
 - Two-sided through_all with cut/intersect participant assignment is unsupported. Use separate one-sided features or the Fusion UI.
-- Editing '':  The feature was not deleted; inspect design_get(include=['timeline']). Observed edit state is in 'details'.
 
 ### `model_edit_loft`
 - Loft section changed on the same feature. Inspect model_inspect.
@@ -3008,7 +3011,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' has unreadable timeline identity; nothing was edited.
 - ; roll after it with design_edit_timeline.
 - 's evaluated-health census is unreadable; nothing was edited.
-- Inspect design_get(include=['timeline']); observed state is in details.
+- Restore it with model_edit_loft(feature='', action='retarget', section_index=, profile={'sketch': '', 'profile_index': }).
 
 ### `model_edit_sweep`
 - Sweep operand changed on the same feature. Boolean edits retain the current participants; newly reached bodies are excluded. Inspect model_inspect.
@@ -3016,7 +3019,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ; roll after it with design_edit_timeline.
 - ' has unreadable or active linked features; nothing was edited.
 - 's evaluated-health census is unreadable; nothing was edited.
-- Inspect design_get(include=['timeline']); observed state is in details.
 - ' is unused for action='
 
 ### `model_emboss`

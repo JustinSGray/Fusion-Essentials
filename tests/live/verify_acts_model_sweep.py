@@ -535,6 +535,39 @@ def _loft_edit_volume(stage, previous=None):
     return check
 
 
+def _loft_edit_volume_kept(p):
+    """Check the rolled-back Loft's independent volume against its pre-edit reading."""
+    volume = (p.get("mass") or {}).get("volume")
+    return _measured("rolled-back Loft material", {"volume_cm3": volume,
+                                                   "created_cm3": _RECALL.get("le_volume_created")},
+                     _near(volume, _RECALL["le_volume_created"], 0.0001))
+
+
+def _rolled_back_body(volume_key, name_key, renamed=None):
+    """(check, save) re-reading the one solid at a recalled volume; renamed pins its name change."""
+    def solids(p):
+        return [r.get("body") for r in (p.get("mass") or {}).get("per_body") or []
+                if r.get("is_solid") is True and _near(r.get("volume"), _RECALL[volume_key], 0.0001)]
+
+    def check(p):
+        names, was = solids(p), _RECALL.get(name_key)
+        return _measured("one solid at the rolled-back volume", {"names": names, "was": was},
+                         len(names) == 1 and (renamed is None or (names[0] != was) is renamed))
+    return check, (name_key, _recall(name_key, lambda p: solids(p)[0]))
+
+
+def _loft_edit_identical(p):
+    """Check a landed retarget whose bodies re-read identical, reported as a success."""
+    return _measured("identical-geometry Loft retarget", {
+        "edited": p.get("edited"), "definition_matches": p.get("definition_matches"),
+        "geometry_changed": p.get("geometry_changed"), "rollback": p.get("rollback"),
+        "outside_changes": p.get("outside_body_changes"), "note": p.get("note")},
+        p.get("edited") is True and p.get("definition_matches") is True
+        and p.get("geometry_changed") is False and p.get("outside_body_changes") == []
+        and "rollback" not in p
+        and (p.get("note") or "").endswith("The body geometry reads identical before and after."))
+
+
 def _loft_edit_witness(p):
     """Check the unrelated witness body retained its measured volume."""
     volume = (p.get("mass") or {}).get("volume")
@@ -621,7 +654,8 @@ def _loft_edit_rows():
     write("design_activate_component", {"occurrence": "root"})
     write("model_create_component", {"name": "LoftEdit", "activate": True}, _made_component)
     for sketch, plane, radius in (("Start", "xy", 5), ("Middle", "MidPlane", 6),
-                                  ("Alternate", "MidPlane", 9),
+                                  ("MiddleTwin", "MidPlane", 6),
+                                  ("Alternate", "MidPlane", 9), ("Narrow", "MidPlane", 1),
                                   ("Penultimate", "LatePlane", 7), ("End", "EndPlane", 4)):
         if sketch == "Middle":
             write("model_construction", {"kind": "plane", "plane": "xy", "offset": 10,
@@ -651,10 +685,12 @@ def _loft_edit_rows():
     rows.append(("design_get", lambda c: {"include": ["definition"],
         "feature": _ctx_get(c, "le_feature", "Loft feature")},
         _loft_edit_definition(("Start", "Middle", "Penultimate", "End")), None))
-    write("sketch_create", {"plane": "xy", "name": "DependentCutSketch"})
+    # A side slot just under the middle section: every section set below reaches x=2.5 there
+    # except the Narrow waist, which leaves the slot cutting air.
+    write("sketch_create", {"plane": "MidPlane", "name": "DependentCutSketch"})
     write("sketch_add_geometry", {"sketch_name": "DependentCutSketch", "geometry": [
-        {"kind": "circle", "cx": 0, "cy": 0, "radius": 1}]})
-    write("model_extrude", lambda c: {"sketch_name": "DependentCutSketch", "distance": 2,
+        {"kind": "rectangle", "x1": 2.5, "y1": -0.5, "x2": 20, "y2": 0.5}]})
+    write("model_extrude", lambda c: {"sketch_name": "DependentCutSketch", "distance": -0.5,
         "operation": "cut", "target_bodies": ["LoftEdit:" + _RECALL["le_body"]]},
         _extruded, ("le_cut", _recall("le_cut", lambda p: p["feature"])))
     rows.append(("model_inspect", lambda c: {"target": "LoftEdit:" + _RECALL["le_body"],
@@ -665,6 +701,32 @@ def _loft_edit_rows():
                  lambda p: _loft_edit_downstream(p, baseline=True),
                  ("le_timeline_before", _recall("le_timeline_before",
                                                 _loft_edit_timeline_evidence))))
+    write("model_edit_loft", lambda c: {"feature": _ctx_get(c, "le_feature", "Loft feature"),
+        "action": "retarget", "section_index": 1,
+        "profile": _ctx_get(c, "le_narrow", "narrow profile"), "component": "LoftEdit"},
+        _refused("New evaluated timeline errors or warnings", "It was rolled back and re-read: "
+                 "section 1 reads sketch 'Middle' profile 0 again"))
+    # The rows below target the Loft body by name, so the name is read back after the restore.
+    rows.append(("model_inspect", {"target": "LoftEdit:1", "include": ["mass"], "units": "cm",
+                                   "per_body": True}, *_rolled_back_body("le_volume_created", "le_body")))
+    rows.append(("design_get", lambda c: {"include": ["definition"],
+        "feature": _ctx_get(c, "le_feature", "Loft feature")},
+        _loft_edit_definition(("Start", "Middle", "Penultimate", "End")), None))
+    rows.append(("model_inspect", lambda c: {"target": "LoftEdit:" + _RECALL["le_body"],
+        "include": ["mass"], "units": "cm"}, _loft_edit_volume_kept, None))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 _loft_edit_downstream, None))
+    write("model_edit_loft", lambda c: {"feature": _ctx_get(c, "le_feature", "Loft feature"),
+        "action": "retarget", "section_index": 1,
+        "profile": _ctx_get(c, "le_middletwin", "middle twin profile"), "component": "LoftEdit"},
+        _loft_edit_identical)
+    rows.append(("design_get", lambda c: {"include": ["definition"],
+        "feature": _ctx_get(c, "le_feature", "Loft feature")},
+        _loft_edit_definition(("Start", "MiddleTwin", "Penultimate", "End")), None))
+    rows.append(("model_inspect", lambda c: {"target": "LoftEdit:" + _RECALL["le_body"],
+        "include": ["mass"], "units": "cm"}, _loft_edit_volume_kept, None))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 _loft_edit_downstream, None))
     write("model_edit_loft", lambda c: {"feature": _ctx_get(c, "le_feature", "Loft feature"),
         "action": "retarget", "section_index": 1,
         "profile": _ctx_get(c, "le_alternate", "alternate profile"), "component": "LoftEdit"},

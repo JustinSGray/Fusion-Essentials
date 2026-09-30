@@ -30,7 +30,8 @@ _CALLED_NAME = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _MATERIAL_EXEMPT = {
     'model_edit_extrude': 'evidence: in-place property/extent setters have no features.add call; '
                          'the handler compares pre/post _geometry volume, area, bounds and center '
-                         'of mass and returns error when unchanged',
+                         'of mass and returns error when unchanged, except an ok naming the '
+                         'identical geometry when the new definition re-reads',
     'mesh_combine': 'evidence: a MeshBody carries no volume, and the meshCombineFeatures collection '
                     'is held in a local before its add() - the target mesh TRIANGLE count is read '
                     'before and after instead, and an unchanged count on a cut/intersect is an '

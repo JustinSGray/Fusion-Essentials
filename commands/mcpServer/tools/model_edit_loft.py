@@ -12,10 +12,13 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from . import _assert, _common, _inputs, _sketch_detail
-from ._edit_feature_common import (all_shapes as _all_shapes,
+from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_address, failed,
                                    feature_body_keys as _feature_body_keys,
-                                   health as _health, same_feature as _same_feature)
-from ._common import counted, error, ok, safe
+                                   health as _health, identical_geometry_reply, matched,
+                                   restore_definition, restore_gaps, rolled_back_text,
+                                   same_feature as _same_feature, sentence, shape_match,
+                                   sketch_address)
+from ._common import counted, error, ok, outcome_clause, safe
 
 
 _FEATURE = _inputs.FeatureRef("feature", required=True)
@@ -118,6 +121,45 @@ def _target_error(feature, label):
     return None
 
 
+def _section_at(feature, section_index):
+    """The sketch address of one section's profile, or None."""
+    return sketch_address(safe(lambda: feature.loftSections.item(section_index).entity))
+
+
+def _settle(design, entity, label, section_index, address, rows, remedy, details, prior, where):
+    """Re-assign the prior section profile (the measured reverse); the sentence its re-read backs."""
+    definition_before, before_shapes, health_before = prior
+    marker, index, token, count = where
+
+    def restore():
+        profile = at_address(address)
+        if profile is None:
+            raise RuntimeError("the prior section profile no longer resolves in its sketch")
+        entity.loftSections.item(section_index).entity = profile
+
+    back = restore_definition(
+        design, entity, restore, lambda e: (_definition(e), _section_at(e, section_index)),
+        index + 1, lambda: _all_shapes(design), marker)
+    definition, now = back["definition"] or (None, None)
+    health_back = _health(design, marker) if back["marker_after"] == marker else None
+    shapes_back, recreated = shape_match(back["shapes"], before_shapes)
+    why = restore_gaps(
+        back["error"], definition=matched(definition, definition_before),
+        shapes=shapes_back, health=matched(health_back, health_before),
+        row=_same_feature(design, token, entity, index, count))
+    details["rollback"] = {"ran": back["ran"], "verified": not why, "unverified": why,
+                           "section_after": address_text(now), "marker_after": back["marker_after"],
+                           "recreated": recreated}
+    if not back["ran"]:
+        return outcome_clause("kept", f"'{label}'", rows, remedy, back["error"])
+    if not why:
+        return rolled_back_text(rows, recreated)
+    now = address_text(now)
+    # model_edit_loft refuses a profile the section already reads.
+    return outcome_clause("rollback_failed", f"'{label}'", [(rows[0][0], now, rows[0][2])],
+                          remedy if now != rows[0][2] else "Undo it in Fusion.", "; ".join(why))
+
+
 def _operand_error(profile, component, index):
     """A refusal for a foreign, future or invalid replacement profile."""
     if safe(lambda: profile.objectType) != adsk.fusion.Profile.classType():
@@ -165,9 +207,9 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
     health_before = _health(design, marker)
     if health_before is None:
         return error(f"'{label}'s evaluated-health census is unreadable; nothing was edited.")
-    failure = restore_failure = post_error_read_failure = None
+    failure = post_error_read_failure = None
     attempted = False
-    definition_before = definition_after = desired = None
+    definition_before = definition_after = desired = address = address_after = None
     before_shapes = after_shapes = target_before = target_after = None
     try:
         if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
@@ -198,6 +240,7 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
             desired = sections[:section_index] + (replacement,) + sections[section_index + 1:]
             if desired == sections:
                 raise ValueError(f"'{label}' already uses that profile at section {section_index}.")
+            address = _section_at(entity, section_index)
         else:
             desired = sections[:section_index] + sections[section_index + 1:]
         timeline.markerPosition = index + 1
@@ -224,10 +267,12 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
         if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
             raise RuntimeError("The evaluated Loft could not return to its edit position.")
         definition_after = _definition(entity)
+        address_after = _section_at(entity, section_index)
     except Exception as exc:
-        failure = str(exc)
+        failure = sentence(exc)
         if definition_before is not None and counted(lambda: timeline.markerPosition) == index:
             definition_after = _definition(entity)
+            address_after = _section_at(entity, section_index)
         if attempted and after_shapes is None:
             try:
                 timeline.markerPosition = index + 1
@@ -240,10 +285,7 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
             except Exception as read_exc:
                 post_error_read_failure = str(read_exc)
     finally:
-        try:
-            timeline.markerPosition = marker
-        except Exception as exc:
-            restore_failure = str(exc)
+        safe(lambda: setattr(timeline, "markerPosition", marker))
     restored = counted(lambda: timeline.markerPosition) == marker
     same = _same_feature(design, token, entity, index, count)
     state, compute_failure = _assert.compute_state(entity)
@@ -286,22 +328,53 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
                "post_error_read_failure": post_error_read_failure,
                "new_timeline_errors": new_errors, "new_timeline_warnings": new_warnings,
                "geometry_frame": "owning_component", "geometry_units": "cm, cm2, cm3"}
-    if (failure or restore_failure or not restored or same is not True
-            or definition_matches is not True or geometry_changed is not True
-            or outside_changes != [] or state != "healthy"
-            or new_errors is None or new_errors or new_warnings):
-        reason = (failure or restore_failure or
+    missed = [name for name, good in (
+        ("marker_restored", restored), ("same_feature", same is True),
+        ("definition_matches", definition_matches is True),
+        ("geometry_changed", geometry_changed is True), ("outside_body_changes", outside_changes == []),
+        ("feature_health", state == "healthy"), ("new_timeline_errors", new_errors == []),
+        ("new_timeline_warnings", new_warnings == [])) if not good]
+    identical = not failure and missed == ["geometry_changed"] and geometry_changed is False
+    if (failure or missed) and not identical:
+        counts = [len(d["sections"]) if d else None for d in (definition_after, definition_before)]
+        if action == "remove":
+            rows = [("the section count", *counts)]
+            remedy = "Rebuild it with model_loft or undo it in Fusion."
+        else:
+            rows = [(f"section {section_index}", address_text(address_after), address_text(address))]
+            remedy = ("Undo it in Fusion." if address is None else
+                      f"Restore it with model_edit_loft(feature='{label}', action='retarget', "
+                      f"section_index={section_index}, profile={{'sketch': "
+                      f"'{safe(lambda: address[0].name)}', 'profile_index': {address[2]}}}).")
+        reason = (failure or
                   ("New evaluated timeline errors or warnings appeared." if new_errors or new_warnings else "")
                   or ("Material outside the Loft result changed." if outside_changes else "")
-                  or str(compute_failure or "")
-                  or "Definition, geometry, identity, marker or health verification failed.")
-        result = error(f"Editing '{label}': {reason} Inspect design_get(include=['timeline']); observed state is in details.")
-        result["details"] = details
-        result["content"].extend(ok({"details": details})["content"])
-        return result
+                  or (sentence(compute_failure) if compute_failure else "")
+                  or f"These checks failed: {', '.join(missed)}.")
+        if not attempted:
+            text = f"{reason} Nothing was edited."
+        elif (definition_after is not None and definition_after == definition_before
+              and geometry_changed is False and outside_changes == []):
+            text = (f"{failure or 'Fusion kept the prior definition.'} "
+                    + outcome_clause("unchanged", f"'{label}'", rows))
+        elif definition_after is None or definition_after == definition_before:
+            text = f"{reason} " + outcome_clause(
+                "unconfirmed", f"'{label}'", remedy="model_inspect", evidence=(
+                    f"definition_after={'unread' if definition_after is None else 'as before'}, "
+                    f"geometry_changed={geometry_changed}, outside_body_changes={outside_changes}"))
+        elif action == "remove" or address is None:
+            text = f"{reason} " + outcome_clause("kept", f"'{label}'", rows, remedy)
+        else:
+            text = f"{reason} " + _settle(design, entity, label, section_index, address, rows, remedy,
+                                          details, (definition_before, before_shapes, health_before),
+                                          (marker, index, token, count))
+        now = counted(lambda: timeline.markerPosition)
+        if now != marker:
+            text += f" Also, {_common.marker_clause(marker, now, 'the edit')}."
+        return failed(f"Editing '{label}': {text}", details)
     details["edited"] = True
     details["note"] = "Loft section changed on the same feature. Inspect model_inspect."
-    return ok(details)
+    return identical_geometry_reply(details) if identical else ok(details)
 
 
 tool = _inputs.apply_to_tool(

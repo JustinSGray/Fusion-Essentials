@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import adsk.fusion
 import pytest
 
-from conftest import FakeTimeline, error_message, load_tool, payload
+from conftest import FakeTimeline, Sketch, _NamedCollection, error_message, load_tool, payload
 
 
 mod = load_tool("model_edit_loft")
@@ -48,7 +48,7 @@ class Section:
         self.owner.assignments += 1
         if self.mode != "ignore":
             self._entity = value
-        if self.mode == "raise_after_land":
+        if self.mode == "raise_after_land" and self.owner.assignments == 1:
             raise RuntimeError("setter raised after landing")
 
     def deleteMe(self):
@@ -119,6 +119,20 @@ def test_retarget_changes_only_middle_section_and_material(rig):
     assert payload(result)["definition_matches"] is True
     assert payload(result)["geometry_changed"] is True
     assert payload(result)["outside_body_changes"] == []
+    assert timeline.markerPosition == 5
+
+
+def test_a_landed_section_with_identical_geometry_succeeds_and_says_so(rig, monkeypatch):
+    loft, timeline = rig
+    monkeypatch.setattr(mod, "_all_shapes", lambda _design: {"target": {
+        "component": "Host", "body": "Target", "shape": {"volume_cm3": 1}}})
+    result = payload(mod.handler(feature="Loft1", action="retarget", section_index=1, profile="X"))
+    assert (result["edited"], result["definition_matches"], result["geometry_changed"]) == (
+        True, True, False)
+    assert result["note"] == ("Loft section changed on the same feature. Inspect model_inspect. "
+                              "The body geometry reads identical before and after.")
+    assert "rollback" not in result
+    assert tuple(s.entity for s in loft.sections) == ("A", "X", "C")
     assert timeline.markerPosition == 5
 
 
@@ -215,15 +229,130 @@ def test_failed_delete_is_error_and_marker_restored(rig):
     assert timeline.markerPosition == 5
 
 
-def test_setter_exception_reports_partial_change(rig):
+@pytest.mark.parametrize("case", ["recovers", "diverges", "unrolled"])
+def test_setter_exception_rolls_back_only_when_the_reread_proves_it(rig, monkeypatch, case):
     loft, timeline = rig
+    recovers, rolls = case != "diverges", []
+
+    def roll(_before):
+        # The edit rolls twice before its setter raises; an unrolled case refuses the restore's roll.
+        rolls.append(True)
+        return timeline.roll() if case != "unrolled" or len(rolls) <= 2 else False
+    loft.timelineObject.rollTo = roll
+    sketch = Sketch(name="Middle")
+    middle = SimpleNamespace(name="Middle", parentSketch=sketch)
+    sketch.profiles = _NamedCollection([middle])
+    loft.sections[1]._entity = middle
+    monkeypatch.setattr(mod, "_all_shapes", lambda _design: {
+        "target": {"component": "Host", "body": "Target", "shape": {"volume_cm3": 1 if (
+            loft.sections[1].entity is middle and (recovers or not loft.assignments)) else 2}},
+        "witness": {"component": "Host", "body": "Witness", "shape": {"volume_cm3": 1}}})
     loft.sections[1].mode = "raise_after_land"
     result = mod.handler(feature="Loft1", action="retarget", section_index=1, profile="X")
-    assert result["isError"] is True
+    text = error_message(result)
     assert result["details"]["mutation_attempted"] is True
-    assert result["details"]["definition_after"]["section_signatures"] != (
-        result["details"]["definition_before"]["section_signatures"])
+    assert (loft.sections[1].entity is middle) is (case != "unrolled")
+    expected = {
+        "recovers": ("setter raised after landing. It was rolled back and re-read: section 1 "
+                     "reads sketch 'Middle' profile 0 again; the bodies match the pre-edit read."),
+        "diverges": "A rollback ran but did not verify: section 1 now reads sketch 'Middle'",
+        "unrolled": ("Editing 'Loft1': setter raised after landing. This STAYED APPLIED (not "
+                     "rolled back): section 1 now reads unread (was sketch 'Middle' profile 0). "
+                     "The feature could not be rolled to its edit position. Restore it with "
+                     "model_edit_loft(feature='Loft1', action='retarget', section_index=1, "
+                     "profile={'sketch': 'Middle', 'profile_index': 0}).")}[case]
+    assert text == expected if case == "unrolled" else expected in text
     assert timeline.markerPosition == 5
+
+
+@pytest.mark.parametrize("volume_back", [1, 3])
+def test_a_restore_that_re_creates_the_body_is_rolled_back_only_at_its_prior_shape(
+        rig, monkeypatch, volume_back):
+    loft, _timeline = rig
+    sketch = Sketch(name="Middle")
+    middle = SimpleNamespace(name="Middle", parentSketch=sketch)
+    sketch.profiles = _NamedCollection([middle])
+    loft.sections[1]._entity = middle
+    loft.sections[1].mode = "raise_after_land"
+    # The second section assignment is the restore.
+    monkeypatch.setattr(mod, "_all_shapes", lambda _design: {
+        "body3" if loft.assignments > 1 else "target": {
+            "component": "Host", "body": "Body3" if loft.assignments > 1 else "Body1",
+            "shape": {"volume_cm3": volume_back if loft.assignments > 1 else
+                      1 if loft.sections[1].entity is middle else 2}}})
+    result = mod.handler(feature="Loft1", action="retarget", section_index=1, profile="X")
+    assert error_message(result) == "Editing 'Loft1': setter raised after landing. " + {
+        1: ("It was rolled back and re-read: section 1 reads sketch 'Middle' profile 0 again; the "
+            "body shapes match the pre-edit read. The body now reads as 'Body3' (was "
+            "'Body1'); re-read names and handles held for it."),
+        3: ("A rollback ran but did not verify: section 1 now reads sketch 'Middle' profile 0 (was "
+            "sketch 'Middle' profile 0). The bodies do not match the pre-edit read. Undo it in "
+            "Fusion.")}[volume_back]
+    assert result["details"]["rollback"]["recreated"] == (
+        [{"component": "Host", "now": ["Body3"], "was": ["Body1"]}] if volume_back == 1 else [])
+
+
+@pytest.mark.parametrize("lands,outcome", [
+    (True, "sketch 'Middle' profile 0 (was sketch 'Middle' profile 0). The timeline health was not "
+           "re-read. Undo it in Fusion."),
+    (False, "sketch 'Narrow' profile 0 (was sketch 'Middle' profile 0). The definition re-read "
+            "differs from before the edit; the timeline health was not re-read. Restore it with "
+            "model_edit_loft(feature='Loft1', action='retarget', section_index=1, "
+            "profile={'sketch': 'Middle', 'profile_index': 0}).")])
+def test_a_restore_left_off_its_marker_says_health_was_not_reread(rig, monkeypatch, lands,
+                                                                  outcome):
+    loft, timeline = rig
+    sketch, narrow_sketch = Sketch(name="Middle"), Sketch(name="Narrow")
+    middle = SimpleNamespace(name="Middle", parentSketch=sketch)
+    narrow = SimpleNamespace(name="Narrow", parentSketch=narrow_sketch)
+    sketch.profiles, narrow_sketch.profiles = _NamedCollection([middle]), _NamedCollection([narrow])
+    monkeypatch.setattr(mod._inputs.ProfileRef, "resolve",
+                        lambda _self, _raw, _scope: (narrow, None))
+    loft.sections[1]._entity = middle
+    loft.sections[1].mode = "raise_after_land"
+    original = Section.entity.fset
+
+    def setter(section, value):
+        # The second assignment is the restore; the marker then refuses to park back.
+        timeline.refuse_restore = section.owner.assignments == 1
+        if timeline.refuse_restore and not lands:
+            section.mode = "ignore"
+        original(section, value)
+    monkeypatch.setattr(Section, "entity", property(Section.entity.fget, setter))
+    text = error_message(mod.handler(feature="Loft1", action="retarget", section_index=1,
+                                     profile="Narrow"))
+    # A retarget call naming the profile the section already reads is refused, so none is offered.
+    assert text == (
+        "Editing 'Loft1': setter raised after landing. A rollback ran but did not verify: section 1 "
+        f"now reads {outcome} Also, the timeline marker stood at 5 before the edit and reads 3 "
+        "after it - roll it back with design_edit_timeline.")
+
+
+def test_a_section_profile_two_profiles_answer_to_is_named_not_restored(rig, monkeypatch):
+    loft, timeline = rig
+    sketch = Sketch(name="Middle")
+    middle = SimpleNamespace(name="Middle", parentSketch=sketch)
+    twin = SimpleNamespace(name="Middle", parentSketch=sketch)
+    sketch.profiles = _NamedCollection([middle, twin])
+    loft.sections[1]._entity = middle
+    monkeypatch.setattr(mod, "_health", lambda *_args: {
+        "errors": [], "warnings": ["Dependent"] if loft.sections[1].entity == "X" else []})
+    text = error_message(mod.handler(feature="Loft1", action="retarget", section_index=1,
+                                     profile="X"))
+    assert ("This STAYED APPLIED (not rolled back): section 1 now reads unread (was unread). "
+            "Undo it in Fusion.") in text
+    assert loft.sections[1].entity == "X" and loft.assignments == 1
+    assert timeline.markerPosition == 5
+
+
+def test_failed_removal_names_the_section_count_it_left(rig, monkeypatch):
+    loft, timeline = rig
+    monkeypatch.setattr(mod, "_health", lambda *_args: {
+        "errors": [], "warnings": ["Dependent"] if len(loft.sections) == 2 else []})
+    result = mod.handler(feature="Loft1", action="remove", section_index=1)
+    assert ("This STAYED APPLIED (not rolled back): the section count now reads 2 (was 3). "
+            "Rebuild it with model_loft or undo it in Fusion.") in error_message(result)
+    assert len(loft.sections) == 2 and timeline.markerPosition == 5
 
 
 def test_new_downstream_warning_is_error(rig, monkeypatch):
@@ -242,3 +371,5 @@ def test_restore_failure_is_error(rig):
     result = mod.handler(feature="Loft1", action="remove", section_index=1)
     assert result["isError"] is True
     assert result["details"]["marker_restored"] is False
+    assert ("the timeline marker stood at 5 before the edit and reads 2 after it"
+            in error_message(result))

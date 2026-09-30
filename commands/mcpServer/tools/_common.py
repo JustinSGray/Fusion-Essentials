@@ -1015,28 +1015,57 @@ def timeline_message(raw, name=None, limit=_MESSAGE_LIMIT):
     return text[:limit].rstrip() + " ..." if len(text) > limit else text
 
 
-def rolled_to(design, entity, read, subject):
-    """(what `read()` answered with the timeline marker parked at `entity`'s own row, a clause for a
-    marker that did not come back where it stood) - (None, None) when the roll could not run.
+def marker_clause(was, now, during):
+    """The clause for a timeline marker that did not come back to `was` around `during`."""
+    return (f"the timeline marker stood at {was} before {during} and reads {now} after it - "
+            "roll it back with design_edit_timeline")
 
-    `subject` names the read inside that clause."""
+
+def rolled_to(design, entity, read, subject, park=None):
+    """(read() at `entity`'s row, a marker clause naming `subject`), marker back at `park` or `was`."""
     # Some properties answer ONLY with the marker before their own row ("Didn't roll editing feature
     # back"; "referencePlane is a BRefFace"). The marker is put back WHERE IT STOOD: moveToEnd
     # instead rolls a deliberately parked marker past the features it was parked before.
     timeline = safe(lambda: design.timeline)
     tl_obj = safe(lambda: entity.timelineObject)
     was = counted(lambda: timeline.markerPosition) if timeline is not None else None
+    back = was if park is None else park
     if tl_obj is None or was is None or safe(lambda: tl_obj.rollTo(True)) is not True:
         return None, None
     try:
         got = read()
     finally:
-        safe(lambda: setattr(timeline, "markerPosition", was))
+        safe(lambda: setattr(timeline, "markerPosition", back))
     now = counted(lambda: timeline.markerPosition)
-    if now == was:
+    if now == back:
         return got, None
-    return got, (f"the timeline marker stood at {was} before {subject} was read and reads {now} "
-                 "after it - roll it back with design_edit_timeline")
+    return got, marker_clause(back, now, f"{subject} was read")
+
+
+def _said(value):
+    """A read value as an outcome sentence quotes it."""
+    return "unread" if value is None else value
+
+
+def outcome_clause(state, subject, rows=(), remedy="", evidence=""):
+    """A failed edit's kept/rolled_back/rollback_failed/unconfirmed/unchanged sentence over (field, now, was)."""
+    if state == "rolled_back":
+        text = "It was rolled back and re-read: " + "; ".join(
+            f"{field} reads {_said(was)} again" for field, _now, was in rows)
+        return text + (f"; {evidence}." if evidence else ".")
+    if state == "unchanged":
+        return "Nothing changed: " + "; ".join(
+            f"{field} still reads {_said(was)}" for field, _now, was in rows) + " (re-read)."
+    if state == "unconfirmed":
+        return (f"Whether {subject} changed is UNCONFIRMED ({evidence}); read {remedy} before "
+                "retrying - a retry may apply it twice.")
+    lead = ("This STAYED APPLIED (not rolled back): " if state == "kept"
+            else "A rollback ran but did not verify: ")
+    text = lead + "; ".join(f"{field} now reads {_said(now)} (was {_said(was)})"
+                            for field, now, was in rows) + "."
+    if evidence:
+        text += f" {evidence[0].upper()}{evidence[1:]}."
+    return text + (f" {remedy}" if remedy else "")
 
 
 # A before/after volume difference (cm3) smaller than this is NO CHANGE - the ONE band every

@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import adsk.fusion
 import pytest
 
-from conftest import FakeTimeline, error_message, load_tool, payload
+from conftest import (FakeTimeline, Sketch, SketchCurves, _NamedCollection, error_message,
+                      load_tool, payload)
 
 
 mod = load_tool("model_edit_sweep")
@@ -151,15 +152,249 @@ def test_wrong_operand_is_refused_before_assignment(rig):
     assert timeline.markerPosition == 3
 
 
-def test_setter_exception_reports_landed_definition(rig):
+@pytest.mark.parametrize("addressed,remedy", [
+    (True, "Restore it with model_edit_sweep(feature='Sweep1', action='profile', "
+           "profile={'sketch': 'Prof', 'profile_index': 0})."),
+    (False, "Undo it in Fusion.")])
+def test_setter_exception_names_the_profile_it_left(rig, addressed, remedy):
     sweep, timeline = rig
+    if addressed:
+        sketch = Sketch(name="Prof")
+        sweep._profile = SimpleNamespace(entityToken="prof", parentSketch=sketch)
+        sketch.profiles = _NamedCollection([sweep._profile])
     sweep.mode = "raise_after_land"
     result = mod.handler(feature="Sweep1", action="profile", profile="new")
-    assert result["isError"] is True
+    text = error_message(result)
     assert (result["details"]["definition_after"]["profile_signature"] !=
             result["details"]["definition_before"]["profile_signature"])
-    assert result["details"]["mutation_attempted"] is True
+    assert "setter raised after landing. This STAYED APPLIED (not rolled back): profile" in text
+    assert text.endswith(remedy)
+    assert sweep.profile == "new"
     assert timeline.markerPosition == 3
+
+
+def _sketch_line(name):
+    """One line its own sketch lists, as a path member reads it."""
+    sketch = Sketch(name=name)
+    line = SimpleNamespace(entityToken=name.lower(), parentSketch=sketch, isValid=True)
+    sketch.sketchCurves = SketchCurves(lines=[line])
+    return line
+
+
+def _path_of(line):
+    return SimpleNamespace(objectType="adsk::fusion::Path", count=1,
+                           item=lambda _i: SimpleNamespace(entity=line))
+
+
+def _path_swap(rig, monkeypatch, old, new, rebuild, operation="NewBodyFeatureOperation"):
+    """Sweep along `old`; a swap to `new` warns a dependent and createPath answers `rebuild(seed)`."""
+    sweep, _timeline = rig
+    sweep._path = _path_of(old)
+    sweep.parentComponent.features = SimpleNamespace(
+        createPath=lambda seed, _chain: _path_of(rebuild(seed)))
+    sweep.parentComponent.sketches = _NamedCollection([old.parentSketch, new.parentSketch])
+    on_new = lambda: sweep.path.item(0).entity is new
+    monkeypatch.setattr(mod, "_path_members", _real_path_members)
+    monkeypatch.setattr(mod, "_definition", lambda entity: {
+        "profile": entity.profile, "path": _real_path_members(entity.path),
+        "operation": getattr(adsk.fusion.FeatureOperations, operation),
+        "orientation": adsk.fusion.SweepOrientationTypes.PerpendicularOrientationType,
+        "is_solid": True})
+    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(new), "sketch:PathB", None))
+    monkeypatch.setattr(mod, "_all_shapes", lambda _design: {("target", None): {
+        "component": "Host", "body": "Target",
+        "shape": {"volume_cm3": 1 if sweep.path.item(0).entity is old else 2}}})
+    monkeypatch.setattr(mod, "_health", lambda *_args: {
+        "errors": [], "warnings": ["Dependent"] if on_new() else []})
+    return on_new
+
+
+@pytest.mark.parametrize("case", ["recovers", "diverges", "unrolled"])
+def test_path_failure_rolls_back_only_when_the_reread_proves_it(rig, monkeypatch, case):
+    sweep, timeline = rig
+    old, new = _sketch_line("PathA"), _sketch_line("PathB")
+    recovers = case == "recovers"
+    on_new = _path_swap(rig, monkeypatch, old, new, lambda seed: seed if recovers else new)
+    rolls = []
+
+    def roll(_before):
+        # The edit rolls three times; an unrolled case refuses the restore's roll.
+        rolls.append(True)
+        return timeline.roll() if case != "unrolled" or len(rolls) <= 3 else False
+    sweep.timelineObject.rollTo = roll
+    text = error_message(mod.handler(feature="Sweep1", action="path", path="sketch:PathB"))
+    remedy = (" Restore it with model_edit_sweep(feature='Sweep1', action='path', "
+              "path='sketch:PathA').")
+    assert text == "Editing 'Sweep1': New evaluated timeline errors or warnings appeared. " + {
+        "recovers": ("It was rolled back and re-read: path reads PathA/line:0 again; the bodies "
+                     "match the pre-edit read."),
+        "diverges": ("A rollback ran but did not verify: path now reads PathB/line:0 (was "
+                     "PathA/line:0). The definition re-read differs from before the edit; the "
+                     "bodies do not match the pre-edit read; the timeline health does not match "
+                     "before the edit." + remedy),
+        "unrolled": ("This STAYED APPLIED (not rolled back): path now reads PathB/line:0 (was "
+                     "PathA/line:0). The feature could not be rolled to its edit position."
+                     + remedy)}[case]
+    assert on_new() is not recovers
+    assert timeline.markerPosition == 3
+
+
+@pytest.mark.parametrize("volume_back", [1, 3, None])
+def test_a_restore_that_re_creates_the_body_is_rolled_back_only_at_its_prior_shape(
+        rig, monkeypatch, volume_back):
+    sweep, _timeline = rig
+    old, restored = _sketch_line("PathA"), []
+    _path_swap(rig, monkeypatch, old, _sketch_line("PathB"),
+               lambda seed: restored.append(seed) or seed)
+    # None: the restore's body census does not read, so nothing may be called rolled back.
+    monkeypatch.setattr(mod, "_all_shapes", lambda _design: None if restored and volume_back is None
+                        else {("body3" if restored else "target", None): {
+                            "component": "Host", "body": "Body3" if restored else "Body1",
+                            "shape": {"volume_cm3": volume_back if restored else
+                                      1 if sweep.path.item(0).entity is old else 2}}})
+    result = mod.handler(feature="Sweep1", action="path", path="sketch:PathB")
+    outcome = {
+        1: ("It was rolled back and re-read: path reads PathA/line:0 again; the body shapes match "
+            "the pre-edit read. The body now reads as 'Body3' (was 'Body1'); re-read names "
+            "and handles held for it."),
+        3: ("A rollback ran but did not verify: path now reads PathA/line:0 (was PathA/line:0). "
+            "The bodies do not match the pre-edit read. Undo it in Fusion."),
+        None: ("A rollback ran but did not verify: path now reads PathA/line:0 (was PathA/line:0). "
+               "The bodies were not re-read. Undo it in Fusion.")}[volume_back]
+    assert error_message(result) == ("Editing 'Sweep1': New evaluated timeline errors or warnings "
+                                     "appeared. " + outcome)
+    assert result["details"]["rollback"]["verified"] is (volume_back == 1)
+    assert result["details"]["rollback"]["recreated"] == (
+        [{"component": "Host", "now": ["Body3"], "was": ["Body1"]}] if volume_back == 1 else [])
+
+
+def _snapshot(rows):
+    return {key: {"component": c, "body": b, "shape": {"volume_cm3": v}}
+            for key, (c, b, v) in rows.items()}
+
+
+@pytest.mark.parametrize("before,after,equal,recreated", [
+    # Host's body comes back renamed while Other still holds a namesake of the same shape.
+    ({("h1", None): ("Host", "Body1", 1), ("o1", None): ("Other", "Body1", 1)},
+     {("h3", None): ("Host", "Body3", 1), ("o1", None): ("Other", "Body1", 1)}, True,
+     [{"component": "Host", "now": ["Body3"], "was": ["Body1"]}]),
+    # Host's body is gone and Other gains one of its shape: the material moved components.
+    ({("h1", None): ("Host", "Body1", 1), ("o1", None): ("Other", "Body1", 1)},
+     {("o1", None): ("Other", "Body1", 1), ("o2", None): ("Other", "Body2", 1)}, False, []),
+    # A body with a new identity and its prior name is re-created.
+    ({("h1", None): ("Host", "Body1", 1)}, {("h3", None): ("Host", "Body1", 1)}, True,
+     [{"component": "Host", "now": ["Body1"], "was": ["Body1"]}]),
+    # A body with its prior identity and a new name is re-created.
+    ({("h1", None): ("Host", "Body1", 1)}, {("h1", None): ("Host", "Body3", 1)}, True,
+     [{"component": "Host", "now": ["Body3"], "was": ["Body1"]}])])
+def test_re_created_bodies_pair_only_within_their_component(before, after, equal, recreated):
+    assert mod.shape_match(_snapshot(after), _snapshot(before)) == (equal, recreated)
+
+
+def test_several_re_created_bodies_are_each_named():
+    recreated = [{"component": "Host", "now": ["Body3"], "was": ["Body1"]},
+                 {"component": "Host", "now": ["Body4"], "was": ["Body2"]}]
+    assert mod.shape_match(
+        _snapshot({("c", None): ("Host", "Body3", 1), ("d", None): ("Host", "Body4", 2)}),
+        _snapshot({("a", None): ("Host", "Body1", 1), ("b", None): ("Host", "Body2", 2)})) == (
+            True, recreated)
+    assert mod.rolled_back_text([("path", "B/line:0", "A/line:0")], recreated) == (
+        "It was rolled back and re-read: path reads A/line:0 again; the body shapes match the "
+        "pre-edit read. The bodies now read as 'Body3' (was 'Body1'), 'Body4' (was "
+        "'Body2'); re-read names and handles held for them.")
+
+
+def test_a_split_path_curve_restores_the_piece_it_used(rig, monkeypatch):
+    sweep, _timeline = rig
+    sketch = Sketch(name="PathA")
+    pieces = [SimpleNamespace(entityToken="patha", parentSketch=sketch, isValid=True, length=length)
+              for length in (1.0, 2.0)]
+    sketch.sketchCurves = SketchCurves(lines=pieces)
+    _path_swap(rig, monkeypatch, pieces[1], _sketch_line("PathB"), lambda seed: seed)
+    text = error_message(mod.handler(feature="Sweep1", action="path", path="sketch:PathB"))
+    assert ("It was rolled back and re-read: path reads PathA/line:1 again; the bodies match the "
+            "pre-edit read.") in text
+    assert sweep.path.item(0).entity is pieces[1]
+
+
+def test_a_path_restore_whose_participant_replay_misses_is_not_rolled_back(rig, monkeypatch):
+    sweep, _timeline = rig
+    _path_swap(rig, monkeypatch, _sketch_line("PathA"), _sketch_line("PathB"), lambda seed: seed,
+               "CutFeatureOperation")
+    selected, extra = SimpleNamespace(entityToken="selected"), SimpleNamespace(entityToken="extra")
+    sweep._participants = [selected]
+    replays = []
+
+    def replay(entity, bodies):
+        # The edit's replay lands; the restore's leaves the scope its path setter widened.
+        replays.append(list(bodies))
+        entity._participants = bodies if len(replays) == 1 else [selected, extra]
+    monkeypatch.setattr(Sweep, "participantBodies", property(Sweep.participantBodies.fget, replay))
+    monkeypatch.setattr(mod, "_participants", lambda entity, _op: list(entity.participantBodies))
+    monkeypatch.setattr(mod._common, "native_identity", lambda body: body.entityToken)
+    result = mod.handler(feature="Sweep1", action="path", path="sketch:PathB")
+    text = error_message(result)
+    assert "A rollback ran but did not verify" in text
+    assert "The participant scope differs from before the edit." in text
+    assert "rolled back and re-read" not in text
+    # The path re-reads PathA, so a path call would meet the already-uses refusal.
+    assert text.endswith("before the edit. Undo it in Fusion.")
+    assert result["details"]["rollback"]["verified"] is False
+    assert replays == [[selected], [selected]]
+
+
+def test_a_raising_setter_that_widened_the_scope_is_unconfirmed(rig, monkeypatch):
+    sweep, _timeline = rig
+    selected, extra = SimpleNamespace(entityToken="selected"), SimpleNamespace(entityToken="extra")
+    sweep._participants = [selected]
+
+    def widen_then_raise(entity, _value):
+        entity._participants = [selected, extra]
+        raise RuntimeError("profile setter refused")
+    monkeypatch.setattr(Sweep, "profile", property(Sweep.profile.fget, widen_then_raise))
+    monkeypatch.setattr(Sweep, "participantBodies",
+                        property(Sweep.participantBodies.fget, lambda _entity, _bodies: None))
+    original_definition = mod._definition
+    monkeypatch.setattr(mod, "_definition", lambda entity: {
+        **original_definition(entity),
+        "operation": adsk.fusion.FeatureOperations.CutFeatureOperation})
+    monkeypatch.setattr(mod, "_participants", lambda entity, _op: list(entity.participantBodies))
+    monkeypatch.setattr(mod._common, "native_identity", lambda body: body.entityToken)
+    result = mod.handler(feature="Sweep1", action="profile", profile="new")
+    text = error_message(result)
+    assert result["details"]["participant_scope_preserved"] is False
+    assert result["details"]["geometry_changed"] is False
+    assert result["details"]["outside_body_changes"] == []
+    assert "Whether 'Sweep1' changed is UNCONFIRMED" in text
+    assert "participant_scope_preserved=False" in text
+    assert "Nothing changed" not in text
+
+
+@pytest.mark.parametrize("second,remedy", [
+    (None, "Restore it with model_edit_sweep(feature='Sweep1', action='path', path='sketch:PathA')."),
+    (True, "Restore it with model_edit_sweep(feature='Sweep1', action='path', path='sketch:PathA')."),
+    (False, "Undo it in Fusion."),
+    ("namesake", "Undo it in Fusion.")])
+def test_a_path_remedy_names_the_sketch_only_when_the_path_is_all_its_curves(second, remedy):
+    sketch = Sketch(name="PathA")
+    extra = [] if second in (None, "namesake") else [SimpleNamespace(isConstruction=second)]
+    sketch.sketchCurves = SketchCurves(lines=[SimpleNamespace(isConstruction=False)] + extra)
+    sketches = [sketch]
+    if second == "namesake":
+        # 'sketch:PathA' resolves by name to the first sketch so named, not the prior path's.
+        namesake = Sketch(name="PathA")
+        namesake.sketchCurves = SketchCurves(lines=[SimpleNamespace(isConstruction=False)])
+        sketches.insert(0, namesake)
+    host = SimpleNamespace(sketches=_NamedCollection(sketches))
+    assert mod._remedy("Sweep1", "path", [(sketch, "line", 0)], host) == remedy
+
+
+@pytest.mark.parametrize("count,tail", [(3, "Rail/line:2"), (4, "Rail/line:2 and 1 more")])
+def test_member_text_names_three_members_then_counts_the_rest(count, tail):
+    sketch = Sketch(name="Rail")
+    text = mod._members_text([(sketch, "line", i) for i in range(count)])
+    assert text.startswith("Rail/line:0, Rail/line:1, ")
+    assert text.endswith(tail)
 
 
 def test_restore_failure_is_reported(rig):
@@ -168,6 +403,8 @@ def test_restore_failure_is_reported(rig):
     result = mod.handler(feature="Sweep1", action="profile", profile="new")
     assert result["isError"] is True
     assert result["details"]["marker_restored"] is False
+    assert ("the timeline marker stood at 3 before the edit and reads 1 after it"
+            in error_message(result))
 
 
 def test_new_downstream_warning_is_an_error(rig, monkeypatch):
@@ -188,6 +425,38 @@ def test_path_edit_checks_actual_target_shape_and_witness(rig):
     assert payload(result)["outside_body_changes"] == []
     assert sweep.events == ["path"]
     assert timeline.markerPosition == 3
+
+
+def test_a_landed_path_with_identical_geometry_succeeds_and_says_so(rig, monkeypatch):
+    sweep, timeline = rig
+    monkeypatch.setattr(mod, "_all_shapes", lambda _design: {("target", None): {
+        "component": "Host", "body": "Target", "shape": {"volume_cm3": 1}}})
+    result = payload(mod.handler(feature="Sweep1", action="path", path="sketch:Arc"))
+    assert (result["edited"], result["definition_matches"], result["geometry_changed"]) == (
+        True, True, False)
+    assert result["note"].endswith(" Inspect model_inspect. The body geometry reads identical "
+                                   "before and after.")
+    assert "rolled back" not in result["note"] and "rollback" not in result
+    assert sweep.path == ("arc",) and timeline.markerPosition == 3
+
+
+def test_a_refused_verification_roll_fails_even_with_identical_geometry(rig, monkeypatch):
+    sweep, timeline = rig
+    monkeypatch.setattr(mod, "_all_shapes", lambda _design: {("target", None): {
+        "component": "Host", "body": "Target", "shape": {"volume_cm3": 1}}})
+    rolls = []
+
+    def roll(_before):
+        # The third roll returns the evaluated Sweep to its edit position.
+        rolls.append(True)
+        return False if len(rolls) == 3 else timeline.roll()
+    sweep.timelineObject.rollTo = roll
+    result = mod.handler(feature="Sweep1", action="path", path="sketch:Arc")
+    text = error_message(result)
+    assert result["isError"] is True
+    assert "The evaluated Sweep could not be rolled back for definition verification." in text
+    assert "The body geometry reads identical" not in text
+    assert "edited" not in result["details"]
 
 
 def test_boolean_scope_is_replayed_before_evaluation(rig, monkeypatch):

@@ -12,10 +12,13 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from . import _assert, _common, _inputs, _sketch_detail, _sweep_common
-from ._edit_feature_common import (all_shapes as _all_shapes,
+from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_address, failed,
                                    feature_body_keys as _feature_body_keys,
-                                   health as _health, same_feature as _same_feature)
-from ._common import counted, error, ok, safe
+                                   health as _health, identical_geometry_reply, matched,
+                                   restore_definition, restore_gaps, rolled_back_text,
+                                   same_feature as _same_feature, sentence, shape_match,
+                                   sketch_address)
+from ._common import counted, error, ok, outcome_clause, safe
 
 
 _FEATURE = _inputs.FeatureRef("feature", required=True)
@@ -72,6 +75,95 @@ def _definition_report(definition):
             "path_signature": hashlib.sha256(repr(path).encode("ascii")).hexdigest()[:16],
             "path_curves": len(path), "operation": definition["operation"],
             "orientation": definition["orientation"], "is_solid": definition["is_solid"]}
+
+
+def _addresses(operand):
+    """The sketch address of each member of a profile or path, None for a member outside a sketch."""
+    entity = _common._native_of(operand)
+    kind = safe(lambda: entity.objectType)
+    if kind == "adsk::fusion::Path":
+        members = [safe(lambda i=i: entity.item(i).entity) for i in range(counted(lambda: entity.count) or 0)]
+    elif kind == "adsk::core::ObjectCollection":
+        members = list(_common.iter_collection(entity))
+    else:
+        members = [entity]
+    return [sketch_address(member) for member in members]
+
+
+def _members_text(addresses):
+    """A profile or path's members as an outcome sentence names them."""
+    texts = [address_text(address) for address in addresses or []]
+    if not texts or None in texts:
+        return f"{len(texts)} member(s), not all in a sketch" if texts else None
+    return ", ".join(texts[:3]) + (f" and {len(texts) - 3} more" if len(texts) > 3 else "")
+
+
+def _remedy(label, action, addresses, host):
+    """A model_edit_sweep call that re-applies the prior operand, else 'Undo it in Fusion.'."""
+    sketch = addresses[0][0] if addresses and None not in addresses else None
+    name = safe(lambda: sketch.name) if sketch is not None else None
+    call = f"Restore it with model_edit_sweep(feature='{label}', action='{action}', "
+    if action == "profile" and name and len(addresses) == 1 and addresses[0][1] == "profile":
+        return f"{call}profile={{'sketch': '{name}', 'profile_index': {addresses[0][2]}}})."
+    curves = [at_address(a) for a in addresses] if name and action == "path" else []
+    # 'sketch:<name>' builds from every non-construction curve of the sketch that name resolves to.
+    if (curves and None not in curves and len({a[1:] for a in addresses}) == len(addresses)
+            and all(a[1] != "profile" and a[0] == sketch for a in addresses)
+            and not any(safe(lambda c=c: c.isConstruction, False) for c in curves)
+            and _common.path_sketch_curve_count(host, f"sketch:{name}") == len(addresses)
+            and safe(lambda: _common.target_sketch(host, name)[0] == sketch) is True):
+        return f"{call}path='sketch:{name}')."
+    return "Undo it in Fusion."
+
+
+def _path_restorer(entity, owner, addresses, participants):
+    """The measured path reverse - createPath over the prior sketch curves - or None."""
+    if not addresses or any(a is None or a[1] == "profile" for a in addresses):
+        return None
+
+    def restore():
+        curves = [at_address(address) for address in addresses]
+        if None in curves:
+            raise RuntimeError("a prior path curve no longer resolves in its sketch")
+        seed = curves[0]
+        if len(curves) > 1:
+            seed = adsk.core.ObjectCollection.create()
+            for curve in curves:
+                seed.add(curve)
+        entity.path = owner.features.createPath(seed, False)
+        if participants:
+            entity.participantBodies = list(participants)
+    return restore
+
+
+def _settle(design, entity, label, restore, rows, remedy, details, prior, where):
+    """Run the measured path reverse; the outcome sentence its re-read backs."""
+    definition_before, before_shapes, participants_before, health_before = prior
+    marker, index, token, count = where
+    operation = definition_before["operation"]
+    back = restore_definition(
+        design, entity, restore,
+        lambda e: (_definition(e), _addresses(safe(lambda: e.path)), _participant_keys(e, operation)),
+        index + 1, lambda: _all_shapes(design), marker)
+    definition, members, keys = back["definition"] or (None, None, None)
+    health_back = _health(design, marker) if back["marker_after"] == marker else None
+    shapes_back, recreated = shape_match(back["shapes"], before_shapes)
+    why = restore_gaps(
+        back["error"], definition=matched(definition, definition_before),
+        scope=matched(keys, participants_before), shapes=shapes_back,
+        health=matched(health_back, health_before),
+        row=_same_feature(design, token, entity, index, count))
+    details["rollback"] = {"ran": back["ran"], "verified": not why, "unverified": why,
+                           "operand_after": _members_text(members), "marker_after": back["marker_after"],
+                           "recreated": recreated}
+    if not back["ran"]:
+        return outcome_clause("kept", f"'{label}'", rows, remedy, back["error"])
+    if not why:
+        return rolled_back_text(rows, recreated)
+    now = _members_text(members)
+    # model_edit_sweep refuses an operand the feature already reads.
+    return outcome_clause("rollback_failed", f"'{label}'", [(rows[0][0], now, rows[0][2])],
+                          remedy if now != rows[0][2] else "Undo it in Fusion.", "; ".join(why))
 
 
 def _participants(feature, operation):
@@ -211,13 +303,13 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
     health_before = _health(design, marker)
     if health_before is None:
         return error(f"'{label}'s evaluated-health census is unreadable; nothing was edited.")
-    failure = restore_failure = post_error_read_failure = None
+    failure = post_error_read_failure = None
     attempted = replayed = False
     definition_before = definition_after = None
-    participants_before = participants_after = participant_names = None
+    participants_before = participants_after = participant_names = participants = None
     desired = before_shapes = after_shapes = target_before = target_after = None
     linked_evaluated = linked_restored = None
-    sketch_curve_count = None
+    sketch_curve_count = members_before = members_after = None
     try:
         if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
             raise RuntimeError("Fusion refused the Sweep edit position.")
@@ -237,6 +329,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         definition_before = _definition(entity)
         if definition_before is None:
             raise ValueError("The Sweep definition is unreadable at its edit position.")
+        members_before = _addresses(safe(lambda: getattr(entity, action)))
         operation = definition_before["operation"]
         allowed_operations = (adsk.fusion.FeatureOperations.NewBodyFeatureOperation,
                               adsk.fusion.FeatureOperations.JoinFeatureOperation,
@@ -281,7 +374,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         if refusal:
             raise ValueError(refusal)
         if desired == definition_before[action]:
-            raise ValueError(f"'{label}' already uses that {action}; nothing was edited.")
+            raise ValueError(f"'{label}' already uses that {action}.")
         attempted = True
         setter_failure = None
         try:
@@ -307,12 +400,14 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
             raise RuntimeError("The evaluated Sweep could not be rolled back for definition verification.")
         definition_after = _definition(entity)
+        members_after = _addresses(safe(lambda: getattr(entity, action)))
         participants_after = _participant_keys(entity, operation)
     except Exception as exc:
-        failure = str(exc)
+        failure = sentence(exc)
         if attempted:
             if counted(lambda: timeline.markerPosition) == index:
                 definition_after = _definition(entity)
+                members_after = _addresses(safe(lambda: getattr(entity, action)))
                 participants_after = _participant_keys(entity, definition_before["operation"])
             if after_shapes is None:
                 try:
@@ -328,10 +423,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         elif definition_before is not None:
             definition_after = _definition(entity)
     finally:
-        try:
-            timeline.markerPosition = marker
-        except Exception as exc:
-            restore_failure = str(exc)
+        safe(lambda: setattr(timeline, "markerPosition", marker))
     restored = counted(lambda: timeline.markerPosition) == marker
     linked_restored = _inactive_link_count(entity, index) if restored else None
     same = _same_feature(design, token, entity, index, count)
@@ -386,33 +478,61 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         details["path_curves"] = len(desired) if desired is not None else None
         if sketch_curve_count is not None:
             details["path_sketch_curves"] = sketch_curve_count
-    if (failure or restore_failure or not restored or same is not True
-            or linked_evaluated is None or linked_restored is None
-            or definition_matches is not True or scope_matches is not True
-            or geometry_changed is not True or outside_changes != [] or state != "healthy"
-            or new_errors is None or new_errors or new_warnings):
-        reason = (failure or restore_failure or
+    details["operand_before"] = _members_text(members_before)
+    details["operand_after"] = _members_text(members_after)
+    missed = [name for name, good in (
+        ("marker_restored", restored), ("same_feature", same is True),
+        ("inactive_linked_evaluated", linked_evaluated is not None),
+        ("inactive_linked_after", linked_restored is not None),
+        ("definition_matches", definition_matches is True),
+        ("participant_scope_preserved", scope_matches is True),
+        ("geometry_changed", geometry_changed is True), ("outside_body_changes", outside_changes == []),
+        ("feature_health", state == "healthy"), ("new_timeline_errors", new_errors == []),
+        ("new_timeline_warnings", new_warnings == [])) if not good]
+    identical = not failure and missed == ["geometry_changed"] and geometry_changed is False
+    if (failure or missed) and not identical:
+        rows = [(action, details["operand_after"], details["operand_before"])]
+        remedy = _remedy(label, action, members_before, component_owner)
+        reason = (failure or
                   ("New evaluated timeline errors or warnings appeared." if new_errors or new_warnings else "")
                   or ("Material outside the Sweep result changed." if outside_changes else "")
-                  or str(compute_failure or "")
-                  or "Definition, geometry, scope, identity, marker or health verification failed.")
-        result = error(f"Editing '{label}': {reason} Inspect design_get(include=['timeline']); observed state is in details.")
-        result["details"] = details
-        result["content"].extend(ok({"details": details})["content"])
-        return result
+                  or (sentence(compute_failure) if compute_failure else "")
+                  or f"These checks failed: {', '.join(missed)}.")
+        if not attempted:
+            text = f"{reason} Nothing was edited."
+        elif (definition_after is not None and definition_after == definition_before
+              and geometry_changed is False and outside_changes == [] and scope_matches is True):
+            text = (f"{failure or 'Fusion kept the prior definition.'} "
+                    + outcome_clause("unchanged", f"'{label}'", rows))
+        elif definition_after is None or definition_after == definition_before:
+            text = f"{reason} " + outcome_clause(
+                "unconfirmed", f"'{label}'", remedy="model_inspect", evidence=(
+                    f"definition_after={'unread' if definition_after is None else 'as before'}, "
+                    f"geometry_changed={geometry_changed}, outside_body_changes={outside_changes}, "
+                    f"participant_scope_preserved={scope_matches}"))
+        else:
+            restore = (_path_restorer(entity, component_owner, members_before, participants)
+                       if action == "path" else None)
+            text = f"{reason} " + (outcome_clause("kept", f"'{label}'", rows, remedy) if restore is None
+                                   else _settle(design, entity, label, restore, rows, remedy, details,
+                                                (definition_before, before_shapes, participants_before,
+                                                 health_before), (marker, index, token, count)))
+        now = counted(lambda: timeline.markerPosition)
+        if now != marker:
+            text += f" Also, {_common.marker_clause(marker, now, 'the edit')}."
+        return failed(f"Editing '{label}': {text}", details)
     details["edited"] = True
     details["note"] = ("Sweep operand changed on the same feature. Boolean edits retain the current "
                        "participants; newly reached bodies are excluded. Inspect model_inspect.")
     if action == "path":
         details["note"] += " " + _common.path_chain_warning(len(desired), sketch_curve_count, "sweep")
         details["note"] = details["note"].strip()
-    return ok(details)
+    return identical_geometry_reply(details) if identical else ok(details)
 
 
 tool = _inputs.apply_to_tool(
     Tool.create_simple(name="model_edit_sweep", description=(
-        "Edit Sweep profile/path. Keep current boolean participants; exclude newly reached "
-        "bodies. Read model_inspect.")),
+        "Edit Sweep profile/path. Keeps participants; read model_inspect.")),
     _SPEC)
 tool.add_input_property("profile", _inputs.ProfileRef("profile", scope_input="component").schema())
 tool.add_input_property("path", {"type": ["string", "array"], "items": {"type": "string"},

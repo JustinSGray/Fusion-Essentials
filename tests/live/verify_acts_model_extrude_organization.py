@@ -81,6 +81,57 @@ def _extrude_edit_history(p):
                      and fields(timeline) == fields(before) and bool(fields(before)))
 
 
+def _extrude_edit_dependent(key, component, healthy):
+    """The recalled dependent row's health in an independent timeline read."""
+    def check(p):
+        rows = [r for r in (p.get("timeline") or {}).get("timeline") or []
+                if r.get("name") == _RECALL.get(key) and r.get("component") == component]
+        health = rows[0].get("health", "healthy") if len(rows) == 1 else None
+        return _measured("dependent feature health", health,
+                         health == "healthy" if healthy else health in ("warning", "error"))
+    return check
+
+
+def _extrude_side_body(label, z_low, z_high, volume):
+    """The side story's body z span and volume in mm, read independently of the editor."""
+    def check(p):
+        mass = p.get("mass") or {}
+        span = [(p.get("min_point") or {}).get("z"), (p.get("max_point") or {}).get("z")]
+        return _measured(label, {"z": span, "volume": mass.get("volume")},
+                         _near(span[0], z_low, 0.01) and _near(span[1], z_high, 0.01)
+                         and _near(mass.get("volume"), volume, 0.01))
+    return check
+
+
+def _extrude_side_edit(before_cm, after_cm, side):
+    """A landed distance edit whose signed read-back shows the side and keeps the parameter."""
+    def check(p):
+        was, now = p.get("definition_before") or {}, p.get("definition_after") or {}
+        return _measured("signed distance read-back", {"was": was, "now": now},
+                         _extrude_edit_landed(p) is True
+                         and _near(was.get("distance_cm"), before_cm, 1e-6)
+                         and _near(now.get("distance_cm"), after_cm, 1e-6) and now.get("side") == side
+                         and now.get("distance_parameter") == _RECALL.get("ee_side_param"))
+    return check
+
+
+def _extrude_edit_identical(sketch):
+    """A landed profile swap whose bodies re-read identical, reported as a success."""
+    def check(p):
+        after = p.get("definition_after") or {}
+        return _measured("identical-geometry profile swap", {
+            "edited": p.get("edited"), "definition_matches": p.get("definition_matches"),
+            "geometry_changed": p.get("geometry_changed"), "rollback": p.get("rollback"),
+            "other_components_unchanged": p.get("other_components_unchanged"),
+            "profile_sketch": after.get("profile_sketch"), "note": p.get("note")},
+            p.get("edited") is True and p.get("definition_matches") is True
+            and p.get("geometry_changed") is False
+            and p.get("other_components_unchanged") is True and "rollback" not in p
+            and after.get("profile_sketch") == sketch
+            and (p.get("note") or "").endswith("The body geometry reads identical before and after."))
+    return check
+
+
 def _extrude_edit_rows():
     """Build a bounded definition-edit bench in an owned scratch document."""
     rows = [
@@ -158,14 +209,80 @@ def _extrude_edit_rows():
           ("ee_dependent", _recall("ee_dependent", lambda p: p["feature"])))
     write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_profile", "Extrude"),
           "action": "profile", "profile": {"sketch": "EditOriginal", "profile_index": 0}},
-          _refused("definition landed", "downstream"))
+          _refused("definition landed", "downstream", "It was rolled back and re-read: profile "
+                   "reads sketch 'EditShifted' profile 0 again"))
     rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
-                 lambda p: any(r.get("name") == _RECALL.get("ee_dependent")
-                               and r.get("health") in ("warning", "error")
-                               for r in (p.get("timeline") or {}).get("timeline") or []), None))
-    inspect("EditProfile:Body2", placed("landed edit with failed dependent", (0, 0, 0), (10, 10, 5), 500))
-    edit("ee_profile", {"action": "profile", "profile": {"sketch": "EditShifted", "profile_index": 0}})
-    inspect("EditProfile:Body2", placed("dependent cut restored", (20, 0, 0), (30, 10, 5), 482))
+                 _extrude_edit_dependent("ee_dependent", "EditProfile", healthy=True), None))
+    inspect("EditProfile:Body2", placed("rolled-back edit keeps its dependent cut",
+                                        (20, 0, 0), (30, 10, 5), 482))
+
+    def side_refs(p):
+        _RECALL["ee_side_param"] = p["model_parameters"]["distance"]
+        return "EditSide/" + p["feature"]
+
+    def side_edit(args, check):
+        write("model_edit_extrude", lambda c, args=args: {
+            "feature": _ctx_get(c, "ee_side", "EditSide extrude"), "action": "extent", **args}, check)
+
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "EditSide", "activate": True}, _made_component)
+    rectangle("EditSideS", (50, 0), (70, 20))
+    # The same rectangle again: a profile swap to it leaves the body identical.
+    rectangle("EditSideTwin", (50, 0), (70, 20))
+    write("model_extrude", {"sketch_name": "EditSideS", "distance": -10}, _extruded,
+          ("ee_side", side_refs))
+    inspect("EditSide:Body1", _extrude_side_body("negative extrusion", -10, 0, 4000))
+    for args, was, now, side, span in (
+            ({"distance": 5}, -1.0, -0.5, "negative", (-5, 0)),
+            ({"distance": 5, "direction": "positive"}, -0.5, 0.5, "positive", (0, 5)),
+            ({"distance": 10, "direction": "negative"}, 0.5, -1.0, "negative", (-10, 0))):
+        side_edit({"extent": "distance", **args}, _extrude_side_edit(was, now, side))
+        inspect("EditSide:Body1", _extrude_side_body(f"{side} side after distance edit", *span,
+                                                     abs(span[0] - span[1]) * 400))
+    rectangle("EditSidePocket", (55, 5), (65, 15))
+    write("model_extrude", {"sketch_name": "EditSidePocket", "distance": -3, "operation": "cut",
+                            "target_bodies": ["EditSide:Body1"]}, _extruded,
+          ("ee_side_pocket", _recall("ee_side_pocket", lambda p: p["feature"])))
+    inspect("EditSide:Body1", _extrude_side_body("pocketed negative extrusion", -10, 0, 3700))
+    # The flip leaves the pocket cutting air, so its health fails the check and the signed
+    # distance is restored through its parameter's expression.
+    side_edit({"extent": "distance", "distance": 10, "direction": "positive"},
+              _refused("downstream", "It was rolled back and re-read: extent reads distance "
+                       "-10.0 mm again"))
+    rows.append(("param_get", lambda c: {"name": _RECALL["ee_side_param"]},
+                 lambda p: _measured("restored signed distance parameter", p.get("parameter"),
+                                     _near((p.get("parameter") or {}).get("value"), -10, 1e-6)), None))
+    inspect("EditSide:Body1", _extrude_side_body("rolled-back flip keeps the pocket", -10, 0, 3700))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 _extrude_edit_dependent("ee_side_pocket", "EditSide", healthy=True), None))
+    side_edit({"extent": "symmetric", "distance": 10}, _extrude_edit_landed)
+    inspect("EditSide:Body1", _extrude_side_body("symmetric side extent", -10, 10, 7700))
+    # A symmetric prior has no measured reverse, so the same failure names what stayed applied.
+    side_edit({"extent": "distance", "distance": 10, "direction": "positive"},
+              _refused("downstream", "This STAYED APPLIED (not rolled back): extent now reads "
+                       "distance 10.0 mm (was symmetric 10.0 mm per side)",
+                       "extent='symmetric', distance=10.0"))
+    inspect("EditSide:Body1", _extrude_side_body("kept flip beside its failed pocket", 0, 10, 4000))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 _extrude_edit_dependent("ee_side_pocket", "EditSide", healthy=False), None))
+    side_edit({"extent": "symmetric", "distance": 10.0}, _extrude_edit_landed)
+    inspect("EditSide:Body1", _extrude_side_body("named remedy restores the pocket", -10, 10, 7700))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 _extrude_edit_dependent("ee_side_pocket", "EditSide", healthy=True), None))
+    side_edit({"extent": "symmetric", "distance": 10.0},
+              _refused("already has that definition", "Nothing was edited"))
+    inspect("EditSide:Body1", _extrude_side_body("identical re-edit refused", -10, 10, 7700))
+    # The lone body's extrude is written join; Fusion keeps it new.
+    write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_side", "EditSide extrude"),
+          "action": "operation", "operation": "join"},
+          _refused("Fusion kept the prior definition", "Nothing changed: operation still reads new"))
+    inspect("EditSide:Body1", _extrude_side_body("refused join", -10, 10, 7700))
+    write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_side", "EditSide extrude"),
+          "action": "profile", "profile": {"sketch": "EditSideTwin", "profile_index": 0}},
+          _extrude_edit_identical("EditSideTwin"))
+    inspect("EditSide:Body1", _extrude_side_body("identical profile swap", -10, 10, 7700))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 _extrude_edit_dependent("ee_side_pocket", "EditSide", healthy=True), None))
 
     write("design_activate_component", {"occurrence": "root"})
     write("model_create_component", {"name": "EditScope", "activate": True}, _made_component)
