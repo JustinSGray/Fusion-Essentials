@@ -15,6 +15,40 @@ from verify_core import (
 from verify_acts_model_combine_revolve import (
     _combine_body, _combine_inspect, _combine_pin)
 
+
+def _extrude_definition(extent, distance, distance2=None, units="mm"):
+    """Check definition values without substituting unavailable participants or numeric extents."""
+    def check(p):
+        d = p.get("definition") or {}
+        available = d.get("unavailable") or {}
+        profile = d.get("profile") or {}
+        numeric = extent != "through_all"
+        return _measured(f"read {extent} Extrude definition in {units}", d,
+            d.get("type") == "ExtrudeFeature" and d.get("extent") == extent and d.get("units") == units
+            and bool(profile.get("profile_handle")) and profile.get("profile_index") == 0
+            and bool(profile.get("source_sketch"))
+            and d.get("distance_applicable") is numeric
+            and (_near(d.get("distance"), distance, 1e-6) if numeric else d.get("distance") is None)
+            and d.get("distance2_applicable") is (distance2 is not None)
+            and (_near(d.get("distance2"), distance2, 1e-6) if distance2 is not None
+                 else d.get("distance2") is None)
+            and (bool(d.get("distance_parameter")) and bool(d.get("distance_expression")) if numeric
+                 else d.get("distance_parameter") is None and d.get("distance_expression") is None)
+            and (bool(d.get("distance2_parameter")) and bool(d.get("distance2_expression"))
+                 if distance2 is not None else True)
+            and (d.get("symmetric_full_length") is False if extent == "symmetric" else True)
+            and d.get("participants") is None and bool(available.get("participants"))
+            and "side" not in d and "direction" not in d)
+    return check
+
+
+def _definition_timeline_unchanged(p):
+    """Check complete row order, health and marker against the independent pre-read snapshot."""
+    before = _RECALL.get("definition_timeline") or {}
+    now = p.get("timeline") or {}
+    return _measured("definition read leaves timeline and health unchanged", now,
+        bool(before) and not now.get("truncated") and now == before)
+
 def _extrude_edit_landed(p):
     """Require the existing feature, requested definition and restored marker to survive an edit."""
     return _measured("existing Extrude edit", p,
@@ -162,6 +196,18 @@ def _extrude_edit_rows():
                                  (high[0] + dx, high[1] + dy, high[2]), volume)(p)
         return check
 
+    def definition(key, extent, distance=None, distance2=None, units="mm"):
+        rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+            lambda p: _measured("complete timeline before definition read", p.get("timeline"),
+                bool((p.get("timeline") or {}).get("timeline"))
+                and not (p.get("timeline") or {}).get("truncated")),
+            ("definition_timeline", _recall("definition_timeline", lambda p: p["timeline"]))))
+        rows.append(("design_get", lambda c: {"include": ["definition"],
+            "feature": _ctx_get(c, key, "Extrude"), "units": units},
+            _extrude_definition(extent, distance, distance2, units), None))
+        rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                     _definition_timeline_unchanged, None))
+
     def edit(key, args):
         write("model_edit_extrude", lambda c, key=key, args=args: {
             "feature": _ctx_get(c, key, "existing Extrude"), **args}, _extrude_edit_landed)
@@ -197,6 +243,11 @@ def _extrude_edit_rows():
     ]:
         edit("ee_profile", {"action": "extent", **args})
         inspect("EditProfile:Body2", placed(args["extent"], low, high, volume))
+        factor = 0.1 if args["extent"] == "two_side" else 1
+        definition("ee_profile", args["extent"], args["distance"] * factor,
+                   args.get("distance2", 0) * factor if "distance2" in args else None,
+                   "cm" if factor == 0.1 else "mm")
+        inspect("EditProfile:Body2", placed("definition read preserves " + args["extent"], low, high, volume))
     write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_profile", "Extrude"),
           "action": "extent", "extent": "to_face", "to_object": _ctx_get(c, "ee_roof", "roof")},
           _extrude_edit_landed)
@@ -232,6 +283,8 @@ def _extrude_edit_rows():
     write("model_extrude", {"sketch_name": "EditSideS", "distance": -10}, _extruded,
           ("ee_side", side_refs))
     inspect("EditSide:Body1", _extrude_side_body("negative extrusion", -10, 0, 4000))
+    definition("ee_side", "distance", -10 / 25.4, units="in")
+    inspect("EditSide:Body1", _extrude_side_body("definition read preserves negative extrusion", -10, 0, 4000))
     for args, was, now, side, span in (
             ({"distance": 5}, -1.0, -0.5, "negative", (-5, 0)),
             ({"distance": 5, "direction": "positive"}, -0.5, 0.5, "positive", (0, 5)),
@@ -317,6 +370,8 @@ def _extrude_edit_rows():
                             p.get("linked_component_aliases"),
                             _extrude_edit_landed(p) is True
                             and p.get("linked_component_aliases") == ["EditProfile"]))
+    inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", -450 / 1910))
+    definition("ee_scope", "through_all")
     inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", -450 / 1910))
     inspect("EditScope:Body2", _extrude_edit_mass(2000))
     write("model_edit_extrude", lambda c: {

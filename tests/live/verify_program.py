@@ -1229,7 +1229,9 @@ STORY = {
                    "(sys_find_tool, which never touches the design, carries no such stamp), the "
                    "timeline slice the 'name@index' feature form is addressed from, plus the "
                    "material/appearance catalog at both zoom levels - the library census and one "
-                   "paged library; an unloaded library name refused"),
+                   "paged library; an unloaded library name refused; read signed, two-sided, symmetric "
+                   "and through-all Extrude definitions in mm/cm/in, plus partial Sweep definition "
+                   "when path/participants need edit context, with unchanged timeline and material"),
     "drawing_create": ("meet every guard the drawing generator sits behind, each settled before the "
                        "tool reaches for a cloud source: the shaded style with no member to set, "
                        "the two centre annotations with no enum family on this build, a tangent-edge "

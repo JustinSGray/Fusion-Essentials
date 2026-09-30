@@ -18,6 +18,7 @@ from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe, terse
 from . import _common
+from . import _edit_feature_common
 from . import _cam_common
 from . import _inputs
 from . import _joints
@@ -29,7 +30,7 @@ app = adsk.core.Application.get()
 # The deeper slices an agent can opt into (the default returns NONE of these in full - only summaries).
 _SLICES = ("mode", "tree", "timeline", "configurations", "materials", "appearances", "attributes",
            "metadata", "definition", "datums")
-_FEATURE = _inputs.FeatureRef("feature", description="Hole/Thread/Loft.")
+_FEATURE = _inputs.FeatureRef("feature", description="Feature definition.")
 _DEFINITION_UNREAD = object()
 
 # The orientation slice's name in include=: any deep include omits that slice unless 'default' rides
@@ -1077,11 +1078,14 @@ def _slice_definition(feature, units):
     entity, label = values["feature"]
     kind = safe(lambda: entity.objectType)
     if kind not in ("adsk::fusion::HoleFeature", "adsk::fusion::ThreadFeature",
-                    "adsk::fusion::LoftFeature"):
+                    "adsk::fusion::LoftFeature", "adsk::fusion::ExtrudeFeature",
+                    "adsk::fusion::SweepFeature"):
         return None, error(f"'{label}' has unsupported definition type {kind!r}; this slice reads "
-                           "HoleFeature, ThreadFeature and LoftFeature. Use include=['timeline'] or model_inspect.")
+                           "Hole/Thread/Loft/Extrude/Sweep. Use include=['timeline'] or model_inspect.")
     factor = 1 / _common.scale(values["units"])
-    if kind == "adsk::fusion::LoftFeature":
+    if kind in ("adsk::fusion::ExtrudeFeature", "adsk::fusion::SweepFeature"):
+        out = {**_definition_identity(entity), **_edit_feature_common.feature_definition(entity, factor)}
+    elif kind == "adsk::fusion::LoftFeature":
         out = _definition_loft(entity)
     elif kind == "adsk::fusion::ThreadFeature":
         out = _definition_thread(entity, factor)
@@ -1108,7 +1112,11 @@ def _slice_definition(feature, units):
                "thread": (_definition_thread(child, factor)
                           if child is not _DEFINITION_UNREAD and child is not None else None)}
     out["units"] = (units or "mm").strip().lower()
-    out["note"] = ("Loft sections are in order; null fields are unreadable. Use profile_handle "
+    out["note"] = ("Read at the current marker without rolling. Null is unknown unless applicable=false; "
+                   "unavailable gives getter failures. Use profile_handle as a profile input. Distances "
+                   "are signed; symmetric_full_length=false means distance is per side."
+                   if kind in ("adsk::fusion::ExtrudeFeature", "adsk::fusion::SweepFeature") else
+                   "Loft sections are in order; null fields are unreadable. Use profile_handle "
                    "with model_edit_loft; model_inspect reads material."
                    if kind == "adsk::fusion::LoftFeature" else
                    "tapped=false or thread_present=false means absent; applicable=false means "

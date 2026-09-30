@@ -14,6 +14,10 @@ from conftest import TOOLS_DIR
 # Each entry names the ONE file allowed to define it; every other tool module must import it from
 # there instead of re-implementing it.
 _DENYLIST = {
+    "read_extrude_definition": ("_edit_feature_common", "def"),
+    "read_sweep_definition": ("_edit_feature_common", "def"),
+    "feature_definition": ("_edit_feature_common", "def"),
+    "extrude_extent_kind": ("_edit_feature_common", "def"),
     "get_cam": ("_cam_common", "def"),
     # The cutting-tool identity pair the create and the edit both read Operation.tool back with -
     # one home, so the '#<n> - ' prefix strip cannot drift between the two comparisons and turn a

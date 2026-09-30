@@ -1589,12 +1589,15 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Could not read the timeline:
 - The active design is not a Configured Design (it has no configuration table) - e.g. a design with Variant A/Variant B style options.
 - include=['attributes'] needs 'attribute_group' - the group to read (the same group design_edit_timeline(action='set_attribute') wrote with). Leave 'attribute_key' empty to get every key in that group.
+- Read at the current marker without rolling. Null is unknown unless applicable=false; unavailable gives getter failures. Use profile_handle as a profile input. Distances are signed; symmetric_full_l...
 - Loft sections are in order; null fields are unreadable. Use profile_handle with model_edit_loft; model_inspect reads material.
 - tapped=false or thread_present=false means absent; applicable=false means inapplicable. Other null fields are unknown. Measure tapped bore geometry with find_geometry/model_inspect; full-length thr...
+- adsk::fusion::ExtrudeFeature
+- adsk::fusion::SweepFeature
 - adsk::fusion::LoftFeature
 - include=['definition'] requires 'feature'; use include=['timeline'] to find it.
 - ' has unsupported definition type
-- ; this slice reads HoleFeature, ThreadFeature and LoftFeature. Use include=['timeline'] or model_inspect.
+- ; this slice reads Hole/Thread/Loft/Extrude/Sweep. Use include=['timeline'] or model_inspect.
 - Definition inventory only. Use find_geometry(kind=construction_axis/construction_plane/construction_point, target=<occurrence>, name=<exact name>) for world geometry and a placed handle. Narrow wit...
 - Light nodes: name, component, body_count, child_count. Narrow: name_filter, component=<name>, max_depth, max_results. tree_handles=true adds handle/full_path/source ids. children_truncated = a leve...
 - lists at most  (per_body_truncated past that); one component has no narrower scope, so read the rest with model_inspect(target='<body>').
@@ -1602,7 +1605,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Each params[].value is in Fusion internal units (cm / radians) - params[].expression carries the authored unit. Full records: param_get(include_model_parameters=true).
 - A group is ONE row here, carrying member_count and is_collapsed; a COLLAPSED group's members are not listed, though summary.states counts them (an exception from one carries index null - address it...
 - part_number and description are writable with design_set_metadata; id and revision_id are reads only - no tool here writes them.
-- '' has unsupported definition type ; this slice reads HoleFeature, ThreadFeature and LoftFeature. Use include=['timeline'] or model_inspect.
+- '' has unsupported definition type ; this slice reads Hole/Thread/Loft/Extrude/Sweep. Use include=['timeline'] or model_inspect.
 - 'default' keeps overview; include=. 'max_depth'/'component'/'name_filter'/'max_results'/'tree_bodies'/'tree_handles' scope the tree; 'group'/'include_suppressed'/'timeline_params' the timeline; 'li...
 
 ### `design_move_occurrence`

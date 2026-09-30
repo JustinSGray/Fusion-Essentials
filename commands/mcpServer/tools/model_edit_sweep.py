@@ -16,7 +16,7 @@ from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_a
                                    feature_body_keys as _feature_body_keys,
                                    health as _health, identical_geometry_reply,
                                    later_operand_refusal, matched, operand_source,
-                                   restore_definition, restore_gaps, rolled_back_text,
+                                   read_sweep_definition, restore_definition, restore_gaps, rolled_back_text,
                                    same_feature as _same_feature, sentence, shape_match,
                                    sketch_address)
 from ._common import counted, error, ok, outcome_clause, safe
@@ -54,17 +54,15 @@ def _path_members(path):
 
 def _definition(feature):
     """The edit-position sweep definition, or None when a required getter fails."""
-    profile = _profile_members(safe(lambda: feature.profile))
-    path = _path_members(safe(lambda: feature.path))
-    operation = safe(lambda: feature.operation)
-    orientation = safe(lambda: feature.orientation)
-    solid = safe(lambda: feature.isSolid)
+    read = read_sweep_definition(feature)
+    profile = _profile_members(read["profile"])
+    path = _path_members(read["path"])
+    operation, orientation, solid = read["operation"], read["orientation"], read["is_solid"]
     if (profile is None or path is None or operation is None or orientation is None
             or solid not in (True, False)):
         return None
     return {"profile": profile, "path": path, "operation": operation,
             "orientation": orientation, "is_solid": solid}
-
 
 def _definition_report(definition):
     """A compact account of read-back members and retained mode controls."""

@@ -16,6 +16,7 @@ from . import _assert, _common, _geom, _inputs
 from ._common import counted, error, ok, outcome_clause, safe
 from ._edit_feature_common import (at_address, failed, health as _health,
                                    identical_geometry_reply, later_operand_refusal, matched,
+                                   read_extrude_definition, extrude_extent_kind as _extent_kind,
                                    restore_definition, restore_gaps,
                                    same_feature as _same_feature, sentence, sketch_address)
 
@@ -32,25 +33,6 @@ _FACE = _inputs.GeometryHandle("to_object", require="face")
 _UNITS = _inputs.UnitField()
 _SPEC = [_FEATURE, _ACTION, _PROFILE, _OPERATION, _BODIES, _EXTENT, _DIRECTION, _FACE, _UNITS]
 _UNREAD = object()
-
-
-def _extent_kind(feature):
-    """The supported extent configuration, or None for an unread or unsupported definition."""
-    one = safe(lambda: feature.extentOne.objectType)
-    two = safe(lambda: feature.hasTwoExtents)
-    if two is True:
-        other = safe(lambda: feature.extentTwo.objectType)
-        if one == other == "adsk::fusion::DistanceExtentDefinition":
-            return "two_side"
-        if one == other == "adsk::fusion::ThroughAllExtentDefinition":
-            return "through_all"
-        return None
-    if two is not False:
-        return None
-    return {"adsk::fusion::DistanceExtentDefinition": "distance",
-            "adsk::fusion::SymmetricExtentDefinition": "symmetric",
-            "adsk::fusion::ToEntityExtentDefinition": "to_face",
-            "adsk::fusion::ThroughAllExtentDefinition": "through_all"}.get(one)
 
 
 def _members_match(actual, requested):
@@ -345,9 +327,9 @@ def _geometry(component):
     return sorted(rows)
 
 
-def _profile_source(feature, component):
+def _profile_source(feature, component, profile=_UNREAD):
     """The native profile and one verified owning sketch, or a refusal."""
-    profile = _common._native_of(safe(lambda: feature.profile))
+    profile = _common._native_of(safe(lambda: feature.profile) if profile is _UNREAD else profile)
     if isinstance(profile, adsk.fusion.Profile):
         sketch = _common._native_of(safe(lambda: profile.parentSketch))
         if _common.same_component(component, safe(lambda: sketch.parentComponent)) is not True:
@@ -400,23 +382,15 @@ def _side(feature, kind):
 
 def _definition(feature):
     """The definition fields readable at the feature's edit position, distances signed in cm."""
-    profile, sketch, collection, _ = _profile_source(feature, safe(lambda: feature.parentComponent))
+    read = read_extrude_definition(feature)
+    profile, sketch, collection, _ = _profile_source(
+        feature, safe(lambda: feature.parentComponent), read["profile"])
     address = None if collection else sketch_address(profile)
-    kind = _extent_kind(feature)
-    param = (safe(lambda: feature.extentOne.distance)
-             if kind in ("distance", "symmetric", "two_side") else None)
     return {"profile_sketch": safe(lambda: sketch.name),
             "profile_index": address[2] if address and address[1] == "profile" else None,
-            "operation": next((name for name, enum in _common.OPERATIONS.items()
-                               if safe(lambda: feature.operation) ==
-                               getattr(adsk.fusion.FeatureOperations, enum)), None),
-            "extent": kind, "side": _side(feature, kind),
-            "distance_cm": _common.landed_extent_cm(feature) if param is not None else None,
-            "distance2_cm": _common.landed_extent2_cm(feature) if kind == "two_side" else None,
-            "distance_parameter": safe(lambda: param.name) if param is not None else None,
-            "distance_expression": safe(lambda: param.expression) if param is not None else None,
-            "participants": safe(lambda: [b.name for b in feature.participantBodies])}
-
+            **{key: read[key] for key in ("operation", "extent", "distance_cm", "distance2_cm",
+                "distance_parameter", "distance_expression", "participants")},
+            "side": _side(feature, read["extent"])}
 
 def _described(definition):
     """A definition read's action-level fields as an outcome sentence quotes them."""

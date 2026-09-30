@@ -627,3 +627,17 @@ def test_open_surface_opaque_profile_reads_back_as_proxy_curve_path(rig, monkeyp
     assert result["isError"] is True
     assert result["details"]["definition_matches"] is False
     assert timeline.markerPosition == 3
+
+
+def test_strict_definition_rejects_partial_path_read(rig, monkeypatch):
+    sweep, _ = rig
+    monkeypatch.setattr(sweep, "operation", adsk.fusion.FeatureOperations.NewBodyFeatureOperation, raising=False)
+    monkeypatch.setattr(sweep, "orientation", adsk.fusion.SweepOrientationTypes.PerpendicularOrientationType, raising=False)
+    monkeypatch.setattr(sweep, "isSolid", True, raising=False)
+    assert _real_definition(sweep) is not None
+
+    def unread_path(_feature):
+        raise RuntimeError("3 : Didn't roll editing feature back")
+
+    monkeypatch.setattr(Sweep, "path", property(unread_path))
+    assert _real_definition(sweep) is None

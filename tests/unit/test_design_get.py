@@ -18,8 +18,8 @@ import adsk.fusion
 import pytest
 
 from conftest import (FakeOccurrence, FakeTimeline, FakeTimelineObject, FakeFeature,
-                      FakeUserParameters, MakeComp, MakeDesign,
-                      _NamedCollection, error_message, load_tool, make_design, install)
+                      FakeUserParameters, FakeModelParameter, Profile, Sketch, MakeComp, MakeDesign,
+                      _NamedCollection, error_message, load_tool, make_design, make_sketch_curve, install)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 "live"))
@@ -132,7 +132,7 @@ def test_definition_requires_explicit_supported_feature_and_units(definition_sce
     assert "requires 'feature'" in error_message(dg.handler(include=["definition"]))
     assert "Unknown units" in error_message(dg.handler(include=["definition"], feature="Hole4", units="ft"))
     assert "include" in error_message(dg.handler(feature="Hole4"))
-    definition_scene.hole.objectType = "adsk::fusion::ExtrudeFeature"
+    definition_scene.hole.objectType = "adsk::fusion::RevolveFeature"
     assert "unsupported definition type" in error_message(dg.handler(include=["definition"], feature="Hole4"))
 
 
@@ -201,6 +201,123 @@ def test_loft_definition_caps_section_list(definition_scene):
 # _slice_* functions to fixed payloads and assert the COMPOSITION. The real slice→source-handler
 # delegation is proven by live validation (the honest test of cross-tool wiring), not by mocking 5
 # handlers' internals (which would recreate the bespoke-fake problem this convention exists to avoid).
+
+@pytest.fixture
+def extrude_definition_scene(definition_scene, monkeypatch):
+    s = definition_scene
+    feature = s.hole
+    feature.objectType = "adsk::fusion::ExtrudeFeature"
+    sketch = Sketch("Section", parent_component=s.component)
+    profile = Profile(parent_sketch=sketch, entity_token="section-profile")
+    profile.objectType = "adsk::fusion::Profile"
+    sketch.profiles = _NamedCollection([profile])
+    feature.profile = profile
+    feature.operation = adsk.fusion.FeatureOperations.NewBodyFeatureOperation
+    feature.hasTwoExtents = False
+    feature.extentOne = SimpleNamespace(objectType="adsk::fusion::DistanceExtentDefinition",
+        distance=FakeModelParameter(name="d1", expression="-15 mm", value=-1.5))
+    feature.extentTwo = None
+    feature.read_participants = False
+    feature.participants = []
+
+    def participants(feature):
+        if not feature.read_participants:
+            raise RuntimeError("3 : Didn't roll editing feature back")
+        return feature.participants
+
+    monkeypatch.setattr(FakeFeature, "participantBodies", property(participants), raising=False)
+    return s
+
+
+@pytest.mark.parametrize("units, expected", [("mm", -15), ("cm", -1.5), ("in", -0.590551)])
+def test_extrude_definition_preserves_sign_units_and_unknown_participants(extrude_definition_scene, units, expected):
+    s = extrude_definition_scene
+    result = _payload(dg.handler(include=["definition"], feature="Hole4", units=units))["definition"]
+    assert result["distance"] == expected and result["distance_applicable"] is True
+    assert result["distance2"] is None and result["distance2_applicable"] is False
+    assert result["distance_parameter"] == "d1" and result["distance_expression"] == "-15 mm"
+    assert result["participants"] is None and "participants" in result["unavailable"]
+    assert result["profile"] == {"type": "Profile", "profile_handle": "section-profile",
+        "source_sketch": "Section", "source_component": "Cradle", "profile_index": 0, "curve_ref": None}
+    assert s.timeline._moves == [] and s.row._rolls == [] and s.timeline.markerPosition == 0
+
+
+def test_two_side_definition_reads_second_parameter_independently(extrude_definition_scene):
+    s = extrude_definition_scene
+    s.hole.hasTwoExtents = True
+    s.hole.extentOne.distance.value = 1.0
+    s.hole.extentOne.distance._expression = "10 mm"
+    s.hole.extentTwo = SimpleNamespace(objectType="adsk::fusion::DistanceExtentDefinition",
+        distance=FakeModelParameter(name="d2", expression="4 mm", value=0.4))
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["extent"] == "two_side" and result["distance"] == 10
+    assert result["distance2"] == 4 and result["distance2_applicable"] is True
+    assert result["distance2_parameter"] == "d2" and result["distance2_expression"] == "4 mm"
+
+
+def test_symmetric_definition_keeps_native_full_length_semantics(extrude_definition_scene):
+    s = extrude_definition_scene
+    s.hole.extentOne.objectType = "adsk::fusion::SymmetricExtentDefinition"
+    s.hole.extentOne.distance.value = 1.2
+    for full in (False, True):
+        s.hole.extentOne.isFullLength = full
+        result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+        assert result["extent"] == "symmetric" and result["distance"] == 12
+        assert result["symmetric_full_length"] is full and result["distance2"] is None
+
+
+def test_through_definition_has_no_distance_or_inferred_world_side(extrude_definition_scene):
+    s = extrude_definition_scene
+    s.hole.extentOne.objectType = "adsk::fusion::ThroughAllExtentDefinition"
+    s.hole.extentOne.isPositiveDirection = True
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["extent"] == "through_all" and result["distance_applicable"] is False
+    assert result["distance"] is None and result["distance_expression"] is None
+    assert "side" not in result and "direction" not in result
+
+
+def test_sweep_definition_preserves_partial_reads_and_edit_context_values(extrude_definition_scene, monkeypatch):
+    s = extrude_definition_scene
+    feature = s.hole
+    feature.objectType = "adsk::fusion::SweepFeature"
+    feature.orientation = adsk.fusion.SweepOrientationTypes.PerpendicularOrientationType
+    feature.isSolid = True
+    feature.read_path = False
+    curve = make_sketch_curve("path-curve")
+    curve.objectType = "adsk::fusion::SketchLine"
+    curve.parentSketch = Sketch("Path", parent_component=s.component)
+    curve.parentSketch.sketchCurves.sketchLines = _NamedCollection([curve])
+    feature.actual_path = _NamedCollection([SimpleNamespace(entity=curve)])
+
+    def path(feature):
+        if not feature.read_path:
+            raise RuntimeError("3 : Didn't roll editing feature back")
+        return feature.actual_path
+
+    monkeypatch.setattr(FakeFeature, "path", property(path), raising=False)
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["operation"] == "new" and result["is_solid"] is True
+    assert result["profile"]["source_sketch"] == "Section"
+    assert result["path"] is None and result["path_count"] is None
+    assert set(result["unavailable"]) == {"path", "participants"}
+    feature.read_path = feature.read_participants = True
+    feature.participants = [SimpleNamespace(name="Body1")]
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["path_count"] == 1 and len(result["path"]) == 1
+    assert result["path"][0]["curve_ref"] == "Path/line:0"
+    assert result["participants"] == ["Body1"] and result["unavailable"] == {}
+    assert s.timeline._moves == [] and s.row._rolls == []
+
+
+def test_definition_caps_participants_and_preserves_unread_profile(extrude_definition_scene):
+    s = extrude_definition_scene
+    s.hole.read_participants = True
+    s.hole.participants = [SimpleNamespace(name=f"Body{i}") for i in range(70)]
+    s.hole.profile = None
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["profile"] is None and result["distance"] == -15
+    assert len(result["participants"]) == 64 and result["participants_truncated"] is True
+
 
 @pytest.fixture
 def stub_slices(monkeypatch):

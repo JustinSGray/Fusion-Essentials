@@ -857,6 +857,27 @@ def _later_operand_rows():
                          and names[11:] == ["PathLater", "ProfLater", "BoxLater", "S1Later"]),
          ("lo_rows", _recall("lo_rows", _timeline_names)))
     volume("sweep volume along the 100 mm path", 7.853982)
+    read("design_get", {"include": ["definition"], "feature": "Sweep1"},
+         lambda p: _measured("Sweep definition keeps readable fields when path needs edit context", p.get("definition"),
+             (p.get("definition") or {}).get("type") == "SweepFeature"
+             and (p.get("definition") or {}).get("operation") == "new"
+             and (p.get("definition") or {}).get("is_solid") is True
+             and (p.get("definition") or {}).get("orientation") is not None
+             and (p.get("definition") or {}).get("path") is None
+             and (p.get("definition") or {}).get("path_count") is None
+             and (p.get("definition") or {}).get("participants") is None
+             and bool(((p.get("definition") or {}).get("unavailable") or {}).get("path"))
+             and bool(((p.get("definition") or {}).get("unavailable") or {}).get("participants"))
+             and ((p.get("definition") or {}).get("profile") or {}).get("source_sketch") == "Prof"
+             and bool(((p.get("definition") or {}).get("profile") or {}).get("profile_handle"))),
+         ("lo_profile_handle", lambda p: p["definition"]["profile"]["profile_handle"]))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("definition read preserves every healthy timeline row and marker",
+                         lambda names: names == _RECALL.get("lo_rows")))
+    volume("definition read preserves the sweep volume", 7.853982)
+    write("model_edit_sweep", lambda c: {"feature": "Sweep1", "action": "profile",
+        "profile": _ctx_get(c, "lo_profile_handle", "profile from definition read")},
+        _refused("already uses that profile", "Nothing was edited"))
     # Each editor names the later sketch, both rows and the move; nothing is edited.
     write("model_edit_sweep", {"feature": "Sweep1", "action": "path", "path": "sketch:PathLater"},
           _later_refusal("PathLater", 11, "Sweep1", 2))
