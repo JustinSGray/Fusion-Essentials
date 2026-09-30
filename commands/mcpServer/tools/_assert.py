@@ -656,8 +656,7 @@ class FreeEdgesChanged(Postcondition):
 
 
 class SurfaceAreaAdded(Postcondition):
-    """After a surface-creating Edit: the design's total body surface area GREW, so the sheet the
-    payload names exists as measured area."""
+    """Verify that total body surface area increased beyond the area threshold."""
 
     name = "surface_area_added"
     rung = "geometry"
@@ -677,8 +676,9 @@ class SurfaceAreaAdded(Postcondition):
             return "", {"area_added_cm2": round(delta, 6)}
         if before[1] or after[1]:
             return "", {"surface_area_confirmed": False}
-        return (f"the surface was reported created but the design's total body surface area is "
-                f"unchanged ({round(after[0], 6)} cm2) - no surface geometry was added."), {}
+        return (f"the surface was reported created, but total body surface area changed by "
+                f"{delta:.12g} cm2; verification requires an increase above {_AREA_TOL_CM2:g} cm2."), {
+                    "area_change_cm2": delta, "area_increase_threshold_cm2": _AREA_TOL_CM2}
 
 
 class PatternElementsPlaced(Postcondition):
@@ -806,18 +806,25 @@ class PatternElementsPlaced(Postcondition):
         return "", {"elements_placed": len(placed)}
 
 
-def _verification_failed(post, ex):
-    """The fail-closed error result when a HARD postcondition's capture or verify RAISED."""
+def _verification_failed(post, ex, payload=None):
+    """Return a hard capture refusal or an unverified post-write error with reported identities."""
     detail = str(ex)[:160]
     tool = getattr(post, "read_tool", None)
     reread = (f"Re-read with {tool} and retry only if the change did not take."
               if tool else "Re-read the affected state and retry only if the change did not take.")
-    note = (f"The mutation may have succeeded, but its verification could not run ({detail}). "
-            f"Reporting failure rather than a possible no-op passed as success. " + reread)
+    body = {"postcondition": post.name, "verification_error": detail}
+    if payload is None:
+        body.update(handler_not_run=True,
+                    note="The required baseline could not be read; this tool's handler was not run. "
+                         "Inspect the affected state before retrying.")
+        message = f"{post.name}: baseline capture failed; handler not run - {detail}"
+    else:
+        body.update(handler_reported_unverified_result=payload,
+                    note=f"The mutation may have succeeded, but its verification could not run ({detail}). "
+                         "Nested results are handler-reported, not confirmation. " + reread)
+        message = f"{post.name}: verification could not run - {detail}"
     return {"content": [{"type": "text", "text": json.dumps(
-                {"postcondition": post.name, "verification_error": detail, "note": note}, indent=2)}],
-            "isError": True,
-            "message": f"{post.name}: verification could not run - {detail}"}
+                body, indent=2)}], "isError": True, "message": message}
 
 
 def _check_input_keys(handler, posts):
@@ -838,9 +845,7 @@ def _check_input_keys(handler, posts):
 
 
 def wrap(handler, postconditions):
-    """Wrap an Edit handler with capture -> handler -> verify, running verify only on a JSON ok().
-    A raising capture or verify fails the call for a HARD kind and annotates for a SOFT one; the
-    mutation is never rolled back. Applied INSIDE _write_guard.wrap."""
+    """Guard an Edit's baseline, run its handler, then verify JSON success without rollback."""
     posts = list(postconditions or [])
     if not posts:
         return handler
@@ -854,6 +859,9 @@ def wrap(handler, postconditions):
 
     def asserted(**kwargs):
         before = [_capture(p, kwargs) for p in posts]
+        for p, (_baseline, cap_ex) in zip(posts, before):
+            if cap_ex is not None and p.severity != "soft":
+                return _verification_failed(p, cap_ex)
         result = handler(**kwargs)
         if not isinstance(result, dict) or result.get("isError"):
             return result
@@ -870,13 +878,10 @@ def wrap(handler, postconditions):
 
         for p, (b, cap_ex) in zip(posts, before):
             soft = (p.severity == "soft")
-            # A capture that raised makes verification impossible; a HARD one fails closed.
             if cap_ex is not None:
-                if soft:
-                    payload.setdefault(p.name + "_confirmed", False)
-                    payload.setdefault("verify_error", ("capture failed: " + str(cap_ex))[:120])
-                    continue
-                return _verification_failed(p, cap_ex)
+                payload.setdefault(p.name + "_confirmed", False)
+                payload.setdefault("verify_error", ("capture failed: " + str(cap_ex))[:120])
+                continue
             try:
                 reason, evidence = p.verify(kwargs, payload, b)
             except Exception as ex:
@@ -885,14 +890,18 @@ def wrap(handler, postconditions):
                     payload.setdefault(p.name + "_confirmed", False)
                     payload.setdefault("verify_error", str(ex)[:120])
                     continue
-                return _verification_failed(p, ex)
+                return _verification_failed(p, ex, payload)
             if reason:
                 if soft:
                     payload.setdefault("verified", {})[p.name] = {"confirmed": False,
                                                                   "reason": reason}
                     continue
+                reread = f"Re-read with {p.read_tool}." if p.read_tool else "Re-read the affected state."
                 return {"content": [{"type": "text", "text": json.dumps(
-                            {"postcondition": p.name, "note": reason}, indent=2)}],
+                            {"postcondition": p.name, "note": reason + " " + reread
+                             + " Nested results are handler-reported, not confirmation; inspect before retrying.",
+                             "handler_reported_unverified_result": payload,
+                             "verification_evidence": evidence or {}}, indent=2)}],
                         "isError": True,
                         "message": f"{p.name}: {reason}"}
             for k, v in (evidence or {}).items():

@@ -8,15 +8,19 @@ built, trimmed and stitched, a mesh round-tripped through export and insert, and
 nesting last, because it restructures what it nests.
 """
 
+import copy
+
 from verify_core import (
     EXPORT_DIR, _RECALL, _activated, _arranged, _base_feature_open, _box, _captured, _ctx_get,
     _datum_plane, _document_closed, _document_read, _drilled, _dwell, _extent_measured, _extruded,
-    _fg, _fgn, _holder_computed, _made_component, _matched, _measured, _mesh_round_trip,
+    _fg, _fgn, _holder_computed, _home_address, _home_document, _made_component, _matched, _measured, _mesh_round_trip,
     _needs, _new_document, _num, _packed, _prof, _rebuilt, _recall, _refused, _repair_no_op,
     _same_face_area, _shelled, _split_bodies, _stitched, _trim_scoped_to_target, _unless,
     _unstitched, _watch)
 from verify_acts_cam import MACHINING_EXTENSION
 from verify_layout import _px, _py
+from verify_acts_model_sweep import (
+    _retire_compare, _retire_design_state, _retire_material_state, _retire_sketch_state)
 
 
 def _base_feature_state(p):
@@ -519,11 +523,130 @@ def _caveat_names_groups(n):
     return check
 
 
+def _tiny_surface_history(after=False):
+    """Require the tiny sheet's one retained feature/body and unchanged prior tree/history."""
+    def check(p):
+        state = _retire_design_state(p)
+        before = _RECALL.get("tiny_surface_design")
+        valid = state is not None
+        if valid:
+            tree, timeline = state["tree"], state["timeline"]
+            valid = (tree.get("child_count") == 2 and timeline["count"] == (8 if after else 7)
+                     and timeline.get("summary") == {"states": {"healthy": timeline["count"]}, "exceptions": []}
+                     and timeline.get("groups") == {})
+        if valid and after:
+            reduced = copy.deepcopy(tree)
+            owners = [n for n in reduced["children"] if n.get("component") == "K2Surface"]
+            added = [b for n in owners for b in n["bodies"] if b.get("name") == "Body2"]
+            valid = (before is not None and len(owners) == len(added) == 1
+                     and added[0].get("is_solid") is False and added[0].get("visible") is True
+                     and bool(added[0].get("handle"))
+                     and timeline["timeline"][:-1] == before["timeline"]["timeline"]
+                     and timeline["timeline"][-1] == {"index": 7, "name": "Extrude2",
+                                                    "type": "ExtrudeFeature", "component": "K2Surface"})
+            if valid:
+                owners[0]["bodies"].remove(added[0])
+                owners[0]["body_count"] -= 1
+                valid = reduced == before["tree"]
+        if valid and not after:
+            _RECALL["tiny_surface_design"] = state
+        return _measured("one retained tiny-sheet feature/body with prior controls unchanged", state, valid)
+    return check
+
+
+def _tiny_surface_bounds(p, kind="body"):
+    """Return complete world-axis bounds without interpreting rounded surface area."""
+    values = [p.get(axis) for axis in "xyz"] + [
+        (p.get(side) or {}).get(axis) for side in ("min_point", "max_point") for axis in "xyz"]
+    if (p.get("units") != "mm" or p.get("frame") != "world axes (axis-aligned)"
+            or p.get("kind") != kind or not all(_num(v) for v in values)):
+        return None
+    return values
+
+
+def _tiny_surface_face(p):
+    """Return one independently acquired surface face's disclosed geometry."""
+    rows = p.get("matches") or []
+    if p.get("units") != "mm" or p.get("match_count") != 1 or p.get("returned") != 1 or len(rows) != 1:
+        return None
+    row = rows[0]
+    if (row.get("kind") != "planar_face" or not row.get("handle") or not _num(row.get("area"))
+            or not all(isinstance(row.get(k), list) and len(row[k]) == 3 and all(_num(v) for v in row[k])
+                       for k in ("position", "normal")) or not isinstance(row.get("frame"), dict)):
+        return None
+    return {k: row[k] for k in ("kind", "area", "position", "normal", "frame")}
+
+
+def _tiny_surface_rows():
+    """Demonstrate a small retained sheet after an area-threshold refusal using public reads."""
+    rows = [("doc_get", {}, _home_document, ("tiny_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "tiny_home", "story")},
+             _new_document, ("tiny_doc", lambda p: p["document_handle"]))]
+    def write(tool, args, expect="ok"):
+        rows.append((tool, lambda c, args=args: dict(args, expect_document=_ctx_get(c, "tiny_doc", "owned scratch")), expect, None))
+    write("model_create_component", {"name": "K2Witness", "activate": True, "x": 100}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "K2Cube"})
+    write("sketch_add_geometry", {"sketch_name": "K2Cube", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]})
+    write("model_extrude", {"sketch_name": "K2Cube", "component": "K2Witness", "distance": 10}, _extruded)
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "K2Surface", "activate": True}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "K2Normal"})
+    write("sketch_add_geometry", {"sketch_name": "K2Normal", "geometry": [
+        {"kind": "line", "x1": 0, "y1": 0, "x2": 20, "y2": 0}]})
+    write("surface_extrude", {"sketch_name": "K2Normal", "component": "K2Surface", "distance": 10},
+          lambda p: p.get("created") is True and p.get("is_solid") is False and p.get("result_bodies") == ["Body1"])
+    write("sketch_create", {"plane": "xy", "name": "K2Tiny"})
+    write("sketch_add_geometry", {"sketch_name": "K2Tiny", "geometry": [
+        {"kind": "line", "x1": 40, "y1": 0, "x2": 40.01, "y2": 0}]})
+    for after in (False, True):
+        if after:
+            write("surface_extrude", {"sketch_name": "K2Tiny", "component": "K2Surface", "distance": 0.005,
+                                       "units": "mm", "operation": "new"},
+                  _refused('"postcondition": "surface_area_added"', '"handler_reported_unverified_result"',
+                           '"feature": "Extrude2"', '"result_bodies"', '"Body2"', '"source": "K2Tiny"',
+                           '"features_verified": 1', '"area_change_cm2"', '"area_increase_threshold_cm2": 1e-06',
+                           "not confirmation", "Re-read with model_inspect"))
+        rows.append(("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                                     "tree_handles": True, "max_results": 200}, _tiny_surface_history(after), None))
+        rows.append(("model_inspect", {"target": "K2Witness:1", "include": ["default", "mass"], "per_body": True,
+                                       "units": "mm", "accuracy": "very_high"},
+                     _retire_compare("tiny_cube", lambda p: _retire_material_state(p)
+                                     if all(p.get(a) == 10 for a in "xyz")
+                                     and (p.get("mass") or {}).get("volume") == 1000 else None, after), None))
+        rows.append(("model_inspect", {"target": "K2Surface:1:Body1", "units": "mm"},
+                     _retire_compare("tiny_normal_bounds", lambda p: (v if (v := _tiny_surface_bounds(p))
+                                     == [20.0, 0.0, 10.0, 0.0, 0.0, 0.0, 20.0, 0.0, 10.0] else None), after), None))
+        rows.append(("find_geometry", {"target": "K2Surface:1:Body1", "kind": "planar_face", "units": "mm",
+                                       "max_results": 100}, _retire_compare("tiny_normal_face", lambda p:
+                                       (v if (v := _tiny_surface_face(p)) is not None and v["area"] == 200 else None), after), None))
+        for owner, name in (("K2Witness", "K2Cube"), ("K2Surface", "K2Normal"), ("K2Surface", "K2Tiny")):
+            rows.append(("sketch_get", {"component": owner, "sketch_name": name, "include_entities": True,
+                                        "max_results": 200, "units": "mm"},
+                         _retire_compare("tiny_" + name, _retire_sketch_state, after), None))
+    rows.extend([
+        ("find_geometry", {"target": "K2Surface:1:Body2", "kind": "planar_face", "units": "mm", "max_results": 100},
+         lambda p: _measured("tiny sheet has one readable face despite rounded area",
+                              _tiny_surface_face(p), _tiny_surface_face(p) is not None
+                              and _tiny_surface_face(p)["position"] == [40.005, 0.0, 0.0025]), _fg("tiny_face")),
+        ("model_inspect", lambda c: {"target": _ctx_get(c, "tiny_face", "retained sheet face"), "units": "mm"},
+         lambda p: _measured("retained sheet independently spans 0.01 by 0.005 mm",
+                              _tiny_surface_bounds(p, "face"), _tiny_surface_bounds(p, "face")
+                              == [0.01, 0.0, 0.005, 40.0, 0.0, 0.0, 40.01, 0.0, 0.005]), None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, "tiny_home", "story"),
+                                     "expect_document": _ctx_get(c, "tiny_doc", "owned scratch")}, "ok", None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "tiny_doc", "owned scratch"), "save_changes": False,
+                                  "expect_document": _ctx_get(c, "tiny_home", "story")}, _document_closed, None),
+    ])
+    return rows
+
+
 # --- the CAMEO acts: surface-prep, mesh, and CAM families ride scratch fixtures in the SAME doc -
 # These families have no natural home on the mechanism itself, so the spec places them as cameos.
 
 # ACT 5: MACHINING PREP - surfaces, sheet ops, split/stitch/arrange/base-feature, holder read.
 _MACHINING = [
+    *_tiny_surface_rows(),
     # the surface/split/stitch cameos live on a GRID (y=200 row, plus a z-lifted revolve) so each
     # builds in clear space a viewer can see, never on top of the part or another cameo.
     ("model_create_component", {"name": "SRev", "activate": True}, _made_component, None),

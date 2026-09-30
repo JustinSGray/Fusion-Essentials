@@ -125,12 +125,15 @@ class TestWrapContract:
         assert "verify exploded" in out["verify_error"]
 
     def test_hard_capture_crash_fails_closed(self):
-        # a raising capture leaves no baseline, so verify can never run - same fail-closed error.
         wrapped = kernel.wrap(lambda **kw: _ok({"done": True}), [Fixed(capture_boom=True)])
         res = wrapped()
         assert res["isError"] is True
-        assert "verification could not run" in res["message"]
+        assert "baseline capture failed; handler not run" in res["message"]
         assert "capture exploded" in res["message"]
+        body = json.loads(res["content"][0]["text"])
+        assert body["handler_not_run"] is True
+        assert "handler_reported_unverified_result" not in body
+        assert "may have succeeded" not in body["note"]
 
     def test_soft_capture_crash_stays_an_annotation(self):
         wrapped = kernel.wrap(lambda **kw: _ok({"done": True}),
@@ -139,9 +142,7 @@ class TestWrapContract:
         assert out["fixed_confirmed"] is False
         assert "capture exploded" in out["verify_error"]
 
-    def test_capture_crash_does_not_block_the_handler(self):
-        # fail-closed applies to the RESULT, not the mutation: the handler still runs - the kernel
-        # never rolls back or pre-empts the work, it reports the unverifiable outcome honestly.
+    def test_hard_capture_crash_blocks_the_handler(self):
         calls = {"n": 0}
 
         def handler(**kw):
@@ -149,13 +150,30 @@ class TestWrapContract:
             return _ok({"done": True})
 
         res = kernel.wrap(handler, [Fixed(capture_boom=True)])()
-        assert calls["n"] == 1 and res["isError"] is True
+        assert calls["n"] == 0 and res["isError"] is True
 
-    def test_handler_error_passes_through_even_when_capture_crashed(self):
-        # an error result carries its own honest failure; the verification-impossible error must not
-        # replace it (the mutation did NOT claim success, so there is nothing to fail closed about).
+    def test_hard_capture_refusal_precedes_a_handler_that_would_error(self):
         err = {"content": [], "isError": True, "message": "handler refused"}
-        assert kernel.wrap(lambda **kw: err, [Fixed(capture_boom=True)])() is err
+        res = kernel.wrap(lambda **kw: err, [Fixed(capture_boom=True)])()
+        assert res is not err and "handler not run" in res["message"]
+
+    @pytest.mark.parametrize("boom", [False, True])
+    def test_hard_failure_retains_identities_and_completed_evidence_without_promoting_success(self, boom):
+        original = {"created": True, "feature": "Extrude2", "result_bodies": ["Body2"],
+                    "postcondition": "not authoritative", "note": "handler says success", "isError": False}
+        posts = [Fixed(evidence={"feature_healthy": True}),
+                 Fixed(reason="area below threshold", boom=boom, read_tool="model_inspect")]
+        result = kernel.wrap(lambda **kw: _ok(original), posts)()
+        body = json.loads(result["content"][0]["text"])
+        assert result["isError"] is True and body["postcondition"] == "fixed"
+        assert "created" not in body and "feature" not in body and "isError" not in body
+        assert body["handler_reported_unverified_result"] == dict(original, feature_healthy=True)
+        assert "model_inspect" in body["note"] and "not confirmation" in body["note"]
+
+    def test_none_capture_baseline_still_reaches_handler_and_verify(self):
+        post = Fixed(capture_value=None, evidence={"baseline_available": False})
+        result = _payload(kernel.wrap(lambda **kw: _ok({"created": True}), [post])())
+        assert result == {"created": True, "baseline_available": False}
 
     def test_no_postconditions_returns_handler_unwrapped(self):
         h = lambda **kw: _ok({})
@@ -1103,7 +1121,19 @@ class TestSurfaceAreaAdded:
         self._wire(monkeypatch, census)
         res = kernel.wrap(self._handler(census, list(census)), [kernel.SurfaceAreaAdded()])()
         assert res["isError"] is True
-        assert "unchanged (3.0 cm2)" in res["message"]
+        assert "changed by 0 cm2" in res["message"]
+
+    def test_small_positive_area_is_disclosed_without_claiming_no_geometry(self, monkeypatch):
+        census = [_sheet("Old", free=4, area=3.0)]
+        self._wire(monkeypatch, census)
+        res = kernel.wrap(self._handler(census, census + [_sheet("Tiny", free=4, area=5e-7)]),
+                          [kernel.SurfaceAreaAdded()])()
+        body = json.loads(res["content"][0]["text"])
+        assert res["isError"] is True and "unchanged" not in res["message"]
+        assert "increase above 1e-06 cm2" in res["message"]
+        assert body["verification_evidence"]["area_change_cm2"] == pytest.approx(5e-7)
+        assert body["verification_evidence"]["area_increase_threshold_cm2"] == 1e-6
+        assert body["handler_reported_unverified_result"]["created"] is True
 
     def test_no_growth_beside_an_unread_area_is_disclosed_not_failed(self, monkeypatch):
         # the sheet may be the body whose area did not read - no conviction from a blind census
