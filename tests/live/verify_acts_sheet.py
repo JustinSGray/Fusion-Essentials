@@ -589,12 +589,40 @@ def _width_set(width):
                                 p.get("set") is True and _near((p.get("after") or {}).get("value"), width, 0.01)), None)
 
 
-def _home_session(p):
-    """Capture the original unsaved story document's exact session handle."""
+def _home_snapshot(p):
+    """Return readable active identity/save facts and the complete open-document census."""
     active = p.get("active") or {}
-    return _measured("story session before sheet coupon", active,
-                     active.get("has_data_file") is False
-                     and str(active.get("document_handle") or "").startswith("session:"))
+    fields = ("document_handle", "name", "document_id", "has_data_file", "is_saved", "is_modified")
+    state = {key: active.get(key) for key in fields}
+    rows = p.get("open_documents")
+    if (not all(key in active for key in fields)
+            or not all(type(state[key]) is bool for key in ("has_data_file", "is_saved", "is_modified"))
+            or not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows)):
+        return None
+    handles = [r.get("document_handle") for r in rows]
+    if (p.get("truncated") is not False or type(p.get("open_count")) is not int
+            or p["open_count"] != len(rows) or not rows
+            or not all(isinstance(h, str) and h.startswith("session:") for h in handles)
+            or len(set(handles)) != len(handles)
+            or not all(isinstance(r.get("name"), str) and r["name"] for r in rows)):
+        return None
+    documents = {r["document_handle"]: r["name"] for r in rows}
+    cloud_id = state["document_id"]
+    if (not isinstance(state["document_handle"], str)
+            or documents.get(state["document_handle"]) != state["name"]
+            or not isinstance(state["name"], str) or not state["name"]
+            or (state["has_data_file"] and not (isinstance(cloud_id, str) and cloud_id))
+            or (not state["has_data_file"] and cloud_id is not None)):
+        return None
+    return {"active": state, "documents": documents}
+
+
+def _home_session(p):
+    """Capture the original story document's exact identity and save state."""
+    snapshot = _home_snapshot(p)
+    _measured("story session before sheet coupon", p, snapshot is not None)
+    _RECALL["sm_home_state"] = snapshot
+    return True
 
 
 def _coupon_session(p):
@@ -796,12 +824,13 @@ def _closed_one(p):
 
 
 def _story_restored(p):
-    """Verify the original unsaved story session is active before the finale."""
-    active = p.get("active") or {}
-    handles = {r.get("document_handle") for r in p.get("open_documents") or []}
-    return _measured("story session restored", {"active": active, "open_handles": sorted(str(h) for h in handles)},
-                     active.get("document_handle") == _RECALL.get("sm_home")
-                     and active.get("has_data_file") is False and p.get("truncated") is False
+    """Verify the original story identity, save state and document census are restored."""
+    snapshot = _home_snapshot(p)
+    before = _RECALL.get("sm_home_state")
+    handles = snapshot["documents"] if snapshot is not None else {}
+    return _measured("story session restored", {"before": before, "after": snapshot, "active": p.get("active")},
+                     snapshot is not None and snapshot == before
+                     and snapshot["active"]["document_handle"] == _RECALL.get("sm_home")
                      and _RECALL.get("sm_coupon") not in handles
                      and _RECALL.get("sm_drawing_session") not in handles)
 
@@ -951,7 +980,7 @@ def _fold_position_extent(position):
     return check
 
 _SHEET_BUILD = [
-    ("doc_get", {}, _home_session,
+    ("doc_get", {"max_results": 1000}, _home_session,
      ("sm_home", _recall("sm_home", lambda p: p["active"]["document_handle"]))),
     ("doc_new", {}, _coupon_session,
      ("sm_coupon", _recall("sm_coupon", lambda p: p["document_handle"]))),

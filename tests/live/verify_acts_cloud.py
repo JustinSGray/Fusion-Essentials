@@ -18,6 +18,7 @@ import time
 from cloud_config import FOLDER, HUB, PROJECT
 from verify_acts_cam import (
     _launched_on, _op_created, _preset_applied, _template_applied, _template_path_state)
+from verify_acts_model_precision import _section_camera
 from verify_core import (
     EXPORT_DIR, MARKER_PNG, NOTE_MAX, _RECALL, _activated, _ctx_get, _document_closed,
     _driven_slide, _dwell, _extruded, _face_up_at, _fg, _home_address, _home_document, _jointed,
@@ -1592,7 +1593,37 @@ def _drawing_revision_updated(p):
     return _measured("row 3's description updated with its original date left alone",
                      {"description": row3.get("description"), "date": row3.get("date")},
                      row3.get("description") == _REVISION_UPDATE_TEXT
-                     and row3.get("date") == "27 Sep 2026")
+                     and row3.get("date") == "27 Sep 2026"
+                     and row3.get("approved") == "PM" and row3.get("zone") == "C3")
+
+
+def _drawing_revision_census(p):
+    """Read complete original-sheet revision and view rows for an independent update check."""
+    sheets = p.get("sheets") or []
+    sheet = sheets[0] if len(sheets) == 1 else {}
+    rows, views = sheet.get("revisions"), sheet.get("view_rows")
+    if (sheet.get("name") != _drawing_original_sheet()["name"]
+            or not isinstance(rows, list) or len(rows) != 4 or sheet.get("revision_count") != 4
+            or any(not isinstance(row.get(field), str) for row in rows
+                   for field in ("rev", "description", "date", "approved", "zone", "sht"))
+            or any(not isinstance(row.get("visible"), bool) for row in rows)
+            or not isinstance(views, list) or len(views) != sheet.get("views")
+            or any(type(row.get("index")) is not int or not isinstance(row.get("type"), str) for row in views)
+            or sheet.get("view_rows_truncated")):
+        raise AssertionError("revision/view census was unreadable or incomplete")
+    return {"revisions": rows, "views": views}
+
+
+def _drawing_revision_read(updated=False):
+    """Compare independent rows with the unchanged census or the one requested description edit."""
+    def check(p):
+        before = _RECALL["drawing_revision_before"]
+        expected = {**before, "revisions": [dict(row) for row in before["revisions"]]}
+        if updated:
+            expected["revisions"][3]["description"] = _REVISION_UPDATE_TEXT
+        return _measured("revision update preserves sibling cells, rows and views", p.get("sheets"),
+                         _drawing_revision_census(p) == expected)
+    return check
 
 
 def _drawing_revision_hidden(p):
@@ -2328,6 +2359,123 @@ def _fit_to_modified_disclosed(p):
                      "records as a document modification" in text)
 
 
+def _fit_refusal_visibility(p):
+    """Read both placed bodies' complete visibility records without transient handles."""
+    tree = p["tree"]
+    nodes = tree.get("children") or []
+    if (tree.get("truncated") is not False or tree.get("children_truncated") is not False
+            or tree.get("child_count") != 2 or len(nodes) != 2
+            or {n.get("name") for n in nodes} != {_RECALL["fit_first"], _RECALL["fit_second"]}
+            or any(n.get("body_count") != 1 or n.get("child_count") != 0
+                   or len(n.get("bodies") or []) != 1
+                   or n["bodies"][0].get("visible") is not True
+                   or n["bodies"][0].get("is_solid") is not True for n in nodes)):
+        raise AssertionError("the two visible cube placements did not read completely")
+    return [(n["name"], n["component"], n["bodies"][0]["name"],
+             n["bodies"][0]["visible"]) for n in nodes]
+
+
+def _fit_refusal_mass(p):
+    """Require one 10 mm cube's independent material and box measurement."""
+    if (p.get("kind") != "occurrence" or p.get("units") != "mm"
+            or any(not _near(p.get(axis), 10, .0001) for axis in "xyz")
+            or not _near((p.get("mass") or {}).get("volume"), 1000, .001)):
+        raise AssertionError("the placed cube's material or box did not read")
+    return p
+
+
+def _fit_refusal_poses(p):
+    """Require both complete placed frames and healthy history before comparing them."""
+    rows = p.get("occurrences") or []
+    if (p.get("is_healthy") is not True or p.get("occurrence_count") != 2
+            or p.get("occurrences_truncated") is not False or len(rows) != 2
+            or {r.get("name") for r in rows} != {_RECALL["fit_first"], _RECALL["fit_second"]}
+            or any(not isinstance(r.get(key), list) or len(r[key]) != 3
+                   or not all(_num(v) for v in r[key]) for r in rows
+                   for key in ("origin", "x_axis", "y_axis", "z_axis", "bbox_center", "bbox_size"))
+            or {r["name"]: r["origin"] for r in rows} != {
+                _RECALL["fit_first"]: [0, 0, 0], _RECALL["fit_second"]: [30, 0, 0]}):
+        raise AssertionError("the cube placement frames did not read completely")
+    return rows
+
+
+def _fit_refusal_history(p):
+    """Read the complete four-row coupon timeline and its end marker."""
+    history = p["timeline"]
+    if (history.get("count") != 4 or history.get("returned") != 4
+            or history.get("marker_position") != 4 or history.get("truncated")
+            or len(history.get("timeline") or []) != 4):
+        raise AssertionError("the cube history did not read completely")
+    return history
+
+
+def _fit_refusal_sketches(p):
+    """Read the complete one-sketch list for the shared cube component."""
+    if p.get("sketch_count") != 1 or len(p.get("sketches") or []) != 1 or p.get("truncated"):
+        raise AssertionError("the cube sketch census did not read completely")
+    return p
+
+
+def _fit_refusal_rows():
+    """Demonstrate dirty-state disclosure on the saved shared-body refusal in the cloud act."""
+    name = "SweepFitRefusal." + _STAMP
+    path = os.path.join(EXPORT_DIR, "fit-refused-" + _STAMP + ".png")
+    rows = [("doc_get", {}, _home_document, ("fit_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "fit_home", "home")},
+             _new_document, ("fit_doc", _recall("fit_doc", lambda p: p["document_handle"])))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: {**(args(c) if callable(args) else args),
+                     "expect_document": _ctx_get(c, "fit_doc", "fit coupon")}, check, save))
+    write("model_create_component", {"name": "FitBulb", "activate": True}, _made_component,
+          ("fit_first", _recall("fit_first", lambda p: p["full_path"])))
+    write("sketch_create", {"plane": "xy", "name": "FitBulbS"})
+    write("sketch_add_geometry", {"sketch_name": "FitBulbS", "geometry": [
+          {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]})
+    write("model_extrude", {"sketch_name": "FitBulbS", "distance": 10}, _extruded)
+    write("design_activate_component", {"occurrence": "root"})
+    write("design_add_instance", lambda c: {"component": _ctx_get(c, "fit_first", "first placement"), "x": 30},
+          lambda p: bool(p.get("full_path")), ("fit_second", _recall("fit_second", lambda p: p["full_path"])))
+    write("doc_save_as", {"name": name, "project": PROJECT, "folder": FOLDER},
+          lambda p: _saved_as(name, FOLDER)(p) and p.get("cloud_processing_complete") is True)
+    rows += _settled(name, "fit_urn")
+    controls = [
+        ("workspace_orient", {}, "fit_camera", _section_camera),
+        ("design_get", {"include": ["tree"], "tree_bodies": True}, "fit_visibility", _fit_refusal_visibility),
+        ("assembly_get", {"include": ["poses"]}, "fit_poses", _fit_refusal_poses),
+        ("design_get", {"include": ["timeline"], "max_results": 1000}, "fit_history", _fit_refusal_history),
+        ("sketch_get", {"component": "FitBulb", "max_results": 1000}, "fit_sketches", _fit_refusal_sketches)]
+    for key in ("fit_first", "fit_second"):
+        controls.append(("model_inspect", lambda c, key=key: {"target": _ctx_get(c, key, "cube"),
+                         "include": ["default", "mass"], "units": "mm"}, "fit_mass_" + key, _fit_refusal_mass))
+    for tool, args, key, extract in controls:
+        rows.append((tool, args, "ok", (key, _recall(key, extract))))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, "fit_first", "cube"),
+                 "kind": "planar_face", "nearest_to": [5, 5, 10], "max_results": 1},
+                 _face_up_at(5, 5, 10), _fg("fit_face")))
+    rows.append(("doc_get", {}, lambda p: _modified_reads(name, False)(p)
+                 and (p.get("active") or {}).get("is_saved") is True
+                 and (p.get("active") or {}).get("document_handle") == _RECALL["fit_doc"]
+                 and not os.path.exists(path), None))
+    write("view_screenshot", lambda c: {"fit_to": _ctx_get(c, "fit_face", "cube face"),
+          "view": "iso-top-right", "width": 300, "height": 240, "file_path": path},
+          _refused("another placement of the same body was hidden", "fullPathName", "Nothing was captured",
+                   "records as a document modification", "doc_get", "doc_save"))
+    rows.append(("doc_get", {}, lambda p: _modified_reads(name, True)(p)
+                 and (p.get("active") or {}).get("is_saved") is False
+                 and (p.get("active") or {}).get("document_handle") == _RECALL["fit_doc"]
+                 and not os.path.exists(path), None))
+    for tool, args, key, extract in controls:
+        rows.append((tool, args, lambda p, key=key, extract=extract: _measured(
+            "refused fit preserves " + key, extract(p), bool(_RECALL.get(key))
+            and extract(p) == _RECALL[key]), None))
+    write("doc_activate", lambda c: {"name": _ctx_get(c, "fit_home", "home")})
+    rows.append(("doc_close", lambda c: {"name": _ctx_get(c, "fit_doc", "fit coupon"),
+                 "save_changes": False, "expect_document": _ctx_get(c, "fit_home", "home")}, _document_closed, None))
+    rows.append(("data_delete_file", lambda c: {"document_id": _ctx_get(c, "fit_urn", "saved coupon"),
+                 "confirm_name": name, "expect_document": _ctx_get(c, "fit_home", "home")}, _file_deleted, None))
+    return rows
+
+
 # --- ACT 11a: THE DATA MODEL -------------------------------------------------------------------
 # A folder tree of this run's own, one file uploaded into it, moved, read, downloaded - and then
 # every one of them taken back out, each delete proven by its own read-back and by the project tree
@@ -2550,7 +2698,7 @@ _CLOUD_LINK = [
 # milestoned, rolled back, copied, and inserted as an xref into a host saved beside it. The SOURCE is
 # left standing - the drawing act generates from it and deletes it; the copy and the host are this
 # act's own and go at the end of it.
-_CLOUD_DOC = [
+_CLOUD_DOC = _fit_refusal_rows() + [
     ("doc_new", {}, _new_document, None),
     ("model_create_component", {"name": SRC_COMP, "activate": True}, _made_component, None),
     ("sketch_create", {"plane": "xy", "name": SRC_SKETCH}, "ok", None),
@@ -2795,11 +2943,29 @@ _CLOUD_DRAWING = [
     # through a partial update, a refused delete of the header row, hide/show and a real delete,
     # each judged by the returned row census.
     ("drawing_edit_revisions", _drawing_revision_args(
-        "add", rows=["A|INITIAL RELEASE|27 Sep 2026|PM|B2", "B|SLOT WIDENED|27 Sep 2026|PM|C3"]),
+        "add", rows=["A|INITIAL RELEASE|27 Sep 2026", "B|SLOT WIDENED|27 Sep 2026|PM|C3"]),
      _drawing_revisions_added, None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"], "include": ["revisions", "views"]},
+     "ok", ("drawing_revision_before", _recall("drawing_revision_before", _drawing_revision_census))),
+    ("drawing_edit_revisions", _drawing_revision_args(
+        "update", index=3, row="B|MUST NOT LAND|27 Sep 2026||C3"),
+     _refused("Cannot clear row 3", "approved", "Nothing changed", "Omit trailing fields"), None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"], "include": ["revisions", "views"]},
+     _drawing_revision_read(), None),
+    ("drawing_edit_revisions", _drawing_revision_args(
+        "update", index=3, row="B||27 Sep 2026|MUST NOT LAND|C3"),
+     _refused("Cannot clear row 3", "description", "Nothing changed", "Omit trailing fields"), None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"], "include": ["revisions", "views"]},
+     _drawing_revision_read(), None),
+    ("drawing_edit_revisions", _drawing_revision_args(
+        "update", index=2, row="A|INITIAL RELEASE|27 Sep 2026||"), "ok", None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"], "include": ["revisions", "views"]},
+     _drawing_revision_read(), None),
     ("drawing_edit_revisions", _drawing_revision_args(
         "update", index=3, row=f"B|{_REVISION_UPDATE_TEXT}"),
      _drawing_revision_updated, None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"], "include": ["revisions", "views"]},
+     _drawing_revision_read(True), None),
     ("drawing_edit_revisions", _drawing_revision_args("delete", index=1),
      _refused("row 1 still reads", "title/header"), None),
     ("drawing_edit_revisions", _drawing_revision_args("hide", index=2),

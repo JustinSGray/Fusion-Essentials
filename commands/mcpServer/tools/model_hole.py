@@ -391,7 +391,8 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             return error(cerr)
         # format without a trailing '.0' (9.0 -> '9 mm', 6.6 -> '6.6 mm')
         diameter = f"{cd:g} mm"
-    if not diameter:
+    tap_sizes_hole = not diameter and bool(tap) and hole_type == "simple"
+    if not diameter and not tap_sizes_hole:
         return error("Provide 'diameter' (e.g. '8 mm') or a 'fastener' (e.g. 'M6 Socket Head Cap "
                      "Screw') to size the hole.")
 
@@ -485,7 +486,7 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
     if not active:
         return error("No target component.")
 
-    dimensions = {"diameter": diameter}
+    dimensions = {} if tap_sizes_hole else {"diameter": diameter}
     if extent == "blind":
         dimensions["depth"] = depth
     if hole_type == "counterbore":
@@ -565,6 +566,13 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             comp, tap.strip(), internal=True, thread_type=thread_type, thread_class=thread_class)
         if terr:
             return error(terr)
+        if tap_sizes_hole:
+            major = safe(lambda: thread_info.majorDiameter)
+            if (not isinstance(major, (int, float)) or isinstance(major, bool)
+                    or not math.isfinite(major) or major <= 0):
+                return error(f"Tap '{tap.strip()}' has no readable positive major diameter. "
+                             "Provide an explicit 'diameter' to construct the hole.")
+            diameter = f"{major:.17g} cm"
     clearance_info = None
     if fastener:
         clearance_info, cerr2 = _resolve_clearance(comp, fastener, fit)
@@ -872,8 +880,9 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             return error(f"The hole was tapped '{got_tap}', not the requested '{tap.strip()}'. "
                          f"Remove '{name}' with design_delete_feature.")
         result["tapped"] = got_tap
-        result["note"] += (f" The tap definition governs bore size; diameter={diameter!r} is unused. "
-                           "Measure the bore with find_geometry/model_inspect.")
+        result["note"] += " The tap definition governs bore size"
+        result["note"] += "." if tap_sizes_hole else f"; diameter={diameter!r} is unused."
+        result["note"] += " Measure the bore with find_geometry/model_inspect."
         result["thread_type"] = safe(lambda: feature.tappedHoleInfo.threadType)
         child = safe(lambda: feature.thread)
         full = _common.read_flag(lambda: child.isFullLength)
@@ -954,7 +963,7 @@ tool = (
     .add_input_property("cbore_depth", {"type": "string"})
     .add_input_property("csink_diameter", {"type": "string"})
     .add_input_property("csink_angle", {"type": "string"})
-    .add_input_property("tap", {"type": "string", "description": "e.g. 'M5x0.8'."})
+    .add_input_property("tap", {"type": "string", "description": "e.g. 'M5x0.8'; sizes simple holes."})
     .add_input_property("thread_type", {"type": "string",
             "description": "When several standards carry 'tap'."})
     .add_input_property("thread_class", {"type": "string"})

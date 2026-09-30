@@ -74,7 +74,8 @@ def _thread_definition(full, units):
                          and row.get("full_length") is full
                          and row.get("length_applicable") is (not full)
                          and row.get("offset_applicable") is (not full) and lengths
-                         and info.get("designation") == "M10x1.5" and info.get("thread_class") == "6g"
+                         and info.get("designation") == ("M6x1" if full else "M10x1.5")
+                         and info.get("thread_class") == "6g"
                          and info.get("thread_type") == "ISO Metric profile"
                          and info.get("internal") is False)
     return check
@@ -86,6 +87,19 @@ def _definition_doc_state(p):
     if not isinstance(modified, bool):
         raise AssertionError("document modified state did not read")
     return {"document_handle": _home_address(p), "is_modified": modified}
+
+
+def _thread_visibility(p):
+    """Read the complete single-post body visibility without transient handles."""
+    tree = p["tree"]
+    node = tree["tree"]
+    bodies = node.get("bodies") or []
+    if (tree.get("truncated") is not False or node.get("body_count") != 1
+            or node.get("child_count") != 0 or len(bodies) != 1
+            or any(not isinstance(row.get(key), bool) for row in bodies
+                   for key in ("visible", "is_solid"))):
+        raise AssertionError("post visibility was unreadable or incomplete")
+    return [{key: row[key] for key in ("name", "visible", "is_solid")} for row in bodies]
 
 
 def _tapped_created_ref(key, component="DefinitionBench"):
@@ -308,14 +322,16 @@ def _hole_feedback_rows():
             _near(p["matches"][0].get("radius"), 2.5, .000001)
             and _near(p["matches"][0]["position"][0], 250, .000001)
             and _near(p["matches"][0]["position"][1], 10, .000001)), None))
-    for index, diameter in enumerate(("0.3125 in", "10 mm")):
-        key, x = "hf_tap_" + str(index), 215 + 30*index
+    for index, (x, diameter) in enumerate(((215, "0.3125 in"), (245, "10 mm"), (230, None))):
+        key = "hf_tap_" + str(index)
         write("model_hole", lambda c, diameter=diameter, x=x: {
             "face": _ctx_get(c, "hf_top", "stock top"), "points_space": "world", "points": [[x, 30, 30]],
-            "diameter": diameter, "extent": "blind", "depth": "0.875 in", "tap": "3/8-16 UNC",
+            **({"diameter": diameter} if diameter is not None else {}),
+            "extent": "blind", "depth": "0.875 in", "tap": "3/8-16 UNC",
             "thread_type": "ANSI Unified Screw Threads", "thread_class": "2B", "thread_extent": "full"},
-            lambda p, diameter=diameter: _drilled(1)(p) and _measured("writer discloses unused diameter", p.get("note"),
-                ("diameter=" + repr(diameter) + " is unused") in p.get("note", "")),
+            lambda p, diameter=diameter: _drilled(1)(p) and _measured("writer discloses tap-controlled bore", p.get("note"),
+                ("tap definition governs bore size" in p.get("note", "") and "diameter=" not in p.get("note", "")
+                 if diameter is None else ("diameter=" + repr(diameter) + " is unused") in p.get("note", ""))),
             (key, _tapped_created_ref(key, "HoleFeedback")))
         rows.append(("design_get", {"include": ["timeline"], "max_results": 1000}, "ok",
                      ("hf_read_timeline", _recall("hf_read_timeline", lambda p: p["timeline"]))))
@@ -336,7 +352,13 @@ def _hole_feedback_rows():
                 _near(p["matches"][0].get("radius"), 7.9756/2, .0001)
                 and _near(p["matches"][0]["position"][0], x, .000001)
                 and (index == 0 or _near(p["matches"][0].get("radius"), _RECALL.get("hf_tap_radius"), .000001))),
-            ("hf_tap_radius", _recall("hf_tap_radius", lambda p: p["matches"][0]["radius"])) if index == 0 else None))
+            ("hf_tap_radius", _recall("hf_tap_radius", lambda p: p["matches"][0]["radius"])) if index == 0
+            else _fg("hf_omitted_bore") if diameter is None else None))
+        if diameter is None:
+            rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "hf_omitted_bore", "tap bore"), "units": "mm"},
+                lambda p: _measured("omitted diameter preserves the actual tapped bore and depth", p,
+                    p.get("units") == "mm" and all(_near(p.get(axis), size, .0001)
+                    for axis, size in zip("xyz", (7.9756, 7.9756, 22.225)))), None))
     return rows
 
 
@@ -345,9 +367,9 @@ def _definition_rows():
     rows = [("doc_get", {}, _home_document, ("def_story", _home_address)),
             ("doc_new", lambda c: {"expect_document": _ctx_get(c, "def_story", "story")},
              _new_document, ("def_doc", lambda p: p["document_handle"]))]
-    def write(name, args, save=None):
+    def write(name, args, save=None, check="ok"):
         rows.append((name, lambda c, args=args: _combine_pin(
-            c, "def_doc", args(c) if callable(args) else args), "ok", save))
+            c, "def_doc", args(c) if callable(args) else args), check, save))
     def read(key, check, units):
         rows.append(("design_get", lambda c, key=key, units=units: {
             "include": ["definition"], "feature": _ctx_get(c, key, "created feature"), "units": units},
@@ -399,11 +421,29 @@ def _definition_rows():
     write("model_create_component", {"name": "DefinitionPost", "activate": True})
     write("sketch_create", {"plane": "xy", "name": "DefinitionPostS"})
     write("sketch_add_geometry", {"sketch_name": "DefinitionPostS", "geometry": [
-        {"kind": "circle", "cx": 50, "cy": 0, "radius": 5}]})
+        {"kind": "circle", "cx": 50, "cy": 0, "radius": 3}]})
     write("model_extrude", {"sketch_name": "DefinitionPostS", "distance": 25})
     rows.append(("find_geometry", {"target": "DefinitionPost", "kind": "cylinder_face"},
                  _matched(1, "cylinder_face"), _fg("def_post")))
     for full in (True, False):
+        if full:
+            controls = (
+                ("design_get", {"include": ["timeline"], "max_results": 1000}, "thread_before", lambda p: p["timeline"]),
+                ("sketch_get", {"component": "DefinitionPost", "max_results": 1000}, "thread_sketches", lambda p: p),
+                ("find_geometry", {"target": "DefinitionPost", "max_results": 1000}, "thread_geometry", _tapped_geometry),
+                ("design_get", {"include": ["tree"], "component": "DefinitionPost", "tree_bodies": True},
+                 "thread_visibility", _thread_visibility))
+            for tool, args, key, extract in controls:
+                rows.append((tool, args, "ok", (key, _recall(key, extract))))
+            rows.append(("model_thread", lambda c: _combine_pin(c, "def_doc", {
+                "faces": [_ctx_get(c, "def_post", "post cylinder")], "designation": "M6x1.0",
+                "thread_type": "ISO Metric profile", "thread_class": "6g"}),
+                _refused("M6x1.0", "not fit recommendations",
+                         "'M6x1' in 'ISO Metric profile' (classes: 6g)"), None))
+            for tool, args, key, extract in controls:
+                rows.append((tool, args, lambda p, key=key, extract=extract: _measured(
+                    "unknown thread preserves " + key, extract(p), bool(_RECALL.get(key))
+                    and extract(p) == _RECALL[key]), None))
         if not full:
             write("sketch_create", {"plane": "xy", "name": "DefinitionPartialS"})
             write("sketch_add_geometry", {"sketch_name": "DefinitionPartialS", "geometry": [
@@ -413,14 +453,30 @@ def _definition_rows():
                                            "nearest_to": [70, 0, 12.5], "max_results": 1},
                          _matched(1, "cylinder_face"), _fg("def_post")))
         write("model_thread", lambda c, full=full: {
-            "faces": [_ctx_get(c, "def_post", "post cylinder")], "designation": "M10x1.5",
+            "faces": [_ctx_get(c, "def_post", "post cylinder")], "designation": "M6x1" if full else "M10x1.5",
             "thread_type": "ISO Metric profile", "thread_class": "6g",
             **({} if full else {"length": 12, "offset": 2})},
-            ("def_thread", lambda p: "DefinitionPost/" + p["feature"]))
+            ("def_thread", lambda p: "DefinitionPost/" + p["feature"]),
+            lambda p: _measured("cosmetic thread discloses cylinder resizing and measurement", p.get("note"),
+                p.get("modeled") is False and "may resize" in p.get("note", "")
+                and "model_inspect" in p.get("note", "")))
+        if full:
+            rows.append(("design_get", {"include": ["timeline"], "max_results": 1000},
+                lambda p: _measured("literal thread recovery adds only one feature", p.get("timeline"),
+                    (p.get("timeline") or {}).get("count") == _RECALL["thread_before"]["count"] + 1
+                    and (p["timeline"].get("timeline") or [])[:-1] == _RECALL["thread_before"]["timeline"]
+                    and p["timeline"]["timeline"][-1].get("type") == "ThreadFeature"), None))
+            rows.append(("design_get", {"include": ["tree"], "component": "DefinitionPost", "tree_bodies": True},
+                lambda p: _measured("thread recovery preserves post visibility", p.get("tree"),
+                                    _thread_visibility(p) == _RECALL.get("thread_visibility")), None))
+            rows.append(("find_geometry", {"target": "DefinitionPost", "kind": "cylinder_face"},
+                lambda p: _matched(1, "cylinder_face")(p) and p.get("match_count") == 1
+                and _near(p["matches"][0].get("radius"), 2.942, .0001), _fg("def_post")))
         rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "def_post", "threaded cylinder")},
                      lambda p, full=full: _measured("capture threaded cylinder before definition reads", p,
                          all(isinstance(p.get(key), (int, float)) and math.isfinite(p[key]) and p[key] > 0
                              for key in ("x", "y"))
+                         and (not full or all(_near(p.get(key), 5.884, .0001) for key in ("x", "y")))
                          and _near(p.get("z"), 25, 0.00001)
                          and _near((p.get("center") or {}).get("x"), 50 if full else 70, 0.00001)),
                      ("def_thread_shape", _recall("def_thread_shape", lambda p: {

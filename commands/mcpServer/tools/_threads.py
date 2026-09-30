@@ -3,6 +3,8 @@
 
 """Thread-table lookup shared by model_hole and model_thread."""
 
+from difflib import SequenceMatcher
+
 from ._common import safe
 
 MAP_BLURB = ("resolve_thread_info - the ONE thread-table walk turning a bare designation "
@@ -10,16 +12,37 @@ MAP_BLURB = ("resolve_thread_info - the ONE thread-table walk turning a bare des
              "model_thread; also returns every thread type carrying that designation")
 
 
-def thread_types_for(tdq, designation):
+def thread_types_for(tdq, designation, candidates=None):
     """Every thread type whose table carries `designation`, in library order."""
     hits = []
     for ttype in (safe(lambda: list(tdq.allThreadTypes), []) or []):
         for size in (safe(lambda t=ttype: list(tdq.allSizes(t)), []) or []):
             desigs = safe(lambda t=ttype, s=size: list(tdq.allDesignations(t, s)), []) or []
+            if candidates is not None:
+                candidates.extend((ttype, d) for d in desigs)
             if designation in desigs:
                 hits.append(ttype)
                 break
     return hits
+
+
+def _nearby_choices(tdq, candidates, designation, internal, thread_type, thread_class):
+    """Return bounded actual library spellings compatible with the supplied standard and class."""
+    ranked = sorted(dict.fromkeys((t, d) for t, d in candidates
+                    if not thread_type or t.lower() == thread_type.lower()),
+                    key=lambda row: SequenceMatcher(None, designation, row[1]).ratio(), reverse=True)
+    choices = []
+    for ttype, desig in ranked[:10]:
+        if SequenceMatcher(None, designation, desig).ratio() < 0.6:
+            continue
+        classes = safe(lambda: list(tdq.allClasses(internal, ttype, desig)), []) or []
+        if thread_class:
+            classes = [c for c in classes if c.lower() == thread_class.lower()]
+        if classes:
+            choices.append(f"'{desig}' in '{ttype}' (classes: {', '.join(classes[:3])})")
+        if len(choices) == 5:
+            break
+    return "; ".join(choices)
 
 
 def resolve_thread_info(comp, designation, internal=True, thread_type="", thread_class=""):
@@ -34,10 +57,16 @@ def resolve_thread_info(comp, designation, internal=True, thread_type="", thread
     if tdq is None:
         return None, [], "Thread data query unavailable."
 
-    hits = thread_types_for(tdq, designation)
+    candidates = []
+    hits = thread_types_for(tdq, designation, candidates)
     if not hits:
-        return None, [], (f"No thread designation '{designation}' found in the thread library. "
-                          "Use a standard call-out like 'M5x0.8' or '1/4-20 UNC'.")
+        choices = _nearby_choices(tdq, candidates, designation, internal,
+                                  (thread_type or "").strip(), (thread_class or "").strip())
+        remedy = (f"Nearby library spellings (not fit recommendations): {choices}. "
+                  "Retry with an exact designation, thread_type and thread_class." if choices else
+                  "No compatible choice among the checked nearby spellings. "
+                  "Check the designation, thread_type and thread_class in Fusion's Thread dialog.")
+        return None, [], f"No thread designation '{designation}' found in the thread library. {remedy}"
     want = (thread_type or "").strip()
     if want:
         chosen = next((t for t in hits if t.lower() == want.lower()), None)

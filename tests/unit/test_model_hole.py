@@ -1804,6 +1804,67 @@ class TestExplicitTapControls:
         assert d.rootComponent.sketches._items[0].deleted is True
 
 
+class TestTapSizesSimpleHole:
+    @pytest.fixture
+    def scene(self, monkeypatch):
+        design = _install()
+        query = design.rootComponent.features.threadFeatures.threadDataQuery
+        monkeypatch.setattr(query, "allSizes", lambda standard: ("0.375",))
+        monkeypatch.setattr(query, "allDesignations", lambda standard, size:
+                            ("3/8-16 UNC",) if standard == "ANSI Unified Screw Threads" else ())
+        monkeypatch.setattr(_ThreadInfo, "majorDiameter", 0.9525, raising=False)
+        return design
+
+    def call(self, **kw):
+        args = dict(face="h", points=[[5, 3, 0]], extent="blind", depth="22.225 mm",
+                    tap="3/8-16 UNC", thread_type="ANSI Unified Screw Threads", thread_class="2B")
+        args.update(kw)
+        return mh.handler(**args)
+
+    @pytest.mark.parametrize("units", ["mm", "in"])
+    def test_omitted_diameter_uses_actual_major_diameter_in_centimeters(self, scene, units):
+        out = _payload(self.call(units=units))
+        inp = scene.rootComponent.features.holeFeatures.added[0]._inp
+        assert inp.args["dia"] == ("V", "0.95250000000000001 cm")
+        assert inp.tap.threadDesignation == out["tapped"] == "3/8-16 UNC"
+        assert inp.tap.threadClass == out["thread_class"] == "2B"
+        assert "tap definition governs bore size" in out["note"]
+        assert "diameter=" not in out["note"]
+
+    @pytest.mark.parametrize("major", [None, 0, float("nan"), float("inf"), True, "raises"])
+    def test_unread_or_invalid_seed_refuses_before_placement(self, scene, monkeypatch, major):
+        def read(_):
+            if major == "raises":
+                raise RuntimeError("unread majorDiameter")
+            return major
+        monkeypatch.setattr(_ThreadInfo, "majorDiameter", property(read))
+        result = self.call()
+        assert result["isError"] is True and "3/8-16 UNC" in result["message"]
+        assert "positive major diameter" in result["message"] and "explicit 'diameter'" in result["message"]
+        assert scene.rootComponent.sketches.created_on == []
+        assert scene.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_explicit_diameter_does_not_need_the_seed(self, scene, monkeypatch):
+        monkeypatch.setattr(_ThreadInfo, "majorDiameter", None)
+        out = _payload(self.call(diameter="0.3125 in"))
+        assert scene.rootComponent.features.holeFeatures.added[0]._inp.args["dia"] == ("V", "0.3125 in")
+        assert "diameter='0.3125 in' is unused" in out["note"]
+
+    def test_supplied_diameter_expression_still_validates(self, scene, monkeypatch):
+        monkeypatch.setattr(mh._inputs, "length_value_input", lambda *a: (None, None, "Unknown parameter"))
+        result = self.call(diameter="MissingDiameter/2")
+        assert result["isError"] is True and "MissingDiameter/2" in result["message"]
+        assert scene.rootComponent.sketches.created_on == []
+        assert scene.rootComponent.features.holeFeatures.add_calls == 0
+
+    @pytest.mark.parametrize("extra", [{"tap": ""}, {"hole_type": "counterbore"}, {"hole_type": "countersink"}])
+    def test_other_holes_still_require_explicit_sizing(self, scene, extra):
+        result = self.call(**extra)
+        assert result["isError"] is True and "Provide 'diameter'" in result["message"]
+        assert scene.rootComponent.sketches.created_on == []
+        assert scene.rootComponent.features.holeFeatures.add_calls == 0
+
+
 # ── fastener-aware clearance holes ───────────────────────────────────────────
 
 class TestClearanceFastener:

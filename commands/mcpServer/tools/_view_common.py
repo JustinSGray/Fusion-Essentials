@@ -230,16 +230,18 @@ def isolate_for_fit(name, ref):
             ident = _common.native_identity(target)
             shared = ident is not None and any(
                 _common.native_identity(b) == ident for b in prev)
-            stuck = _relight(prev)
+            def restore_hidden():
+                return _relight(prev)
+            restore_hidden.hidden = "bodies"
+            restore_hidden.modified_before = modified_before
+            restoration = restore_message(restore_hidden, ref.name, "for the requested frame")
             msg = (f"{ref.name}: hiding the other bodies turned the SUBJECT's own bulb off, which "
                    f"this call never wrote"
                    + (f" - another placement of the same body was hidden, so '{_common.short_ref(name)}' "
                       "shares one bulb with it and cannot be lit alone." if shared else ".")
                    + " Frame the occurrence by its fullPathName instead. Nothing was captured.")
-            if stuck:
-                msg += (f" {len(stuck)} bulb(s) did NOT come back on: "
-                        f"{', '.join(str(s) for s in stuck[:5])} - the document is left with those "
-                        "hidden; view_set(action='show', target=...) restores them.")
+            if restoration:
+                msg += " " + restoration
             return None, None, msg
     isolated = None
     isolation_before = []

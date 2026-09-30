@@ -7,6 +7,8 @@ input, and the honesty gates - a failed compute, a designation or side that read
 from the one requested, and a modeled thread that left the body's volume untouched.
 """
 
+import pytest
+
 from conftest import (load_tool, make_design, install, MakeComp, payload, error_message,
                       assert_no_active_design, assert_unknown_units,
                       BRepBody, BRepFace, Cylinder, FakePoint, FakeVector3D)
@@ -70,9 +72,7 @@ class FakeThreadFeature:
 
 
 class FakeThreadFeatures:
-    """createInput/add plus the thread-table query the shared resolver walks. add() shifts each
-    body's volume by `volume_delta` (split evenly) only when the input is modeled - a cosmetic
-    thread changes no geometry."""
+    """Record thread inputs and optionally change modeled fixture volume."""
     def __init__(self, bodies=(), volume_delta=-2.0, return_feature=True, health=0,
                  feature_info=None, full_length=None, length_cm=None, offset_cm=None):
         self.added = 0
@@ -306,6 +306,72 @@ class TestGuards:
         assert "CYLINDRICAL" in msg
 
 
+class TestLibraryChoices:
+    @pytest.fixture
+    def library(self, monkeypatch):
+        feats = FakeThreadFeatures()
+        _wire(monkeypatch, feats, [_shaft()])
+        query = feats.threadDataQuery
+        monkeypatch.setattr(query, "allSizes", lambda t: ("6.0",))
+        monkeypatch.setattr(query, "allDesignations", lambda t, s:
+                            ("M6x1", "M6x0.8", "M6x0.75", "M6x0.7", "M6x0.5"))
+        return feats
+
+    def test_refusal_offers_actual_literal_that_can_be_consumed(self, library):
+        args = dict(faces=["h"], designation="M6x1.0",
+                    thread_type="ISO Metric profile", thread_class="6g")
+        message = error_message(mt.handler(**args))
+        assert "'M6x1' in 'ISO Metric profile' (classes: 6g)" in message
+        assert "M5x0.8" not in message and "ANSI" not in message
+        assert "not fit recommendations" in message
+        assert message.count("(classes:") == 5
+        assert library.added == 0 and library.created_info == []
+        literal = message.split("recommendations): '", 1)[1].split("'", 1)[0]
+        assert literal == "M6x1"
+        out = payload(mt.handler(**{**args, "designation": literal}))
+        assert out["designation"] == literal and out["thread_class"] == "6g"
+        assert "may resize" in out["note"] and "model_inspect" in out["note"]
+        assert "does not check" not in out["note"]
+
+    @pytest.mark.parametrize("standard,cls", [("unknown standard", "6g"), ("ISO Metric profile", "6H")])
+    def test_choices_do_not_cross_requested_standard_or_external_class(self, library, standard, cls):
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.0",
+                                           thread_type=standard, thread_class=cls))
+        assert "No compatible choice among the checked nearby spellings" in message
+        assert "Thread dialog" in message and "'M6x1'" not in message
+        assert library.created_info == [] and library.added == 0
+
+    def test_unreadable_classes_are_not_guessed(self, library, monkeypatch):
+        def fail(*args):
+            raise RuntimeError("unreadable classes")
+        monkeypatch.setattr(library.threadDataQuery, "allClasses", fail)
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.0"))
+        assert "No compatible choice among the checked nearby spellings" in message
+        assert library.created_info == [] and library.added == 0
+
+    def test_query_and_reply_choices_are_bounded(self, library, monkeypatch):
+        queried = []
+        monkeypatch.setattr(library.threadDataQuery, "allDesignations", lambda t, s:
+                            tuple(f"M6x1.{i}" for i in range(20)))
+        def all_compatible(internal, standard, designation):
+            queried.append((internal, standard, designation))
+            return ("6g",)
+        monkeypatch.setattr(library.threadDataQuery, "allClasses", all_compatible)
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.00",
+            thread_type="ISO Metric profile", thread_class="6g"))
+        assert len(queried) == message.count("(classes:") == 5
+        queried.clear()
+        def classes(internal, standard, designation):
+            queried.append((internal, standard, designation))
+            return ("6g",) if designation.endswith(".9") else ("4g6g",)
+        monkeypatch.setattr(library.threadDataQuery, "allClasses", classes)
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.00",
+            thread_type="ISO Metric profile", thread_class="6g"))
+        assert len(queried) <= 10
+        assert message.count("(classes:") <= 5 and "(classes: 4g6g)" not in message
+        assert library.created_info == [] and library.added == 0
+
+
 class TestHonesty:
     def test_health_error_reported_not_false_ok(self, monkeypatch):
         feats = FakeThreadFeatures(health=2)
@@ -441,8 +507,6 @@ class TestInternalFlagIsReadOffTheCreatedFeature:
     pin that the classification reaches the ThreadInfo, and that the witness still fires."""
 
     def test_a_cosmetic_bore_thread_reports_the_internal_flag_the_feature_carries(self, monkeypatch):
-        # the default is COSMETIC (no geometry changes), so this flag is the only evidence the
-        # bore classification reached the feature at all
         feats = FakeThreadFeatures()
         _wire(monkeypatch, feats, [_bore()])
         out = payload(mt.handler(faces=["h"], designation="M10x1.5"))

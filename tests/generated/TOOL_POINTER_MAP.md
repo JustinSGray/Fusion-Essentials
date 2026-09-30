@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 686
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 687
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -42,7 +42,7 @@ close orphans, factor duplicated guards into shared helpers.
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 33  (desc 15, note 18)
-- `model_inspect`  <- 29  (desc 5, note 24)
+- `model_inspect`  <- 30  (desc 5, note 25)
 - `sketch_get`  <- 26  (desc 7, note 19)
 - `data_get`  <- 25  (desc 10, note 15)
 - `doc_open`  <- 25  (desc 5, note 20)
@@ -2141,6 +2141,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - addRevision raised on rows[
 - . The table now reads
 - action='update' needs 'row' - a '
+- : Fusion leaves empty updates unchanged. Nothing changed. Omit trailing fields to keep them, or supply non-empty text.
 - RevisionTableRow.create() returned nothing - nothing was updated.
 - updateRevisionRow returned false for row
 - The revision table's rows did not read back after the update - unverified.
@@ -2153,6 +2154,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - deleteRow raised on row
 - Fusion accepted the delete but row
 - The table sits in the sheet's top-right corner; no API moves or deletes it. drawing_export's PDF shows it, doc_save persists the drawing.
+- Cannot clear row  field(s) : Fusion leaves empty updates unchanged. Nothing changed. Omit trailing fields to keep them, or supply non-empty text.
 
 ### `drawing_edit_sheet`
 - The active document is not a drawing, so it has no sheets. Open the drawing (doc_open by file_id) and make it active, then retry.
@@ -3202,6 +3204,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - . Inspect design_get(include=['definition']); remove the feature with design_delete_feature if unwanted.
 - placement='center' needs 'edge' - a find_geometry handle at the circular/elliptical edge to center the hole on.
 - Could not resolve 'offset_edge_one' to an edge.
+- ' has no readable positive major diameter. Provide an explicit 'diameter' to construct the hole.
 - Fusion refused to centre the hole on that edge, so nothing was placed. Check that 'edge' is a circular/elliptical edge ON 'face'.
 - A modeled thread was requested, but the hole's thread feature could not be read back, so there is no proof the helix was cut. Remove '
 - The tap was requested
@@ -3651,7 +3654,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - is not available on this Fusion version.
 - The thread was created but its
 - Modeled thread cut into the existing cylinder(s). The cut is verified by volume, which catches a designation too large for a shaft or too small for a bore; a designation too large for a BORE also r...
-- Cosmetic thread added to the existing cylinder(s) - the call-out is recorded and the geometry stays a plain cylinder; pass modeled=true when the helix itself must be in the model. Fusion does not c...
+- Cosmetic thread added; the plain cylinder may resize to the call-out. Measure its actual diameter with find_geometry/model_inspect. Pass modeled=true for a helix.
 - Could not read the outward normal of face(s)  (0-based), so whether they are bores or shafts is unknown. Re-run find_geometry for fresh handles and pass faces whose 'normal' it reports.
 - One Thread feature cannot mix internal and external faces: face(s)  (0-based) are bores and the rest are shafts. Thread each side in its own call.
 - The thread was created but carries designation '', not the requested ''. Remove it with design_delete_feature (feature '').

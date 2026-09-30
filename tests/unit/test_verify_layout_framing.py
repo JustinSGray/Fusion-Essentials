@@ -159,7 +159,8 @@ class TestPlacementFrame:
             ("DefinitionBench", [5, 17, 20]), ("DefinitionBench", [17, 5, 20]),
             ("TapControlBench", [130, 12.5, 30]), ("TapControlBench", [110, 10, 15]),
             ("HoleFeedback", [230, 20, 30]), ("HoleFeedback", [215, 30, 20]),
-            ("HoleFeedback", [245, 30, 20]), ("DefinitionPost", [70, 0, 12.5])]
+            ("HoleFeedback", [245, 30, 20]), ("HoleFeedback", [230, 30, 20]),
+            ("DefinitionPost", [70, 0, 12.5])]
 
 
 class TestDatumOperandStory:

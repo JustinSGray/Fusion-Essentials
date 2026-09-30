@@ -175,10 +175,44 @@ class TestUpdate:
         assert out["revision_count_after"] == 3
 
     def test_a_partial_update_keeps_the_fields_it_did_not_send(self, env):
-        env.install(revision_table=_table([_RevisionRow(rev="A", description="Initial", date="D1")]))
+        env.install(revision_table=_table([_RevisionRow(rev="A", description="Initial", date="D1",
+                                                       approved="AA", zone="Z1")]))
         out = payload(_call("update", index=2, row="A|Updated description"))
         assert out["row"]["description"] == "Updated description"
         assert out["row"]["date"] == "D1"
+        assert out["row"]["approved"] == "AA" and out["row"]["zone"] == "Z1"
+
+    @pytest.mark.parametrize("row,field", [("A||D1|AA|Z1", "description"),
+        ("A|Changed||AA|Z1", "date"), ("A|Changed|D1||Z1", "approved"),
+        ("A|Changed|D1|AA|", "zone")])
+    def test_explicit_clear_refuses_before_any_other_cell_changes(self, env, row, field):
+        table = _table([_RevisionRow(rev="A", description="Initial", date="D1", approved="AA", zone="Z1"),
+                        _RevisionRow(rev="B", description="Witness")])
+        env.install(revision_table=table)
+        before = dr._drawing_common.revision_rows(table)
+        message = error_message(_call("update", index=2, row=row))
+        assert "Cannot clear row 2" in message and field in message
+        assert "Omit trailing fields" in message and "non-empty text" in message
+        assert table.calls == []
+        assert dr._drawing_common.revision_rows(table) == before
+
+    def test_explicit_empty_cell_already_empty_can_remain_empty(self, env):
+        env.install(revision_table=_table([_RevisionRow(rev="A", description="Initial", date="D1")]))
+        out = payload(_call("update", index=2, row="A|Changed|D1||"))
+        assert out["row"]["description"] == "Changed"
+        assert out["row"]["approved"] == out["row"]["zone"] == ""
+
+    def test_update_must_preserve_omitted_cells(self, env, monkeypatch):
+        table = _table([_RevisionRow(rev="A", description="Initial", date="D1", approved="AA")])
+        env.install(revision_table=table)
+        update = table.updateRevisionRow
+        def loses_approval(index, row):
+            result = update(index, row)
+            table._rows[index].approved = ""
+            return result
+        monkeypatch.setattr(table, "updateRevisionRow", loses_approval)
+        message = error_message(_call("update", index=2, row="A|Changed"))
+        assert "row 2 still reads" in message
 
     def test_updating_the_header_row_is_a_false_success(self, env):
         env.install(revision_table=_table([_RevisionRow(rev="A", description="Initial")]))

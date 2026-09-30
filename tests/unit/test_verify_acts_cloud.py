@@ -12,6 +12,7 @@ claimed off a call that cannot produce one of its buckets.
 import json
 import os
 import sys
+from copy import deepcopy
 
 import pytest
 
@@ -19,6 +20,7 @@ TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(TESTS_DIR, "live"))
 import tool_verify  # noqa: E402
 import verify_acts_cloud as acts  # noqa: E402
+import verify_acts_sheet as sheet  # noqa: E402
 
 
 def _step(narrative, tool, nth=0):
@@ -26,6 +28,73 @@ def _step(narrative, tool, nth=0):
     hits = [s for s in narrative if s[0] == tool]
     assert len(hits) > nth, f"{tool} has {len(hits)} step(s) in this act"
     return hits[nth]
+
+
+@pytest.fixture
+def sheet_home(monkeypatch):
+    for key in ("sm_home", "sm_home_state", "sm_coupon", "sm_drawing_session"):
+        monkeypatch.setitem(sheet._RECALL, key, None)
+    return {"active": {"document_handle": "session:home", "name": "DrawSelection",
+                       "document_id": "urn:owned-source", "has_data_file": True,
+                       "is_saved": True, "is_modified": False},
+            "open_count": 2, "truncated": False,
+            "open_documents": [{"document_handle": "session:home", "name": "DrawSelection"},
+                               {"document_handle": "session:witness", "name": "Untouched"}]}
+
+
+class TestSheetOriginalHome:
+    @pytest.mark.parametrize("saved", [True, False])
+    def test_saved_or_unsaved_original_home_is_restored_exactly(self, sheet_home, saved):
+        if not saved:
+            sheet_home["active"].update(document_id=None, has_data_file=False, is_saved=False, is_modified=True)
+        start = sheet._SHEET_BUILD[0]
+        assert start[2](sheet_home) is True
+        assert start[3][1](sheet_home) == "session:home"
+        assert sheet._story_restored(deepcopy(sheet_home)) is True
+
+    @pytest.mark.parametrize("field,value", [
+        ("document_handle", "session:witness"), ("name", "Renamed"), ("document_id", "urn:other"),
+        ("has_data_file", False), ("is_saved", False), ("is_modified", True)])
+    def test_restore_rejects_changed_identity_or_save_state(self, sheet_home, field, value):
+        start = sheet._SHEET_BUILD[0]
+        start[2](sheet_home)
+        start[3][1](sheet_home)
+        restored = deepcopy(sheet_home)
+        restored["active"][field] = value
+        with pytest.raises(AssertionError, match="story session restored"):
+            sheet._story_restored(restored)
+
+    @pytest.mark.parametrize("value", [None, 0])
+    def test_unread_or_nonboolean_flags_fail_capture_and_restore(self, sheet_home, value):
+        start = sheet._SHEET_BUILD[0]
+        start[2](sheet_home)
+        start[3][1](sheet_home)
+        unread = deepcopy(sheet_home)
+        unread["active"]["is_modified"] = value
+        with pytest.raises(AssertionError, match="story session restored"):
+            sheet._story_restored(unread)
+        with pytest.raises(AssertionError, match="story session before sheet coupon"):
+            start[2](unread)
+
+    @pytest.mark.parametrize("fault", ["lost_witness", "missing_row", "truncated", "coupon", "drawing"])
+    def test_restore_requires_complete_census_and_closed_owned_documents(self, sheet_home, fault):
+        start = sheet._SHEET_BUILD[0]
+        start[2](sheet_home)
+        start[3][1](sheet_home)
+        restored = deepcopy(sheet_home)
+        if fault in ("lost_witness", "missing_row"):
+            restored["open_documents"].pop()
+            if fault == "lost_witness":
+                restored["open_count"] -= 1
+        elif fault == "truncated":
+            restored["truncated"] = True
+        else:
+            key = "sm_coupon" if fault == "coupon" else "sm_drawing_session"
+            sheet._RECALL[key] = "session:" + fault
+            restored["open_documents"].append({"document_handle": "session:" + fault, "name": fault})
+            restored["open_count"] += 1
+        with pytest.raises(AssertionError, match="story session restored"):
+            sheet._story_restored(restored)
 
 
 class TestMovedFileListingSettle:

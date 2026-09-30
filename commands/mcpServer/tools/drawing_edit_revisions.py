@@ -35,8 +35,8 @@ _NOTE = ("The table sits in the sheet's top-right corner; no API moves or delete
         "drawing_export's PDF shows it, doc_save persists the drawing.")
 
 
-def _row_texts(raw, label):
-    """(the five texts as a dict, error) for one 'rev|description|date|approved|zone' string."""
+def _row_texts(raw, label, pad=True):
+    """Return the supplied row fields, padding omitted fields only for add."""
     if not isinstance(raw, str):
         return None, f"{label} must be a '{_ROW_FORM}' string (got {raw!r})."
     fields = [f.strip() for f in raw.split("|")]
@@ -45,7 +45,8 @@ def _row_texts(raw, label):
                       f"takes at most {len(_TEXT_FIELDS)}.")
     if not fields[0]:
         return None, f"{label} {raw!r} needs a non-empty 'rev', such as 'A|Initial release'."
-    fields += [""] * (len(_TEXT_FIELDS) - len(fields))
+    if pad:
+        fields += [""] * (len(_TEXT_FIELDS) - len(fields))
     return dict(zip(_TEXT_FIELDS, fields)), None
 
 
@@ -71,7 +72,7 @@ def _new_row(texts):
 
 
 def _fields_match(requested, got):
-    """True when every non-empty requested text reads back - Fusion leaves a cell sent empty unchanged."""
+    """True when non-empty add values read back; an empty added date may auto-populate."""
     return all(got.get(f) == v for f, v in requested.items() if v)
 
 
@@ -193,13 +194,19 @@ def _do_update(sheet, table, before, row, index):
     """update: updateRevisionRow(index, row); judged by the census (title/header rows: false-success)."""
     if row is None:
         return error(f"action='update' needs 'row' - a '{_ROW_FORM}' string.")
-    texts, err = _row_texts(row, "row")
+    texts, err = _row_texts(row, "row", pad=False)
     if err:
         return error(err)
     idx, err = _row_index(index, len(before))
     if err:
         return error(err)
-    r = _new_row(texts)
+    clearing = [field for field, value in texts.items()
+                if value == "" and before[idx].get(field) != ""]
+    if clearing:
+        return error(f"Cannot clear row {idx} field(s) {', '.join(clearing)}: Fusion leaves empty "
+                     "updates unchanged. Nothing changed. Omit trailing fields to keep them, "
+                     "or supply non-empty text.")
+    r = _new_row({field: texts.get(field, "") for field in _TEXT_FIELDS})
     if r is None:
         return error("RevisionTableRow.create() returned nothing - nothing was updated.")
     try:
@@ -212,7 +219,7 @@ def _do_update(sheet, table, before, row, index):
     if after is None or not 0 <= idx < len(after):
         return error("The revision table's rows did not read back after the update - unverified.")
     got = after[idx]
-    if not _fields_match(texts, got):
+    if any(got.get(field) != texts.get(field, before[idx].get(field)) for field in _TEXT_FIELDS):
         return error(f"Fusion accepted the update but row {idx} still reads {got}"
                      f"{_title_header_clause(idx)}")
     return ok({

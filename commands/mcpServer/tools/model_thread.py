@@ -80,9 +80,8 @@ def _note(modeled):
                 "which catches a designation too large for a shaft or too small for a bore; a "
                 "designation too large for a BORE also removes material and passes that check, so "
                 "confirm the call-out against the bore diameter.")
-    return ("Cosmetic thread added to the existing cylinder(s) - the call-out is recorded and the "
-            "geometry stays a plain cylinder; pass modeled=true when the helix itself must be in "
-            "the model. Fusion does not check a cosmetic call-out against the cylinder diameter.")
+    return ("Cosmetic thread added; the plain cylinder may resize to the call-out. Measure its "
+            "actual diameter with find_geometry/model_inspect. Pass modeled=true for a helix.")
 
 
 def handler(faces=None, designation: str = "", modeled: bool = False, left_handed: bool = False,

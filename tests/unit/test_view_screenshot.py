@@ -347,7 +347,7 @@ class TestFitToOnABody:
         object.__setattr__(native, "_armed", True)     # armed AFTER the hide is allowed to land
         restore, _target, err = gs._isolate_for_fit("HANDLE")
         assert restore is None and native.isLightBulbOn is False   # the relight really did fail
-        assert "1 bulb(s) did NOT come back on: skin" in err
+        assert "could NOT turn 1 of them back on: skin" in err
         assert "view_set(action='show'" in err
 
     def _install_bodies(self, bodies):
@@ -656,6 +656,46 @@ class TestFitToModifiedFlag:
     def test_an_already_modified_document_gets_no_such_sentence(self, shoot):
         result, _doc = shoot(is_modified=True)
         assert [c["type"] for c in result["content"]] == ["image"]
+
+    @pytest.fixture
+    def shared_body(self, monkeypatch):
+        import adsk.fusion
+        monkeypatch.setattr(adsk.fusion, "BRepBody", BRepBody)
+        doc = FakeFusionDocument(is_modified=False)
+        native = BRepBody(name="skin", entity_token="SKIN")
+        part = MakeComp(name="Wing", bodies=[native])
+        occs = [make_occurrence(path=path, component=part) for path in ("Wing:1", "Wing:2")]
+        proxies = [body_proxy(native, occ) for occ in occs]
+        for occ, proxy in zip(occs, proxies):
+            occ.bRepBodies = _NamedCollection([proxy])
+        design = install(gs, make_design(comp=MakeComp(name="Root", all_occurrences=occs),
+                                         tokens={"HANDLE": proxies[0]}))
+        def set_bulb(body, value):
+            body.__dict__["isLightBulbOn"] = value
+            doc.isModified = True
+        monkeypatch.setattr(BRepBody, "isLightBulbOn", property(
+            lambda body: body.__dict__["isLightBulbOn"], set_bulb), raising=False)
+        viewport = Viewport(camera=Camera())
+        app = FakeApplication(active_product=design, active_document=doc, active_viewport=viewport)
+        monkeypatch.setattr(gs, "app", app)
+        monkeypatch.setattr(gs._common, "app", app)
+        captured = []
+        monkeypatch.setattr(gs._view_common, "capture_png_b64", lambda *a, **k:
+                            (captured.append(True) or "B64DATA", None))
+        return doc, native, viewport, captured
+
+    @pytest.mark.parametrize("modified", [False, True])
+    def test_shared_body_refusal_discloses_new_dirty_flag_after_relighting(self, shared_body, modified):
+        doc, native, viewport, captured = shared_body
+        doc.isModified = modified
+        before = camera_state(viewport.camera)
+        result = gs.handler(view="top", fit_to="HANDLE")
+        assert result["isError"] is True
+        assert "another placement of the same body was hidden" in result["message"]
+        assert "Nothing was captured" in result["message"] and "fullPathName" in result["message"]
+        assert ("records as a document modification" in result["message"]) is (not modified)
+        assert native.isLightBulbOn is True and doc.isModified is True
+        assert captured == [] and camera_state(viewport.camera) == before
 
     def test_the_flag_is_read_after_the_restore_runs(self, monkeypatch):
         doc = FakeFusionDocument(is_modified=False)
