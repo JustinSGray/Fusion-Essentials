@@ -15,9 +15,9 @@ from ..mcp_primitives.registry import register
 from . import _assert, _common, _geom, _inputs
 from ._common import counted, error, ok, outcome_clause, safe
 from ._edit_feature_common import (at_address, failed, health as _health,
-                                   identical_geometry_reply, matched, restore_definition,
-                                   restore_gaps, same_feature as _same_feature, sentence,
-                                   sketch_address)
+                                   identical_geometry_reply, later_operand_refusal, matched,
+                                   restore_definition, restore_gaps,
+                                   same_feature as _same_feature, sentence, sketch_address)
 
 
 _FEATURE = _inputs.FeatureRef("feature", required=True)
@@ -565,9 +565,11 @@ def handler(feature: str = "", action: str = "", profile=None, operation: str = 
         sketch = safe(lambda: profile_entity.parentSketch)
         if _common.same_component(component, safe(lambda: sketch.parentComponent)) is not True:
             return error(f"profile '{profile}' must belong to '{label}'s owning component.")
-        profile_index = counted(lambda: sketch.timelineObject.index)
-        if profile_index is None or profile_index >= index:
-            return error(f"profile '{profile}' must precede '{label}' in the timeline.")
+        refusal = later_operand_refusal(label, index, [profile_entity])
+        if refusal:
+            return error(refusal)
+        if counted(lambda: sketch.timelineObject.index) is None:
+            return error("The profile's sketch timeline row does not read. Nothing was edited.")
         operands.append(profile_entity)
     if values["to_object"] is not None:
         operands.append(values["to_object"])

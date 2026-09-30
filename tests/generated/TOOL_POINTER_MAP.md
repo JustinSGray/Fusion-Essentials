@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 685
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 686
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -43,10 +43,10 @@ close orphans, factor duplicated guards into shared helpers.
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 33  (desc 15, note 18)
 - `model_inspect`  <- 29  (desc 5, note 24)
+- `sketch_get`  <- 26  (desc 7, note 19)
 - `data_get`  <- 25  (desc 10, note 15)
 - `doc_open`  <- 25  (desc 5, note 20)
 - `sketch_create`  <- 25  (desc 7, note 18)
-- `sketch_get`  <- 25  (desc 7, note 18)
 - `assembly_get`  <- 21  (desc 4, note 17)
 
 ## The detected guidance surface
@@ -1444,6 +1444,24 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' does not report isRolledBack - the roll is unconfirmed.
 - rollTo reported success but '
 - ' reads isRolledBack=
+- ' now sits immediately
+- '; every other item kept its order (re-read).
+- action='reorder' needs 'feature' (the item to move) and 'end_feature' (the item it goes before or after), named as design_get(include=['timeline']) lists them.
+- action='reorder' takes to='before' or to='after' (got '
+- The timeline did not list with every item told apart, so a move could not be verified. Nothing moved.
+- ' is the anchor itself; name another item as 'end_feature'.
+- ' already sits immediately
+- The timeline index of '
+- ' or of the item it would land in front of does not read. Nothing moved.
+- Fusion refused to move '
+- , but the timeline re-reads changed or did not re-read. Read design_get(include=['timeline']).
+- reorder returned true, but the timeline re-reads unchanged: '
+- reorder returned true, but the timeline did not re-read with every item told apart, so where '
+- ' sits is UNCONFIRMED. Read design_get(include=['timeline']).
+- reorder returned true, but the re-read has '
+- and other items changed order. Undo it in Fusion.
+- ' left new timeline errors or warnings:
+- . Nothing moved (the timeline re-reads unchanged).
 - A suppressed item is skipped when the model rebuilds; its geometry is absent until it is unsuppressed with suppressed=false.
 - . A downstream feature consumed what this one produced - set suppressed=false to restore it.
 - action='suppress' needs 'feature' - the timeline object to suppress or unsuppress (from design_get(include=['timeline'])).
@@ -1495,6 +1513,9 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - but itemByName still returns it (value '
 - ') - it was not deleted.
 - action='roll' without a 'feature' takes to='beginning'/'end'/'next'/'previous' (got '' - that one names a position relative to a 'feature').
+- Fusion cannot place an item after the last timeline row, so '' cannot go after ''. Nothing moved. To make '' last, run .
+- Fusion refused to move ''  '': , but the timeline re-reads changed or did not re-read. Read design_get(include=['timeline']).
+- reorder returned true, but the timeline did not re-read with every item told apart, so where '' sits is UNCONFIRMED. Read design_get(include=['timeline']).
 - The change left  feature(s) in error: . A downstream feature consumed what this one produced - set suppressed=false to restore it.
 - A timeline group cannot hold another group, and  lies in ... Remove it with action='ungroup' first, or pick a range without it.
 - Timeline items .. overlap the expanded group '' (its members span ..), and a timeline item can belong to only one group. Remove it with action='ungroup' first, or pick a range clear of it.
@@ -2999,6 +3020,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 's evaluated-health census is unreadable; nothing was edited.
 - ' already uses profile '
 - '; nothing was edited.
+- The profile's sketch timeline row does not read. Nothing was edited.
 - An operand does not belong to '
 - ' is not native to its owning component.
 - Two-sided through_all with cut/intersect participant assignment is unsupported. Use separate one-sided features or the Fusion UI.
@@ -3700,6 +3722,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Creating user parameter '
 - . (Model/feature parameters may be read-only or require a valid expression; text parameters need quotes, e.g. "'text'".)
 - Could not create user parameter '
+- sketch_moves lists the points that moved over  mm, in each sketch's own coordinates (mm); sketch_get(sketch_name=...) gives that sketch's frame.
 - The value took, and the recompute left  new timeline error(s) and  new warning(s): . Nothing was rolled back; read design_get(include=['timeline']) for the messages, or set the previous value again.
 - Could not set '' to '': . (Model/feature parameters may be read-only or require a valid expression; text parameters need quotes, e.g. "'text'".)
 

@@ -361,7 +361,8 @@ def _extrude_edit_rows():
     rectangle("EditLate", (1, 1), (4, 4))
     write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_scope", "Extrude"),
           "action": "profile", "profile": {"sketch": "EditLate", "profile_index": 0}},
-          _refused("must precede"))
+          _refused("sketch 'EditLate' is at timeline row", "action='reorder', feature='EditLate@",
+                   "to='before'", "Nothing was edited."))
     inspect("EditScope:Body2", _extrude_edit_mass(180))
     write("model_extrude", {"sketch_name": "EditPocketA", "operation": "cut",
                             "extent": "through_all", "symmetric": True,

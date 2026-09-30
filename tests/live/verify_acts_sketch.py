@@ -11,7 +11,7 @@ from verify_core import (
     EXPORT_DIR, SVG96_PATH, SVG_PATH, _ctx_get, _datum_plane, _dim_measures, _extruded,
     _made_component, _param_added, _param_favorited, _params_listed, _refused, _svg96_extent,
     _watch_all, _measured, _RECALL, _recall, _home_document, _home_address,
-    _new_document, _document_closed, _activated)
+    _new_document, _document_closed, _activated, _near)
 from verify_layout import _px, _py
 
 
@@ -1472,3 +1472,99 @@ def _paging_rows():
 
 _SKETCH_PAGING = _paging_rows()
 _SKETCHWORK += _SKETCH_PAGING
+
+
+def _dm_line(x, y):
+    """sketch_get: point:1 held at (0, y); point:2 and line:0's end at (x, y), in mm."""
+    def check(p):
+        rows = {e.get("id"): e for e in p.get("entities") or []}
+        got = [(rows.get("point:1") or {}).get("position"), (rows.get("point:2") or {}).get("position"),
+               (rows.get("line:0") or {}).get("end")]
+        want = [(0, y), (x, y), (x, y)]
+        return _measured(f"line held at x 0 and ending at x {x}", got, all(
+            isinstance(g, dict) and _near(g.get("x"), wx, 0.001) and _near(g.get("y"), wy, 0.001)
+            for g, (wx, wy) in zip(got, want)))
+    return check
+
+
+def _dm_moved(row, sketch, key, x0, x1, y):
+    """One sketch_moves row: only point:2 moved, x0 -> x1, as line:0's end, under the named dim."""
+    moved = row.get("moved") or [{}]
+    ends = [moved[0].get("from_mm") or [], moved[0].get("to_mm") or []]
+    return (row.get("sketch") == sketch and row.get("moved_count") == 1 and len(moved) == 1
+            and moved[0].get("id") == "point:2" and moved[0].get("ends") == ["line:0 end"]
+            and all(len(e) == 3 and all(_near(a, b, 0.001) for a, b in zip(e, want))
+                    for e, want in zip(ends, [(x0, y, 0), (x1, y, 0)]))
+            and row.get("dimensions") == [{"parameter": _RECALL.get(key),
+                                           "entities": ["point:1", "point:2"]}])
+
+
+def _dimension_move_rows():
+    """Name a dimension's entities, then drive it and a user parameter over it: what moved."""
+    rows = [("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("doc_get", {}, _home_document, ("dm_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "dm_home", "home")},
+             _new_document, ("dm_doc", lambda p: p["document_handle"]))]
+
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: {
+            **(args(c) if callable(args) else args),
+            "expect_document": _ctx_get(c, "dm_doc", "dimension document")}, check, save))
+
+    def read(name, args, check, save=None):
+        rows.append((name, lambda c, args=args: args(c) if callable(args) else dict(args),
+                     check, save))
+
+    def driven(sketch, y, length, value, key):
+        # Drawn at the length its dimension is created at (SlotW reads 45 mm for DriveB).
+        write("sketch_create", {"plane": "xy", "name": sketch})
+        write("sketch_add_geometry", {"sketch_name": sketch, "geometry": [
+            {"kind": "line", "x1": 0, "y1": y, "x2": length, "y2": y}]})
+        read("sketch_get", {"sketch_name": sketch, "include_entities": True}, _dm_line(length, y))
+        write("sketch_dimension", {"sketch_name": sketch, "dimensions": [
+            {"dim_type": "distance", "entity_one": "point:1", "entity_two": "point:2",
+             "value": value}]},
+            lambda p: bool(p["results"][0].get("parameter")),
+            (key, _recall(key, lambda p: p["results"][0]["parameter"])))
+
+    # The dimension row names the two points the dimension was given.
+    driven("Drive", 40, 30, "30 mm", "dm_a")
+    read("sketch_get", {"sketch_name": "Drive", "include_entities": True},
+         lambda p: _measured("the dimension names point:1 and point:2", p.get("dimensions"),
+                             [(d.get("name"), d.get("entities")) for d in p.get("dimensions") or []]
+                             == [(_RECALL.get("dm_a"), ["point:1", "point:2"])]))
+    # Driving it moves point:2 - line:0's end - and holds point:1, read back independently.
+    write("param_set", lambda c: {"name": _ctx_get(c, "dm_a", "Drive's dimension"),
+                                  "expression": "45 mm"},
+          lambda p: _measured("the write names the point and line end it moved",
+                              p.get("sketch_moves"), len(p.get("sketch_moves") or []) == 1
+                              and _dm_moved(p["sketch_moves"][0], "Drive", "dm_a", 30, 45, 40)))
+    read("sketch_get", {"sketch_name": "Drive", "include_entities": True}, _dm_line(45, 40))
+    write("param_set", {"name": "SlotW", "expression": "45 mm", "create": True},
+          lambda p: p.get("created") is True)
+    write("param_set", lambda c: {"name": _ctx_get(c, "dm_a", "Drive's dimension"),
+                                  "expression": "SlotW"},
+          lambda p: _measured("binding at the same value moved nothing", p.get("sketch_moves"),
+                              [(r.get("sketch"), r.get("moved"), r.get("moved_count"))
+                               for r in p.get("sketch_moves") or []] == [("Drive", [], 0)]))
+    driven("DriveB", 80, 45, "SlotW", "dm_b")
+    write("param_set", {"name": "SlotW", "expression": "60 mm"},
+          lambda p: (lambda by: _measured(
+              "the user parameter reports both sketches it drives", sorted(by),
+              sorted(by) == ["Drive", "DriveB"]
+              and _dm_moved(by["Drive"], "Drive", "dm_a", 45, 60, 40)
+              and _dm_moved(by["DriveB"], "DriveB", "dm_b", 45, 60, 80)))(
+                  {r.get("sketch"): r for r in p.get("sketch_moves") or []}))
+    for sketch, y in (("Drive", 40), ("DriveB", 80)):
+        read("sketch_get", {"sketch_name": sketch, "include_entities": True}, _dm_line(60, y))
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "dm_home", "home"),
+                                         "expect_document": _ctx_get(c, "dm_doc", "dimension")},
+              _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "dm_doc", "dimension"),
+                                      "save_changes": False,
+                                      "expect_document": _ctx_get(c, "dm_home", "home")},
+              _document_closed, None)]
+    return rows
+
+
+_SKETCHWORK += _dimension_move_rows()

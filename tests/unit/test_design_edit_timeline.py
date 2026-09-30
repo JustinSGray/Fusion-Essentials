@@ -1185,6 +1185,178 @@ class TestWiring:
             assert props[prop]["type"] == "string"
 
 
+class _Movable(FakeTimelineObject):
+    """reorder(i) lands the item in front of the item read at index i; -1 or the count raises."""
+
+    def __init__(self, name, index, raises=None, returns=True, lands=None, after=None):
+        super().__init__(name, index, entity=types.SimpleNamespace(entityToken=f"tok-{name}"))
+        self._raises, self._returns, self._lands, self._after = raises, returns, lands, after
+        self.reorder_calls = []
+
+    def canReorder(self, _before):
+        raise AssertionError("canReorder was consulted")
+
+    def reorder(self, beforeIndex):
+        self.reorder_calls.append(beforeIndex)
+        items = self.timeline._items
+        if beforeIndex == -1 or beforeIndex >= len(items):
+            raise RuntimeError("2 : InternalValidationError : featureAtIndex")
+        if self._returns:
+            anchor = items[beforeIndex]
+            items.remove(self)
+            items.insert(items.index(anchor) if self._lands is None else self._lands, self)
+            _reindex(items)
+            (self._after or (lambda: None))()
+        if self._raises:
+            raise RuntimeError(self._raises)
+        return self._returns
+
+
+def _reindex(items):
+    for i, obj in enumerate(items):
+        obj.index = i
+
+
+class TestReorder:
+    def _wired(self, wire, at=4, names="ABCDE", **kw):
+        items = [_Movable(n, i, **kw) if i == at else
+                 FakeTimelineObject(n, i, entity=types.SimpleNamespace(entityToken=f"tok-{n}"))
+                 for i, n in enumerate(names)]
+        return wire(FakeTimeline(items))
+
+    def _order(self, tl):
+        return [o.name for o in tl._items]
+
+    def test_a_move_after_the_last_item_is_refused_with_the_two_moves_before_any_write(self, wire):
+        tl = self._wired(wire, at=2)
+        msg = error_message(et.handler(action="reorder", feature="C", to="after", end_feature="E"))
+        assert self._order(tl) == ["A", "B", "C", "D", "E"] and tl._items[2].reorder_calls == []
+        assert msg == ("Fusion cannot place an item after the last timeline row, so 'C' cannot go "
+                       "after 'E'. Nothing moved. To make 'C' last, run design_edit_timeline("
+                       "action='reorder', feature='C@2', to='before', end_feature='E@4'), then "
+                       "design_edit_timeline(action='reorder', feature='E@4', to='before', "
+                       "end_feature='C@3').")
+
+    def test_the_two_moves_the_refusal_names_make_the_item_last(self, wire):
+        tl = wire(FakeTimeline([_Movable(n, i) for i, n in enumerate("ABCDE")]))
+        payload(et.handler(action="reorder", feature="C@2", to="before", end_feature="E@4"))
+        assert self._order(tl) == ["A", "B", "D", "C", "E"]
+        payload(et.handler(action="reorder", feature="E@4", to="before", end_feature="C@3"))
+        assert self._order(tl) == ["A", "B", "D", "E", "C"]
+
+    def test_an_item_just_before_the_last_needs_one_move(self, wire):
+        self._wired(wire, at=3)
+        msg = error_message(et.handler(action="reorder", feature="D", to="after", end_feature="E"))
+        assert msg.endswith("To make 'D' last, run design_edit_timeline(action='reorder', "
+                            "feature='E@4', to='before', end_feature='D@3').")
+
+    def test_a_true_return_that_moved_nothing_says_nothing_moved(self, wire):
+        tl = self._wired(wire, lands=4)          # re-inserts E where it was
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert self._order(tl) == ["A", "B", "C", "D", "E"]
+        assert msg == ("reorder returned true, but the timeline re-reads unchanged: 'E' is still "
+                       "at index 4. Nothing moved.")
+
+    def test_a_move_that_also_shuffled_other_items_is_not_ok(self, wire):
+        tl = self._wired(wire, after=lambda: (tl._items.insert(3, tl._items.pop(4)),
+                                              _reindex(tl._items)))
+        res = et.handler(action="reorder", feature="E", end_feature="B")
+        assert self._order(tl) == ["A", "E", "B", "D", "C"]
+        assert error_message(res) == ("reorder returned true, but the re-read has 'E' at index 1, "
+                                      "and other items changed order. Undo it in Fusion.")
+        assert res["isError"] is True and "reordered" not in str(res)
+
+    @pytest.mark.parametrize("to,anchor", [("before", "B"), ("after", "A")])
+    def test_a_later_item_lands_beside_the_anchor_by_reread(self, wire, to, anchor):
+        tl = self._wired(wire)
+        out = payload(et.handler(action="reorder", feature="E", to=to, end_feature=anchor))
+        assert self._order(tl) == ["A", "E", "B", "C", "D"]
+        assert tl._items[1].reorder_calls == [1]
+        assert (out["reordered"], out["index_before"], out["index_after"]) == (True, 4, 1)
+        assert out["note"] == (f"'E' now sits immediately {to} '{anchor}'; every other item kept "
+                               "its order (re-read).")
+
+    def test_a_raise_quotes_fusion_after_the_rows_reread_unchanged(self, wire):
+        tl = self._wired(wire, returns=False,
+                         raises="3 : CIRCULAR_DEPENDENCY - Circular dependency found: from E to "
+                                "B. / First feature in timeline: E // E")
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert msg == ("Fusion refused to move 'E' before 'B': 3 : CIRCULAR_DEPENDENCY - Circular "
+                       "dependency found: from E to B. Nothing moved (the timeline re-reads "
+                       "unchanged).")
+        assert self._order(tl) == ["A", "B", "C", "D", "E"]
+
+    def test_a_raise_after_rows_moved_does_not_claim_nothing_moved(self, wire):
+        self._wired(wire, raises="3 : reorder failed")
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert "Nothing moved" not in msg and "re-reads changed" in msg
+
+    def test_a_false_return_is_a_refusal(self, wire):
+        self._wired(wire, returns=False)
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert msg.startswith("Fusion refused to move 'E' before 'B': reorder returned false. "
+                              "Nothing moved")
+
+    def test_a_true_return_that_landed_elsewhere_names_the_move_back(self, wire):
+        tl = self._wired(wire, at=3, lands=2)
+        msg = error_message(et.handler(action="reorder", feature="D", end_feature="B"))
+        assert self._order(tl) == ["A", "B", "D", "C", "E"]
+        assert msg == ("reorder returned true, but the re-read has 'D' at index 2, not immediately "
+                       "before 'B' (index 1). Move it back with design_edit_timeline("
+                       "action='reorder', feature='D@2', to='before', end_feature='E@4').")
+
+    def test_a_move_back_for_an_item_that_was_last_is_not_offered(self, wire):
+        tl = self._wired(wire, lands=2)
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert self._order(tl) == ["A", "B", "E", "C", "D"]
+        assert msg.endswith("not immediately before 'B' (index 1). Undo it in Fusion.")
+
+    def test_a_move_back_whose_index_does_not_read_is_not_offered(self, wire):
+        tl = self._wired(wire, at=3, lands=2, after=lambda: setattr(tl._items[4], "index", None))
+        msg = error_message(et.handler(action="reorder", feature="D", end_feature="B"))
+        assert msg.endswith("not immediately before 'B' (index 1). Undo it in Fusion.")
+
+    def test_new_errors_after_the_move_are_reported_as_kept(self, wire):
+        tl = self._wired(wire, at=3, after=lambda: setattr(tl._items[3], "healthState", 2))
+        msg = error_message(et.handler(action="reorder", feature="D", end_feature="B"))
+        assert msg == ("Moving 'D' before 'B' left new timeline errors or warnings: C. This STAYED "
+                       "APPLIED (not rolled back): 'D' timeline index now reads 1 (was 3). Move it "
+                       "back with design_edit_timeline(action='reorder', feature='D@1', to='before', "
+                       "end_feature='E@4').")
+
+    @pytest.mark.parametrize("to,anchor,why", [
+        ("before", "E", "is the anchor itself"),
+        ("after", "D", "already sits immediately after 'D'"),
+        ("before", "", "needs 'feature' (the item to move) and 'end_feature'")])
+    def test_a_move_with_nowhere_to_go_is_refused_unattempted(self, wire, to, anchor, why):
+        tl = self._wired(wire)
+        msg = error_message(et.handler(action="reorder", feature="E", to=to, end_feature=anchor))
+        assert why in msg and tl._items[4].reorder_calls == []
+
+    def test_tokenless_namesakes_are_refused_before_any_move(self, wire):
+        tl = self._wired(wire, at=3, names="AGBGE")
+        tl._items[1].entity = tl._items[3].entity = None
+        msg = error_message(et.handler(action="reorder", feature="G@3", end_feature="A"))
+        assert msg == ("The timeline did not list with every item told apart, so a move could not "
+                       "be verified. Nothing moved.")
+        assert tl._items[3].reorder_calls == []
+
+    def test_a_true_return_the_census_cannot_reread_is_unconfirmed(self, wire):
+        tl = self._wired(wire, after=lambda: setattr(tl, "_raises", "3 : count unreadable"))
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert msg == ("reorder returned true, but the timeline did not re-read with every item "
+                       "told apart, so where 'E' sits is UNCONFIRMED. Read "
+                       "design_get(include=['timeline']).")
+
+    def test_an_unread_landing_index_is_refused_before_any_move(self, wire):
+        tl = self._wired(wire)
+        tl._items[1].index = None
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert msg == ("The timeline index of 'E' or of the item it would land in front of does "
+                       "not read. Nothing moved.")
+        assert tl._items[4].reorder_calls == []
+
+
 class TestVerificationPathsBite:
     """The gates that catch a platform LIE - each returned true (or claimed success) while the
     timeline did not actually move."""

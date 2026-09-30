@@ -240,7 +240,7 @@ Produces: full... |
 | ✎ | `design_configure` | Build or switch a Configured Design; 'action' picks the verb |
 | ⚠ | `design_delete_feature` | Delete one timeline feature by name; a pattern/mirror delete takes every instance it created. |
 | ⚠ | `design_delete_occurrence` | Delete one component occurrence; if it was the last instance of its component, the component goes too. |
-| ⚠ | `design_edit_timeline` | Drive the parametric timeline |
+| ⚠ | `design_edit_timeline` | Drive the timeline |
 | ✎ | `design_export` | Export a body, component/occurrence or the whole design (omit 'target') to a CAD file on local disk. |
 | · | `design_get` | Design summary and opt-in detail. |
 | ✎ | `design_move_occurrence` | Re-parent an occurrence into another occurrence's component.

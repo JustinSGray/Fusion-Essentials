@@ -14,7 +14,8 @@ from ..mcp_primitives.registry import register
 from . import _assert, _common, _inputs, _sketch_detail, _sweep_common
 from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_address, failed,
                                    feature_body_keys as _feature_body_keys,
-                                   health as _health, identical_geometry_reply, matched,
+                                   health as _health, identical_geometry_reply,
+                                   later_operand_refusal, matched, operand_source,
                                    restore_definition, restore_gaps, rolled_back_text,
                                    same_feature as _same_feature, sentence, shape_match,
                                    sketch_address)
@@ -77,17 +78,30 @@ def _definition_report(definition):
             "orientation": definition["orientation"], "is_solid": definition["is_solid"]}
 
 
-def _addresses(operand):
-    """The sketch address of each member of a profile or path, None for a member outside a sketch."""
+def _members(operand):
+    """The member entities of a profile or path: a Path's or collection's items, else the operand."""
     entity = _common._native_of(operand)
     kind = safe(lambda: entity.objectType)
     if kind == "adsk::fusion::Path":
-        members = [safe(lambda i=i: entity.item(i).entity) for i in range(counted(lambda: entity.count) or 0)]
-    elif kind == "adsk::core::ObjectCollection":
-        members = list(_common.iter_collection(entity))
+        return [safe(lambda i=i: entity.item(i).entity) for i in range(counted(lambda: entity.count) or 0)]
+    if kind == "adsk::core::ObjectCollection":
+        return list(_common.iter_collection(entity))
+    return [entity]
+
+
+def _addresses(operand):
+    """The sketch address of each member of a profile or path, None for a member outside a sketch."""
+    return [sketch_address(member) for member in _members(operand)]
+
+
+def _later_refusal(design, owner, label, index, action, raw, component):
+    """The later-operand refusal for the replacement as it resolves at the current marker."""
+    if action == "path":
+        operand, _label, refusal = _common.build_path(owner, raw)
     else:
-        members = [entity]
-    return [sketch_address(member) for member in members]
+        operand, _solid, _open, _host, _sketch, refusal = _sweep_common.resolve_profile(
+            design, owner, raw, False, component)
+    return None if refusal else later_operand_refusal(label, index, _members(operand))
 
 
 def _members_text(addresses):
@@ -186,14 +200,8 @@ def _participant_keys(feature, operation):
 
 def _operand_owner(entity):
     """The native profile or path member's component and source timeline index."""
-    native = _common._native_of(entity)
-    source = (safe(lambda: native.parentSketch) or safe(lambda: native.body)
-              or native)
-    owner = safe(lambda: source.parentComponent)
-    row = counted(lambda: source.timelineObject.index)
-    if row is None and safe(lambda: native.parentSketch) is not None:
-        row = counted(lambda: native.parentSketch.timelineObject.index)
-    return owner, row
+    source, row, _from_sketch = operand_source(entity)
+    return safe(lambda: source.parentComponent), row
 
 
 def _operand_error(operand, action, component, index):
@@ -297,6 +305,9 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         return error(f"'{label}' has unreadable timeline identity; nothing was edited.")
     if marker <= index:
         return error(f"'{label}' is after marker {marker}; roll after it with design_edit_timeline.")
+    refusal = _later_refusal(design, component_owner, label, index, action, raw[action], component)
+    if refusal:
+        return error(refusal)
     linked_before = _inactive_link_count(entity, index)
     if linked_before is None:
         return error(f"'{label}' has unreadable or active linked features; nothing was edited.")

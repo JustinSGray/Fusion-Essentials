@@ -111,6 +111,22 @@ def rig(monkeypatch):
     return loft, timeline
 
 
+def test_a_retarget_profile_drawn_after_the_loft_is_refused_before_any_roll(rig, monkeypatch):
+    loft, timeline = rig
+    later = Sketch(name="S1Later", timeline_object=SimpleNamespace(index=14))
+    monkeypatch.setattr(mod._inputs.ProfileRef, "resolve", lambda _self, _raw, _scope: (
+        SimpleNamespace(parentSketch=later), None))
+    rolls = []
+    loft.timelineObject.rollTo = lambda _before: rolls.append(True) or timeline.roll()
+    result = mod.handler(feature="Loft1", action="retarget", section_index=1,
+                         profile={"sketch": "S1Later", "profile_index": 0})
+    assert error_message(result) == (
+        "Editing 'Loft1': sketch 'S1Later' is at timeline row 14, after 'Loft1' at row 2. Move it "
+        "first with design_edit_timeline(action='reorder', feature='S1Later@14', to='before', "
+        "end_feature='Loft1@2'), then retry. Nothing was edited.")
+    assert (rolls, loft.assignments, timeline.markerPosition) == ([], 0, 5)
+
+
 def test_retarget_changes_only_middle_section_and_material(rig):
     loft, timeline = rig
     result = mod.handler(feature="Loft1", action="retarget", section_index=1, profile="X")

@@ -1,8 +1,8 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Drive the parametric timeline: move the marker, suppress a timeline object, group a range of
-items, discard everything after the marker, and tag a feature with an attribute.
+"""Drive the parametric timeline: move the marker, reorder or suppress a timeline object, group a
+range of items, discard everything after the marker, and tag a feature with an attribute.
 Timeline.movetoNextStep carries a lowercase 't' - that is the member name the API exposes.
 """
 
@@ -12,9 +12,9 @@ from ..mcp_primitives.registry import register
 from . import _common
 from . import _design_common
 from . import _inputs
-from ._common import error, ok, safe, short_ref, timeline_health
+from ._common import error, ok, outcome_clause, safe, short_ref, timeline_health
 
-_ACTIONS = ("roll", "suppress", "group", "ungroup", "delete_after_marker",
+_ACTIONS = ("roll", "reorder", "suppress", "group", "ungroup", "delete_after_marker",
             "set_attribute", "delete_attribute")
 _PLACES = ("before", "after")            # roll to a named item - TimelineObject.rollTo(rollBefore)
 _STEPS = ("beginning", "end", "next", "previous")   # roll with no feature - the Timeline marker moves
@@ -33,7 +33,7 @@ _UNREADABLE = object()      # a read-back that RAISED - distinct from one that r
 _ACTION = _inputs.Choice("action", list(_ACTIONS), default="roll")
 _TO = _inputs.Choice(
     "to", list(_PLACES) + list(_STEPS), default="before",
-    description="before/after a named 'feature'; the steps take none.")
+    description="before/after the anchor; the steps take none.")
 # The attribute actions target the FEATURE ENTITY, which is what the FeatureRef kind resolves to;
 # it rides on the shared 'feature' input rather than adding a second name for the same thing.
 _ATTR_TARGET = _inputs.FeatureRef("feature")
@@ -175,6 +175,119 @@ def _do_roll(timeline, feature, to):
     out.update(_marker_facts(timeline, count))
     out["note"] = ("Items after the marker are rolled back - they are not computed and their geometry "
                    "is absent until the marker returns. Roll to='end' when done.")
+    return ok(out)
+
+
+def _order(design):
+    """The timeline census as [((entity token, name), index)], None when unread or not told apart."""
+    census = _design_common.timeline_census(design)
+    if census is None:
+        return None
+    rows = [((it["key"], it["name"]), it["index"]) for it in census["items"]]
+    return rows if len({key for key, _i in rows}) == len(rows) else None
+
+
+def _move_back(before, after, item):
+    """The reorder call, by 'name@index' in `after`, putting `item` back in front of the item that
+    followed it in `before`; None when it was last or an index does not read."""
+    keys, now = [key for key, _i in before], dict(after)
+    at = keys.index(item)
+    if at + 1 >= len(keys):
+        return None
+    anchor = keys[at + 1]
+    if not isinstance(now.get(item), int) or not isinstance(now.get(anchor), int):
+        return None
+    return (f"design_edit_timeline(action='reorder', feature='{item[1]}@{now[item]}', to='before', "
+            f"end_feature='{anchor[1]}@{now[anchor]}')")
+
+
+def _last_refusal(name, i, last_name, last):
+    """The refusal for a move after the last row, with the two measured moves that make it last."""
+    call = "design_edit_timeline(action='reorder', feature='{}@{}', to='before', end_feature='{}@{}')"
+    steps = ([] if i == last - 1 else [call.format(name, i, last_name, last)]
+             ) + [call.format(last_name, last, name, last - 1)]
+    return error(f"Fusion cannot place an item after the last timeline row, so '{name}' cannot go "
+                 f"after '{last_name}'. Nothing moved. To make '{name}' last, run "
+                 + ", then ".join(steps) + ".")
+
+
+def _do_reorder(design, timeline, feature, anchor, to):
+    if not feature or not anchor:
+        return error("action='reorder' needs 'feature' (the item to move) and 'end_feature' (the "
+                     "item it goes before or after), named as design_get(include=['timeline']) "
+                     "lists them.")
+    if to not in _PLACES:
+        return error(f"action='reorder' takes to='before' or to='after' (got '{to}').")
+    obj, rerr = _resolve_object(timeline, feature, "the item to move")
+    if rerr:
+        return error(rerr)
+    mark, aerr = _resolve_object(timeline, anchor, "the anchor item")
+    if aerr:
+        return error(aerr)
+    item = (_design_common.timeline_item_key(obj), safe(lambda: obj.name))
+    near = (_design_common.timeline_item_key(mark), safe(lambda: mark.name))
+    name, target = item[1], near[1]
+    before = _order(design)
+    keys_before = [key for key, _i in before or []]
+    if item not in keys_before or near not in keys_before:
+        return error("The timeline did not list with every item told apart, so a move could not be "
+                     "verified. Nothing moved.")
+    if item == near:
+        return error(f"'{_label(obj)}' is the anchor itself; name another item as 'end_feature'.")
+    at, pa = keys_before.index(item), keys_before.index(near)
+    if at == (pa - 1 if to == "before" else pa + 1):
+        return error(f"'{name}' already sits immediately {to} '{target}'. Nothing moved.")
+    # Measured: reorder(beforeIndex) lands the item in front of the item read at beforeIndex, moving
+    # either way; reorder(-1) and reorder(count) raise featureAtIndex, so nothing lands after the last.
+    nxt = pa if to == "before" else pa + 1
+    land = before[nxt][1] if nxt < len(before) else None
+    i = before[at][1]
+    if nxt == len(before) and isinstance(i, int) and isinstance(before[pa][1], int):
+        return _last_refusal(name, i, target, before[pa][1])
+    if not isinstance(land, int) or not isinstance(i, int):
+        return error(f"The timeline index of '{name}' or of the item it would land in front of "
+                     "does not read. Nothing moved.")
+    health_before = timeline_health(design)
+    try:
+        why = None if obj.reorder(land) is True else "reorder returned false"
+    except Exception as e:
+        why = str(e).split(" / ")[0].strip().rstrip(".")
+    after = _order(design)
+    keys_after = [key for key, _i in after or []]
+    if why is not None:
+        if after == before:
+            return error(f"Fusion refused to move '{name}' {to} '{target}': {why}. Nothing moved "
+                         "(the timeline re-reads unchanged).")
+        return error(f"Fusion refused to move '{name}' {to} '{target}': {why}, but the timeline "
+                     "re-reads changed or did not re-read. Read design_get(include=['timeline']).")
+    if after == before:
+        return error(f"reorder returned true, but the timeline re-reads unchanged: '{name}' is still "
+                     f"at index {i}. Nothing moved.")
+    if item not in keys_after or near not in keys_after:
+        return error(f"reorder returned true, but the timeline did not re-read with every item told "
+                     f"apart, so where '{name}' sits is UNCONFIRMED. Read "
+                     "design_get(include=['timeline']).")
+    j, k = keys_after.index(item), keys_after.index(near)
+    now = after[j][1]
+    back = _move_back(before, after, item)
+    undo = f"Move it back with {back}." if back else "Undo it in Fusion."
+    kept_order = [x for x in keys_after if x != item] == [x for x in keys_before if x != item]
+    if j != (k - 1 if to == "before" else k + 1) or not kept_order:
+        return error(f"reorder returned true, but the re-read has '{name}' at index {now}, "
+                     + (f"not immediately {to} '{target}' (index {after[k][1]}). {undo}"
+                        if kept_order else "and other items changed order. Undo it in Fusion."))
+    errors_after, warnings_after, _total = timeline_health(design)
+    new = ([n for n in errors_after if n not in health_before[0]]
+           + [n for n in warnings_after if n not in health_before[1]])
+    if new:
+        return error(f"Moving '{name}' {to} '{target}' left new timeline errors or warnings: "
+                     f"{_common.named_with_remainder(new)}. "
+                     + outcome_clause("kept", "", [(f"'{name}' timeline index", now, i)], undo))
+    out = {"reordered": True, "feature": name, "to": to, "end_feature": target,
+           "index_before": i, "index_after": now,
+           "note": f"'{name}' now sits immediately {to} '{target}'; every other item kept its order "
+                   "(re-read)."}
+    out.update(_marker_facts(timeline, len(keys_after)))
     return ok(out)
 
 
@@ -559,6 +672,8 @@ def handler(action: str = "roll", feature: str = "", to: str = "before", end_fea
     feature = (feature or "").strip()
     if action == "roll":
         return _do_roll(timeline, feature, to)
+    if action == "reorder":
+        return _do_reorder(design, timeline, feature, (end_feature or "").strip(), to)
     if action == "suppress":
         return _do_suppress(design, timeline, feature, suppressed)
     if action == "group":
@@ -573,8 +688,8 @@ def handler(action: str = "roll", feature: str = "", to: str = "before", end_fea
 
 
 TOOL_DESCRIPTION = (
-    "Drive the parametric timeline. Items after the marker are not computed, so roll to='end' when "
-    "done. Names come from design_get(include=['timeline'])."
+    "Drive the timeline. Items after the marker are not computed; roll to='end' when done. Names "
+    "from design_get(include=['timeline'])."
 )
 
 tool = (
@@ -582,15 +697,15 @@ tool = (
     .add_input_property(*_ACTION.as_property())
     .add_input_property(*_TO.as_property())
     .add_input_property("feature", {"type": "string",
-            "description": "The roll/suppress/attribute target, or a group's first item."})
+            "description": "Item to move/suppress/tag, roll's anchor, or a group's first item."})
     .add_input_property("end_feature", {"type": "string",
-            "description": "Last item of the group range."})
+            "description": "Group's last item, or reorder's anchor."})
     .add_input_property("name", {"type": "string",
-            "description": "The new group's name."})
+            "description": "New group's name."})
     .add_input_property("suppressed", {"type": "boolean",
             "description": "False unsuppresses."})
     .add_input_property("confirm_delete_after_marker", {"type": "boolean",
-            "description": "Without it the action previews and refuses."})
+            "description": "Without it, previews and refuses."})
     .add_input_property("attribute_group", {"type": "string"})
     .add_input_property("attribute_name", {"type": "string"})
     .add_input_property("attribute_value", {"type": "string"})

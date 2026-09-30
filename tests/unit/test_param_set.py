@@ -7,10 +7,12 @@ import math
 from types import SimpleNamespace
 
 import adsk.core
+import pytest
 
-from conftest import (FakeTimeline, FakeTimelineObject, FakeUserParameter, FakeUserParameters,
-                      MakeComp, MakeDesign, load_tool, make_joint, make_timeline,
-                      payload as _payload)
+from conftest import (FakeFeature, FakeModelParameter, FakePoint, FakeSketchPoint, FakeTimeline,
+                      FakeTimelineObject, FakeUserParameter, FakeUserParameters, MakeComp,
+                      MakeDesign, Sketch, SketchCurves, _NamedCollection, load_tool, make_joint,
+                      make_timeline, payload as _payload)
 
 params = load_tool("param_set")
 
@@ -181,6 +183,113 @@ class TestDrivenJointsReset:
         _stub_design(monkeypatch, _design(up, make_timeline()))
         out = _payload(params.handler(name="PartX", expression="20 mm"))
         assert "driven_joints_reset" not in out
+
+
+class SketchLinearDimension:
+    """No measured shape; named as the live class so its getters entityOne/entityTwo are read."""
+    def __init__(self, one, two, parameter):
+        self.entityOne, self.entityTwo, self.parameter = one, two, parameter
+
+
+def _driven_sketch(name, parameter, y=4.0):
+    """A sketch whose line point:1 -> point:2 (x 0 -> 3 cm) `parameter` drives; d_other spans 0-1."""
+    points = [FakeSketchPoint(geometry=FakePoint(0.0, 0.0), entity_token=f"{name}-p0"),
+              FakeSketchPoint(geometry=FakePoint(0.0, y), entity_token=f"{name}-p1"),
+              FakeSketchPoint(geometry=FakePoint(3.0, y), entity_token=f"{name}-p2")]
+    line = SimpleNamespace(entityToken=f"{name}-l0", isConstruction=False,
+                           startSketchPoint=points[1], endSketchPoint=points[2])
+    sketch = Sketch(name=name, curves=SketchCurves(lines=[line]), points=points)
+    sketch.sketchDimensions = _NamedCollection([
+        SketchLinearDimension(points[0], points[1], FakeModelParameter(name="d_other")),
+        SketchLinearDimension(points[1], points[2], parameter)])
+    return sketch
+
+
+class _DrivingParam(FakeModelParameter):
+    """A parameter whose write solves each driven sketch: point:2 and later go to (x, 4 cm)."""
+    moves = ()
+
+    @FakeModelParameter.expression.setter
+    def expression(self, text):
+        self._expression = text
+        for sketch, x in self.moves:
+            points = sketch.sketchPoints
+            for i in range(2, points.count):
+                points.item(i).geometry = FakePoint(x, 4.0)
+
+
+def _set(monkeypatch, param, others=()):
+    design = MakeDesign(user_parameters=FakeUserParameters([]), timeline=make_timeline(),
+                        all_parameters=[param, *others])
+    _stub_design(monkeypatch, design)
+    return params.handler(name=param.name, expression="45 mm")
+
+
+class TestSketchMoves:
+    def test_a_dimension_write_reports_the_point_and_the_line_end_it_moved(self, monkeypatch):
+        param = _DrivingParam(name="d11", expression="30 mm")
+        sketch = _driven_sketch("Drive", param)
+        param.createdBy, param.moves = sketch, ((sketch, 4.5),)
+        out = _payload(_set(monkeypatch, param))
+        assert out["sketch_moves"] == [{
+            "sketch": "Drive", "dimensions": [{"parameter": "d11",
+                                               "entities": ["point:1", "point:2"]}],
+            "moved": [{"id": "point:2", "from_mm": [30.0, 40.0, 0.0], "to_mm": [45.0, 40.0, 0.0],
+                       "ends": ["line:0 end"]}], "moved_count": 1}]
+        assert "moved over 0.001 mm, in each sketch's own coordinates" in out["note"]
+
+    def test_the_moved_list_stops_at_the_cap_and_counts_every_move(self, monkeypatch):
+        param = _DrivingParam(name="d11", expression="30 mm")
+        sketch = _driven_sketch("Drive", param)
+        sketch.sketchPoints._items += [FakeSketchPoint(geometry=FakePoint(0.0, float(i)))
+                                       for i in range(params._MOVED_CAP)]
+        param.createdBy, param.moves = sketch, ((sketch, 4.5),)
+        row = _payload(_set(monkeypatch, param))["sketch_moves"][0]
+        assert (len(row["moved"]), row["moved_count"]) == (params._MOVED_CAP, params._MOVED_CAP + 1)
+
+    @pytest.mark.parametrize("x,moved", [(0.0001, []), (0.0002, ["point:2"])])
+    def test_a_point_moving_no_further_than_the_tolerance_reads_held(self, monkeypatch, x, moved):
+        param = _DrivingParam(name="d11", expression="30 mm")
+        sketch = _driven_sketch("Drive", param)
+        sketch.sketchPoints.item(2).geometry = FakePoint(0.0, 4.0)
+        param.createdBy, param.moves = sketch, ((sketch, x),)
+        row = _payload(_set(monkeypatch, param))["sketch_moves"][0]
+        assert [m["id"] for m in row["moved"]] == moved and row["moved_count"] == len(moved)
+
+    def test_an_unreadable_census_says_the_moves_were_not_read(self, monkeypatch):
+        param = _DrivingParam(name="d11", expression="30 mm")
+        sketch = _driven_sketch("Drive", param)
+        param.createdBy, param.moves = sketch, ((sketch, None),)
+        out = _payload(_set(monkeypatch, param))
+        assert (out["sketch_moves"][0]["moved"], out["sketch_moves"][0]["moved_count"]) == (None, None)
+        assert "The moves in sketch 'Drive' were not read." in out["note"]
+
+    @pytest.mark.parametrize("over,unread", [(0, None), (1, 1)])
+    def test_a_user_parameter_reports_each_sketch_it_drives_up_to_the_cap(self, monkeypatch, over,
+                                                                         unread):
+        count = params._SKETCH_CAP + over
+        dims = [FakeModelParameter(name=f"d{i}") for i in range(count)]
+        sketches = [_driven_sketch(f"Drive{i}", d) for i, d in enumerate(dims)]
+        for d, s in zip(dims, sketches):
+            d.createdBy = s
+        driver = _DrivingParam(name="SlotW", expression="30 mm", dependents=dims)
+        driver.createdBy, driver.moves = None, tuple((s, 4.0) for s in sketches)
+        out = _payload(_set(monkeypatch, driver, dims))
+        assert [r["sketch"] for r in out["sketch_moves"]] == [
+            f"Drive{i}" for i in range(params._SKETCH_CAP)]
+        assert all(r["moved"][0]["to_mm"] == [40.0, 40.0, 0.0] for r in out["sketch_moves"])
+        assert out.get("sketch_moves_unread") == unread
+
+    def test_a_feature_parameter_among_the_dependents_adds_no_row(self, monkeypatch):
+        dim = FakeModelParameter(name="d1")
+        sketch = _driven_sketch("DriveA", dim)
+        dim.createdBy = sketch
+        depth = FakeModelParameter(name="d2", owner=FakeFeature("Extrude1"))
+        driver = _DrivingParam(name="SlotW", expression="30 mm", dependents=[depth, dim])
+        driver.createdBy, driver.moves = None, ((sketch, 4.5),)
+        out = _payload(_set(monkeypatch, driver, (depth, dim)))
+        assert [r["sketch"] for r in out["sketch_moves"]] == ["DriveA"]
+        assert "were not read" not in out["note"]
 
 
 class _BreakingParam(FakeUserParameter):

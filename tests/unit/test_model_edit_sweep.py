@@ -143,6 +143,38 @@ def test_ignored_setter_is_an_error(rig):
     assert timeline.markerPosition == 3
 
 
+_LATER = ("Editing 'Sweep1': sketch 'PathLater' is at timeline row 11, after 'Sweep1' at row 1. "
+          "Move it first with design_edit_timeline(action='reorder', feature='PathLater@11', "
+          "to='before', end_feature='Sweep1@1'), then retry. Nothing was edited.")
+
+
+@pytest.mark.parametrize("action", ["path", "profile"])
+def test_an_operand_drawn_after_the_sweep_is_refused_before_any_roll(rig, monkeypatch, action):
+    sweep, timeline = rig
+    later = Sketch(name="PathLater", timeline_object=SimpleNamespace(index=11))
+    line = SimpleNamespace(entityToken="later-line", parentSketch=later)
+    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(line), "p", None))
+    monkeypatch.setattr(mod._sweep_common, "resolve_profile", lambda *_args: (
+        line, True, False, sweep.parentComponent, None, None))
+    rolls = []
+    sweep.timelineObject.rollTo = lambda _before: rolls.append(True) or timeline.roll()
+    result = mod.handler(feature="Sweep1", action=action, **{action: "PathLater"})
+    assert error_message(result) == _LATER
+    assert (rolls, sweep.assignments, timeline.markerPosition) == ([], 0, 3)
+
+
+@pytest.mark.parametrize("row,refused", [(0, False), (1, True)])
+def test_an_operand_at_the_features_own_row_is_already_too_late(row, refused):
+    sketch = Sketch(name="Prof", timeline_object=SimpleNamespace(index=row))
+    text = mod.later_operand_refusal("Sweep1", 1, [SimpleNamespace(parentSketch=sketch)])
+    assert (text is not None) is refused
+
+
+def test_a_later_source_outside_a_sketch_is_not_called_a_sketch():
+    source = SimpleNamespace(name="Plane9", timelineObject=SimpleNamespace(index=4))
+    assert mod.later_operand_refusal("Sweep1", 1, [source]) is None
+
+
 def test_wrong_operand_is_refused_before_assignment(rig):
     sweep, timeline = rig
     result = mod.handler(feature="Sweep1", action="profile", profile="new", path="sketch:Other")

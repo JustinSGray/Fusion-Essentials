@@ -20,11 +20,10 @@ from . import _inputs
 app = adsk.core.Application.get()
 
 MAP_BLURB = (
-    "sketch_get's X-ray; sketch_world_frame/frame_space_note - frame + sentence; "
-    "curve_id/entity_id - an entity's '<type>:<index>'; scope_component/scope_components/"
-    "COMPONENT_SCOPE/"
-    "component_scope/scoped_sketch/scoped_or_recent_sketch/scope_remedy - the 'component' scope "
-    "+ wire form; _sketch_summary - a sketch's row; _prepare/_transform - move/copy matrix; "
+    "sketch_get's X-ray; sketch_world_frame/frame_space_note - frame; curve_id/entity_id/"
+    "dimension_entities - ids; point_census/moved_points/point_ends - what a solve moved; "
+    "scope_component(s)/COMPONENT_SCOPE/component_scope/scoped_sketch/scoped_or_recent_sketch/"
+    "scope_remedy - the scope; _sketch_summary - a sketch row; _prepare/_transform - move/copy; "
     "unquote_text/font_read_back - SketchText.")
 
 
@@ -235,6 +234,70 @@ def entity_id(sketch, entity):
     return None
 
 
+# ── the sketch-point census a solve's moves are read from ─────────────────────────────────────────
+
+MOVE_TOL_CM = 1e-4       # a point that moved no further than this (0.001 mm) is reported as held
+
+
+def point_cm(geo):
+    """(x, y, z) in cm off a point geometry, or None when it does not read."""
+    x = safe(lambda: float(geo.x))
+    y = safe(lambda: float(geo.y))
+    if x is None or y is None:
+        return None
+    return (x, y, safe(lambda: float(geo.z), 0.0) or 0.0)
+
+
+def point_mm(p):
+    """A cm point as the [x, y, z] mm list a payload publishes."""
+    return [round(v * _common.CM_TO_UNIT["mm"], 4) for v in p]
+
+
+def distance_cm(a, b):
+    """The straight-line distance between two cm points."""
+    return sum((p - q) ** 2 for p, q in zip(a, b)) ** 0.5
+
+
+def moved_cm(before, after):
+    """The furthest one entity's sampled points moved, in cm, or None when the reads do not pair."""
+    if not before or not after or len(before) != len(after):
+        return None
+    return max(distance_cm(a, b) for a, b in zip(before, after))
+
+
+def point_census(sketch):
+    """{'point:<i>': (x, y, z) cm} for every sketch point, or None when any one does not read."""
+    pts = safe(lambda: sketch.sketchPoints)
+    count = _common.counted(lambda: pts.count)
+    if count is None:
+        return None
+    census = {f"point:{i}": point_cm(safe(lambda i=i: pts.item(i).geometry)) for i in range(count)}
+    return None if None in census.values() else census
+
+
+def moved_points(before, after):
+    """[(id, from, to)] for the points that moved more than MOVE_TOL_CM, None when unpaired."""
+    if before is None or after is None or set(before) != set(after):
+        return None
+    return [(ref, was, after[ref]) for ref, was in before.items()
+            if distance_cm(was, after[ref]) > MOVE_TOL_CM]
+
+
+def point_ends(sketch, refs):
+    """{point id: ['<curve id> start' or '<curve id> end', ...]} for the curves ending there."""
+    points = [(ref, _common.resolve_entity_ref(sketch, ref)) for ref in refs]
+    ends = {ref: [] for ref in refs}
+    for kind, coll in _curve_collections(sketch):
+        for i in range(safe(lambda coll=coll: coll.count, 0) if coll else 0):
+            curve = safe(lambda coll=coll, i=i: coll.item(i))
+            for end in ("start", "end"):
+                at = safe(lambda: getattr(curve, end + "SketchPoint"))
+                for ref, point in points:
+                    if at is not None and point is not None and safe(lambda: at == point) is True:
+                        ends[ref].append(f"{kind}:{i} {end}")
+    return ends
+
+
 def _entity_handles(sketch, rows, occurrence, placed):
     """Stamp each point/curve row with its 'handle' through `occurrence`, None when not `placed`."""
     for rec in rows:
@@ -246,21 +309,54 @@ def _entity_handles(sketch, rows, occurrence, placed):
                          if ent is not None else None)
 
 
-def _build_token_map(sketch):
-    """Map entityToken -> '<type>:<index>' for every entity kind resolve_entity_ref addresses -
-    _curve_collections' kinds plus 'point'."""
-    tok2id = {}
-    for kind, coll in _curve_collections(sketch):
+def sketch_token_ids(sketch):
+    """entityToken -> every '<type>:<index>' carrying it, over the curve kinds plus 'point'."""
+    ids = {}
+    for kind, coll in list(_curve_collections(sketch)) + [("point", safe(lambda: sketch.sketchPoints))]:
         for i in range(safe(lambda coll=coll: coll.count, 0) if coll else 0):
             tok = safe(lambda coll=coll, i=i: coll.item(i).entityToken)
             if tok:
-                tok2id[tok] = f"{kind}:{i}"
-    pts = safe(lambda: sketch.sketchPoints)
-    for i in range(safe(lambda: pts.count, 0) if pts else 0):
-        tok = safe(lambda i=i: pts.item(i).entityToken)
-        if tok:
-            tok2id[tok] = f"point:{i}"
-    return tok2id
+                ids.setdefault(tok, []).append(f"{kind}:{i}")
+    return ids
+
+
+def _build_token_map(sketch, token_ids=None):
+    """Map entityToken -> the last '<type>:<index>' carrying it, from `token_ids` when given."""
+    ids = sketch_token_ids(sketch) if token_ids is None else token_ids
+    return {tok: refs[-1] for tok, refs in ids.items()}
+
+
+# Dimension class -> the getters naming its sketch entities, in getter order (measured); any other
+# class publishes entities null (a surface dimension anchors on a face or construction plane).
+_DIMENSION_REFS = {
+    "SketchLinearDimension": ("entityOne", "entityTwo"),
+    "SketchOffsetDimension": ("line", "entityTwo"),
+    "SketchAngularDimension": ("lineOne", "lineTwo"),
+    "SketchDiameterDimension": ("entity",),
+    "SketchConcentricCircleDimension": ("circleOne", "circleTwo"),
+    "SketchRadialDimension": ("entity",),
+    "SketchEllipseMajorRadiusDimension": ("ellipse",),
+    "SketchEllipseMinorRadiusDimension": ("ellipse",),
+    "SketchTangentDistanceDimension": ("entityOne", "circleOrArc"),
+    "SketchLinearDiameterDimension": ("line", "entityTwo"),
+}
+
+
+def _identical_id(sketch, entity, token_ids):
+    """The one id among those `entity`'s token maps to that resolves IDENTICAL to it, else '?'."""
+    tok = safe(lambda: entity.entityToken)
+    hits = [ref for ref in token_ids.get(tok, ())
+            if safe(lambda r=ref: _common.resolve_entity_ref(sketch, r) == entity) is True]
+    return hits[0] if len(hits) == 1 else "?"
+
+
+def dimension_entities(sketch, dimension, token_ids):
+    """A dimension's sketch-entity ids in getter order ('?' unmatched), None for an unprobed class."""
+    getters = _DIMENSION_REFS.get(type(dimension).__name__)
+    if getters is None:
+        return None
+    return [_identical_id(sketch, safe(lambda g=g: getattr(dimension, g)), token_ids)
+            for g in getters]
 
 
 _Z_EPS = 1e-6   # cm; a sketch point within this of the plane is on-plane and its z is omitted
@@ -570,7 +666,8 @@ def _dimension_value(raw, is_angle, f):
 
 def _entity_xray(sketch, f, unit, counts, entity_offset=0, entity_limit=_ENTITY_PAGE_DEFAULT):
     """Entity pages, capped constraint/dimension rows, and uncapped construction/driving counts."""
-    tok2id = _build_token_map(sketch)
+    token_ids = sketch_token_ids(sketch)
+    tok2id = _build_token_map(sketch, token_ids)
     entities, construction_count = _entities(sketch, f)
 
     constraints = []
@@ -595,6 +692,7 @@ def _entity_xray(sketch, f, unit, counts, entity_offset=0, entity_limit=_ENTITY_
             # driving = constrains geometry; a driven/reference dim just MEASURES (doesn't lock).
             "driving": bool(safe(lambda d=d: d.isDriving, True)),
             "type": type(d).__name__.replace("SketchDimension", "").replace("Dimension", "").lower(),
+            "entities": dimension_entities(sketch, d, token_ids) if i < _XRAY_CAP else None,
         })
     driving_dims = sum(1 for d in dimensions if d.get("driving"))
 
@@ -1120,9 +1218,9 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
         note += " 'handle' is null on every row until the instance is named as above."
     if any(e.get("reference") for e in entities):
         note += (" reference:true marks reference geometry; linked:true marks an external or API-driven link.")
-    if any("?" in c.get("entities", []) for c in constraints):
-        note += (" A constraint entity of '?' has no id in this payload - nothing listed in "
-                 "'entities' matches it.")
+    if any("?" in (c.get("entities") or []) for c in constraints + dimensions):
+        note += (" A constraint or dimension entity of '?' has no id in this payload - nothing "
+                 "listed in 'entities' matches it.")
     if truncated:
         note += (f" Entity collections page {entity_limit} each; entity_pages gives each count and "
                  "next_offset. Constraints/dimensions remain capped at 200; their counts above "

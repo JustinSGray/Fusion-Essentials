@@ -14,7 +14,8 @@ from ..mcp_primitives.registry import register
 from . import _assert, _common, _inputs, _sketch_detail
 from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_address, failed,
                                    feature_body_keys as _feature_body_keys,
-                                   health as _health, identical_geometry_reply, matched,
+                                   health as _health, identical_geometry_reply,
+                                   later_operand_refusal, matched,
                                    restore_definition, restore_gaps, rolled_back_text,
                                    same_feature as _same_feature, sentence, shape_match,
                                    sketch_address)
@@ -23,6 +24,7 @@ from ._common import counted, error, ok, outcome_clause, safe
 
 _FEATURE = _inputs.FeatureRef("feature", required=True)
 _ACTION = _inputs.Choice("action", ("retarget", "remove"), required=True)
+_PROFILE = _inputs.ProfileRef("profile", scope_input="component")
 _SPEC = [_FEATURE, _ACTION]
 _UNREAD = object()
 
@@ -204,6 +206,11 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
         return error(f"'{label}' has unreadable timeline identity; nothing was edited.")
     if marker <= index:
         return error(f"'{label}' is after marker {marker}; roll after it with design_edit_timeline.")
+    if action == "retarget":
+        early, _unresolved = _PROFILE.resolve(profile, component)
+        refusal = later_operand_refusal(label, index, [early])
+        if refusal:
+            return error(refusal)
     health_before = _health(design, marker)
     if health_before is None:
         return error(f"'{label}'s evaluated-health census is unreadable; nothing was edited.")
@@ -227,8 +234,7 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
                 or definition_before["guide_count"] != 0):
             raise ValueError("Loft must be open, unguided, solid and use the NEW body operation.")
         if action == "retarget":
-            operand, refusal = _inputs.ProfileRef("profile", scope_input="component").resolve(
-                profile, component)
+            operand, refusal = _PROFILE.resolve(profile, component)
             if refusal:
                 raise ValueError(refusal)
             refusal = _operand_error(operand, owner, index)
@@ -385,7 +391,7 @@ tool = _inputs.apply_to_tool(
 tool.add_input_property("section_index", {"type": "integer", "minimum": 0,
                                           "description": "Zero-based interior section index."})
 tool.add_required_input("section_index")
-tool.add_input_property("profile", _inputs.ProfileRef("profile", scope_input="component").schema())
+tool.add_input_property("profile", _PROFILE.schema())
 tool.add_input_property(*_sketch_detail.COMPONENT_SCOPE)
 tool.strict_schema()
 item = Item.create_tool_item(

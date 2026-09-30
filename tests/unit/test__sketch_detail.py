@@ -422,6 +422,36 @@ class TestDimensions:
         assert d["name"] == "d1" and d["expression"] == "100 mm"
 
 
+class SketchOffsetDimension(FakeDim):
+    """No measured shape; named as the live class so its getters line/entityTwo are read."""
+    def __init__(self, line, other):
+        super().__init__("d2", 1.0, "10 mm")
+        self.line, self.entityTwo = line, other
+
+
+class TestDimensionEntities:
+    def test_split_pieces_sharing_a_token_are_told_apart_by_identity(self):
+        # The two pieces a split returns share one entityToken, so only identity separates them.
+        first, second = FakeLine("split", 0, 0, 1, 0), FakeLine("split", 1, 0, 2, 0)
+        stray = FakeLine("stray", 9, 9, 9, 8)
+        dims = [SketchOffsetDimension(second, first), SketchOffsetDimension(first, stray),
+                FakeDim("d3", 1.0, "1 mm")]
+        _install(FakeSketch("Split", lines=[first, second], dimensions=dims))
+        out = _payload(sd.handler(sketch_name="Split", include_entities=True))
+        assert [d["entities"] for d in out["dimensions"]] == [
+            ["line:1", "line:0"], ["line:0", "?"], None]
+        assert "dimension entity of '?'" in out["note"]
+
+    def test_only_the_rows_the_cap_publishes_are_matched(self, monkeypatch):
+        line = FakeLine("t0", 0, 0, 1, 0)
+        calls = []
+        monkeypatch.setattr(sd, "dimension_entities", lambda *args: calls.append(1) or [])
+        dims = [SketchOffsetDimension(line, line) for _ in range(sd._XRAY_CAP + 1)]
+        _install(FakeSketch("Many", lines=[line], dimensions=dims))
+        out = _payload(sd.handler(sketch_name="Many", include_entities=True))
+        assert len(calls) == sd._XRAY_CAP == len(out["dimensions"])
+
+
 # ── constraint state: is_fully_constrained + per-dim isDriving ──────────────
 #
 # The intuition gap this closes: sketch_get's flat list couldn't tell an agent whether a

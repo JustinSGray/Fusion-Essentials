@@ -613,7 +613,8 @@ STORY = {
                    "sketch recipes' own bar; and the keyway slot's own census, where WHICH of its "
                    "three lines is the construction spine is read off the sketch rather than "
                    "counted on (a solid side line is vertical too and spans the same length, so a "
-                   "dimension addressed at one lands the slot half a width off)"),
+                   "dimension addressed at one lands the slot half a width off); a dimension row "
+                   "names the points the sketch_dimension call was given"),
     "sketch_delete_entity": ("delete a helper constraint; count drops - then a sketch text by its "
                              "index, the deleted string reported back, and the empty index refused"),
     "model_construction": ("offset the step floor the pocket is cut from and the top the boss stands on; an AXIS on a cameo bore whose published handle the circular pattern turns about; a plane at 30 deg about a bench bore's own axis (origin pinned to the axis) and a plane through a cap vertex; then the ON-PATH surface on one measured 30 mm cap edge - a proportional plane and point reading their ratio back with no extent published, an absolute placement inside the path, one before the start and one far past the end (both accepted, both disclosed against the measured length), the boundary exactly at the length, an expression placement whose model parameter is named for param_set, a to-object plane carrying distance AND offset off the path and a second one landing inside a two-edge chained path, and the summed length of that chain; the out-of-range proportional value and to_object on the point kind refused. Then the datum bench - one bored block carrying every reference the remaining modes read: a plane swung 30 deg about a top edge, one spanning three corners, one splitting the block at mid-height, one spanning two coplanar edges and one resting tangent on the bore wall; an axis on an edge, one spanning two corners and one along the top face's own normal; and points at the bore centre, at a corner where two edges meet, at the three world planes' shared origin and where an edge pierces XY. The world axis and the coordinate point are refused up front - both are setByLine/setByPoint, direct-edit-only, and this design is parametric. And the hub's own datum: the axis plane swung 30 deg about the SHAFT WALL, whose frame maps its +X onto world Z alone - which is what lets the inclined flat be drawn in depths and radii measured from the hub's axis rather than from the datum's parametric origin"),
@@ -958,10 +959,18 @@ STORY = {
                              "suppress carries a census_caveat naming 1 collapsed group while "
                              "design_get's group= listing shows both members suppressed. The "
                              "creased Form's suppress and unsuppress name exactly its fillet. "
+                             "action='reorder' moves a sketch drawn after its sweep to sit before "
+                             "it, by the call the editors' refusal names, read back on design_get's "
+                             "timeline; a sketch projecting the sweep's edge is refused with Fusion's "
+                             "CIRCULAR_DEPENDENCY and every row stays where it was; an earlier item "
+                             "moves later; a direct move after the last row refuses unchanged, then "
+                             "its two-move remedy makes the item last, read back after each move. "
                              "SKIPPED(rig): the AMBIGUOUS-name refusal itself needs two same-named "
                              "timeline features, and no tool on this surface renames a feature, so "
                              "the sweep cannot mint the pair"),
-    "param_set": "bump PartLen +33%, measure the part grew with it, then restore it",
+    "param_set": ("bump PartLen +33%, measure the part grew with it, then restore it; drive a "
+                  "sketch dimension, then a user parameter feeding two sketches, each reply naming "
+                  "the moved point and the line end it sits at, checked on sketch_get's positions"),
     "param_delete": "delete a scratch parameter",
     "view_switch_workspace": "switch to Manufacture, then back to Design",
     "cam_get": ("read the CAM job structure, and the recorded-probing slice on a job nothing has "

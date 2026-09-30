@@ -472,7 +472,30 @@ def test_preexisting_warning_is_not_new(scene):
 def test_later_profile_is_refused_before_roll(scene):
     scene.profiles[1].parentSketch.timelineObject.index = 3
     result = edit()
-    assert "must precede" in error_message(result)
+    assert error_message(result) == (
+        "Editing 'Extrude1': sketch 'Replacement' is at timeline row 3, after 'Extrude1' at row 2. "
+        "Move it first with design_edit_timeline(action='reorder', feature='Replacement@3', "
+        "to='before', end_feature='Extrude1@2'), then retry. Nothing was edited.")
+    assert scene.feature.assignments == 0
+    assert scene.timeline._moves == []
+
+
+class _RaisingRow(FakeTimelineObject):
+    """A timeline row whose index read raises."""
+    @property
+    def index(self):
+        raise RuntimeError("2 : InternalValidationError : res >= 0")
+
+    @index.setter
+    def index(self, _value):
+        pass
+
+
+def test_an_unreadable_profile_sketch_row_is_refused_before_roll(scene, monkeypatch):
+    monkeypatch.setattr(scene.profiles[1].parentSketch, "timelineObject", _RaisingRow())
+    result = edit()
+    assert error_message(result) == ("The profile's sketch timeline row does not read. Nothing "
+                                     "was edited.")
     assert scene.feature.assignments == 0
     assert scene.timeline._moves == []
 

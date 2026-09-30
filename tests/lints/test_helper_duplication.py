@@ -304,6 +304,20 @@ _DENYLIST = {
     "outcome_clause": ("_common", "def"),
     "marker_clause": ("_common", "def"),
     "restore_definition": ("_edit_feature_common", "def"),
+    # The ONE pre-roll read of an operand's source row and the ONE refusal naming the reorder that
+    # fixes it: a copy is how one editor says "no sketch named" about a sketch drawn after it.
+    "operand_source": ("_edit_feature_common", "def"),
+    "later_operand_refusal": ("_edit_feature_common", "def"),
+    # The ONE sketch-point census a solve's moves are read from, and the identity match a
+    # dimension's entities are named by: a copy is how two tools disagree about what moved.
+    "point_census": ("_sketch_detail", "def"),
+    "moved_points": ("_sketch_detail", "def"),
+    "point_ends": ("_sketch_detail", "def"),
+    "moved_cm": ("_sketch_detail", "def"),
+    "point_cm": ("_sketch_detail", "def"),
+    "point_mm": ("_sketch_detail", "def"),
+    "distance_cm": ("_sketch_detail", "def"),
+    "dimension_entities": ("_sketch_detail", "def"),
     # The ONE token-keyed timeline census a delete or a suppress diffs before and after; a second
     # copy can key on names and lose a namesake, or skip the collapsed groups the caveat names.
     "timeline_census": ("_design_common", "def"),

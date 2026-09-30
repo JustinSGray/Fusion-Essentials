@@ -10,10 +10,11 @@ from . import _common, _geom, _sketch_detail
 from ._common import counted, safe
 
 MAP_BLURB = (
-    "the definition-edit substrate: all_shapes/feature_body_keys/health/same_feature - the evidence "
-    "an edit is judged by; sketch_address/at_address/address_text - a prior operand re-resolved from "
-    "its sketch; restore_definition/restore_gaps/matched/shape_match/rolled_back_text - the reverse, "
-    "its re-read and any body it re-created; failed/identical_geometry_reply - the replies")
+    "the definition-edit substrate: all_shapes/feature_body_keys/health/same_feature - an edit's "
+    "evidence; operand_source/later_operand_refusal - a later operand, refused before any roll; "
+    "sketch_address/at_address/address_text - a prior operand re-resolved; restore_definition/"
+    "restore_gaps/matched/shape_match/rolled_back_text - the reverse and its re-read; "
+    "failed/identical_geometry_reply - replies")
 
 
 def _empty_solid_shape(body):
@@ -88,6 +89,28 @@ def same_feature(design, token, feature, index, count):
     return (same is True and safe(lambda: feature.isValid) is True
             and counted(lambda: feature.timelineObject.index) == index
             and counted(lambda: design.timeline.count) == count)
+
+
+def operand_source(entity):
+    """(source sketch/body/entity, its timeline row or None, whether that source is a sketch)."""
+    native = _common._native_of(entity)
+    sketch = safe(lambda: native.parentSketch)
+    source = sketch if sketch is not None else (safe(lambda: native.body) or native)
+    return source, counted(lambda: source.timelineObject.index), sketch is not None
+
+
+def later_operand_refusal(label, index, operands):
+    """The refusal for the first operand drawn in a sketch at or after row `index`, else None."""
+    for entity in operands:
+        source, row, from_sketch = operand_source(entity)
+        if not from_sketch or row is None or row < index:
+            continue
+        name = safe(lambda: source.name)
+        return (f"Editing '{label}': sketch '{name}' is at timeline row {row}, after '{label}' at "
+                f"row {index}. Move it first with design_edit_timeline(action='reorder', "
+                f"feature='{name}@{row}', to='before', end_feature='{label}@{index}'), then retry. "
+                "Nothing was edited.")
+    return None
 
 
 def sketch_address(entity):

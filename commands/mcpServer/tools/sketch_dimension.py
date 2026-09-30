@@ -17,6 +17,7 @@ from . import _common
 from . import _inputs
 from . import _sketch_batch
 from . import _sketch_detail
+from ._sketch_detail import distance_cm, moved_cm, point_cm, point_mm
 
 app = adsk.core.Application.get()
 
@@ -134,50 +135,33 @@ _MOVE_SLACK = 2.0
 _MOVE_FLOOR_CM = 0.01   # 0.1 mm
 
 
-def _xyz(geo):
-    """(x, y, z) in cm off a point geometry, or None when it does not read."""
-    x = safe(lambda: float(geo.x))
-    y = safe(lambda: float(geo.y))
-    if x is None or y is None:
-        return None
-    return (x, y, safe(lambda: float(geo.z), 0.0) or 0.0)
-
-
-def _mm3(p):
-    return [round(v * _MM, 4) for v in p]
-
-
-def _distance_cm(a, b):
-    return sum((p - q) ** 2 for p, q in zip(a, b)) ** 0.5
-
-
 def _entity_solved(entity):
     """(facts, positions) for ONE sketch entity: `facts` is the mm geometry the payload publishes -
     a circle/arc's center + radius, a line's span and midpoint, a point's position - and `positions`
     are the cm points a MOVE is measured on. ({}, []) for an entity whose geometry does not read."""
     center = safe(lambda: entity.centerSketchPoint)
     if center is not None:
-        c = _xyz(safe(lambda: center.geometry))
+        c = point_cm(safe(lambda: center.geometry))
         r = safe(lambda: float(entity.geometry.radius))
         facts = {}
         if c is not None:
-            facts["center_mm"] = _mm3(c)
+            facts["center_mm"] = point_mm(c)
         if r is not None:
             facts["radius_mm"] = round(r * _MM, 4)
         return facts, ([c] if c is not None else [])
     start = safe(lambda: entity.startSketchPoint)
     end = safe(lambda: entity.endSketchPoint)
     if start is not None and end is not None:
-        a = _xyz(safe(lambda: start.geometry))
-        b = _xyz(safe(lambda: end.geometry))
+        a = point_cm(safe(lambda: start.geometry))
+        b = point_cm(safe(lambda: end.geometry))
         if a is None or b is None:
             return {}, [p for p in (a, b) if p is not None]
         mid = tuple((p + q) / 2.0 for p, q in zip(a, b))
-        return ({"start_mm": _mm3(a), "end_mm": _mm3(b), "mid_mm": _mm3(mid),
-                 "length_mm": round(_distance_cm(a, b) * _MM, 4)}, [a, b])
-    p = _xyz(safe(lambda: entity.geometry))
+        return ({"start_mm": point_mm(a), "end_mm": point_mm(b), "mid_mm": point_mm(mid),
+                 "length_mm": round(distance_cm(a, b) * _MM, 4)}, [a, b])
+    p = point_cm(safe(lambda: entity.geometry))
     if p is not None:
-        return {"position_mm": _mm3(p)}, [p]
+        return {"position_mm": point_mm(p)}, [p]
     return {}, []
 
 
@@ -205,23 +189,15 @@ def _gap_cm(dt, p1, p2):
     euclidean span for an aligned distance, the axis projection for a horizontal/vertical one (those
     two measure one component, so their demanded change is computed on that component). None when
     either point does not read."""
-    a = _xyz(safe(lambda: p1.geometry))
-    b = _xyz(safe(lambda: p2.geometry))
+    a = point_cm(safe(lambda: p1.geometry))
+    b = point_cm(safe(lambda: p2.geometry))
     if a is None or b is None:
         return None
     if dt == "horizontal_distance":
         return abs(a[0] - b[0])
     if dt == "vertical_distance":
         return abs(a[1] - b[1])
-    return _distance_cm(a, b)
-
-
-def _moved_cm(before, after):
-    """The furthest one entity's sampled points moved, in cm, or None when the two reads do not
-    describe the same points (nothing can be said about a move that was not measured twice)."""
-    if not before or not after or len(before) != len(after):
-        return None
-    return max(_distance_cm(a, b) for a, b in zip(before, after))
+    return distance_cm(a, b)
 
 
 def _solved_block(pairs, before):
@@ -230,7 +206,7 @@ def _solved_block(pairs, before):
     rows, moves = [], []
     for ref, ent in pairs:
         facts, positions = _entity_solved(ent)
-        moved = _moved_cm(before.get(ref), positions)
+        moved = moved_cm(before.get(ref), positions)
         if moved is not None:
             moves.append((ref, moved))
             facts["moved_mm"] = round(moved * _MM, 4)
@@ -277,7 +253,7 @@ def _shared_coordinate_clause(sketch, dt, operands):
     n = safe(lambda: pts.count, 0) if pts is not None else 0
     points = [p for _ref, p in operands]
     for label, p in operands:
-        at = _xyz(safe(lambda p=p: p.geometry))
+        at = point_cm(safe(lambda p=p: p.geometry))
         if at is None:
             continue
         hits = []
@@ -285,7 +261,7 @@ def _shared_coordinate_clause(sketch, dt, operands):
             q = safe(lambda j=j: pts.item(j))
             if q is None or any(safe(lambda q=q, o=o: q == o) is True for o in points):
                 continue
-            g = _xyz(safe(lambda q=q: q.geometry))
+            g = point_cm(safe(lambda q=q: q.geometry))
             if g is not None and abs(g[i] - at[i]) <= _SAME_COORD_TOL_CM:
                 hits.append(f"point:{j}")
         if hits:

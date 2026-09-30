@@ -6,7 +6,7 @@
 import math
 
 from verify_core import (
-    _RECALL, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _measured, _near, _num, _new_document, _prof, _recall, _refused, _watch)
+    _RECALL, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _measured, _near, _num, _new_document, _prof, _recall, _refused, _swept, _watch)
 
 
 
@@ -784,6 +784,185 @@ def _loft_edit_rows():
 
 
 _LOFT_EDITOR = _loft_edit_rows()
+
+
+def _later_refusal(sketch, row, feature, feature_row):
+    """The one sentence the editors refuse an operand drawn after their feature with."""
+    return _refused(f"Editing '{feature}': sketch '{sketch}' is at timeline row {row}, after "
+                    f"'{feature}' at row {feature_row}. Move it first with design_edit_timeline("
+                    f"action='reorder', feature='{sketch}@{row}', to='before', "
+                    f"end_feature='{feature}@{feature_row}'), then retry. Nothing was edited.")
+
+
+def _timeline_names(p):
+    """The timeline's row names in order, or None unless every row is listed and healthy."""
+    t = p.get("timeline") or {}
+    rows = t.get("timeline") or []
+    whole = (t.get("count") == t.get("marker_position") == len(rows) and not t.get("truncated")
+             and (t.get("summary") or {}).get("states") == {"healthy": len(rows)})
+    return [r.get("name") for r in rows] if whole else None
+
+
+def _timeline_reads(label, want):
+    """An independent timeline read: every row healthy and `want(names)` true of the order."""
+    return lambda p: _measured(label, _timeline_names(p),
+                               _timeline_names(p) is not None and want(_timeline_names(p)))
+
+
+def _later_operand_rows():
+    """Refuse operands drawn after their feature, reorder one earlier and edit, refuse a cycle."""
+    rows = [("doc_get", {}, _home_document, ("lo_story", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "lo_story", "story")},
+             _new_document, ("lo_doc", lambda p: p["document_handle"]))]
+
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: _combine_pin(
+            c, "lo_doc", args(c) if callable(args) else args), check, save))
+
+    def read(name, args, check, save=None):
+        rows.append((name, lambda c, args=args: args(c) if callable(args) else dict(args),
+                     check, save))
+
+    def sketch(name, plane, geometry):
+        write("sketch_create", {"plane": plane, "name": name})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [geometry]})
+
+    def volume(label, cm3):
+        read("model_inspect", lambda c: {"target": _ctx_get(c, "lo_body", "sweep body"),
+                                         "include": ["mass"], "units": "cm"},
+             lambda p: _measured(label, (p.get("mass") or {}).get("volume"),
+                                 _near((p.get("mass") or {}).get("volume"), cm3, 0.0001)))
+
+    # Rows 0-10 hold the features; 11-14 the sketches drawn after every one of them.
+    sketch("Prof", "yz", {"kind": "circle", "cx": 0, "cy": 0, "radius": 5})
+    sketch("PathA", "xy", {"kind": "line", "x1": 0, "y1": 0, "x2": 100, "y2": 0})
+    write("model_sweep", {"profile": {"sketch": "Prof", "profile_index": 0},
+                          "path": "sketch:PathA", "operation": "new"}, _swept,
+          ("lo_body", lambda p: p["result_bodies"][0]))
+    sketch("Box", "xy", {"kind": "rectangle", "x1": 200, "y1": -20, "x2": 240, "y2": 20})
+    write("model_extrude", {"sketch_name": "Box", "profile_index": 0, "distance": 20}, _extruded)
+    for offset in (20, 40):
+        write("model_construction", {"kind": "plane", "plane": "xy", "offset": offset,
+                                     "name": f"PlaneZ{offset}"}, _datum_plane("xy"))
+    for name, plane, radius in (("S0", "xy", 10), ("S1", "PlaneZ20", 6), ("S2", "PlaneZ40", 10)):
+        sketch(name, plane, {"kind": "circle", "cx": 400, "cy": 0, "radius": radius})
+    write("model_loft", {"profiles": [{"sketch": s, "profile_index": 0} for s in ("S0", "S1", "S2")]},
+          _lofted)
+    sketch("PathLater", "xy", {"kind": "line", "x1": 0, "y1": 0, "x2": 80, "y2": 0})
+    sketch("ProfLater", "yz", {"kind": "circle", "cx": 0, "cy": 0, "radius": 8})
+    sketch("BoxLater", "xy", {"kind": "rectangle", "x1": 300, "y1": -10, "x2": 320, "y2": 10})
+    sketch("S1Later", "PlaneZ20", {"kind": "circle", "cx": 400, "cy": 0, "radius": 8})
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("later-operand baseline", lambda names: names[2] == "Sweep1"
+                         and names[11:] == ["PathLater", "ProfLater", "BoxLater", "S1Later"]),
+         ("lo_rows", _recall("lo_rows", _timeline_names)))
+    volume("sweep volume along the 100 mm path", 7.853982)
+    # Each editor names the later sketch, both rows and the move; nothing is edited.
+    write("model_edit_sweep", {"feature": "Sweep1", "action": "path", "path": "sketch:PathLater"},
+          _later_refusal("PathLater", 11, "Sweep1", 2))
+    write("model_edit_sweep", {"feature": "Sweep1", "action": "profile",
+                               "profile": {"sketch": "ProfLater", "profile_index": 0}},
+          _later_refusal("ProfLater", 12, "Sweep1", 2))
+    write("model_edit_extrude", {"feature": "Extrude1", "action": "profile",
+                                 "profile": {"sketch": "BoxLater", "profile_index": 0}},
+          _later_refusal("BoxLater", 13, "Extrude1", 4))
+    write("model_edit_loft", {"feature": "Loft1", "action": "retarget", "section_index": 1,
+                              "profile": {"sketch": "S1Later", "profile_index": 0}},
+          _later_refusal("S1Later", 14, "Loft1", 10))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("refused edits left the timeline as it was",
+                         lambda names: names == _RECALL.get("lo_rows")))
+    volume("refused edits left the sweep volume", 7.853982)
+    # The move the refusal names, read back independently, then the edit it unblocks.
+    write("design_edit_timeline", {"action": "reorder", "feature": "PathLater@11", "to": "before",
+                                   "end_feature": "Sweep1@2"},
+          lambda p: _measured("PathLater moved before Sweep1", p, p.get("reordered") is True
+                              and (p.get("index_before"), p.get("index_after")) == (11, 2)))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("PathLater sits before Sweep1, every other row in its order",
+                         lambda names: names[1:4] == ["PathA", "PathLater", "Sweep1"]
+                         and [n for n in names if n != "PathLater"]
+                         == [n for n in _RECALL.get("lo_rows") or [] if n != "PathLater"]))
+    write("model_edit_sweep", {"feature": "Sweep1", "action": "path", "path": "sketch:PathLater"},
+          lambda p: _measured("the unblocked path edit landed", p, p.get("edited") is True
+                              and p.get("operand_after") == "PathLater/line:0"))
+    volume("sweep volume along the 80 mm path", 6.283185)
+    # A sketch projecting the sweep's own edge depends on it: Fusion refuses the move.
+    read("find_geometry", lambda c: {"target": _ctx_get(c, "lo_body", "sweep body"),
+                                     "kind": "circular_edge", "max_results": 1},
+         lambda p: _measured("one sweep end edge", p.get("returned"), p.get("returned") == 1),
+         _fg("lo_edge"))
+    write("sketch_create", {"plane": "xy", "name": "Dep"})
+    write("sketch_project", lambda c: {"sketch_name": "Dep", "entities": [
+        _ctx_get(c, "lo_edge", "sweep end edge")]},
+          lambda p: _measured("the sweep edge projected into Dep", p.get("created_count"),
+                              _num(p.get("created_count")) and p["created_count"] >= 1))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("Dep drawn last", lambda names: names[-1] == "Dep"),
+         ("lo_rows_dep", _recall("lo_rows_dep", _timeline_names)))
+    write("design_edit_timeline", {"action": "reorder", "feature": "Dep", "to": "before",
+                                   "end_feature": "Sweep1"},
+          _refused("Fusion refused to move 'Dep' before 'Sweep1'", "CIRCULAR_DEPENDENCY",
+                   "Nothing moved (the timeline re-reads unchanged)."))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("the refused move left every row where it was",
+                         lambda names: names == _RECALL.get("lo_rows_dep")))
+    # An earlier item moves later; the end-of-timeline refusal names a two-move remedy.
+    write("design_edit_timeline", {"action": "reorder", "feature": "PathA", "to": "after",
+                                   "end_feature": "Loft1"},
+          lambda p: _measured("PathA moved after Loft1", p, p.get("reordered") is True
+                              and (p.get("index_before"), p.get("index_after")) == (1, 11)))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("PathA sits right after Loft1; the end-move operands retain their rows",
+                         lambda names: len(names) == 16 and names[10:12] == ["Loft1", "PathA"]
+                         and names[12:] == ["ProfLater", "BoxLater", "S1Later", "Dep"]),
+         ("lo_before_end", _recall("lo_before_end", _timeline_names)))
+    write("design_edit_timeline", {"action": "reorder", "feature": "ProfLater", "to": "after",
+                                   "end_feature": "Dep"},
+          _refused("Fusion cannot place an item after the last timeline row", "Nothing moved.",
+                   "To make 'ProfLater' last, run design_edit_timeline(action='reorder', "
+                   "feature='ProfLater@12', to='before', end_feature='Dep@15'), then "
+                   "design_edit_timeline(action='reorder', feature='Dep@15', to='before', "
+                   "end_feature='ProfLater@14')."))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("the refused end move left every row where it was",
+                         lambda names: names == _RECALL.get("lo_before_end")))
+    write("design_edit_timeline", lambda c: {
+        "action": "reorder", "to": "before",
+        "feature": "ProfLater@" + str(_ctx_get(c, "lo_before_end", "timeline").index("ProfLater")),
+        "end_feature": "Dep@" + str(_ctx_get(c, "lo_before_end", "timeline").index("Dep"))},
+        lambda p: _measured("the remedy moved ProfLater before Dep", p,
+                            p.get("reordered") is True and p.get("feature") == "ProfLater"
+                            and p.get("end_feature") == "Dep"))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("ProfLater sits before Dep; every other row kept its order",
+                         lambda names: names[-2:] == ["ProfLater", "Dep"]
+                         and [n for n in names if n != "ProfLater"]
+                         == [n for n in _RECALL.get("lo_before_end") or [] if n != "ProfLater"]),
+         ("lo_before_swap", _recall("lo_before_swap", _timeline_names)))
+    write("design_edit_timeline", lambda c: {
+        "action": "reorder", "to": "before",
+        "feature": "Dep@" + str(_ctx_get(c, "lo_before_swap", "timeline").index("Dep")),
+        "end_feature": "ProfLater@" + str(_ctx_get(c, "lo_before_swap", "timeline").index("ProfLater"))},
+        lambda p: _measured("the remedy moved Dep before ProfLater", p,
+                            p.get("reordered") is True and p.get("feature") == "Dep"
+                            and p.get("end_feature") == "ProfLater"))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("ProfLater is last; every other row kept its order",
+                         lambda names: names[-2:] == ["Dep", "ProfLater"]
+                         and names == [n for n in _RECALL.get("lo_before_end") or []
+                                       if n != "ProfLater"] + ["ProfLater"]))
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "lo_story", "story"),
+                                         "expect_document": _ctx_get(c, "lo_doc", "later operand")},
+              "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "lo_doc", "later operand"),
+                                      "save_changes": False,
+                                      "expect_document": _ctx_get(c, "lo_story", "story")},
+              _document_closed, None)]
+    return rows
+
+
+_LATER_OPERAND = _later_operand_rows()
 
 
 def _loft_scoped_body(case, stage, role, expected, previous=None):
