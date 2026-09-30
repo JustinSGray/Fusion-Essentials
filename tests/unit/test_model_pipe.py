@@ -17,7 +17,8 @@ import pytest
 
 from conftest import (BRepBody, MakeComp, assert_no_active_design, body_proxy, error_message,
                       install, load_tool, make_design, make_sketch, make_sketch_curve,
-                      make_source_document, payload, _NamedCollection)
+                      make_source_document, payload, _NamedCollection, FakePoint,
+                      FakeTimeline, FakeTimelineObject, make_bbox)
 
 mp = load_tool("model_pipe")
 
@@ -166,6 +167,59 @@ def _wire(bodies=(), path_closed=False, design_type=1, sketch_curves=1, path_unr
 
 
 # ── the solid happy path ────────────────────────────────────────────────────
+
+@pytest.fixture
+def empty_pipe_create(monkeypatch):
+    def make(fault=None):
+        face = types.SimpleNamespace(area=6.0, centroid=FakePoint(.5, .5, .5))
+        stock = BRepBody("Stock", volume=1.0, area=6.0, faces=[face], bbox=make_bbox((0, 0, 0), (1, 1, 1)))
+        pf = _wire(bodies=[stock])
+        stock.parentComponent = pf.comp
+        design = mp._common.design()
+        prior = types.SimpleNamespace(entityToken="prior", name="Source", parentComponent=pf.comp)
+        timeline = FakeTimeline([FakeTimelineObject("Source", 0, prior)])
+        design.timeline = timeline
+        feature = _PipeFeature("EmptyPipe", [stock], .6, 0, True)
+        feature.parentComponent, feature.entityToken = pf.comp, "empty-pipe"
+        feature.timelineObject = FakeTimelineObject(feature.name, 1, feature)
+        calls = []
+
+        def add(inp):
+            timeline._items.append(feature.timelineObject)
+            timeline._marker += 1
+            if fault == "new_body":
+                pf.comp.bRepBodies._items.append(BRepBody("Orphan", volume=2))
+            if fault == "unread_shape":
+                stock.area = None
+            return feature
+
+        def delete():
+            calls.append(feature)
+            timeline._items.pop()
+            timeline._marker -= 1
+            return True
+
+        feature.deleteMe = delete
+        monkeypatch.setattr(pf, "add", add)
+        return timeline, calls, feature
+    return make
+
+
+class TestEmptyScopedCutRetirement:
+    def test_scoped_no_effect_cut_removes_only_its_new_feature(self, empty_pipe_create):
+        timeline, calls, feature = empty_pipe_create()
+        res = mp.handler(path="sketch:Spine", section_size=6, operation="cut", target_bodies=["Stock"])
+        assert res["isError"] is True and "was removed" in error_message(res)
+        assert calls == [feature] and timeline.count == timeline.markerPosition == 1
+        assert timeline.item(0).name == "Source"
+
+    @pytest.mark.parametrize("fault", ["new_body", "unread_shape"])
+    def test_zero_volume_delta_does_not_authorize_deleting_unknown_or_new_material(self, empty_pipe_create, fault):
+        timeline, calls, _ = empty_pipe_create(fault)
+        res = mp.handler(path="sketch:Spine", section_size=6, operation="cut", target_bodies=["Stock"])
+        assert res["isError"] is True and "EmptyPipe@1' was retained" in error_message(res)
+        assert calls == [] and timeline.count == 2
+
 
 class TestSolidPipe:
     def test_circular_pipe_on_a_path_sketch(self):

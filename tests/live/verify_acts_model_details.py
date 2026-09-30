@@ -22,6 +22,7 @@ from verify_acts_model_definition_operand import (
     _DATUM_OPERANDS, _DEFINITION_READS)
 from verify_acts_model_precision import (
     _section_camera, _section_camera_unchanged, _section_census, _section_created, _section_named_clear)
+from verify_acts_model_sweep import _retire_reads, _retire_material_state
 
 
 def _bodyref_scale_state(p):
@@ -748,9 +749,21 @@ _DETAILS = [
     ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 790, "y1": -10,
                                            "x2": 850, "y2": -10}],
                              "sketch_name": "PipeCutPath"}, "ok", None),
+    ("model_inspect", {"target": "PipeCut:1", "include": ["default", "mass"], "per_body": True,
+                       "accuracy": "very_high", "units": "mm"},
+     lambda p: _measured("pipe cut control before", _retire_material_state(p), _retire_material_state(p) is not None),
+     ("pipe_cut_before", _recall("pipe_cut_before", _retire_material_state))),
     ("model_pipe", {"path": "sketch:PipeCutPath", "section_size": 8, "operation": "cut",
                     "target_bodies": ["PipeCut"]},
      lambda p: "REQUESTED" in (p.get("note") or "") and p.get("scoped_to_bodies"), None),
+    ("model_inspect", {"target": "PipeCut:1", "include": ["default", "mass"], "per_body": True,
+                       "accuracy": "very_high", "units": "mm"},
+     lambda p: (lambda now, before: _measured("successful pipe cut removes independent material",
+         {"before": before, "now": now}, now is not None and before is not None
+         and len(now["bodies"]) == len(before["bodies"]) == 1
+         and 0 < now["shape"]["volume"] < before["shape"]["volume"]
+         and all(now["shape"][k] == before["shape"][k] for k in ("min", "max"))))(
+             _retire_material_state(p), _RECALL.get("pipe_cut_before")), None),
     # a pipe JOIN whose path touches nothing: the tube lands as a body of its own, so the error
     # names the new orphan body and points at model_combine(join) instead of just "nothing changed".
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
@@ -765,41 +778,48 @@ _DETAILS = [
     ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 1050, "y1": 0,
                                            "x2": 1050, "y2": 40}],
                              "sketch_name": "PipeJoinMissPath"}, "ok", None),
-    # the miss as a CUT first, scoped to the box (the component's ONE body before the join lands
-    # its orphan; an unscoped miss raises NO_TARGET_SWEEP_BODY and leaves nothing - measured): the
-    # feature lands with no effect, retained at WARNING severity ("No target body!") - the boundary
-    # FSAE-0922-FAILED-FEATURE-SEVERITY-1 keeps apart from an ERROR, which alone breaks is_healthy.
+    *_retire_reads("pipe_retire", ["PipeJoinMiss:1", "PipeCut:1"],
+                  [("PipeJoinMiss", "PipeJoinTargetS"), ("PipeJoinMiss", "PipeJoinMissPath"),
+                   ("PipeCut", "PipeCutS"), ("PipeCut", "PipeCutPath")]),
     ("model_pipe", {"path": "sketch:PipeJoinMissPath", "section_size": 6, "operation": "cut",
                     "target_bodies": ["PipeJoinMiss"]},
-     _refused("no body's volume changed", "remains in the timeline"), None),
+     _refused("no body's volume changed", "was removed", "checked body shapes were restored"), None),
+    *_retire_reads("pipe_retire", ["PipeJoinMiss:1", "PipeCut:1"],
+                  [("PipeJoinMiss", "PipeJoinTargetS"), ("PipeJoinMiss", "PipeJoinMissPath"),
+                   ("PipeCut", "PipeCutS"), ("PipeCut", "PipeCutPath")], after=True),
     # then the same path as a JOIN lands an orphan tube, which the error names
     ("model_pipe", {"path": "sketch:PipeJoinMissPath", "section_size": 6, "operation": "join"},
      _refused("no body's volume changed", "operation='join' landed a NEW body (",
               "model_combine(join) merges them"), None),
-    # is_healthy must stay TRUE over a retained WARNING feature - only an ERROR breaks it.
+    ("model_inspect", {"target": "PipeJoinMiss:1", "include": ["default", "mass"], "per_body": True,
+                       "accuracy": "very_high", "units": "mm"},
+     lambda p: (lambda now, before: _measured("effectful disjoint join retains its new body",
+         {"before": before, "now": now}, now is not None and before is not None
+         and len(now["bodies"]) == len(before["bodies"]) + 1
+         and now["shape"]["volume"] > before["shape"]["volume"]
+         and all(any(r["body"] == old["body"] and r["volume"] == old["volume"] for r in now["bodies"])
+                 for old in before["bodies"]))) (
+             _retire_material_state(p), _RECALL.get("pipe_retire_PipeJoinMiss:1")), None),
+    # Retiring the empty cut removes its warning; the disjoint join remains an effectful feature.
     ("assembly_get", {},
-     lambda p: _measured("a retained WARNING-severity pipe feature reads healthy on assembly_get",
+     lambda p: _measured("the retired empty pipe leaves no assembly health warning",
                          {"is_healthy": p.get("is_healthy"),
                           "timeline_problems": p.get("timeline_problems"),
                           "timeline_warnings": p.get("timeline_warnings")},
                          p.get("is_healthy") is True and p.get("timeline_problems") == []
-                         and any("Pipe" in (w.get("name") or "")
-                                for w in (p.get("timeline_warnings") or []))), None),
-    # the same warning's own message on the timeline row reads as plain text, no markup
+                         and p.get("timeline_warnings") == []), None),
     ("design_get", {"include": ["timeline"], "max_results": 2000},
      lambda p: (lambda warned: _measured(
-         "the retained pipe's warning message carries no markup",
+         "the removed empty pipe leaves no warning row",
          {"warned": [(r.get("name"), r.get("message")) for r in warned]},
-         bool(warned) and all(r.get("message") and "<" not in r["message"] for r in warned)))(
+         not warned))(
          [r for r in ((p.get("timeline") or {}).get("timeline") or [])
           if r.get("health") == "warning" and "Pipe" in (r.get("name") or "")]), None),
-    # the SAME state through workspace_orient's health counts (uncapped, unlike the timeline
-    # slice's row list) - a warning, no error, is_healthy true: the severity must agree.
     ("workspace_orient", {},
-     lambda p: _measured("workspace_orient counts the retained pipe as a warning, not an error",
+     lambda p: _measured("workspace_orient confirms the empty pipe warning was removed",
                          {"health": p.get("health")},
                          (p.get("health") or {}).get("timeline_errors") == 0
-                         and ((p.get("health") or {}).get("timeline_warnings") or 0) >= 1
+                         and (p.get("health") or {}).get("timeline_warnings") == 0
                          and (p.get("health") or {}).get("is_healthy") is True), None),
     # a d70 CUT across a 100 x 30 x 8 plate: the tube is wider than the plate, so it DISCONNECTS
     # the plate into two bodies - the split is named, not left for 'result_bodies' alone to imply.

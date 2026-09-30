@@ -16,6 +16,8 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe, target_component, build_path
 from . import _common
+from . import _design_common
+from . import _edit_feature_common
 from . import _assert
 from . import _geom
 from . import _inputs
@@ -239,6 +241,14 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
     # A join is told "grew a body" from "made a second one" by the census host's body NAMES before
     # the add - the same before-image a no-volume-change join error names its orphan body from.
     bodies_before = _common.component_body_names(census) if op_key == "join" else None
+    retire_hosts, before_timeline, before_shapes, before_marker = [], None, None, None
+    if op_key == "cut" and participants:
+        for owner in [comp] + [safe(lambda b=b: _common._native_of(b).parentComponent) for b in participants]:
+            if not any(_common.same_component(owner, prior) is True for prior in retire_hosts):
+                retire_hosts.append(owner)
+        before_timeline = _design_common.timeline_census(design)
+        before_marker, _ = _common.timeline_marker(design)
+        before_shapes = _edit_feature_common.all_shapes(design, components=retire_hosts)
 
     try:
         feature = comp.features.pipeFeatures.add(pin)
@@ -289,8 +299,12 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
                 bodies_after = _common.component_body_names(census)
                 join_clause = _common.join_new_body_clause(op_key, bodies_before, bodies_after)
                 extra = (" " + join_clause) if join_clause else ""
+            remedy = _common.failed_effect_remedy(design, feature)
+            if op_key == "cut" and participants and feature:
+                remedy = _edit_feature_common.retire_failed_create(
+                    design, feature, before_timeline, before_shapes, retire_hosts, before_marker)
             return error(f"Pipe reported success but no body's volume changed, so the {op_key} "
-                         f"affected nothing.{extra} " + _common.failed_effect_remedy(design, feature))
+                         f"affected nothing.{extra} " + remedy)
 
     inv = 1.0 / scale_factor
     payload = {

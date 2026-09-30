@@ -29,8 +29,8 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source 67964448437cd4d3274c2586a973e450a1cc5436574705a56f68a2d36c71e13b | Fusion 2706.0.97 | verified 2026-09-30
-Loaded: implementation ba3db4b96478f40583528c71d376c7197864b34b941f19391fd8d50e9158ace2 | schema 436ec0bcdeb01e018a89991a90e376280247edd50247b640db9e15394f04fa47 | load df3528c030aa488986c8c8975557c236 | session 86f2edfa985b41a2b8c3a93822c83913
+Stamp: source c9eba1c40769b713feb0475211e5860b26fe6b3cf440db84eba86d779d1df6bd | Fusion 2706.0.97 | verified 2026-09-30
+Loaded: implementation 2bdf217a1c8edf2af6aa4b939fba46c216bc1df6dc6110fa0ca90de6157b6c45 | schema 436ec0bcdeb01e018a89991a90e376280247edd50247b640db9e15394f04fa47 | load 77b9820043ef458ea84d59de17473d0b | session f25a809832e2459195ade82721b49792
 
 203 covered / 1 called / 5 refusals-only / 4 skipped(reason) / 0 pending
 
@@ -233,7 +233,7 @@ Loaded: implementation ba3db4b96478f40583528c71d376c7197864b34b941f19391fd8d50e9
 | model_pattern_circular | covered | circular-pattern a cameo body about a world axis, then about a construction axis by handle and by name with the resolved label read back, then about the bore FACE itself; the datum name reached from the root refused |
 | model_pattern_path | covered | pattern the feature cameo along its own edge with the count read back off the feature's own patternElements, then along TWO connected edge handles - a list is used EXACTLY, with no chaining, and the label says which of the two path rules ran |
 | model_pattern_rectangular | covered | rectangular-pattern a cameo body |
-| model_pipe | covered | run a hollow pipe along its path with the wall read back off the feature (and NO capped_ends claim - the face collections that would answer that read empty on this build), then a half-path pipe whose bounding box proves the extent is a FRACTION, a CUT scoped to a named body where the note says the scope is what was REQUESTED because participantBodies cannot be read back, and the two chaining fixtures: ONE seed handle chains across TANGENT junctions and stops where that continuity breaks - several edges on an open run bounded by sharp corners, and all eight of a closed tangent loop (which reports itself closed) - so what a seed produces is the BUILT path's own count and nothing about the request predicts it; the reverse extent refused on an open path |
+| model_pipe | covered | build hollow and partial-length pipes, prove a scoped cut removes material, retire a scoped cut with no effect while preserving history/body/sketch controls, and retain a disjoint join's extra body; verify path chaining and refuse reverse extent on an open path |
 | model_replace_face | covered | replace a scratch block's top face with an open sheet above it, the measured volume move pinning the effect; a solid face as the target refused |
 | model_revolve | covered | revolve a torus ring about the world z axis, then a ring about an off-origin cylinder FACE - the resolved label reads BRepFace and the ring's measured bounding box stands around x=30, not around the origin; a planar face as the axis refused. Then the HUB itself: its thirteen-segment outline turned 360 deg about the construction line the outline closes on, off a profile handle rather than a guessed index |
 | model_scale | covered | uniform x8 and per-axis x*y*z scales with ratio read-backs; unresolvable, length, and angle expressions refused; a bare unitless parameter accepted; a vertex-anchored scale |
@@ -241,7 +241,7 @@ Loaded: implementation ba3db4b96478f40583528c71d376c7197864b34b941f19391fd8d50e9
 | model_shell | covered | shell a scratch cap cameo |
 | model_split | covered | split a scratch pin by a plane |
 | model_stitch | covered | re-stitch two faces |
-| model_sweep | covered | sweep a round section along its own path |
+| model_sweep | covered | sweep profile and solid sections; verify placed straight-sweep material, then retire an empty curved solid sweep with unchanged history, sketches and control bodies |
 | model_thread | covered | thread a scratch post M10x1.5 over part of its length with the extent read back, an explicit thread standard with its alternatives disclosed, and a modeled thread on a second post proving it cut material; then the INTERNAL side on a real bore - 'internal' derived from the face's own out-of-material normal and checked against the face by the API at add() - and a partial thread measured from the LOW end, reading that end back off the feature; an unknown call-out, an offset with no length, and a modeled call-out too big for the cylinder all refused. And the hub's stub, M30x2 over 15 mm from its low end, on the ONE cylinder face of its radius the whole part carries - which is what says nothing has been cut across it |
 | model_unstitch | covered | unstitch a scratch box's faces |
 | param_add | covered | add PartLen (the driving length), PartWid and PartHt (independent extents), and the feature parameters derived from them - step, bore, pocket depth and corner radius, boss, mounting bore, edge break |

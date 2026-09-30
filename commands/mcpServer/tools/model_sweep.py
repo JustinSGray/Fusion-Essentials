@@ -11,6 +11,8 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe, target_component, root_body_advisory, build_path
 from . import _common
+from . import _design_common
+from . import _edit_feature_common
 from . import _geom
 from . import _inputs
 from . import _outputs
@@ -138,6 +140,9 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
     perpendicular = adsk.fusion.SweepSolidOrientationTypes.PerpendicularSolidOrientationType
     if safe(lambda: sweep_input.solidOrientation) != perpendicular:
         return error("Solid sweep input did not retain perpendicular orientation; no sweep was made.")
+    before_timeline = _design_common.timeline_census(design)
+    before_marker, _ = _common.timeline_marker(design)
+    before_shapes = _edit_feature_common.all_shapes(design, components=[host])
     try:
         feature = sweeps.add(sweep_input)
     except Exception as exc:
@@ -151,9 +156,13 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
     new_keys = set(after or ()) - set(before)
     if (after is None or not readable or face_count < 1 or None in created_keys
             or len(new_keys) != 1 or created_keys != new_keys):
+        unchanged = (after is not None and set(after) == set(before)
+                     and _common.counted(lambda: feature.faces.count) == 0)
+        remedy = _edit_feature_common.retire_failed_create(
+            design, feature, before_timeline, before_shapes if unchanged else None, [host], before_marker)
         return error("Solid sweep was built, but its new result body could not be identified "
                      "from created faces and the owner's body census. "
-                     + _common.failed_effect_remedy(design, feature))
+                     + remedy)
     key = next(iter(new_keys))
     feature_keys = {_common.native_identity(b) for b in _common.result_bodies(feature)}
     result = after[key]

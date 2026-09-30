@@ -6,7 +6,7 @@
 import math
 
 from verify_core import (
-    _RECALL, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _measured, _near, _num, _new_document, _prof, _recall, _refused, _swept, _watch)
+    _RECALL, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _measured, _near, _num, _new_document, _prof, _recall, _refused, _revolved, _swept, _watch)
 
 
 
@@ -96,6 +96,149 @@ def _solid_tool_health(host, key):
                          bool(feature) and not timeline.get("truncated") and len(rows) == 1
                          and rows[0].get("health", "healthy") == "healthy")
     return check
+
+
+def _retire_design_state(p):
+    """Return complete ungrouped tree/history facts for failed-create comparisons."""
+    tree, tl = p.get("tree") or {}, p.get("timeline") or {}
+    rows = tl.get("timeline")
+    def complete(node):
+        children = node.get("children", [])
+        return (node.get("child_count") == len(children) and not node.get("children_truncated")
+                and not node.get("truncated") and not node.get("bodies_truncated")
+                and not node.get("root_bodies_truncated") and not node.get("unresolved")
+                and ("component" not in node or type(node.get("body_count")) is int
+                     and node["body_count"] == len(node.get("bodies", [])))
+                and all(b.get("name") and type(b.get("is_solid")) is bool and type(b.get("visible")) is bool
+                        for b in node.get("bodies", []))
+                and all(complete(c) for c in children))
+    if (not complete(tree) or not isinstance(rows, list) or tl.get("truncated")
+            or tl.get("count") != tl.get("returned") or tl.get("count") != len(rows)
+            or tl.get("marker_position") != len(rows)
+            or any(r.get("index") != i or not r.get("name") or not r.get("type") for i, r in enumerate(rows))):
+        return None
+    return {"tree": tree, "timeline": tl}
+
+
+def _retire_material_state(p):
+    """Return independently counted body material, visibility and world bounds."""
+    mass = p.get("mass") or {}
+    rows = mass.get("per_body")
+    shape = _sweep_mode_shape(p)
+    if (p.get("units") != "mm" or p.get("frame") != "world axes (axis-aligned)"
+            or not _sweep_mode_box_equal(shape, shape)
+            or not all(_num(shape[k]) and shape[k] > 0 for k in ("volume", "area"))
+            or not isinstance(rows, list) or not rows or mass.get("per_body_count") != len(rows)
+            or mass.get("per_body_truncated") is not False
+            or any(not r.get("body") or r.get("is_solid") is not True or r.get("lump_count") != 1
+                   or not _num(r.get("volume")) or r["volume"] <= 0 for r in rows)):
+        return None
+    return {"shape": shape, "bodies": rows}
+
+
+def _retire_sphere_fixture(p):
+    """Require the measured sphere and witness geometry on the owned solid fixture's reads."""
+    state = _retire_material_state(p)
+    if state is None:
+        return None
+    if p.get("target") not in ("occurrence 'RetireSolid:1'", "occurrence 'RetireWitness:1'"):
+        return None
+    source = p["target"] == "occurrence 'RetireSolid:1'"
+    size, volume = (5, 4 * math.pi * 2.5 ** 3 / 3) if source else (10, 1000)
+    if not all(_near(p.get(axis), size, .001) for axis in "xyz") or not _near(state["shape"]["volume"], volume, .001):
+        return None
+    return state
+
+
+def _retire_sketch_state(p):
+    """Return complete sketch geometry, constraints and frame without handle text."""
+    counts, entities = p.get("counts"), p.get("entities")
+    if (not isinstance(counts, dict) or any(type(n) is not int or n < 0 for n in counts.values())
+            or not isinstance(entities, list) or sum(counts.values()) != len(entities)
+            or p.get("truncated") is not False or p.get("profiles_stale") or p.get("timeline_marker_unrestored")
+            or not isinstance(p.get("frame"), dict)):
+        return None
+    for e in entities:
+        fields = {"line": ("start", "end"), "arc": ("center",), "point": ("position",)}.get(e.get("type"))
+        if fields is None or any(not isinstance(e.get(k), dict) or not e[k]
+                                 or any(not _num(v) for v in e[k].values()) for k in fields):
+            return None
+        if e.get("type") == "arc" and (not _num(e.get("radius")) or not math.isfinite(e["radius"]) or e["radius"] <= 0):
+            return None
+    for count, key in (("constraint_count", "constraints"), ("dimension_count", "dimensions"), ("profile_count", "profiles")):
+        if type(p.get(count)) is not int or not isinstance(p.get(key), list) or p[count] != len(p[key]):
+            return None
+    return {"counts": counts, "entities": [{k: v for k, v in e.items() if k != "handle"} for e in entities],
+            "profiles": [{k: v for k, v in e.items() if k != "handle"} for e in p["profiles"]],
+            "constraints": p["constraints"], "dimensions": p["dimensions"], "frame": p["frame"]}
+
+
+def _retire_compare(key, extract, after):
+    """Require the complete independent read to equal its pre-failure observation."""
+    def check(p):
+        now = extract(p)
+        before = _RECALL.get(key)
+        valid = now is not None and (not after or before is not None and now == before)
+        if valid and not after:
+            _RECALL[key] = now
+        return _measured("failed creation leaves " + key + " unchanged", {"before": before, "now": now}, valid)
+    return check
+
+
+def _retire_reads(tag, targets, sketches, after=False, material_read=_retire_material_state):
+    """Read the entire history/tree and each affected or control body's material and sketches."""
+    rows = [("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                              "max_depth": 10, "max_results": 2000},
+             _retire_compare(tag + "_design", _retire_design_state, after), None)]
+    for target in targets:
+        rows.append(("model_inspect", {"target": target, "include": ["default", "mass"], "per_body": True,
+                                       "accuracy": "very_high", "units": "mm"},
+                     _retire_compare(tag + "_" + target, material_read, after), None))
+    for owner, name in sketches:
+        rows.append(("sketch_get", {"component": owner, "sketch_name": name, "include_entities": True,
+                                    "max_results": 200, "units": "mm"},
+                     _retire_compare(tag + "_" + name, _retire_sketch_state, after), None))
+    return rows
+
+
+def _empty_solid_rows():
+    """Verify the measured curved solid-sweep failure is retired without disturbing its controls."""
+    rows = [("doc_get", {}, _home_document, ("retire_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "retire_home", "story")},
+             _new_document, ("retire_doc", lambda p: p["document_handle"]))]
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: _combine_pin(
+            c, "retire_doc", args(c) if callable(args) else args), check, save))
+    write("model_create_component", {"name": "RetireWitness", "activate": True, "x": 3225, "y": 520}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "RetireWitnessS"})
+    write("sketch_add_geometry", {"sketch_name": "RetireWitnessS", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]})
+    write("model_extrude", {"sketch_name": "RetireWitnessS", "distance": 10}, _extruded)
+    write("model_create_component", {"name": "RetireSolid", "activate": True, "x": 100}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "RetireSphere"})
+    write("sketch_add_geometry", {"sketch_name": "RetireSphere", "geometry": [
+        {"kind": "arc", "cx": 0, "cy": 0, "x1": 2.5, "y1": 0, "sweep_deg": 180},
+        {"kind": "line", "x1": -2.5, "y1": 0, "x2": 2.5, "y2": 0}]})
+    write("sketch_create", {"plane": "xy", "name": "RetireArc"})
+    write("sketch_add_geometry", {"sketch_name": "RetireArc", "geometry": [
+        {"kind": "arc", "cx": -20, "cy": 0, "x1": 0, "y1": 0, "sweep_deg": 90}]})
+    write("model_revolve", {"sketch_name": "RetireSphere", "component": "RetireSolid", "axis": "x", "angle_deg": 360}, _revolved)
+    rows.append(("find_geometry", {"target": "RetireSolid:1", "kind": "sphere_face", "nearest_to": [100, 0, 0], "max_results": 8},
+                 lambda p: _measured("one placed source sphere face", p.get("matches"),
+                     p.get("returned") == p.get("match_count") == 1 and bool(p["matches"][0].get("handle"))), _fg("retire_sphere")))
+    write("design_activate_component", {"occurrence": "RetireWitness:1"})
+    targets = ["RetireSolid:1", "RetireWitness:1"]
+    sketches = [("RetireSolid", "RetireSphere"), ("RetireSolid", "RetireArc"), ("RetireWitness", "RetireWitnessS")]
+    rows.extend(_retire_reads("solid_retire", targets, sketches, material_read=_retire_sphere_fixture))
+    write("model_sweep", lambda c: {"solid_body": _ctx_get(c, "retire_sphere", "sphere face"),
+          "path": "sketch:RetireArc", "component": "RetireSolid", "operation": "new"},
+          _refused("new result body could not be identified", "was removed", "checked body shapes were restored"))
+    rows.extend(_retire_reads("solid_retire", targets, sketches, after=True, material_read=_retire_sphere_fixture))
+    rows.extend([("doc_activate", lambda c: {"name": _ctx_get(c, "retire_home", "story"),
+                    "expect_document": _ctx_get(c, "retire_doc", "retirement scratch")}, "ok", None),
+                 ("doc_close", lambda c: {"name": _ctx_get(c, "retire_doc", "retirement scratch"), "save_changes": False,
+                    "expect_document": _ctx_get(c, "retire_home", "story")}, _document_closed, None)])
+    return rows
 
 
 def _solid_tool_rows():
@@ -198,7 +341,7 @@ def _solid_tool_rows():
     return rows
 
 
-_SOLID_TOOL = _solid_tool_rows()
+_SOLID_TOOL = _solid_tool_rows() + _empty_solid_rows()
 
 
 def _sweep_mode_expected_volume(case, stage):

@@ -653,7 +653,8 @@ STORY = {
                    "and point_tangent read back; a direction start on open sketch curves and on "
                    "profiles, each start_angle set to 30 deg widening the body's box; and a loft "
                    "on two strip-edge rails at rail_continuity g1 and a g0 twin, read back"),
-    "model_sweep": "sweep a round section along its own path",
+    "model_sweep": ("sweep profile and solid sections; verify placed straight-sweep material, then "
+                    "retire an empty curved solid sweep with unchanged history, sketches and control bodies"),
     "model_draft": "draft a cameo face",
     "model_mirror": ("mirror a cameo body, then the emboss block's own timeline FEATURE with the "
                      "body/volume census read back, then a join whose isCombine is read off the "
@@ -663,16 +664,10 @@ STORY = {
     "model_replace_face": ("replace a scratch block's top face with an open sheet above it, the "
                            "measured volume move pinning the effect; a solid face as the target "
                            "refused"),
-    "model_pipe": ("run a hollow pipe along its path with the wall read back off the feature (and "
-                   "NO capped_ends claim - the face collections that would answer that read empty "
-                   "on this build), then a half-path pipe whose bounding box proves the extent is a "
-                   "FRACTION, a CUT scoped to a named body where the note says the scope is what "
-                   "was REQUESTED because participantBodies cannot be read back, and the two "
-                   "chaining fixtures: ONE seed handle chains across TANGENT junctions and stops "
-                   "where that continuity breaks - several edges on an open run bounded by sharp "
-                   "corners, and all eight of a closed tangent loop (which reports itself closed) "
-                   "- so what a seed produces is the BUILT path's own count and nothing about the "
-                   "request predicts it; the reverse extent refused on an open path"),
+    "model_pipe": ("build hollow and partial-length pipes, prove a scoped cut removes material, "
+                   "retire a scoped cut with no effect while preserving history/body/sketch controls, "
+                   "and retain a disjoint join's extra body; verify path chaining and refuse reverse "
+                   "extent on an open path"),
     "model_pattern_rectangular": "rectangular-pattern a cameo body",
     "model_pattern_circular": ("circular-pattern a cameo body about a world axis, then about a "
                                "construction axis by handle and by name with the resolved label "

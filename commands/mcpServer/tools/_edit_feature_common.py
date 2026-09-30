@@ -7,13 +7,13 @@ import adsk.fusion
 import math
 from itertools import islice
 
-from . import _common, _geom, _sketch_detail
+from . import _common, _design_common, _geom, _inputs, _sketch_detail
 from ._common import counted, safe
 
 MAP_BLURB = (
-    "read_extrude_definition/read_sweep_definition/feature_definition - current reads; "
-    "all_shapes/feature_body_keys/health/same_feature - edit evidence; "
-    "operand_source/later_operand_refusal - dependency checks; "
+    "read_extrude_definition/read_sweep_definition/feature_definition - reads; "
+    "all_shapes/feature_body_keys/health/same_feature - evidence; retire_failed_create - cleanup; "
+    "operand_source/later_operand_refusal - dependencies; "
     "sketch_address/at_address/address_text - operands; "
     "restore_definition/restore_gaps/matched/shape_match - rollback; "
     "rolled_back_text/failed/identical_geometry_reply - outcomes")
@@ -161,9 +161,10 @@ def _empty_solid_shape(body):
             "face_count": faces, "edge_count": edges, "lump_count": lumps}
 
 
-def all_shapes(design, allow_empty_solids=False):
-    """Native body snapshots across components, or None on an unreadable census."""
-    components = safe(lambda: list(design.allComponents))
+def all_shapes(design, allow_empty_solids=False, components=None):
+    """Native body snapshots across supplied components or the design, or None when unreadable."""
+    if components is None:
+        components = safe(lambda: list(design.allComponents))
     if not components:
         return None
     rows = {}
@@ -183,6 +184,45 @@ def all_shapes(design, allow_empty_solids=False):
             rows[key] = {"component": safe(lambda c=component: c.name),
                          "body": safe(lambda b=body: b.name), "shape": shape}
     return rows
+
+
+def retire_failed_create(design, feature, before_timeline, before_shapes, components, before_marker):
+    """Remove only a new last feature with unchanged material, reporting verified timeline restoration."""
+    name = safe(lambda: feature.name)
+    owner = safe(lambda: feature.parentComponent.name)
+    index = counted(lambda: feature.timelineObject.index)
+    address = f"{owner}/{name}@{index}" if owner and name and index is not None else name
+    remedy = (f"Feature '{address}' was retained; inspect it with design_get and remove it with "
+              "design_delete_feature.") if address else _common.failed_effect_remedy(design, feature)
+    if _inputs.current_design_type(design) != _inputs.MODE_PARAMETRIC:
+        return (f"Automatic cleanup of '{address}' was not attempted outside a readable PARAMETRIC "
+                "design; inspect with design_get or undo in Fusion.")
+    now = _design_common.timeline_census(design)
+    old_rows = (before_timeline or {}).get("items")
+    rows = (now or {}).get("items")
+    complete = (isinstance(old_rows, list) and isinstance(rows, list)
+                and not before_timeline["collapsed_groups"] and not now["collapsed_groups"]
+                and all(r["key"] and r["name"] and r["index"] == i
+                        and type(r["suppressed"]) is bool for i, r in enumerate(rows))
+                and len({r["key"] for r in rows}) == len(rows))
+    if (not complete or before_marker != len(old_rows) or len(rows) != len(old_rows) + 1
+            or rows[:-1] != old_rows or index != len(old_rows)
+            or _common.timeline_marker(design) != (len(rows), len(rows))
+            or safe(lambda: design.timeline.item(index).entity == feature) is not True
+            or before_shapes is None or all_shapes(design, components=components) != before_shapes):
+        return remedy
+    try:
+        removed = feature.deleteMe()
+    except Exception as exc:
+        return (f"Cleanup of '{address}' raised: {exc}. Removal is unconfirmed; re-read "
+                "design_get(include=['timeline']) before using design_delete_feature.")
+    after = _design_common.timeline_census(design)
+    if (removed is True and after == before_timeline
+            and _common.timeline_marker(design) == (before_marker, before_marker)
+            and all_shapes(design, components=components) == before_shapes):
+        return f"Failed feature '{address}' was removed; the prior timeline and checked body shapes were restored."
+    return (f"Cleanup of '{address}' returned {removed!r}, but restoration is unconfirmed; re-read "
+            "design_get(include=['timeline']) and model_inspect before using design_delete_feature.")
 
 
 def feature_body_keys(feature):

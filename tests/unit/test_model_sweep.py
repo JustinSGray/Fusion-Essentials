@@ -15,7 +15,7 @@ import pytest
 from conftest import (load_tool, make_design, install, make_sketch, payload as _payload,
                       error_message, assert_no_active_design, BRepBody, BRepEdge,
                       FakeFeatures as _SharedFeatures, Line3D, Profile, _NamedCollection,
-                      MakeComp, FakePoint, make_bbox, body_proxy)
+                      MakeComp, FakePoint, FakeTimeline, FakeTimelineObject, make_bbox, body_proxy)
 
 sw = load_tool("model_sweep")
 
@@ -79,6 +79,84 @@ def _solid_tool_world(*, result_same_shape=False, ignored_orientation=False, wro
     sf.createInputForSolid = create
     sf.add = add
     return sf, host, source, result
+
+
+@pytest.fixture
+def empty_solid_create(monkeypatch):
+    def make(fault=None):
+        sf, host, source, result = _solid_tool_world()
+        design = host.parentDesign
+        design.designType = adsk.fusion.DesignTypes.ParametricDesignType
+        prior = types.SimpleNamespace(entityToken="prior", name="Source", parentComponent=host)
+        timeline = FakeTimeline([FakeTimelineObject("Source", 0, prior)])
+        design.timeline = timeline
+        feature = types.SimpleNamespace(name="EmptySweep", entityToken="empty-sweep", parentComponent=host,
+                                        faces=_NamedCollection([]), bodies=_NamedCollection([source]))
+        row = FakeTimelineObject(feature.name, 1, feature)
+        feature.timelineObject = row
+        calls = []
+
+        def delete():
+            calls.append(feature)
+            if fault == "raises":
+                raise RuntimeError("delete refused")
+            if fault != "kept":
+                timeline._items.pop()
+                timeline._marker -= 1
+            if fault == "cascade":
+                timeline._items.clear()
+                timeline._marker = 0
+            if fault == "changed_after":
+                source.volume *= 2
+            return fault != "false"
+
+        def add(inp):
+            timeline._items.append(row)
+            timeline._marker += 1
+            if fault == "unread_faces":
+                feature.faces = types.SimpleNamespace(count=None)
+            if fault == "changed_before":
+                source.volume *= 2
+            if fault == "new_body":
+                host.bRepBodies._items.append(result)
+            if fault == "wrong_entity":
+                row.entity = prior
+            return feature
+
+        feature.deleteMe = delete
+        monkeypatch.setattr(sf, "add", add)
+        if fault == "direct":
+            design.designType = adsk.fusion.DesignTypes.DirectDesignType
+        return timeline, calls, feature
+    return make
+
+
+class TestEmptySolidRetirement:
+    def test_removes_only_verified_no_effect_feature(self, empty_solid_create):
+        timeline, calls, feature = empty_solid_create()
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        assert res["isError"] is True
+        assert "Failed feature 'ToolHost/EmptySweep@1' was removed" in error_message(res)
+        assert calls == [feature] and timeline.count == timeline.markerPosition == 1
+        assert timeline.item(0).name == "Source"
+
+    @pytest.mark.parametrize("fault", ["unread_faces", "changed_before", "new_body", "wrong_entity", "direct"])
+    def test_unread_or_effectful_or_unidentifiable_create_is_not_deleted(self, empty_solid_create, fault):
+        timeline, calls, _ = empty_solid_create(fault)
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        text = error_message(res)
+        assert res["isError"] is True and calls == [] and timeline.count == 2
+        assert "ToolHost/EmptySweep@1" in text
+        assert "was removed" not in text
+
+    @pytest.mark.parametrize("fault", ["kept", "false", "cascade", "changed_after", "raises"])
+    def test_failed_or_incomplete_cleanup_is_never_reported_restored(self, empty_solid_create, fault):
+        _, calls, feature = empty_solid_create(fault)
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath")
+        text = error_message(res)
+        assert res["isError"] is True and calls == [feature]
+        assert "ToolHost/EmptySweep@1" in text and "unconfirmed" in text
+        assert "was removed" not in text and "was retained" not in text
 
 
 class TestSolidTool:
