@@ -587,7 +587,7 @@ def handler(constraints=None, sketch_name: str = "", component: str = "",
     if uerr:
         return error(uerr)
     return _sketch_batch.run_batch(entries, lambda _i, e: _one(sketch, k, e), "constraints",
-                                   "constrained", safe(lambda: sketch.name))
+                                   "constrained", safe(lambda: sketch.name), sketch=sketch)
 
 
 def _one(sketch, k, entry):
@@ -656,15 +656,28 @@ def _one(sketch, k, entry):
         if not e1:
             return None, (f"Could not resolve entity_one '{entity_one}' "
                           f"(use '<type>:<index>', type = {'/'.join(_common.ENTITY_REF_KINDS)}).")
-    # BOTH refs resolve before EITHER anchor is built: a 'mid' anchor CREATES a point and a midpoint
-    # constraint, so a refusal after that leaves an orphan behind in the sketch. Nothing is added
-    # until every operand this call needs is in hand.
+    # A midpoint anchor creates both a point and a relation; validate operands first.
     e2 = None
     if kind in _TWO_ENTITY_KINDS:
         e2 = _common.resolve_entity_ref(sketch, base_two)
         if not e2:
             return None, (f"'{cname}' needs 'entity_two' (a second '<type>:<index>'). "
                           f"Got '{entity_two}'.")
+    for slot, entity, anchor in (("entity_one", e1, anchor_one), ("entity_two", e2, anchor_two)):
+        if anchor:
+            _point, perr = _common.anchor_preflight(entity, anchor)
+            if perr:
+                return None, f"{slot}: {perr}"
+    surf = None
+    if kind == "entity_surface":
+        surf, serr = _SURFACE.resolve(surface, cname)
+        if serr:
+            return None, serr
+        if surf is None:
+            return None, (f"'{cname}' needs 'surface' - a plane alias (xy/xz/yz), a "
+                          "construction-plane name, or a face handle from find_geometry"
+                          + (" (curved faces allowed)." if cname in _CURVED_SURFACE_OK
+                             else " (this constraint takes a PLANAR face only)."))
     if anchor_one:
         e1, perr = _common.anchor_point(sketch, e1, anchor_one)
         if perr:
@@ -737,14 +750,6 @@ def _one(sketch, k, entry):
                               "(e.g. 'line:0').")
             result_obj = getattr(gc, method)(e1, e2, sline)
         elif kind == "entity_surface":
-            surf, serr = _SURFACE.resolve(surface, cname)
-            if serr:
-                return None, serr
-            if surf is None:
-                return None, (f"'{cname}' needs 'surface' - a plane alias (xy/xz/yz), a "
-                              "construction-plane name, or a face handle from find_geometry"
-                              + (" (curved faces allowed)." if cname in _CURVED_SURFACE_OK
-                                 else " (this constraint takes a PLANAR face only)."))
             result_obj = getattr(gc, method)(e1, surf)
         elif kind == "entity_list":
             if len(ents) < 3:

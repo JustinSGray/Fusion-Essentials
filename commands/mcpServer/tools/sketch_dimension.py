@@ -302,7 +302,7 @@ def handler(dimensions=None, sketch_name: str = "", component: str = "") -> dict
         return error("No sketch to dimension. Create one first with sketch_create.")
     return _sketch_batch.run_batch(
         entries, lambda i, e: _one(sketch, e), "dimensions", "dimensioned",
-        safe(lambda: sketch.name), result_note=_SOLVED_NOTE)
+        safe(lambda: sketch.name), sketch=sketch, result_note=_SOLVED_NOTE)
 
 
 def _one(sketch, entry):
@@ -396,6 +396,11 @@ def _one(sketch, entry):
                          + (" (curved faces allowed)." if dt in _CURVED_SURFACE_OK
                             else " (this dimension takes a PLANAR face only)."))
 
+    for slot, entity, anchor in (("entity_one", e1, anchor1), ("entity_two", e2, anchor2)):
+        if anchor:
+            _point, perr = _common.anchor_preflight(entity, anchor)
+            if perr:
+                return None, f"{slot}: {perr}"
     if dt in _DISTANCE_TYPES:
         if lone_line:
             p1 = safe(lambda: e1.startSketchPoint)

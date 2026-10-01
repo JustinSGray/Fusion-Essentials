@@ -7,6 +7,8 @@ Both run before anything is solid - which is the order the work is done in - so 
 sketch geometry and user parameters, never bodies.
 """
 
+from math import isfinite
+
 from verify_core import (
     EXPORT_DIR, SVG96_PATH, SVG_PATH, _ctx_get, _datum_plane, _dim_measures, _extruded,
     _made_component, _param_added, _param_favorited, _params_listed, _refused, _svg96_extent,
@@ -712,7 +714,7 @@ _SKETCHWORK = [
         {"dim_type": "radius", "entity_one": "circle:99", "value": "1 mm +"},
         {"dim_type": "radius", "entity_one": "circle:0", "value": "8 mm"}],
         "sketch_name": "RetainedDims"},
-     _refused("circle:99", "Nothing landed", "1 later entry was not attempted"), None),
+     _refused("circle:99", "Nothing completed", "1 later entry was not attempted"), None),
     ("sketch_get", {"sketch_name": "RetainedDims", "include_entities": True},
      lambda p: p.get("truncated") is False and _radial_state(p, [10, 10, 10], []), None),
     # A rejected value on the first entry leaves one measured dimension and skips the suffix.
@@ -1625,3 +1627,205 @@ def _dimension_move_rows():
 
 
 _SKETCHWORK += _dimension_move_rows()
+
+
+def _anchor_history(key, before):
+    """Check the complete healthy timeline without moving or adding feature rows."""
+    def check(p):
+        tl = p.get("timeline") or {}
+        rows = tl.get("timeline")
+        good = (isinstance(rows, list) and tl.get("count") == tl.get("returned") == tl.get("marker_position") == len(rows)
+                and tl.get("truncated") is not True and p.get("timeline_healthy") is True
+                and tl.get("summary", {}).get("states") == {"healthy": len(rows)}
+                and tl["summary"].get("exceptions") == []
+                and all(r.get("index") == i and r.get("name") and r.get("type") for i, r in enumerate(rows)))
+        if before and good:
+            _RECALL[key + "_history"] = tl
+        return _measured("sketch entry leaves healthy history unchanged", tl,
+                         good and tl == _RECALL.get(key + "_history"))
+    return check
+
+
+def _anchor_state(key, stage):
+    """Read complete sketch controls and distinguish added midpoint or batch-prefix geometry."""
+    def check(p):
+        counts, entities = p.get("counts"), p.get("entities")
+        if (p.get("sketch") != key or p.get("units") != "mm"
+                or p.get("truncated") is not False or p.get("compute_deferred") is True
+                or p.get("profiles_stale") is True or p.get("timeline_marker_unrestored") is True
+                or not isinstance(counts, dict) or not isinstance(entities, list)
+                or not all(type(n) is int and 0 <= n < 100 for n in counts.values())
+                or sum(counts.values()) != len(entities)
+                or not isinstance(p.get("frame"), dict) or type(p.get("is_fully_constrained")) is not bool
+                or any(type(p.get(n)) is not int or not isinstance(p.get(k), list) or p[n] != len(p[k])
+                       for n, k in (("constraint_count", "constraints"), ("dimension_count", "dimensions"),
+                                    ("profile_count", "profiles")))):
+            return _measured("complete sketch census", p, False)
+        facts = {k: p.get(k) for k in ("counts", "constraints", "dimensions", "frame", "is_fully_constrained", "compute_deferred")}
+        for kind in ("entities", "profiles"):
+            facts[kind] = [{k: v for k, v in e.items() if k != "handle"} for e in p[kind]]
+        by = {e.get("id"): e for e in facts["entities"]}
+        if not all(isinstance(i, str) and i for i in by) or len(by) != len(entities):
+            return _measured("unique current sketch ids", entities, False)
+        for e in entities:
+            fields = {"line": ("start", "end"), "circle": ("center",), "point": ("position",)}.get(e.get("type"))
+            if fields is None or any(not isinstance(e.get(k), dict) or not all(
+                    type(e[k].get(a)) in (int, float) and isfinite(e[k][a]) for a in "xy") for k in fields):
+                return _measured("readable sketch coordinates", e, False)
+            if e.get("type") == "circle" and not (type(e.get("radius")) in (int, float)
+                                                     and isfinite(e["radius"]) and e["radius"] > 0):
+                return _measured("readable circle radius", e, False)
+        if any(type(r.get("area")) not in (int, float) or not isfinite(r["area"]) or r["area"] <= 0
+               or not isinstance(r.get("centroid"), list) or len(r["centroid"]) != 3
+               or not all(type(x) in (int, float) and isfinite(x) for x in r["centroid"]) for r in p["profiles"]):
+            return _measured("readable profiles", p["profiles"], False)
+        if stage == "before":
+            selected = []
+            for ends in (([10, 10], [30, 10]), ([100, 100], [120, 100])):
+                hits = [e["id"] for e in entities if e.get("type") == "line"
+                        and [[e.get(k, {}).get(a) for a in "xy"] for k in ("start", "end")] == list(ends)]
+                if len(hits) != 1:
+                    return _measured("independent anchor/control endpoints", entities, False)
+                selected += hits
+            circles = [e for e in entities if e.get("type") == "circle"]
+            good = (counts.get("lines") == 2 and counts.get("points") == 6 and len(circles) == counts.get("circles") == 1
+                    and circles[0].get("center") == {"x": 60.0, "y": 10.0} and circles[0].get("radius") == 5.0
+                    and p["constraint_count"] == p["dimension_count"] == 0 and p["profile_count"] == 1
+                    and all(type(e.get(k)) is bool for e in entities if e.get("type") in ("line", "circle")
+                            for k in ("construction", "fixed", "reference", "linked")))
+            if good:
+                _RECALL[key] = facts
+                _RECALL[key + "_ids"] = selected + [circles[0]["id"]]
+            return _measured("fresh independent sketch witness", facts, good)
+        old = _RECALL.get(key, {})
+        if stage == "unchanged":
+            return _measured("preflight preserves the full disclosed sketch", facts, facts == old)
+        prior = {e["id"]: e for e in old.get("entities", [])}
+        new = [e for i, e in by.items() if i not in prior]
+        line, control, circle = _RECALL.get(key + "_ids", [None] * 3)
+        centers = [e["id"] for e in prior.values() if e.get("type") == "point"
+                   and e.get("position") == {"x": 60.0, "y": 10.0}]
+        n = 1 if stage in ("success", "con_success", "geometry") else 2
+        added_points = [e for e in new if e.get("type") == "point"]
+        expected_position = {"x": 40.0, "y": 40.0} if stage == "geometry" else {"x": 20.0, "y": 10.0}
+        expected_counts = dict(old.get("counts", {}))
+        expected_counts["points"] += n
+        if stage == "geometry":
+            expected_counts["circles"] += 1
+        wanted = [{"type": "horizontal", "entities": [control]}] if stage == "mixed" else []
+        if stage != "geometry":
+            wanted += [{"type": "midpoint", "entities": [e["id"], line]} for e in added_points]
+        if stage == "con_success" and len(added_points) == len(centers) == 1:
+            wanted += [{"type": "horizontal_points", "entities": [added_points[0]["id"], centers[0]]}]
+        dimensions = p["dimensions"]
+        good = (all(by.get(i) == e for i, e in prior.items()) and facts["frame"] == old.get("frame")
+                and facts["is_fully_constrained"] == old.get("is_fully_constrained")
+                and facts["compute_deferred"] == old.get("compute_deferred")
+                and counts == expected_counts and len(added_points) == n
+                and all(e.get("position") == expected_position for e in added_points)
+                and p["constraints"] == wanted and all(e in facts["profiles"] for e in old.get("profiles", [])))
+        if stage == "geometry":
+            new_circles = [e for e in new if e.get("type") == "circle"]
+            good = (good and len(new) == 2 and len(new_circles) == 1
+                    and new_circles[0].get("center") == expected_position and new_circles[0].get("radius") == 3.0
+                    and len(facts["profiles"]) == 2 and dimensions == [])
+        else:
+            good = good and len(new) == n and facts["profiles"] == old.get("profiles")
+            if stage in ("success", "dim_mixed"):
+                refs = [circle] if stage == "dim_mixed" else (
+                    [added_points[0]["id"], centers[0]] if len(added_points) == len(centers) == 1 else None)
+                good = (good and len(dimensions) == 1 and dimensions[0].get("value") == (5.0 if stage == "dim_mixed" else 40.0)
+                        and dimensions[0].get("driving") is True and dimensions[0].get("name")
+                        and refs is not None and dimensions[0].get("entities") == refs)
+            else:
+                good = good and dimensions == []
+        return _measured("independent retained geometry and unchanged controls", facts, good)
+    return check
+
+
+def _anchor_partial(geometry=False, dimension=False):
+    """Separate completed prefix, failed-entry counts and unattempted suffix."""
+    def check(p):
+        before = {"curves": 4 if geometry else 3, "points": 7 if geometry else 6,
+                  "constraints": 0 if geometry or dimension else 1, "dimensions": int(dimension)}
+        change = {"curves": 0, "points": 0 if geometry else 2, "constraints": 0 if geometry else 2, "dimensions": 0}
+        return _measured("per-entry counts exclude the completed prefix", p,
+                         p.get("drawn" if geometry else "dimensioned" if dimension else "constrained") == 1 and p.get("requested") == 3
+                         and len(p.get("results", [])) == 1 and p["results"][0].get("index") == 0
+                         and p.get("failed", {}).get("index") == 1 and p.get("not_attempted") == 1
+                         and "retained" not in p and p.get("failed_entry_counts") == {
+                             "before": before, "after": {k: before[k] + change[k] for k in before}, "change": change}
+                         and "sketch_get(include_entities=true)" in p.get("note", ""))
+    return check
+
+
+def _anchor_retention_rows():
+    """Exercise anchor preflight and failed-entry retention on fresh equivalent sketches."""
+    rows = [("doc_get", {}, _home_document, ("anchor_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "anchor_home", "home")},
+             _new_document, ("anchor_doc", lambda p: p["document_handle"]))]
+
+    def write(tool, args, check="ok"):
+        rows.append((tool, lambda c, args=args: {**(args(c) if callable(args) else args),
+                    "expect_document": _ctx_get(c, "anchor_doc", "anchor document")}, check, None))
+
+    for key, stage in (("AnchorSurface", "unchanged"), ("AnchorConKind", "unchanged"), ("AnchorKind", "unchanged"),
+                       ("AnchorConSolver", "solver"), ("AnchorDimSolver", "solver"),
+                       ("AnchorMixed", "mixed"), ("AnchorDimMixed", "dim_mixed"), ("AnchorGeometry", "geometry"),
+                       ("AnchorConSuccess", "con_success"), ("AnchorSuccess", "success")):
+        write("sketch_create", {"name": key, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": key, "geometry": [
+            {"kind": "line", "x1": 10, "y1": 10, "x2": 30, "y2": 10},
+            {"kind": "circle", "cx": 60, "cy": 10, "radius": 5},
+            {"kind": "line", "x1": 100, "y1": 100, "x2": 120, "y2": 100}]})
+        read_args = {"sketch_name": key, "include_entities": True, "max_results": 200, "units": "mm"}
+        rows.append(("sketch_get", read_args, _anchor_state(key, "before"),
+                     (key + "_ids", lambda _p, key=key: _RECALL[key + "_ids"])))
+        rows.append(("design_get", {"include": ["default", "timeline"], "max_results": 200}, _anchor_history(key, True), None))
+
+        def arguments(c, key=key):
+            line, control, circle = _ctx_get(c, key + "_ids", "current anchor ids")
+            if key == "AnchorGeometry":
+                return {"sketch_name": key, "geometry": [
+                    {"kind": "circle", "cx": 40, "cy": 40, "radius": 3},
+                    {"kind": "circle", "cx": 70, "cy": 40, "radius": -1},
+                    {"kind": "circle", "cx": 80, "cy": 40, "radius": 2}]}
+            if key == "AnchorConSuccess":
+                return {"sketch_name": key, "constraints": [{"constraint": "horizontal_points",
+                        "entity_one": line + ":mid", "entity_two": circle + ":center"}]}
+            if key in ("AnchorSurface", "AnchorConKind", "AnchorConSolver", "AnchorMixed"):
+                entries = ([{"constraint": "horizontal", "entity_one": control}] if key == "AnchorMixed" else [])
+                entries += [{"constraint": "coincident_to_surface", "entity_one": line + ":mid"}
+                            if key == "AnchorSurface" else
+                            {"constraint": "coincident", "entity_one": line + ":mid",
+                             "entity_two": (circle if key == "AnchorConKind" else line) + ":mid"}]
+                if key == "AnchorMixed":
+                    entries += [{"constraint": "vertical", "entity_one": control}]
+                return {"sketch_name": key, "constraints": entries}
+            entries = [{"dim_type": "radius", "entity_one": circle, "value": "5 mm"}] if key == "AnchorDimMixed" else []
+            entries += [{"dim_type": "distance", "entity_one": line + ":mid",
+                         "entity_two": circle + ":mid" if key == "AnchorKind" else
+                         circle + ":center" if key == "AnchorSuccess" else line + ":mid"}]
+            if key == "AnchorSuccess":
+                entries[-1]["value"] = "40 mm"
+            if key == "AnchorDimMixed":
+                entries += [{"dim_type": "distance", "entity_one": control, "value": "20 mm"}]
+            return {"sketch_name": key, "dimensions": entries}
+
+        tool = ("sketch_add_geometry" if stage == "geometry" else "sketch_constrain"
+                if key in ("AnchorSurface", "AnchorConKind", "AnchorConSolver", "AnchorMixed", "AnchorConSuccess") else "sketch_dimension")
+        verdict = (_anchor_partial(stage == "geometry", stage == "dim_mixed") if stage in ("mixed", "dim_mixed", "geometry")
+                   else "ok" if stage in ("success", "con_success")
+                   else _refused("points=+2, constraints=+2", "sketch_get(include_entities=true)") if stage == "solver"
+                   else _refused("points=+0", "constraints=+0", "needs 'surface'" if key == "AnchorSurface" else "LINE"))
+        write(tool, arguments, verdict)
+        rows.append(("sketch_get", read_args, _anchor_state(key, stage), None))
+        rows.append(("design_get", {"include": ["default", "timeline"], "max_results": 200}, _anchor_history(key, False), None))
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "anchor_home", "home"),
+                                        "expect_document": _ctx_get(c, "anchor_doc", "anchor document")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "anchor_doc", "anchor document"), "save_changes": False,
+                                     "expect_document": _ctx_get(c, "anchor_home", "home")}, _document_closed, None)]
+    return rows
+
+
+_SKETCHWORK += _anchor_retention_rows()

@@ -398,6 +398,7 @@ _DENYLIST = {
     # rejects, which is exactly the asymmetry this home removes.
     "parse_anchor_ref": ("_common", "def"),
     "anchor_point": ("_common", "def"),
+    "anchor_preflight": ("_common", "def"),
     "midpoint_sketch_point": ("_common", "def"),
     "SKETCH_ANCHORS": ("_common", "assign"),
     "entity_component": ("_inputs", "def"),

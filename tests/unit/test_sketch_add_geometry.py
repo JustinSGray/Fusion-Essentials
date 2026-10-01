@@ -6,7 +6,7 @@ rides in a 'geometry' entry, so a single-entity test reads its payload off resul
 
 from types import SimpleNamespace
 import pytest
-from conftest import load_tool
+from conftest import SketchCurves, load_tool
 from _sketch_fakes import FakeSketch, _Curve, _payload, draw_installer, scoped_installer
 
 sk = load_tool("sketch_add_geometry")
@@ -1351,6 +1351,21 @@ class TestBatch:
 
     _BAD_POLYGON = {"kind": "polygon", "cx": 0, "cy": 0, "radius": 5, "sides": 2}
 
+    def test_failed_entry_counts_exclude_the_completed_circle(self, monkeypatch):
+        s = FakeSketch(); _install_draw(monkeypatch, s)
+        s.sketchCurves = SketchCurves()
+        s.sketchCurves.sketchCircles = s.sketchCircles
+        out = _payload(sk.handler(geometry=[
+            {"kind": "circle", "cx": 0, "cy": 0, "radius": 5},
+            {"kind": "circle", "cx": 20, "cy": 0, "radius": -1},
+            {"kind": "circle", "cx": 40, "cy": 0, "radius": 5}]))
+        counts = out["failed_entry_counts"]
+        assert out["drawn"] == 1 and out["failed"]["index"] == 1 and out["not_attempted"] == 1
+        assert s.sketchCircles.count == 1
+        assert counts["before"]["curves"] == counts["after"]["curves"] == 1
+        assert counts["change"]["curves"] == counts["change"]["points"] == 0
+        assert "Counts do not establish unchanged geometry" in out["note"]
+
     def test_two_entries_land_each_carrying_its_index(self, monkeypatch):
         s = FakeSketch(); _install_draw(monkeypatch, s)
         out = _payload(sk.handler(geometry=[
@@ -1439,7 +1454,7 @@ class TestBatch:
                                    {"kind": "circle", "cx": 0, "cy": 0, "radius": 5}])
         assert res["isError"] is True
         assert "geometry[0]: polygon needs sides >= 3." in res["message"]
-        assert "Nothing landed." in res["message"]
+        assert "Nothing completed." in res["message"]
         assert s.sketchCircles.count == 0        # the run stopped before the later entry
 
     def test_an_unknown_field_in_an_entry_is_refused_by_name(self, monkeypatch):

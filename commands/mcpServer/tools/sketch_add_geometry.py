@@ -621,7 +621,7 @@ def handler(geometry=None, sketch_name: str = "", component: str = "", units: st
     multi = len(entries) > 1
     return _sketch_batch.run_batch(
         entries, lambda i, e: _one(sketch, e, k, units, include_summary=not multi),
-        "geometry", "drawn", safe(lambda: sketch.name),
+        "geometry", "drawn", safe(lambda: sketch.name), sketch=sketch,
         result_fields=(lambda results: _batch_receipt_fields(results, sketch, entries, units))
         if multi else None)
 

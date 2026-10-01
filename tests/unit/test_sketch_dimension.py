@@ -467,6 +467,16 @@ class TestPointOf:
 # which dim_types accept an anchor, and which point reaches the API.
 
 class TestAnchorHandler:
+    def test_invalid_second_anchor_refuses_before_creating_first_midpoint(self, monkeypatch):
+        s = _install(monkeypatch)
+        built = []
+        monkeypatch.setattr(sd._common, "_midpoint_sketch_point",
+                            lambda *_: (built.append("midpoint") or FakeSketchPoint(), None))
+        result = sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                         "entity_two": "circle:0:mid"}])
+        assert result["isError"] is True and "entity_two" in result["message"] and "LINE" in result["message"]
+        assert built == [] and s.sketchDimensions.calls == []
+
     def test_end_anchor_uses_end_point(self, monkeypatch):
         s = _install(monkeypatch)
         _payload(sd.handler(dimensions=[{"dim_type": "horizontal_distance",
@@ -1142,7 +1152,7 @@ class TestBatch:
         assert res["isError"] is True
         assert "dimensions[0]" in res["message"]
         assert "entity_one 'circle:9' did not resolve" in res["message"]
-        assert "Nothing landed." in res["message"]
+        assert "Nothing completed." in res["message"]
         assert "1 later entry was not attempted" in res["message"]
         assert s.sketchDimensions.calls == []
 

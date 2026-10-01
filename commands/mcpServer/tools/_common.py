@@ -1297,9 +1297,8 @@ def _midpoint_sketch_point(sketch, line):
     return pt, None
 
 
-def anchor_point(sketch, entity, anchor):
-    """(point, error) for the SketchPoint an anchored ref names - mid/midpoint CREATES a welded
-    point, where every other anchor only reads one."""
+def anchor_preflight(entity, anchor):
+    """Return (existing point, refusal) without creating a midpoint or constraint."""
     start = safe(lambda: entity.startSketchPoint)
     end = safe(lambda: entity.endSketchPoint)
     center = safe(lambda: entity.centerSketchPoint)
@@ -1312,6 +1311,16 @@ def anchor_point(sketch, entity, anchor):
     # mid / midpoint - a line only (a well-defined addMidPoint target; a circle/arc uses 'center')
     if center is not None or start is None or end is None:
         return None, "anchor 'mid' applies to a LINE (line:N:mid); for a circle/arc use 'center'."
+    return None, None
+
+
+def anchor_point(sketch, entity, anchor):
+    """Return (point, error), creating a welded point only for a midpoint anchor."""
+    point, refusal = anchor_preflight(entity, anchor)
+    if refusal:
+        return None, refusal
+    if point is not None:
+        return point, None
     return _midpoint_sketch_point(sketch, entity)
 
 

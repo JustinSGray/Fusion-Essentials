@@ -5,7 +5,7 @@
 resolved sketch, the first failure stops the run, and the payload says what landed, what failed and
 what was not attempted."""
 
-from ._common import error, ok
+from ._common import counted, error, ok
 
 MAP_BLURB = ("the sketch batch substrate: entries_or_error - the list-shape guard naming a bad "
              "entry and its unknown fields; run_batch - the entries of a sketch write run in order "
@@ -34,16 +34,38 @@ def entries_or_error(raw, name, allowed):
     return raw, None
 
 
-def run_batch(entries, one, name, verb, sketch_name, *, result_note="", result_fields=None):
+def _entry_counts(sketch):
+    """Read the four sketch collection counts, retaining unknown values."""
+    values = {label: counted(lambda attr=attr: getattr(sketch, attr).count)
+              for label, attr in (("curves", "sketchCurves"), ("points", "sketchPoints"),
+                                  ("constraints", "geometricConstraints"), ("dimensions", "sketchDimensions"))}
+    return {key: n if n is not None and n >= 0 else None for key, n in values.items()}
+
+
+def _failed_counts(before, after):
+    """Return per-entry count evidence and its limited readback guidance."""
+    change = {key: after[key] - value if value is not None and after[key] is not None else None
+              for key, value in before.items()}
+    text = ", ".join(f"{key}={value:+d}" if value is not None else f"{key}=unknown"
+                     for key, value in change.items())
+    note = (f"Failed-entry count changes: {text}. Counts do not establish unchanged geometry. "
+            "Read sketch_get(include_entities=true) for current entities and constraints.")
+    return {"before": before, "after": after, "change": change}, note
+
+
+def run_batch(entries, one, name, verb, sketch_name, *, sketch, result_note="", result_fields=None):
     """Run one sketch batch and report completed, retained, failed, and unattempted entries."""
     results = []
     retained = []
     retention_unknown = False
     failed = None
+    count_evidence, count_note = None, ""
     for i, entry in enumerate(entries):
+        before = _entry_counts(sketch)
         res, err = one(i, entry)
         if err:
             failed = {"index": i, "error": err}
+            count_evidence, count_note = _failed_counts(before, _entry_counts(sketch))
             if res is UNKNOWN_RETENTION:
                 retention_unknown = True
             elif res is not None:
@@ -60,13 +82,15 @@ def run_batch(entries, one, name, verb, sketch_name, *, result_note="", result_f
         tail = (f" {rest} later entr{'y was' if rest == 1 else 'ies were'} not attempted."
                 if rest else "")
         landed = ("Nothing completed; whether the failed entry retained an effect in the sketch "
-                  "could not be read." if retention_unknown else "Nothing landed.")
+                  "could not be read." if retention_unknown else "Nothing completed.")
+        landed += " " + count_note
         return error(f"{name}[{failed['index']}]: {failed['error']} {landed}{tail}")
     payload = {verb: len(results), "requested": requested, "sketch": sketch_name,
                "results": results}
     note = f"{len(results)} of {requested} {name} landed."
     if failed:
         payload["failed"] = failed
+        payload["failed_entry_counts"] = count_evidence
         payload["not_attempted"] = requested - failed["index"] - 1
         if retained:
             payload["retained"] = retained
@@ -83,6 +107,7 @@ def run_batch(entries, one, name, verb, sketch_name, *, result_note="", result_f
         else:
             note += (f" Stopped at {name}[{failed['index']}]: {failed['error']} The entries before "
                      f"it are in the sketch; {payload['not_attempted']} after it were not attempted.")
+        note += " " + count_note
     payload["note"] = note
     if result_fields:
         payload = {**(result_fields(results) or {}), **payload}

@@ -653,6 +653,61 @@ class TestEntityAnchors:
     does (_common.parse_anchor_ref / anchor_point): a point slot handed 'circle:0:center' gets that
     circle's own centre point, so centring a circle takes no hunt for the right 'point:N'."""
 
+    @pytest.mark.parametrize("entry, reason", [
+        ({"constraint": "coincident_to_surface", "entity_one": "line:0:mid"}, "needs 'surface'"),
+        ({"constraint": "coincident", "entity_one": "line:0:mid", "entity_two": "circle:0:mid"}, "LINE")])
+    def test_required_operands_are_checked_before_either_midpoint(self, install, entry, reason):
+        s = _anchored_sketch(); install(s)
+        result = _constrain(**entry)
+        assert result["isError"] is True and reason in result["message"]
+        assert s.sketchPoints.added == [] and s.geometricConstraints.calls == []
+        assert s.sketchPoints.count == 2 and s.geometricConstraints.count == 0
+
+    @pytest.mark.parametrize("prefix", [False, True])
+    def test_solver_refusal_reports_its_own_retained_counts(self, install, monkeypatch, prefix):
+        s = _anchored_sketch(); install(s)
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        record = s.geometricConstraints._rec
+
+        def counted_record(name, *args):
+            s.geometricConstraints.count += 1
+            return record(name, *args)
+
+        def refuse(*_args):
+            raise RuntimeError("OVERCONSTRAINTS")
+
+        monkeypatch.setattr(s.geometricConstraints, "_rec", counted_record)
+        monkeypatch.setattr(s.geometricConstraints, "addCoincident", refuse)
+        entries = [{"constraint": "horizontal", "entity_one": "line:1"}] if prefix else []
+        entries += [{"constraint": "coincident", "entity_one": "line:0:mid", "entity_two": "line:0:mid"},
+                    {"constraint": "vertical", "entity_one": "line:1"}]
+        result = sc.handler(constraints=entries, sketch_name="S")
+        assert s.sketchPoints.count == 4 and s.geometricConstraints.count == 2 + int(prefix)
+        assert [c[0] for c in s.geometricConstraints.calls] == (["horizontal"] if prefix else []) + ["midpoint", "midpoint"]
+        if prefix:
+            out = _payload(result)
+            assert out["constrained"] == 1 and len(out["results"]) == 1 and "retained" not in out
+            assert out["failed"]["index"] == 1 and out["not_attempted"] == 1
+            counts = out["failed_entry_counts"]
+            assert counts["before"]["constraints"] == 1 and counts["after"]["constraints"] == 3
+            assert counts["change"] == {"curves": 0, "points": 2, "constraints": 2, "dimensions": 0}
+        else:
+            assert result["isError"] is True
+            message = result["message"]
+            assert "OVERCONSTRAINTS" in message and "points=+2, constraints=+2" in message
+            assert "1 later entry was not attempted" in message and "sketch_get(include_entities=true)" in message
+            assert "Nothing landed" not in message
+
+    def test_unread_and_negative_counts_stay_unknown(self, install):
+        s = _anchored_sketch(); install(s)
+        s.sketchDimensions = types.SimpleNamespace(count=-1)
+        s.geometricConstraints.count = None
+        result = _constrain(constraint="horizontal", entity_one="circle:0")
+        assert result["isError"] is True and "curves=+0, points=+0" in result["message"]
+        assert "constraints=unknown, dimensions=unknown" in result["message"]
+        assert "Counts do not establish unchanged geometry" in result["message"]
+        assert s.sketchPoints.added == [] and s.geometricConstraints.calls == []
+
     def test_a_centre_anchored_circle_reaches_coincident_as_the_centre_point(self, install):
         s = _anchored_sketch(); install(s)
         _payload(_constrain(constraint="coincident", sketch_name="S",
@@ -2288,7 +2343,7 @@ class TestBatch:
                                       {"constraint": "vertical", "entity_one": "line:1"}],
                          sketch_name="S")
         assert res["isError"] is True
-        assert "constraints[0]:" in res["message"] and "Nothing landed." in res["message"]
+        assert "constraints[0]:" in res["message"] and "Nothing completed." in res["message"]
         assert s.geometricConstraints.calls == []
 
     def test_an_unknown_field_in_an_entry_is_refused_naming_it(self, install):
