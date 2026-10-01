@@ -729,6 +729,31 @@ def _revolve_body_rows(label, bodies):
     ]
 
 
+def _revolve_selector_read(key, sketch=None, after=False):
+    """Require complete history or a full source-sketch read around a refused selector."""
+    def check(p):
+        if sketch:
+            valid = (p.get("sketch") == sketch and p.get("component") == _REVOLVE_HOST
+                     and p.get("units") == "mm" and p.get("truncated") is False
+                     and p.get("profile_count") == len(p.get("profiles") or []) == 1
+                     and p.get("constraint_count") == len(p.get("constraints") or [])
+                     and p.get("dimension_count") == len(p.get("dimensions") or [])
+                     and isinstance(p.get("frame"), dict) and bool(p.get("entities")))
+            value = {k: v for k, v in p.items() if k != "note"}
+        else:
+            value = p.get("timeline") or {}
+            rows = value.get("timeline") or []
+            valid = (value.get("count") == value.get("returned") == value.get("marker_position")
+                     == len(rows) == 9 and not value.get("truncated")
+                     and (value.get("summary") or {}).get("exceptions") == []
+                     and (value.get("summary") or {}).get("states") == {"healthy": 9}
+                     and all(r.get("index") == i and r.get("name") and r.get("type")
+                             for i, r in enumerate(rows)))
+        return _measured("revolve selector preserves " + key, value,
+                         valid and (not after or value == _RECALL.get(key)))
+    return check
+
+
 def _revolve_participant_rows():
     """Build one isolated scoped, unscoped and splitting revolve-cut proof."""
     scoped = (
@@ -804,6 +829,26 @@ def _revolve_participant_rows():
          _revolve_census("baseline", _REVOLVE_BASELINE), None),
     ]
     rows += _revolve_body_rows("baseline", _REVOLVE_BASELINE)
+    reads = [("design_get", {"include": ["timeline"], "max_results": 20},
+              "revolve_selector_history", None)] + [
+        ("sketch_get", {"sketch_name": name, "component": _REVOLVE_OCCURRENCE,
+                        "include_entities": True, "max_results": 100, "units": "mm"},
+         "revolve_selector_" + name, name)
+        for name in ("RingProfile", "InnerProfile", "DecoyProfile", "GrooveProfile", "BandProfile")]
+    for tool, args, key, name in reads:
+        rows.append((tool, args, _revolve_selector_read(key, name),
+                     (key, _recall(key, lambda p, name=name:
+                                  {k: v for k, v in p.items() if k != "note"}
+                                  if name else p["timeline"]))))
+    rows.append(("model_revolve", lambda c: _revolve_pin(c, {
+        "sketch_name": "GrooveProfile", "component": _REVOLVE_HOST, "axis": "z",
+        "operation": "cut", "profile_index": "garbage", "target_bodies": [_REVOLVE_HOST + ":Body1"]}),
+        _refused("profile_index", "garbage", "integer index", "sketch_get"), None))
+    rows += [(tool, args, _revolve_selector_read(key, name, True), None)
+             for tool, args, key, name in reads]
+    rows.append(("model_inspect", {**_combine_inspect(_REVOLVE_OCCURRENCE), "per_body": True},
+                 _revolve_census("selector refusal", _REVOLVE_BASELINE), None))
+    rows += _revolve_body_rows("selector refusal", _REVOLVE_BASELINE)
     cases = (
         ("scoped", "GrooveProfile", "Revolve2", ("Body1",), True,
          -225 * math.pi / 1000, scoped),
@@ -812,14 +857,22 @@ def _revolve_participant_rows():
         ("split", "BandProfile", "Revolve4", ("Body1", "Body4"), True, None, split),
     )
     for label, profile, feature, result_bodies, is_scoped, delta, after in cases:
-        def cut_args(c, profile=profile, is_scoped=is_scoped):
+        def cut_args(c, profile=profile, is_scoped=is_scoped, label=label):
             args = {"sketch_name": profile, "component": _REVOLVE_HOST, "axis": "z",
                     "operation": "cut", "angle_deg": 360}
+            if label == "scoped":
+                args["profile_index"] = "0"
+            elif label == "unscoped":
+                args["profile_index"] = _ctx_get(c, "revolve_selected_profile", "current profile")
             if is_scoped:
                 args["target_bodies"] = [_REVOLVE_HOST + ":Body1"]
             return _revolve_pin(c, args)
 
         rows += [
+            ("sketch_get", {"sketch_name": profile, "component": _REVOLVE_OCCURRENCE},
+             lambda p: p.get("profile_count") == len(p.get("profiles") or []) == 1
+             and bool(p["profiles"][0].get("handle")),
+             ("revolve_selected_profile", lambda p: p["profiles"][0]["handle"])),
             ("model_revolve", cut_args,
              _revolve_cut(profile, feature, result_bodies, is_scoped, delta), None),
             ("model_inspect", {**_combine_inspect(_REVOLVE_OCCURRENCE), "per_body": True},

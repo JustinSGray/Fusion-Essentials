@@ -11,6 +11,7 @@ keeps the bespoke doubles below.
 """
 
 import json
+import pytest
 
 from conftest import (BRepBody, FakeApplication, FakeDataFile, FakeDocumentReference, FakeDocuments,
                       FakeFeatures, FakeFusionDocument, FakeOccurrence, FakeProducts,
@@ -43,6 +44,11 @@ class FakeDeriveFeature:
         self.bodies = FakeBodyCollection(bodies)
         self.isParametric = is_parametric
         self.documentReference = FakeDocumentReference(out_of_date=out_of_date)
+
+    def getDerivedEntity(self, source):
+        if source not in self.mapping:
+            raise RuntimeError("3 : derived entity not found")
+        return self.mapping[source]
 
 
 class FakeDeriveFeatureInput:
@@ -403,7 +409,26 @@ class TestReadBackWalk:
 
 # ── scoping through the handler: no selector -> whole; names -> occurrences on sourceEntities ──────
 
+@pytest.fixture
+def selector_derive(monkeypatch):
+    return _install(monkeypatch)[4]
+
+
 class TestScopingHandler:
+    @pytest.mark.parametrize("field,value", [
+        ("source_components", [""]), ("source_bodies", " "),
+        ("exclude_components", ["Rotor", " "]), ("exclude_bodies", "Rotor/Body,"),
+    ])
+    def test_explicit_blank_selector_refuses_before_native_setup(self, selector_derive, field, value):
+        dfs = selector_derive
+        res = io.handler(document_id="urn:x", **{field: value})
+        assert res["isError"] is True and field in res["message"]
+        assert "nonblank" in res["message"] and dfs.last_input is None and dfs.created is None
+
+    def test_empty_array_and_valid_legacy_names_keep_their_meaning(self):
+        assert io._as_names([], "source_bodies") == []
+        assert io._as_names(" A, B/Body ", "source_bodies") == ["A", "B/Body"]
+
     def test_no_selector_derives_whole_design(self, monkeypatch):
         src = _make_source([_src_comp("Sub")], root_name="WholeSrc")
         _, _, _, _, dfs, _ = _install(monkeypatch, source_design=src)
@@ -436,6 +461,86 @@ class TestScopingHandler:
 
 
 # ── read-back honesty: something must actually land ───────────────────────────────────────────────
+
+@pytest.fixture
+def mapped_derive(monkeypatch):
+    def build(failure=None):
+        source_body = BRepBody("Body1")
+        source = _make_source()
+        source.rootComponent.bRepBodies = FakeBodyCollection([source_body, BRepBody("Body2")])
+        dfs = FakeDeriveFeatures(bodies=())
+        _, comp, _, df, _, _ = _install(monkeypatch, source_design=source, derive_features=dfs)
+        body = BRepBody("Body1", is_derived=True, parent_component=comp)
+        original_add = dfs.add
+
+        def add(di):
+            feature = original_add(di)
+            comp.bRepBodies = FakeBodyCollection([body])
+            feature.mapping = {source_body: body}
+            feature.documentReference = FakeDocumentReference(data_file=df)
+            if failure == "missing":
+                feature.mapping.clear()
+            elif failure == "unknown_flag":
+                body.isDerived = None
+            elif failure == "wrong_owner":
+                comp.bRepBodies = FakeBodyCollection([BRepBody("Body1", is_derived=True)])
+            elif failure == "unknown_link":
+                feature.documentReference.isOutOfDate = None
+            elif failure == "unread_source_ids":
+                df.id = None
+            elif failure == "ignored_exclusion":
+                second = source.rootComponent.bRepBodies.item(1)
+                other = BRepBody("Body2", is_derived=True, parent_component=comp)
+                comp.bRepBodies = FakeBodyCollection([body, other])
+                feature.mapping[second] = other
+            return feature
+
+        monkeypatch.setattr(dfs, "add", add)
+        return source_body, body, comp, dfs
+    return build
+
+
+class TestMappedSelectedBody:
+    def test_empty_feature_bodies_uses_exact_selected_source_mapping(self, mapped_derive):
+        source, body, comp, dfs = mapped_derive()
+        out = _payload(io.handler(document_id="urn:x", source_bodies=["Body1"]))
+        assert dfs.created.bodies.count == 0 and comp.bRepBodies.item(0) is body
+        assert dfs.last_input.sourceEntities == [source]
+        assert out["derived_bodies"] == [{"name": "Body1", "is_derived": True}]
+        assert out["bodies_landed"] == 1 and out["derived_components"] == []
+
+    def test_explicitly_excluded_body_needs_no_derived_mapping(self, mapped_derive):
+        _, _, _, dfs = mapped_derive()
+        out = _payload(io.handler(document_id="urn:x", source_bodies=["Body1", "Body2"],
+                                  exclude_bodies=["Body2"]))
+        assert [b.name for b in dfs.last_input.excludedEntities] == ["Body2"]
+        assert out["derived_bodies"] == [{"name": "Body1", "is_derived": True}]
+        assert out["bodies_landed"] == 1
+
+    def test_ignored_exclusion_reports_the_retained_result(self, mapped_derive):
+        mapped_derive("ignored_exclusion")
+        out = io.handler(document_id="urn:x", source_bodies=["Body1", "Body2"],
+                         exclude_bodies=["Body2"])
+        assert out["isError"] is True
+        assert "excluded source body 'Body2' has a derived result" in out["message"]
+        assert "Derive1" in out["message"] and "remains" in out["message"]
+
+    @pytest.mark.parametrize("failure", ["missing", "unknown_flag", "wrong_owner", "unknown_link",
+                                         "unread_source_ids"])
+    def test_unconfirmed_mapping_names_retained_feature(self, mapped_derive, failure):
+        mapped_derive(failure)
+        out = io.handler(document_id="urn:x", source_bodies=["Body1"])
+        assert out["isError"] is True
+        assert "Derive1" in out["message"] and "remains" in out["message"]
+        assert "design_get" in out["message"] and "design_delete_feature" in out["message"]
+
+    def test_component_exclusion_keeps_the_existing_classifier(self, mapped_derive):
+        mapped_derive()
+        out = io.handler(document_id="urn:x", source_bodies=["Body1"],
+                         exclude_components=["SrcRoot"])
+        assert out["isError"] is True
+        assert "nothing reports isDerived=true" in out["message"]
+
 
 class TestReadBackHonesty:
     def test_nothing_landed_is_an_error(self, monkeypatch):

@@ -29,8 +29,8 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source f4a0be028a1288ece1c213fe1e24726d4a2740c30bd54480cb81bf8fbb1e9e1d | Fusion 2706.0.97 | verified 2026-09-30
-Loaded: implementation 86080237f362d46702aba06c38aaf4b946a43ded3e5c6fd1eefd62579aca955b | schema 2cf763a16822b3af76a18485fc04be819699ebdc0dc7c4fe0957cd5e6645025e | load 4e9100524d6342269c47f278f773033e | session 900ecc3159f44919a01ae5595b804594
+Stamp: source 6266e63ca67d0aac7a0852f530bba3f861cc13d8e666e82eef6a1fae6cc25fb7 | Fusion 2706.0.97 | verified 2026-09-30
+Loaded: implementation f2b81e608e4e761d5a692148ea667f2febdc8baa71bbf1009c1bbad266eb1519 | schema 57dab3b70416917fdbdace6ef29e0cc8df84a17a70ab199bd072afda2d94f3de | load d5754515db3843a39a1cf7426b750b94 | session 71a1c03b677a4739b028f5b43c548d89
 
 203 covered / 1 called / 5 refusals-only / 4 skipped(reason) / 0 pending
 

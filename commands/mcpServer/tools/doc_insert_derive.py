@@ -21,7 +21,7 @@ from ._data_common import _resolve_data_file
 app = adsk.core.Application.get()
 
 _INTO_COMPONENT = _inputs.OccurrenceRef("into_component",
-        description="Default: the root component.")
+        description="Default root.")
 
 # Insert > Derive (Component.features.deriveFeatures) has no Direct-modeling equivalent - confirmed
 # against the live API surface (deriveFeatures is a parametric feature collection).
@@ -35,13 +35,18 @@ _ERROR_HEALTH = 2  # adsk.fusion.FeatureHealthStates.ErrorFeatureHealthState (se
 _UNREAD = object()      # an activeOccurrence read that RAISED - distinct from one that reads None
 
 
-def _as_names(raw):
-    """A clean list of names from a JSON array or a comma-separated string; [] when empty."""
-    if raw in (None, "", []):
+def _as_names(raw, field):
+    """Return explicit names, refusing blank entries instead of widening the selection."""
+    if raw is None or raw == [] or raw == ():
         return []
-    if isinstance(raw, (list, tuple)):
-        return [str(s).strip() for s in raw if str(s).strip()]
-    return [s.strip() for s in str(raw).split(",") if s.strip()]
+    names = raw.split(",") if isinstance(raw, str) else raw
+    if not isinstance(names, (list, tuple)):
+        raise ValueError(f"{field} {raw!r} must be names. Omit it or use [] for no selection.")
+    for i, name in enumerate(names):
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{field}[{i}] {name!r} is not a nonblank name. Remove that entry; "
+                             "omit the selector or use [] only when no selection is intended.")
+    return [name.strip() for name in names]
 
 
 def _names(values):
@@ -123,7 +128,9 @@ def _resolve_source_bodies(source_design, specs):
             return None, (f"Source body '{spec}' is ambiguous - a body named '{body_name}' exists in "
                           f"{holders}. Qualify it as 'Component/Body'.")
         if not matches:
-            return None, f"Source body '{spec}' not found in the source design."
+            return None, (f"Source body '{spec}' not found. Use a SOURCE body name or "
+                          "'Component/Body', not a handle; doc_activate the source, then "
+                          "design_get(include=['tree'], tree_bodies=true).")
         out.append(matches[0][1])
     return out, None
 
@@ -213,8 +220,39 @@ def _new_derived_occurrences(comp, before_tokens):
     return out
 
 
+def _mapped_bodies(feature, sources, excluded, comp):
+    """Read selected source bodies through the feature's mapping into the requested owner."""
+    bodies = safe(lambda: comp.bRepBodies)
+    count = _common.counted(lambda: bodies.count)
+    if count is None or not 0 <= count <= 1000 or len(sources) > 1000:
+        return None, "selected-body target membership could not be read within 1000 bodies"
+    members = [safe(lambda i=i: bodies.item(i)) for i in range(count)]
+    if any(b is None for b in members):
+        return None, "selected-body target membership did not read completely"
+    rows = []
+    for source in sources:
+        name = safe(lambda: source.name)
+        is_excluded = safe(lambda: any(source == skipped for skipped in excluded))
+        if is_excluded is None:
+            return None, f"exclusion membership for source body '{name}' could not be read"
+        try:
+            body = feature.getDerivedEntity(source)
+            if body is not None and is_excluded:
+                return None, f"excluded source body '{name}' has a derived result; exclusion did not take"
+            if body is None or body.isDerived is not True:
+                return None, f"the mapping for source body '{name}' did not confirm isDerived=true"
+            if not any(body == member for member in members):
+                return None, f"the mapped source body '{name}' was not found in the requested component"
+        except Exception as exc:
+            if is_excluded and "derived entity not found" in str(exc):
+                continue
+            return None, f"the mapping for source body '{name}' could not be verified: {exc}"
+        rows.append({"name": safe(lambda: body.name), "is_derived": True})
+    return rows, None
+
+
 def handler(document_id: str = "", into_component: str = "",
-            source_components="", source_bodies="", exclude_components="", exclude_bodies="",
+            source_components=None, source_bodies=None, exclude_components=None, exclude_bodies=None,
             include_parameters: bool = True, include_favorite_parameters: bool = True,
             place_at_origin: bool = True) -> dict:
     """See TOOL_DESCRIPTION."""
@@ -222,6 +260,14 @@ def handler(document_id: str = "", into_component: str = "",
     if not raw:
         return error("Provide 'document_id' - the lineage URN (or web URL) of the saved cloud "
     "document to derive.")
+
+    try:
+        comp_names = _as_names(source_components, "source_components")
+        body_names = _as_names(source_bodies, "source_bodies")
+        excl_comp_names = _as_names(exclude_components, "exclude_components")
+        excl_body_names = _as_names(exclude_bodies, "exclude_bodies")
+    except ValueError as exc:
+        return error(str(exc))
 
     design = _common.design()
     if not design:
@@ -270,10 +316,6 @@ def handler(document_id: str = "", into_component: str = "",
                       "product to derive from (not a Fusion design file?).")
 
     # Resolve the (optional) named subset in the SOURCE. Empty selectors -> the whole design.
-    comp_names = _as_names(source_components)
-    body_names = _as_names(source_bodies)
-    excl_comp_names = _as_names(exclude_components)
-    excl_body_names = _as_names(exclude_bodies)
     if comp_names or body_names:
         source_entities, scope_labels, sel_err = _collect_source_entities(
             source_design, comp_names, body_names)
@@ -367,11 +409,22 @@ def handler(document_id: str = "", into_component: str = "",
         return error("Derive was created but its documentReference reads isOutOfDate=true "
                       "immediately at creation - the link did not land against the resolved version.")
 
-    # feature.bodies holds DIRECT top-level bodies only: an occurrence-tree derive lands them nested
-    # under a derived occurrence and reads empty here, so both are counted plus the design-wide delta.
+    # A named-body derive can leave feature.bodies empty; its source mapping identifies the result.
     direct_bodies = [{"name": safe(lambda b=b: b.name),
-                      "is_derived": bool(safe(lambda b=b: b.isDerived, False))}
+                      "is_derived": safe(lambda b=b: b.isDerived)}
                      for b in _common.result_bodies(feature)]
+    if not direct_bodies and body_names and not comp_names and not excl_comp_names:
+        direct_bodies, mapping_error = _mapped_bodies(feature, source_entities, excluded_entities, comp)
+        reference_id = safe(lambda: doc_ref.dataFile.id)
+        source_id = safe(lambda: data_file.id)
+        if not mapping_error and (out_of_date is not False or not reference_id or not source_id
+                                  or reference_id != source_id):
+            mapping_error = "the mapped bodies' current source document reference did not read"
+        if mapping_error:
+            feature_name = safe(lambda: feature.name) or "(name unreadable)"
+            return error(f"Derive feature '{feature_name}' remains, but {mapping_error}. "
+                         "Inspect design_get(include=['tree','timeline'], tree_bodies=true); "
+                         "use design_delete_feature with its current feature address if unwanted.")
     derived_components = _new_derived_occurrences(comp, before_occ_tokens)
     # `is False` only: the net's error says the nesting FAILED, and run against a target that may
     # itself be the root a successful root derive would trip it. An unproven answer skips the net and
@@ -394,7 +447,7 @@ def handler(document_id: str = "", into_component: str = "",
                          "or keep it and move on.")
     after_bodies, _ = _common.design_wide_counts(design)
     bodies_landed = max(0, after_bodies - before_bodies)
-    any_derived_marker = (any(b["is_derived"] for b in direct_bodies) or bool(derived_components))
+    any_derived_marker = (any(b["is_derived"] is True for b in direct_bodies) or bool(derived_components))
 
     if bodies_landed == 0 and not direct_bodies and not derived_components:
         return error("Derive created a feature but nothing landed - no bodies appeared and no new "
@@ -479,8 +532,8 @@ RETURNS = [
 
 
 TOOL_DESCRIPTION = (
-    "Insert a one-way linked DERIVE of an OPEN document's design into a component, at its last "
-    "SAVED cloud version.\n"
+    "Derive OPEN source's last SAVED cloud version: one-way linked copy. Source/exclude: "
+    "component names; body names or Component/Body; no handles.\n"
     + _outputs.produces_block(RETURNS)
 )
 
@@ -489,7 +542,7 @@ tool = (
         name="doc_insert_derive",
         description=TOOL_DESCRIPTION,
         input_param_name="document_id",
-        input_param_description="Lineage URN or web URL, from data_get.",
+        input_param_description="URN/URL.",
     )
     .add_input_property(*_INTO_COMPONENT.as_property())
     .add_input_property("source_components", {"type": "array", "items": {"type": "string"}})

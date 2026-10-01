@@ -260,8 +260,7 @@ Produces: name -> find_geometry/design_get. |
 | ⚠ | `doc_close` | Close an open document, or every one (close_all) |
 | ✎ | `doc_copy` | Copy a saved cloud document into a destination project/folder |
 | · | `doc_get` | Read the SESSION's open documents: which is active, save state, lineage URNs |
-| ✎ | `doc_insert_derive` | Insert a one-way linked DERIVE of an OPEN document's design into a component, at its last SAVED cloud version.
-Produces: feature_name -> design_delete_feature, ... |
+| ✎ | `doc_insert_derive` | Derive OPEN source's last SAVED cloud version: one-way linked copy |
 | ✎ | `doc_insert_import` | Import a CAD file from LOCAL DISK: solids into a component, DXF as sketches, SVG into a sketch. |
 | ✎ | `doc_insert_occurrence` | Insert a SAVED cloud document into the active design as a linked external-reference occurrence, placed at x/y/z |
 | ✎ | `doc_new` | Create and open a new, empty design document; it becomes active and stays unsaved until doc_save_as |

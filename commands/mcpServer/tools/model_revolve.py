@@ -142,9 +142,12 @@ def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
         if pcount == 0:
             return error(f"Sketch '{safe(lambda: sketch.name)}' has no closed profile to revolve.")
         try:
+            if type(profile_index) is not int and not isinstance(profile_index, str):
+                raise ValueError
             idx = int(profile_index)
-        except Exception:
-            idx = 0
+        except (TypeError, ValueError):
+            return error(f"profile_index {profile_index!r} is not an integer index. Use an index "
+                         "from sketch_get or a profile handle.")
         if idx < 0 or idx >= pcount:
             return error(f"profile_index {idx} out of range - sketch has {pcount} profile(s).")
         profile = profiles.item(idx)

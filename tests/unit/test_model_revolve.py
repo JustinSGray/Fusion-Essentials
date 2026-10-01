@@ -178,6 +178,18 @@ class TestGuards:
         res = rv.handler(sketch_name="S", profile_index=5)
         assert res["isError"] is True and "out of range" in res["message"]
 
+    @pytest.mark.parametrize("selector", ["garbage", "", True, 0.9, None])
+    def test_malformed_profile_never_falls_back_to_first(self, selector, wire):
+        rf = wire([_sketch("S", profile_count=2)])
+        res = rv.handler(sketch_name="S", profile_index=selector)
+        assert res["isError"] is True and "profile_index" in res["message"]
+        assert rf.last_input is None and rf.add_calls == 0
+
+    def test_numeric_string_profile_retains_its_index(self, wire):
+        rf = wire([_sketch("S", profile_count=2)])
+        payload(rv.handler(sketch_name="S", profile_index="1"))
+        assert rf.last_input.profile == ("profile", 1)
+
     def test_bad_axis(self):
         _install([_sketch("S")])
         res = rv.handler(sketch_name="S", axis="q")

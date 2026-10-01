@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 688
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 689
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -44,9 +44,9 @@ close orphans, factor duplicated guards into shared helpers.
 - `cam_get`  <- 33  (desc 15, note 18)
 - `model_inspect`  <- 30  (desc 5, note 25)
 - `sketch_get`  <- 26  (desc 7, note 19)
-- `data_get`  <- 25  (desc 10, note 15)
 - `doc_open`  <- 25  (desc 5, note 20)
 - `sketch_create`  <- 25  (desc 7, note 18)
+- `data_get`  <- 24  (desc 9, note 15)
 - `assembly_get`  <- 21  (desc 4, note 17)
 
 ## The detected guidance surface
@@ -1803,12 +1803,15 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' has no component to derive into.
 - Could not configure the derive:
 - ' to receive the derive (Occurrence.activate() returned false). Nothing was derived.
+- . Inspect design_get(include=['tree','timeline'], tree_bodies=true); use design_delete_feature with its current feature address if unwanted.
 - Derive landed at the ROOT component (
 - - the target activation did not take, so the nesting failed. The derive EXISTS at root: delete its feature (design_delete_feature) and retry, or keep it and move on.
 - Source component name '' is ambiguous -  distinct components share it; refusing rather than deriving the wrong one. Available: .
+- Source body '' not found. Use a SOURCE body name or 'Component/Body', not a handle; doc_activate the source, then design_get(include=['tree'], tree_bodies=true).
 - Whether source component '' is the source design's ROOT could not be read, and the root derives as itself while any other component derives through its occurrences - so which entities to derive is ...
 - Could not resolve '' to a saved document. Tried: . Pass a lineage URN or web URL (from data_get). The document must be SAVED to the cloud.
 - The source document '' is not open. This tool derives from an ALREADY-OPEN source (Fusion loads documents asynchronously - it cannot load one within a single call). Open it first: doc_open(file_id=...
+- Derive feature '' remains, but . Inspect design_get(include=['tree','timeline'], tree_bodies=true); use design_delete_feature with its current feature address if unwanted.
 - Whether the derive's target component is this design's root could not be read, so the check for a derive that landed at ROOT instead of nested was not run - the bodies reported below landed, but WH...
 - Derive landed at the ROOT component (), not in  - the target activation did not take, so the nesting failed. The derive EXISTS at root: delete its feature (design_delete_feature) and retry, or keep...
 - include_parameters/include_favorite_parameters was requested but 0 new user parameters landed - this Fusion API flag is reported flaky; confirm with param_get (the source design may also simply def...
@@ -1906,12 +1909,15 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - s of re-reading the cloud file (latest reads
 - ) - no new tip carrying version
 - 's content was observed. Confirm with doc_get include=['versions'] before promoting again.
+- is not a positive integer. Use a version number from doc_get(include=['versions']).
 - in this document's history. Available version numbers (newest-first):
+- . Use one selector, or matching number/id from doc_get(include=['versions']).
 - The cloud tip advanced to
 - while this call re-read it, and
 - is not in the refreshed history. Available version numbers (newest-first):
 - promote() raised while restoring version
 - is already the latest version; nothing to restore -
+- No version matching  in this document's history. Available version numbers (newest-first): . Use one selector, or matching number/id from doc_get(include=['versions']).
 - The cloud tip advanced to  while this call re-read it, and  is not in the refreshed history. Available version numbers (newest-first): .
 - Version  promoted to latest; a new tip version  now carries its content (history is preserved). Reopen/reload the document to see it in-session.
 - promote() returned true, but this document's latestVersionNumber could not be read BEFORE the call - so whether a new tip appeared is not decidable here (the read after the call reports ). Confirm ...
@@ -3492,6 +3498,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Revolve reported success but this
 - changed nothing - every solid body in '
 - ' measures the volume it had before and none was consumed, so the revolved shape does not overlap any of them. Check that the profile and axis put the swept solid inside the target body (an 'inters...
+- is not an integer index. Use an index from sketch_get or a profile handle.
 - Fusion refused a two-sided revolve extent (
 - deg), so nothing was revolved.
 - deg, so nothing was revolved.

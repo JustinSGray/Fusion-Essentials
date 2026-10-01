@@ -782,7 +782,11 @@ def _milestone_restore_args(ctx, polls=_SETTLE_POLLS):
                      and matches[0].get("milestone_name") == target["milestone"])
         if confirmed:
             ctx["milestone_settled"] = dict(target)
-            return {"version_number": RESTORE_VERSION}
+            selected = [r for r in rows if r.get("version_number") == RESTORE_VERSION]
+            if len(selected) != 1 or not selected[0].get("version_id"):
+                raise AssertionError("The restore version's exact id did not read")
+            return {"version_number": RESTORE_VERSION, "version_id": selected[0]["version_id"],
+                    "expect_document": active["document_handle"]}
         if payload is not None and not identity_ok:
             break
         if i < polls - 1:
@@ -2289,6 +2293,265 @@ def _derived(source):
     return check
 
 
+def _selector_design(p):
+    """Read the complete empty or single-component cloud fixture tree and healthy history."""
+    tree, tl = p.get("tree") or {}, p.get("timeline") or {}
+    nodes, rows = tree.get("children"), tl.get("timeline")
+    valid = (isinstance(nodes, list) and tree.get("child_count") == len(nodes) <= 1
+             and tree.get("truncated") is False and tree.get("children_truncated") is False
+             and not tree.get("root_bodies") and not tree.get("root_bodies_truncated")
+             and isinstance(rows, list) and tl.get("count") == tl.get("returned")
+             == tl.get("marker_position") == len(rows) and not tl.get("truncated")
+             and (tl.get("summary") or {}).get("exceptions") == []
+             and (tl.get("summary") or {}).get("states") == ({"healthy": len(rows)} if rows else {})
+             and isinstance(tl.get("groups"), dict)
+             and all(r.get("index") == i and r.get("name") and r.get("type")
+                     for i, r in enumerate(rows)))
+    for node in nodes or []:
+        valid = (valid and node.get("full_path") and node.get("handle")
+                 and node.get("child_count") == 0 and not node.get("children_truncated")
+                 and node.get("body_count") == len(node.get("bodies") or []) == 1
+                 and not node.get("bodies_truncated")
+                 and all(b.get("name") and b.get("handle") and b.get("is_solid") is True
+                         and type(b.get("visible")) is bool for b in node.get("bodies") or []))
+    if not valid:
+        raise AssertionError("Selector fixture tree/history did not read completely")
+    return {"tree": tree, "timeline": tl}
+
+
+def _selector_session(p):
+    """Read actual active identity/save flags and the complete session handle/name census."""
+    active, docs = p.get("active") or {}, p.get("open_documents")
+    fields = ("document_handle", "name", "document_id", "version_id", "version_number",
+              "is_saved", "is_modified", "has_data_file")
+    if (not isinstance(docs, list) or p.get("open_count") != len(docs)
+            or any(not d.get("document_handle") or not d.get("name") for d in docs)
+            or len({d["document_handle"] for d in docs}) != len(docs)
+            or not active.get("document_handle") or not active.get("name")
+            or any(type(active.get(k)) is not bool for k in fields[-3:])):
+        raise AssertionError("Selector fixture session did not read completely")
+    out = {"active": {k: active.get(k) for k in fields},
+           "documents": sorted((d["document_handle"], d["name"]) for d in docs)}
+    if "versions" in p:
+        v = p["versions"]
+        rows = v.get("versions")
+        if (v.get("history_readable") is not True or v.get("history_complete") is not True
+                or not isinstance(rows, list) or v.get("version_count") != len(rows)
+                or any(type(r.get("version_number")) is not int or not r.get("version_id") for r in rows)):
+            raise AssertionError("Selector fixture version history did not read completely")
+        out["versions"] = {"latest": v.get("latest_version_number"),
+                           "rows": [(r["version_number"], r["version_id"]) for r in rows]}
+    return out
+
+
+def _selector_source_sketch(p):
+    """Read the source plate's complete disclosed X-ray around a refused restore."""
+    if (p.get("sketch") != SRC_SKETCH or p.get("component") != SRC_COMP
+            or p.get("units") != "mm" or p.get("truncated") is not False
+            or not isinstance(p.get("frame"), dict) or not p.get("entities")
+            or p.get("constraint_count") != len(p.get("constraints") or [])
+            or p.get("dimension_count") != len(p.get("dimensions") or [])
+            or p.get("profile_count") != len(p.get("profiles") or [])):
+        raise AssertionError("Source plate X-ray did not read completely")
+    return {k: v for k, v in p.items() if k != "note"}
+
+
+def _selector_reads(reads, after=False):
+    """Build this cloud selector witness's capture or equality rows."""
+    return [(tool, args,
+             lambda p, key=key, read=read: _measured("selector preserves " + key, read(p),
+                 not after or read(p) == _RECALL.get(key)),
+             None if after else (key, _recall(key, read))) for tool, args, key, read in reads]
+
+
+_SELECTOR_DESIGN_ARGS = {"include": ["tree", "timeline"], "tree_bodies": True,
+                         "tree_handles": True, "max_depth": 3, "max_results": 30}
+
+
+def _restore_selector_baseline(ctx):
+    """Settle the exact milestone before capturing an unchanged-version refusal baseline."""
+    _milestone_restore_args(ctx)
+    return {"include": ["default", "versions"], "versions_max": 10}
+
+
+def _restore_conflict(ctx):
+    """Pair distinct version numbers and milestone ids for a conflicting-selector request."""
+    before = _ctx_get(ctx, "selector_restore_session", "complete restore baseline")
+    target = ctx["milestone_settled"]
+    if target["version"] == RESTORE_VERSION:
+        raise AssertionError("Conflict requires two distinct versions")
+    return {"version_number": RESTORE_VERSION, "version_id": target["version_id"],
+            "expect_document": before["active"]["document_handle"]}
+
+
+_RESTORE_SELECTOR_READS = [
+    ("doc_get", {"include": ["default", "versions"], "versions_max": 10},
+     "selector_restore_session", _selector_session),
+    ("design_get", _SELECTOR_DESIGN_ARGS, "selector_restore_design", _selector_design),
+    ("sketch_get", {"sketch_name": SRC_SKETCH, "component": SRC_COMP + ":1",
+                    "include_entities": True, "units": "mm", "max_results": 100},
+     "selector_restore_sketch", _selector_source_sketch),
+]
+
+
+def _derive_selector_rows():
+    """Refuse blank include/exclude entries, then consume a valid subset on one owned host."""
+    reads = [("doc_get", {}, "selector_derive_session", _selector_session),
+             ("design_get", _SELECTOR_DESIGN_ARGS, "selector_derive_design", _selector_design)]
+    def home(p):
+        facts = _selector_session(p)
+        _RECALL["selector_derive_home_state"] = facts
+        return _home_document(p) and facts["active"]["document_id"] == _RECALL.get("source_urn")
+
+    rows = [("doc_get", {}, home,
+             ("selector_derive_home", _recall("selector_derive_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "selector_derive_home", "source")},
+             _new_document, ("selector_derive_doc", _recall("selector_derive_doc", lambda p: p["document_handle"])))]
+    rows += _selector_reads(reads)
+    for field, value in (("source_components", [""]), ("source_bodies", [SRC_COMP + "/Body1", " "]),
+                         ("exclude_components", [SRC_COMP, ""]), ("exclude_bodies", [" "])):
+        rows.append(("doc_insert_derive", lambda c, field=field, value=value: {
+            "document_id": _ctx_get(c, "source_urn", "source"), field: value,
+            "expect_document": _ctx_get(c, "selector_derive_doc", "derive host")},
+            _refused(field, "nonblank", "Remove that entry"), None))
+        rows += _selector_reads(reads, True)
+    rows += [
+        ("doc_insert_derive", lambda c: {"document_id": _ctx_get(c, "source_urn", "source"),
+             "source_components": [SRC_COMP], "exclude_bodies": [],
+             "expect_document": _ctx_get(c, "selector_derive_doc", "derive host")},
+         lambda p: _derived(SOURCE_DOC)(p) and p.get("scope") == SRC_COMP, None),
+        ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
+         _plate_geometry("the explicitly selected derived source", 16.0), None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, "selector_derive_home", "source"),
+             "expect_document": _ctx_get(c, "selector_derive_doc", "derive host")}, _activated(SOURCE_DOC), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "selector_derive_doc", "derive host"),
+             "save_changes": False, "expect_document": _ctx_get(c, "selector_derive_home", "source")},
+         _document_closed, None),
+        ("doc_get", {}, lambda p: _document_is(SOURCE_DOC)(p)
+         and _selector_session(p) == _RECALL.get("selector_derive_home_state"), None),
+    ]
+    return rows
+
+
+def _named_derive_tree(p, count, history):
+    """Read this root-body coupon's complete membership and healthy timeline."""
+    tree, tl = p.get("tree") or {}, p.get("timeline") or {}
+    bodies, rows = tree.get("root_bodies") or [], tl.get("timeline")
+    if (tree.get("child_count") != 0 or tree.get("children") != []
+            or tree.get("truncated") is not False or tree.get("children_truncated") is not False
+            or tree.get("root_bodies_truncated") or len(bodies) != count
+            or any(not b.get("name") or not b.get("handle") or b.get("is_solid") is not True
+                   or type(b.get("visible")) is not bool for b in bodies)
+            or not isinstance(rows, list) or len(rows) != history
+            or tl.get("count") != history or tl.get("returned") != history
+            or tl.get("marker_position") != history or tl.get("truncated")
+            or any(r.get("index") != i or not r.get("name") or not r.get("type")
+                   for i, r in enumerate(rows))
+            or (tl.get("summary") or {}).get("exceptions") != []
+            or (tl.get("summary") or {}).get("states") != ({"healthy": history} if history else {})):
+        raise AssertionError("Named derive body membership/history did not read completely")
+    return {"tree": tree, "timeline": tl}
+
+
+def _named_derive_mass(p, size, x=0):
+    """Read the selected cube or the separate source control's material and bounds."""
+    if (p.get("units") != "mm" or p.get("kind") != "body"
+            or p.get("frame") != "world axes (axis-aligned)"
+            or any(not _near(p.get(axis), size, .0001) for axis in "xyz")
+            or any(not _near((p.get("min_point") or {}).get(axis), value, .0001)
+                   for axis, value in zip("xyz", (x, 0, 0)))
+            or any(not _near((p.get("max_point") or {}).get(axis), value, .0001)
+                   for axis, value in zip("xyz", (x + size, size, size)))
+            or not _near((p.get("mass") or {}).get("volume"), size ** 3, .001)):
+        raise AssertionError("Named derive body size/material did not match its source")
+    return p
+
+
+def _named_derive_rows():
+    """Derive one named body from a separate two-body source, preserving its sibling and home."""
+    name = "SweepNamedDerive." + _STAMP
+    def home(p):
+        _RECALL["named_home_state"] = _selector_session(p)
+        return _home_document(p)
+    rows = [("doc_get", {}, home, ("named_home", _recall("named_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": c["named_home"]}, _new_document,
+             ("named_source", _recall("named_source", lambda p: p["document_handle"])))]
+    def write(tool, args, check="ok", save=None, owner="named_source"):
+        rows.append((tool, lambda c, args=args, owner=owner: {
+            **(args(c) if callable(args) else args), "expect_document": c[owner]}, check, save))
+    for key, x, size in (("selected", 0, 10), ("sibling", 30, 20)):
+        sketch = "NamedDerive_" + key
+        write("sketch_create", {"plane": "xy", "name": sketch})
+        write("sketch_add_geometry", {"sketch_name": sketch, "geometry": [
+            {"kind": "rectangle", "x1": x, "y1": 0, "x2": x + size, "y2": size}]})
+        write("model_extrude", {"sketch_name": sketch, "distance": size, "operation": "new"},
+              lambda p: _extruded(p) and len(p.get("result_bodies") or []) == 1,
+              ("named_" + key, _recall("named_" + key, lambda p: p["result_bodies"][0])))
+    write("doc_save_as", {"name": name, "project": PROJECT, "folder": FOLDER},
+          lambda p: _saved_as(name, FOLDER)(p) and p.get("cloud_processing_complete") is True)
+    rows += _settled(name, "named_urn")
+    controls = [("design_get", _SELECTOR_DESIGN_ARGS, "named_tree",
+                 lambda p: _named_derive_tree(p, 2, 4)),
+                ("doc_get", {}, "named_session", _selector_session)]
+    for key, size, x in (("selected", 10, 0), ("sibling", 20, 30)):
+        controls.append(("model_inspect", lambda c, key=key: {"target": c["named_" + key],
+                         "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                         "named_mass_" + key, lambda p, size=size, x=x: _named_derive_mass(p, size, x)))
+    rows += _selector_reads(controls)
+    write("doc_new", {}, _new_document,
+          ("named_host", _recall("named_host", lambda p: p["document_handle"])))
+    rows.append(("design_get", _SELECTOR_DESIGN_ARGS, "ok",
+                 ("named_empty", _recall("named_empty", lambda p: _named_derive_tree(p, 0, 0)))))
+    write("doc_insert_derive", lambda c: {"document_id": c["named_urn"],
+          "source_bodies": [c["named_selected"], c["named_sibling"]],
+          "exclude_bodies": [c["named_sibling"]]},
+          _refused("remains", "excluded source body", "exclusion did not take", "design_delete_feature"),
+          owner="named_host")
+    rows.append(("design_get", _SELECTOR_DESIGN_ARGS,
+                 lambda p: _named_derive_tree(p, 2, 1) and {b["name"] for b in p["tree"]["root_bodies"]}
+                 == {_RECALL["named_selected"], _RECALL["named_sibling"]},
+                 ("named_failed_feature", lambda p: p["timeline"]["timeline"][0]["name"] + "@0")))
+    for key, size, x in (("selected", 10, 0), ("sibling", 20, 30)):
+        rows.append(("model_inspect", lambda c, key=key: {"target": c["named_" + key],
+                     "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                     lambda p, size=size, x=x: p.get("kind") == "body"
+                     and _named_derive_mass(p, size, x), None))
+    write("design_delete_feature", lambda c: {"feature": c["named_failed_feature"]}, owner="named_host")
+    rows.append(("design_get", _SELECTOR_DESIGN_ARGS,
+                 lambda p: _named_derive_tree(p, 0, 0) == _RECALL["named_empty"], None))
+    write("doc_insert_derive", lambda c: {"document_id": c["named_urn"],
+          "source_bodies": [c["named_selected"]]},
+          lambda p: _derived(name)(p) and p.get("bodies_landed") == 1
+          and p.get("derived_components") == []
+          and p.get("derived_bodies") == [{"name": _RECALL["named_selected"], "is_derived": True}],
+          owner="named_host")
+    rows += [
+        ("design_get", _SELECTOR_DESIGN_ARGS,
+         lambda p: _named_derive_tree(p, 1, 1)["tree"]["root_bodies"][0]["name"]
+         == _RECALL["named_selected"], None),
+        ("model_inspect", lambda c: {"target": c["named_selected"], "include": ["default", "mass"],
+                                    "units": "mm", "accuracy": "very_high"},
+         lambda p: _named_derive_mass(p, 10) and all(p.get(k) == _RECALL["named_mass_selected"].get(k)
+             for k in ("x", "y", "z", "min_point", "max_point")), None),
+        ("doc_get", {"include": ["default", "xref_tree"]}, lambda p: (
+             p["xref_tree"].get("walk_complete") is True and p["xref_tree"].get("all_current") is True
+             and p["xref_tree"].get("reference_link_count") == 1
+             and len(p["xref_tree"].get("references") or []) == 1
+             and p["xref_tree"]["references"][0].get("kind") == "derive"
+             and p["xref_tree"]["references"][0].get("source_document") == name
+             and p["xref_tree"]["references"][0].get("out_of_date") is False), None)]
+    write("doc_activate", lambda c: {"name": c["named_source"]}, _activated(name), owner="named_host")
+    write("doc_close", lambda c: {"name": c["named_host"], "save_changes": False}, _document_closed)
+    rows += _selector_reads(controls, True)
+    write("doc_activate", lambda c: {"name": c["named_home"]}, _activated())
+    write("doc_close", lambda c: {"name": c["named_source"], "save_changes": False},
+          _document_closed, owner="named_home")
+    write("data_delete_file", lambda c: {"document_id": c["named_urn"], "confirm_name": name},
+          _file_deleted, owner="named_home")
+    rows.append(("doc_get", {}, lambda p: _selector_session(p) == _RECALL["named_home_state"], None))
+    return rows
+
+
 # How long the source's new version is given to become visible to the CLOUD before the tip read
 # below asserts it. doc_save returns as soon as Fusion has written; the version METADATA the derive
 # link's freshness is judged against trails it by up to ~20 s (doc_get's own note gives that lag),
@@ -2564,7 +2827,7 @@ _CLOUD_DATA = [
 # true, so doc_update_xref refuses and names delete-and-re-derive as the remedy. This leg is that
 # measurement on a run - the rig wants a cloud save, a close and a reopen, none of which a
 # measure_api row can build on the main thread.
-_CLOUD_DERIVE = [
+_CLOUD_DERIVE = _derive_selector_rows() + [
     ("doc_new", {}, _new_document, None),
     ("doc_insert_derive", lambda c: {"document_id": _ctx_get(c, "source_urn", "the source")},
      _derived(SOURCE_DOC), None),
@@ -2698,7 +2961,7 @@ _CLOUD_LINK = [
 # milestoned, rolled back, copied, and inserted as an xref into a host saved beside it. The SOURCE is
 # left standing - the drawing act generates from it and deletes it; the copy and the host are this
 # act's own and go at the end of it.
-_CLOUD_DOC = _fit_refusal_rows() + [
+_CLOUD_DOC = _fit_refusal_rows() + _named_derive_rows() + [
     ("doc_new", {}, _new_document, None),
     ("model_create_component", {"name": SRC_COMP, "activate": True}, _made_component, None),
     ("sketch_create", {"plane": "xy", "name": SRC_SKETCH}, "ok", None),
@@ -2763,6 +3026,13 @@ _CLOUD_DOC = _fit_refusal_rows() + [
      _milestoned("SweepCloudMilestone", SOURCE_DOC), None),
     ("doc_get", {"include": ["default", "versions"], "versions_max": 10}, _versions_read(3),
      ("milestone_history", lambda p: p)),
+    ("doc_get", _restore_selector_baseline, _versions_read(3), None),
+] + _selector_reads(_RESTORE_SELECTOR_READS) + [
+    ("doc_restore_version", _restore_conflict,
+     _refused("No version matching", "and id", "matching number/id"), None),
+] + _selector_reads(_RESTORE_SELECTOR_READS, True) + [
+    ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
+     _plate_geometry("the refused restore leaves the milestone plate", 16.0), None),
     ("doc_restore_version", _milestone_restore_args, _restored(RESTORE_VERSION),
      ("milestone_restored", lambda p: p)),
     _dwell(_TIP_SETTLE_S),
