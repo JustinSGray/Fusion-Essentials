@@ -1416,6 +1416,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 ### `design_edit_timeline`
 - No active design (open a document with design geometry).
 - This design has no timeline (a direct-modelling design keeps no history), so there is no marker to move and nothing to group.
+- confirm_delete_after_marker must be a Boolean, got
+- . Use false for a preview or true to discard the items after the marker.
 - Could not read markerPosition, so what lies after the marker is unknown - nothing was deleted.
 - Nothing lies after the marker: it is at
 - (the end of the timeline). Roll it back first with action='roll'.
@@ -1519,6 +1521,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - The change left  feature(s) in error: . A downstream feature consumed what this one produced - set suppressed=false to restore it.
 - A timeline group cannot hold another group, and  lies in ... Remove it with action='ungroup' first, or pick a range without it.
 - Timeline items .. overlap the expanded group '' (its members span ..), and a timeline item can belong to only one group. Remove it with action='ungroup' first, or pick a range clear of it.
+- confirm_delete_after_marker must be a Boolean, got . Use false for a preview or true to discard the items after the marker.
 - Refusing: this DISCARDS  timeline item(s) after the marker at  of  -  - and the features and geometry they produced. Pass confirm_delete_after_marker=true to proceed. Nothing was deleted.
 - '' starts with '', which the attribute search reads as a regular expression instead of this literal name. Name the attribute without that prefix.
 - Deleting attribute '/' from '' returned  but reading it back raised, so nothing confirms it is gone - the delete is UNCONFIRMED. Run this same delete_attribute call again: a refusal naming '/' as a...

@@ -87,23 +87,17 @@ def census_caveat(census):
 
 
 def collapsed_group_holding(timeline, want):
-    """The name of the COLLAPSED timeline group holding a member `want` names (bare or
-    '<component>/<name>'), or None - timeline.item() lists such a member only as its group."""
-    comp, feat = _inputs._split_qualified(want)
-    low = (feat or want).strip().lower()
+    """The collapsed group holding a member matched by the shared timeline selector, or None."""
     for g in _common.iter_collection(safe(lambda: timeline.timelineGroups)):
         if safe(lambda g=g: g.isCollapsed) is not True:
             continue
-        for m in _common.iter_collection(g):
-            if (safe(lambda m=m: m.name) or "").lower() != low:
-                continue
-            if comp is None or (_inputs._owner_component_name(m) or "").lower() == comp.lower():
-                return safe(lambda g=g: g.name) or "(unnamed group)"
+        if _inputs._match_timeline_objects(list(_common.iter_collection(g)), want):
+            return safe(lambda g=g: g.name) or "(unnamed group)"
     return None
 
 
 def hidden_twin_hint(timeline, want, visible):
-    """The refusal for a bare integer with visible hits that also names a member of a collapsed group."""
+    """The refusal for an unindexed selector with visible hits and a collapsed member twin."""
     holder = collapsed_group_holding(timeline, want)
     if not holder:
         return None

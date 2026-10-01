@@ -425,6 +425,26 @@ class TestRollToFeature:
         assert "'0' matches Extrude1@0 and also names" in msg
         assert "collapsed timeline group 'Imports'" in msg and seat.isSuppressed is False
 
+    def test_a_hidden_bare_name_twin_refuses_but_an_indexed_visible_address_rolls(self, wire):
+        visible = FakeTimelineObject("Twin", 1)
+        hidden = FakeTimelineObject("Twin", 2)
+        group = FakeTimelineGroup("HiddenPair", 0, members=[hidden], collapsed=True)
+        tl = wire(FakeTimeline([group, visible], groups=[group], marker=2))
+        msg = error_message(et.handler(action="roll", feature="Twin"))
+        assert "Twin@1" in msg and "collapsed timeline group 'HiddenPair'" in msg
+        assert visible.roll_calls == [] and tl.markerPosition == 2
+        out = payload(et.handler(action="roll", feature="Twin@1"))
+        assert out["marker_position"] == 1 and visible.roll_calls == [True]
+
+    def test_collapsed_member_matching_keeps_a_slashed_owner_whole(self, wire):
+        entity = types.SimpleNamespace(parentComponent=types.SimpleNamespace(name="X/Y"))
+        hidden = FakeTimelineObject("Target", 1, entity=entity)
+        group = FakeTimelineGroup("HiddenPair", 0, members=[hidden], collapsed=True)
+        tl = wire(FakeTimeline([group], groups=[group], marker=1))
+        msg = error_message(et.handler(action="roll", feature="X/Y/Target"))
+        assert "'X/Y/Target' is inside the collapsed timeline group 'HiddenPair'" in msg
+        assert tl.markerPosition == 1 and hidden.roll_calls == []
+
     def test_a_genuinely_absent_name_still_lists_the_timeline(self, wire):
         members = [FakeTimelineObject("Sketch1", 0)]
         group = FakeTimelineGroup("Base", 0, members=members, collapsed=True)
@@ -851,6 +871,15 @@ class TestUngroup:
 # ── delete after the marker ──────────────────────────────────────────────────
 
 class TestDeleteAfterMarker:
+    @pytest.mark.parametrize("confirmation", ["false", 1, None])
+    def test_non_boolean_confirmation_never_reaches_delete(self, wire, confirmation):
+        tl = wire(_timeline(marker=1))
+        msg = error_message(et.handler(action="delete_after_marker",
+                                       confirm_delete_after_marker=confirmation))
+        assert "confirm_delete_after_marker must be a Boolean" in msg and repr(confirmation) in msg
+        assert "false for a preview or true" in msg
+        assert tl.delete_calls == 0 and tl.count == 3 and tl.markerPosition == 1
+
     def test_refuses_without_the_confirmation_and_deletes_nothing(self, wire):
         tl = wire(_timeline(marker=1))
         msg = error_message(et.handler(action="delete_after_marker"))

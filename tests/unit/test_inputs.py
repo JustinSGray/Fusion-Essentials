@@ -4756,6 +4756,21 @@ class TestQualifiedAndIndexAddressing:
         a, b = _tl_obj("Pipe4", 3, comp="COOLING - cockpit"), _tl_obj("Pipe4", 9, comp="FRAME")
         assert inp._match_timeline_objects([a, b], "FRAME/Pipe4") == [b]
 
+    def test_a_slashed_component_uses_the_whole_qualified_key(self):
+        target = _tl_obj("Target", 4, comp="X/Y")
+        other = _tl_obj("Target", 7, comp="X")
+        obj, err = inp.resolve_timeline_object([target, other], "X/Y/Target", "'feature'")
+        assert obj is target and err is None
+        assert inp._match_timeline_objects([target, other], "X/Y/Target@4") == [target]
+
+    def test_a_qualified_key_and_a_literal_slash_name_refuse_both_meanings(self):
+        literal, qualified = _tl_obj("A/B", 4, comp="Literal"), _tl_obj("B", 6, comp="A")
+        obj, err = inp.resolve_timeline_object([literal, qualified], "A/B", "'feature'")
+        assert obj is None and "matches 2 timeline objects" in err
+        assert "Literal/A/B@4" in err and "A/B@6" in err
+        assert inp._match_timeline_objects([literal, qualified], "Literal/A/B@4") == [literal]
+        assert inp._match_timeline_objects([literal, qualified], "A/B@6") == [qualified]
+
     def test_a_bare_integer_resolves_by_its_own_index(self):
         objs = [_tl_obj("Extrude1", 0), _tl_obj("Fillet1", 4)]
         assert inp._match_timeline_objects(objs, "4") == [objs[1]]

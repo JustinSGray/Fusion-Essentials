@@ -468,6 +468,9 @@ def _do_ungroup(timeline, feature):
 
 
 def _do_delete_after_marker(timeline, confirm):
+    if type(confirm) is not bool:
+        return error(f"confirm_delete_after_marker must be a Boolean, got {confirm!r}. "
+                     "Use false for a preview or true to discard the items after the marker.")
     marker = safe(lambda: timeline.markerPosition)
     count = safe(lambda: timeline.count, 0) or 0
     if marker is None:
@@ -684,7 +687,7 @@ def handler(action: str = "roll", feature: str = "", to: str = "before", end_fea
         return _do_set_attribute(design, feature, attribute_group, attribute_name, attribute_value)
     if action == "delete_attribute":
         return _do_delete_attribute(design, feature, attribute_group, attribute_name)
-    return _do_delete_after_marker(timeline, bool(confirm_delete_after_marker))
+    return _do_delete_after_marker(timeline, confirm_delete_after_marker)
 
 
 TOOL_DESCRIPTION = (

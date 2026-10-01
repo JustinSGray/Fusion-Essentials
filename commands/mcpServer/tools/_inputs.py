@@ -1618,11 +1618,6 @@ def _address_key(obj):
     return f"{comp}/{name}" if comp else name
 
 
-def _owner_matches(obj, comp):
-    """Whether `comp` names the object's owning component (case-insensitive)."""
-    return (_owner_component_name(obj) or "").strip().lower() == comp.lower()
-
-
 def _match_timeline_objects(objs, want):
     """Every timeline object `want` names - a bare integer's index hit and its literal-name twins."""
     # MEASURED: Fusion names an occurrence-create timeline object with a LEADING SPACE
@@ -1635,15 +1630,9 @@ def _match_timeline_objects(objs, want):
         low, whole = base.lower(), want.strip().lower()
         hits = [o for o in objs if _index_of(o) == i and low in (_name_key(o), _address_key(o))]
         return hits + [o for o in objs if _name_key(o) == whole and o not in hits]
-    comp, feat = _split_qualified(want)
-    if comp is not None:
-        flow = feat.lower()
-        hits = [o for o in objs if _name_key(o) == flow and _owner_matches(o, comp)]
-        if hits:
-            return hits
     stripped = want.strip()
     low = stripped.lower()
-    by_name = [o for o in objs if _name_key(o) == low]
+    by_name = [o for o in objs if low in (_name_key(o), _address_key(o))]
     n = _ascii_int(stripped)
     if n is not None:
         # A bare number is an index AND may be a feature's literal name (a DXF import named "0"):
@@ -1722,9 +1711,9 @@ def _address_miss(objs, want):
 def resolve_timeline_object(objs, want, label, miss_hint=None, hidden_hint=None):
     """(timeline object, error): the one object `want` names, else a refusal."""
     hits = _match_timeline_objects(objs, want)
-    # MEASURED: a collapsed group's members are absent from the timeline walk, so a bare integer
-    # can hit an index while the object literally named that number sits hidden in a group.
-    if hits and _ascii_int(want) is not None and hidden_hint is not None:
+    # Collapsed members can share a visible name or a numeric index; an explicit indexed address
+    # still selects its visible row without treating an unindexed hidden member as that address.
+    if hits and _parse_address(want)[0] is None and hidden_hint is not None:
         hidden = hidden_hint(want, hits)
         if hidden:
             return None, f"{label}: {hidden}"

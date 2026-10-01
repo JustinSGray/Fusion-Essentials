@@ -513,6 +513,259 @@ _NUMERIC_REFERENCE = [
     ("doc_get", {}, _scratch_gone_story_active, None),
 ]
 
+
+def _target_design(p):
+    """Return the complete small targeting fixture's tree and indexed history."""
+    tree, tl = p.get("tree") or {}, p.get("timeline") or {}
+    nodes, rows = tree.get("children"), tl.get("timeline")
+    valid = (isinstance(nodes, list) and tree.get("child_count") == len(nodes)
+             and tree.get("truncated") is False and tree.get("children_truncated") is False
+             and not tree.get("root_bodies") and not tree.get("root_bodies_truncated")
+             and isinstance(rows, list) and tl.get("count") == tl.get("returned") == len(rows)
+             and type(tl.get("marker_position")) is int and 0 <= tl["marker_position"] <= len(rows)
+             and not tl.get("truncated") and isinstance(tl.get("groups"), dict)
+             and (tl.get("summary") or {}).get("states") == {"healthy": sum(
+                 r.get("member_count", 1) for r in rows)} and tl["summary"].get("exceptions") == []
+             and all(type(r.get("index")) is int and r["index"] == i and r.get("name") and r.get("type")
+                     for i, r in enumerate(rows)))
+    for n in nodes or []:
+        valid = (valid and n.get("component") and n.get("full_path") and n.get("handle")
+                 and n.get("child_count") == 0 and not n.get("children_truncated")
+                 and type(n.get("body_count")) is int and n["body_count"] == len(n.get("bodies", []))
+                 and not n.get("bodies_truncated") and all(b.get("name") and b.get("handle")
+                     and type(b.get("is_solid")) is bool and type(b.get("visible")) is bool
+                     for b in n.get("bodies", [])))
+    valid = valid and len({n.get("full_path") for n in nodes or []}) == len(nodes or [])
+    valid = valid and sum(n.get("body_count", 0) for n in nodes or []) == 1
+    return {"tree": tree, "timeline": tl} if valid else None
+
+
+def _target_material(p):
+    """Read the independent 10 mm cube's actual material and world-axis bounds."""
+    mass = p.get("mass") or {}
+    bodies = mass.get("per_body") or []
+    values = [p.get(a) for a in "xyz"] + [mass.get("volume"), mass.get("area")]
+    valid = (p.get("target") == "occurrence 'Witness:1'" and p.get("units") == "mm"
+             and p.get("frame") == "world axes (axis-aligned)" and len(bodies) == 1
+             and mass.get("per_body_count") == 1 and mass.get("per_body_truncated") is False
+             and bodies[0].get("body") and bodies[0].get("is_solid") is True
+             and bodies[0].get("lump_count") == 1 and _num(bodies[0].get("volume"))
+             and abs(bodies[0]["volume"] - 1000) < .001
+             and all(_num(a) and abs(a-b) < .001 for a, b in zip(values, [10, 10, 10, 1000, 600])))
+    bounds = [p.get(k, {}).get(a) for k in ("min_point", "max_point") for a in "xyz"]
+    return {"mass": mass, "bounds": bounds} if valid and all(_num(v) for v in bounds) else None
+
+
+def _target_sketch(p, owner, name, radius=None):
+    """Read all disclosed sketch geometry and flags, retaining only stable selector-free facts."""
+    counts, entities = p.get("counts"), p.get("entities")
+    valid = (p.get("component") == owner and p.get("sketch") == name and p.get("units") == "mm"
+             and isinstance(counts, dict) and all(type(n) is int and n >= 0 for n in counts.values())
+             and isinstance(entities, list) and sum(counts.values()) == len(entities)
+             and p.get("truncated") is False and not p.get("profiles_stale")
+             and not p.get("timeline_marker_unrestored") and isinstance(p.get("frame"), dict))
+    for e in entities or []:
+        fields = {"line": ("start", "end"), "circle": ("center",), "point": ("position",)}.get(e.get("type"))
+        valid = valid and fields is not None and all(isinstance(e.get(k), dict) and e[k]
+                  and all(_num(v) for v in e[k].values()) for k in fields or ())
+        if e.get("type") == "circle":
+            valid = valid and _num(e.get("radius")) and e["radius"] > 0
+    for count, key in (("constraint_count", "constraints"), ("dimension_count", "dimensions"), ("profile_count", "profiles")):
+        valid = valid and type(p.get(count)) is int and isinstance(p.get(key), list) and p[count] == len(p[key])
+    if radius is not None:
+        circles = [e for e in entities or [] if e.get("type") == "circle"]
+        valid = valid and len(circles) == 1 and circles[0].get("center") == {"x": 30.0, "y": 20.0}
+        valid = valid and circles[0].get("radius") == radius
+    if not valid:
+        return None
+    return {"entities": [{k: v for k, v in e.items() if k != "handle"} for e in entities],
+            "profiles": [{k: v for k, v in r.items() if k != "handle"} for r in p["profiles"]],
+            **{k: p[k] for k in ("counts", "constraints", "dimensions", "frame")}}
+
+
+def _target_listing(p, sketches, baseline=None, removed=None):
+    """Require every expected current sketch and retain its disclosed counts and visibility."""
+    rows = p.get("sketches")
+    if (not isinstance(rows, list) or p.get("sketch_count") != len(rows) or p.get("truncated")
+            or sorted((r.get("component"), r.get("name")) for r in rows) != sorted(sketches)
+            or not all(type(r.get("is_visible")) is bool for r in rows)):
+        return None
+    if baseline:
+        prior = _RECALL.get(baseline)
+        if prior is None or rows != [r for r in prior if (r["component"], r["name"]) != removed]:
+            return None
+    return rows
+
+
+def _target_document(p):
+    """Read the owned coupon's actual saved/modified flags and complete open-document identities."""
+    active, rows = p.get("active") or {}, p.get("open_documents")
+    if (active.get("document_handle") != _RECALL.get("target_doc") or active.get("has_data_file") is not False
+            or any(type(active.get(k)) is not bool for k in ("is_saved", "is_modified"))
+            or not isinstance(rows, list) or p.get("open_count") != len(rows) or p.get("truncated")
+            or not all(r.get("document_handle") and r.get("name") for r in rows)):
+        return None
+    return {"active": {k: active[k] for k in ("name", "document_handle", "is_saved", "is_modified")},
+            "open": [(r["document_handle"], r["name"]) for r in rows]}
+
+
+def _target_row(tool, args, key, extract, baseline=None):
+    """Build one targeting read whose saved facts also enter the runner's actual context."""
+    def check(p):
+        facts = extract(p)
+        return _measured(key, facts, facts is not None and (baseline is None or facts == _RECALL.get(baseline)))
+    return (tool, args, check, (key, _recall(key, extract)))
+
+
+def _target_history_change(key, owner, name, deleted=False):
+    """Compare a roll or deletion against the independently read exact prior timeline."""
+    def read(p):
+        now, before = _target_design(p), _RECALL.get(key)
+        if now is None or before is None:
+            return None
+        old = before["timeline"]
+        hits = [r for r in old["timeline"] if (r.get("component"), r.get("name")) == (owner, name)]
+        if len(hits) != 1:
+            return None
+        target = hits[0]
+        if deleted:
+            rows = [dict(r, index=i) for i, r in enumerate(r for r in old["timeline"] if r != target)]
+            marker = min(old["marker_position"], len(rows))
+        else:
+            marker = target["index"]
+            rows = [dict(r, is_rolled_back=True) if r["index"] >= marker else r for r in old["timeline"]]
+        return now if (now["tree"] == before["tree"] and now["timeline"]["timeline"] == rows
+                       and now["timeline"]["count"] == len(rows) and now["timeline"]["marker_position"] == marker
+                       and now["timeline"]["groups"] == old["groups"]) else None
+    return read
+
+
+def _target_address(ctx, key, owner, name):
+    """Acquire the current indexed address from a completed independent timeline read."""
+    facts = _ctx_get(ctx, key, "the current full targeting timeline")
+    hits = [r for r in facts["timeline"]["timeline"] if (r.get("component"), r.get("name")) == (owner, name)]
+    if len(hits) != 1 or type(hits[0].get("index")) is not int:
+        raise AssertionError("Target has no unique current timeline address")
+    return f"{owner}/{name}@{hits[0]['index']}"
+
+
+def _target_reads(tag, sketches, baseline=None, changed=None, grouped=False):
+    """Read the finite targeting coupon's history, cube, current sketches and optional hidden group."""
+    design = _target_design if changed is None else _target_history_change(*changed)
+    rows = [_target_row("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 3, "max_results": 200}, tag + "_design", design,
+                baseline + "_design" if baseline and changed is None else None),
+            _target_row("model_inspect", {"target": "Witness:1", "include": ["default", "mass"],
+                "per_body": True, "accuracy": "very_high", "units": "mm"}, tag + "_body", _target_material,
+                baseline + "_body" if baseline else None),
+            _target_row("sketch_get", {"max_results": 200}, tag + "_list",
+                lambda p: _target_listing(p, [(o, n) for o, n, _ in sketches],
+                    baseline + "_list" if baseline else None, tuple(changed[1:3]) if changed else None)),
+            _target_row("doc_get", {"max_results": 1000}, tag + "_doc", _target_document,
+                baseline + "_doc" if baseline else None)]
+    for owner, name, radius in sketches:
+        rows.append(_target_row("sketch_get", {"component": owner, "sketch_name": name,
+                    "include_entities": True, "max_results": 200, "units": "mm"}, tag + owner + name,
+                    lambda p, o=owner, n=name, r=radius: _target_sketch(p, o, n, r),
+                    baseline + owner + name if baseline else None))
+    if grouped:
+        def group(p):
+            tl = p.get("timeline") or {}
+            members = tl.get("timeline") or []
+            full = _RECALL.get(tag + "_design", {}).get("timeline", {}).get("timeline", [])
+            gs = [r for r in full if r.get("name") == "HiddenPair"]
+            return members if (len(gs) == 1 and gs[0].get("is_collapsed") is True and gs[0].get("member_count") == 2
+                and len(members) == tl.get("returned") == 2 and not tl.get("truncated")
+                and [(r.get("component"), r.get("name")) for r in members] == [("Hidden", "Twin"), ("Hidden", "Sibling")]
+                and all(r.get("parent_group") == "HiddenPair" for r in members)) else None
+        rows.append(_target_row("design_get", {"include": ["timeline"], "group": "HiddenPair", "max_results": 200},
+                                tag + "_group", group, baseline + "_group" if baseline else None))
+    rows.append(_target_row("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 3, "max_results": 200}, tag + "_settled", _target_design, tag + "_design"))
+    return rows
+
+
+def _target_circle(owner, name, radius):
+    return [("sketch_create", {"plane": "xy", "name": name},
+             lambda p: p.get("created") is True and p.get("sketch_name") == name and p.get("component") == owner, None),
+            ("sketch_add_geometry", {"component": owner, "sketch_name": name, "units": "mm",
+             "geometry": [{"kind": "circle", "cx": 30, "cy": 20, "radius": radius}]}, "ok", None)]
+
+
+def _target_begin():
+    return [("doc_new", {}, _new_document, None),
+            ("doc_get", {}, _scratch_opened_beside_it, ("target_doc", _recall("target_doc", _home_address))),
+            ("model_create_component", {"name": "Witness", "activate": True}, _made_component, None),
+            ("sketch_create", {"plane": "xy", "name": "Cube"}, "ok", None),
+            ("sketch_add_geometry", {"component": "Witness", "sketch_name": "Cube", "units": "mm",
+             "geometry": [{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]}, "ok", None),
+            ("model_extrude", {"component": "Witness", "sketch_name": "Cube", "profile_index": 0,
+                               "distance": 10, "operation": "new", "units": "mm"}, _extruded, None)]
+
+
+def _target_end():
+    return [("doc_activate", lambda c: {"name": _ctx_get(c, "story_doc", "the story document")}, _activated(), None),
+            ("doc_close", lambda c: {"name": _ctx_get(c, "target_doc", "the owned targeting coupon"),
+                                      "save_changes": False}, _document_closed, None),
+            ("doc_get", {}, _scratch_gone_story_active, None)]
+
+
+_TARGET_CUBE = [("Witness", "Cube", None)]
+_TARGET_CONFIRMATION = _target_begin() + [
+    ("model_create_component", {"name": "Suffix", "activate": True}, _made_component, None),
+] + _target_circle("Suffix", "Tail", 3) + _target_reads("tc_end", _TARGET_CUBE + [("Suffix", "Tail", 3)]) + [
+    ("design_edit_timeline", lambda c: {"action": "roll", "feature": _target_address(c, "tc_end_design", "Suffix", "Tail"),
+                                        "to": "before"}, lambda p: p.get("rolled") is True, None),
+] + _target_reads("tc_rolled", _TARGET_CUBE, "tc_end", ("tc_end_design", "Suffix", "Tail", False)) + [
+    ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": False},
+     _refused("Refusing:", "DISCARDS 1 timeline item(s)", "confirm_delete_after_marker=true"), None),
+] + _target_reads("tc_false", _TARGET_CUBE, "tc_rolled") + [
+    ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": "false"},
+     _refused("confirm_delete_after_marker must be a Boolean, got 'false'", "false for a preview or true"), None),
+] + _target_reads("tc_string", _TARGET_CUBE, "tc_rolled") + [
+    ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": True},
+     lambda p: p.get("deleted_after_marker") is True and p.get("deleted_timeline_entries") == 1, None),
+] + _target_reads("tc_deleted", _TARGET_CUBE, "tc_rolled", ("tc_rolled_design", "Suffix", "Tail", True)) + _target_end()
+
+_TARGET_HIDDEN_GEOMETRY = _TARGET_CUBE + [("Hidden", "Twin", 3), ("Hidden", "Sibling", 4)]
+_TARGET_HIDDEN = _target_begin() + [
+    ("model_create_component", {"name": "Hidden", "activate": True}, _made_component, None),
+] + _target_circle("Hidden", "Twin", 3) + _target_circle("Hidden", "Sibling", 4) + _target_reads("th_seed", _TARGET_HIDDEN_GEOMETRY) + [
+    ("design_edit_timeline", lambda c: {"action": "group", "name": "HiddenPair",
+     "feature": _target_address(c, "th_seed_design", "Hidden", "Twin"),
+     "end_feature": _target_address(c, "th_seed_design", "Hidden", "Sibling")}, lambda p: p.get("grouped") is True, None),
+    ("model_create_component", {"name": "Visible", "activate": True}, _made_component, None),
+] + _target_circle("Visible", "Twin", 5) + _target_reads("th_before", _TARGET_HIDDEN_GEOMETRY + [("Visible", "Twin", 5)], grouped=True) + [
+    ("design_delete_feature", {"feature": "Twin"}, _refused("'Twin' matches Visible/Twin@", "collapsed timeline group 'HiddenPair'"), None),
+] + _target_reads("th_refused", _TARGET_HIDDEN_GEOMETRY + [("Visible", "Twin", 5)], "th_before", grouped=True) + [
+    ("design_delete_feature", lambda c: {"feature": _target_address(c, "th_refused_design", "Visible", "Twin")},
+     lambda p: p.get("deleted") is True and p.get("feature") == "Twin", None),
+] + _target_reads("th_deleted", _TARGET_HIDDEN_GEOMETRY, "th_before", ("th_before_design", "Visible", "Twin", True), True) + _target_end()
+
+_TARGET_SLASH_GEOMETRY = _TARGET_CUBE + [("X/Y", "Target", 3)]
+_TARGET_SLASH = _target_begin() + [
+    ("model_create_component", {"name": "X/Y", "activate": True}, _made_component, None),
+] + _target_circle("X/Y", "Target", 3) + _target_reads("ts_before", _TARGET_SLASH_GEOMETRY) + [
+    ("design_edit_timeline", {"action": "roll", "feature": "X/Y/Target", "to": "before"}, lambda p: p.get("rolled") is True, None),
+] + _target_reads("ts_rolled", _TARGET_CUBE, "ts_before", ("ts_before_design", "X/Y", "Target", False)) + [
+    ("design_edit_timeline", {"action": "roll", "to": "end"}, lambda p: p.get("rolled") is True, None),
+] + _target_reads("ts_restored", _TARGET_SLASH_GEOMETRY, "ts_before") + [
+    ("design_edit_timeline", lambda c: {"action": "roll", "to": "before",
+     "feature": _target_address(c, "ts_restored_design", "X/Y", "Target")}, lambda p: p.get("rolled") is True, None),
+] + _target_reads("ts_indexed", _TARGET_CUBE, "ts_before", ("ts_before_design", "X/Y", "Target", False)) + [
+    ("design_edit_timeline", {"action": "roll", "to": "end"}, lambda p: p.get("rolled") is True, None),
+] + _target_reads("ts_indexed_end", _TARGET_SLASH_GEOMETRY, "ts_before") + [
+    ("model_create_component", {"name": "Literal", "activate": True}, _made_component, None),
+] + _target_circle("Literal", "A/B", 4) + [
+    ("model_create_component", {"name": "A", "activate": True}, _made_component, None),
+] + _target_circle("A", "B", 5) + _target_reads("ts_collision", _TARGET_SLASH_GEOMETRY + [("Literal", "A/B", 4), ("A", "B", 5)]) + [
+    ("design_delete_feature", {"feature": "A/B"}, _refused("matches 2 timeline objects", "Literal/A/B@", "A/B@"), None),
+] + _target_reads("ts_refused", _TARGET_SLASH_GEOMETRY + [("Literal", "A/B", 4), ("A", "B", 5)], "ts_collision") + [
+    ("design_delete_feature", lambda c: {"feature": _target_address(c, "ts_refused_design", "Literal", "A/B")},
+     lambda p: p.get("deleted") is True and p.get("feature") == "A/B", None),
+] + _target_reads("ts_deleted", _TARGET_SLASH_GEOMETRY + [("A", "B", 5)], "ts_collision",
+                  ("ts_collision_design", "Literal", "A/B", True)) + _target_end()
+
 # --- ACT 0: OVERTURE - orient, then open the one document the whole story lives in -------------
 _OVERTURE = [
     ("doc_new", {}, _new_document, None),
@@ -636,7 +889,7 @@ _OVERTURE = [
      "refused", None),
     # a tier-R member names the member and the reason, with nothing written.
     ("sys_set_preferences", {"member": "network.proxyHost", "value": "127.0.0.1"}, "refused", None),
-] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE
+] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE + _TARGET_CONFIRMATION + _TARGET_HIDDEN + _TARGET_SLASH
 
 # --- THE SHOWCASE: the finished fixture photographed, renamed, exported and read back -----------
 # It runs BEFORE the machining acts so the sweep ends on the CAM job and its post, which is the
