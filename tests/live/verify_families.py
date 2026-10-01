@@ -3,10 +3,13 @@
 
 """Owned sweep families and the local inputs each builds before its judged acts."""
 
-from verify_acts_cam import _CAM_EXTENSION, _CAM_SCOPE, _SWARF_RIG
+from verify_acts_cam import _CAM_EXTENSION, _CAM_SCOPE, _SWARF_FRUSTUM
 from verify_acts_model import _DETAILS, _SOLIDS
-from verify_acts_motion import _MOTION, _VISE
-from verify_acts_sketch import _SKELETON
+from verify_acts_model_solids import (
+    DATUM_BENCH_DETAILS, DATUM_BENCH_RESIZE, FINISHED_BRACKET,
+    _component_block as _solids_component_block)
+from verify_acts_motion import _MOTION, _STOCK_VISE, _VISE_SHOWCASE_POSE
+from verify_acts_sketch import BRACKET_PARAMETERS_PROFILES
 from verify_core import _DWELL
 from verify_layout import _placed
 
@@ -56,41 +59,99 @@ def ordered_acts(acts):
             if owners[act[0]] == family]
 
 
-def _through(steps, tool, name):
-    """Take a producer's rows through its named last effect."""
-    matches = [i for i, step in enumerate(steps)
-               if step[0] == tool and isinstance(step[1], dict)
-               and step[1].get("name") == name]
-    if len(matches) != 1:
-        raise ValueError("fixture boundary is not unique: " + name)
-    return list(steps[:matches[0] + 1])
-
-
-def _component_block(steps, component, last_tool, last_key=None, last_value=None):
-    """Take one named component's producer through its last required effect."""
-    starts = [i for i, row in enumerate(steps)
-              if row[0] == "model_create_component" and isinstance(row[1], dict)
-              and row[1].get("name") == component]
-    if len(starts) != 1:
-        raise ValueError("component fixture boundary is not unique: " + component)
-    start = starts[0]
-    ends = [i for i in range(start + 1, len(steps))
-            if steps[i][0] == last_tool
-            and (last_key is None or (isinstance(steps[i][1], dict)
-                                      and steps[i][1].get(last_key) == last_value))]
-    if not ends:
-        raise ValueError("component fixture has no last effect: " + component)
-    return list(steps[start:ends[0] + 1])
-
-
-_HANDLE_END = next(i for i, row in enumerate(_VISE)
-                   if row[0] == "model_extrude" and isinstance(row[1], dict)
-                   and row[1].get("sketch_name") == "HandleS")
-STOCK_VISE = list(_VISE[:_HANDLE_END + 2])
+STOCK_VISE = list(_STOCK_VISE)
 RECOGNITION = [step for step in _DETAILS
                if step[0] in ("cam_find_holes", "cam_find_pockets")]
 _MANUFACTURE = ("view_switch_workspace", {"workspace": "manufacture"}, "ok", None)
 _DESIGN = ("view_switch_workspace", {"workspace": "design"}, "ok", None)
+_CAM_TOOL_LIBRARY = [
+    _MANUFACTURE,
+    ("cam_edit_tools", {"action": "add", "scope": "document",
+     "add_tools": [{"from_type": "flat end mill", "diameter": "10 mm"}]},
+     lambda p: p.get("added") == 1 and p.get("tool_count", 0) >= 1, None),
+    _DESIGN]
+
+PRODUCER_ROWS = {
+    "bracket-parameters-profiles": BRACKET_PARAMETERS_PROFILES,
+    "finished-bracket": FINISHED_BRACKET,
+    "datum-details": DATUM_BENCH_DETAILS,
+    "datum-resize": DATUM_BENCH_RESIZE,
+    "stock-vise": STOCK_VISE,
+    "showcase-pose": _VISE_SHOWCASE_POSE,
+    "swarf-frustum": _SWARF_FRUSTUM,
+    "cam-scope": _CAM_SCOPE,
+    "cam-extension": _CAM_EXTENSION,
+    "cam-tool-library": _CAM_TOOL_LIBRARY,
+    "recognition": RECOGNITION,
+}
+
+PRODUCER_SLOTS = {
+    "bracket-parameters-profiles": (),
+    "finished-bracket": ("pk_c1", "pk_c2", "pk_c3", "pk_c4", "low_top", "step_top",
+                          "step_lead", "step_out", "boss_top", "edge_break"),
+    "datum-details": ("db_top", "db_top2", "db_bore"),
+    "datum-resize": (),
+    "stock-vise": (),
+    "showcase-pose": (),
+    "swarf-frustum": (),
+    "cam-scope": ("scope_mill", "scope_top_face", "setup2_op"),
+    "cam-extension": ("corner_op", "deburr_dependency_baseline", "deburr_op", "flow_op",
+                       "geodesic_op", "mafin_op", "marough_op", "sw_faces", "sw_lower",
+                       "sw_mill", "sw_top_edge", "sw_top_face", "sw_upper", "sw_wall",
+                       "swarf_op"),
+    "cam-tool-library": (),
+    "recognition": ("pocket_floor", "recognized_cbore_walls"),
+}
+
+FAMILY_DEPENDENCIES = {
+    "sketch": {"producers": [], "requires": ("owned design document",),
+               "provides": ("parametric bracket sketches",), "workspace": "Design",
+               "camera": "Skeleton and BracketBody"},
+    "solids": {"producers": ("bracket-parameters-profiles",),
+               "requires": ("PartLen", "PartWid", "PartHt"),
+               "provides": ("Bracket:1 solid", "StockCenter"), "workspace": "Design",
+               "camera": "Bracket:1"},
+    "details": {"producers": ("bracket-parameters-profiles", "finished-bracket",
+                               "datum-details"),
+                "requires": ("Bracket:1",),
+                "provides": ("DatumBench", "db_bore"), "workspace": "Design",
+                "camera": "Bracket:1 and DatumBench"},
+    "resize": {"producers": ("bracket-parameters-profiles", "finished-bracket",
+                              "datum-resize"),
+               "requires": ("Bracket:1", "StockCenter"),
+               "provides": ("Bracket:1", "DatumBench"), "workspace": "Design",
+               "camera": "Bracket:1 and DatumBench"},
+    "vise": {"producers": ("bracket-parameters-profiles", "finished-bracket"),
+             "requires": ("Bracket:1",), "provides": ("clamped stock and vise"),
+             "workspace": "Design", "camera": "ViseBase:1 and STOCK:1"},
+    "showcase": {"producers": ("bracket-parameters-profiles", "finished-bracket", "stock-vise",
+                                 "showcase-pose"),
+                 "requires": ("Bracket:1", "captured vise pose"),
+                 "provides": ("showcase fixtures and cameos"), "workspace": "Design",
+                 "camera": "ViseBase:1 and STOCK:1"},
+    "part_cam": {"producers": ("bracket-parameters-profiles", "finished-bracket", "stock-vise",
+                                "recognition"),
+                 "requires": ("Bracket:1", "STOCK:1", "StockCenter"),
+                 "provides": ("part CAM models and recognition inputs"),
+                 "workspace": "varies by act", "camera": "Bracket:1 and CAM setup"},
+    "swarf_cam": {"producers": ("cam-tool-library",), "requires": ("owned family document",),
+                  "provides": ("SwarfFrustum:1", "SwarfSetup"), "workspace": "varies by act",
+                  "camera": "SwarfFrustum:1 and setup"},
+    "hub_cam": {"producers": ("cam-tool-library",), "requires": ("owned family document",),
+                "provides": ("hub CAM setup state",), "workspace": "varies by act",
+                "camera": "hub and CAM setup"},
+}
+
+for _family, _prefixes in FAMILY_GROUPS:
+    FAMILY_DEPENDENCIES.setdefault(_family, {
+        "producers": (), "requires": ("owned family document",),
+        "provides": ("family-local act state",), "workspace": "act-specific",
+        "camera": "authored act frames"})
+
+ACT_PRODUCER_OVERRIDES = {
+    "ACT 10e - CAM: MULTI-SETUP POST": ("swarf-frustum", "cam-scope", "cam-extension"),
+    "ACT 10c15 - CAM: THE ADDITIVE BUILD": ("swarf-frustum", "cam-extension"),
+}
 
 
 def fixture_steps(family, before_act=None, entitled=True, raw=False, slots=None):
@@ -99,11 +160,11 @@ def fixture_steps(family, before_act=None, entitled=True, raw=False, slots=None)
     place = (lambda rows: list(rows)) if raw else (lambda rows: _placed(rows, selected))
     if before_act is not None:
         if before_act.startswith("ACT 10e") and family == "part_cam":
-            rows = [_DESIGN] + place(_SWARF_RIG) + [
+            rows = [_DESIGN] + place(_SWARF_FRUSTUM) + [
                 _MANUFACTURE] + place(_CAM_SCOPE)
             return rows + (place(_CAM_EXTENSION) if entitled else [])
         if before_act.startswith("ACT 10c15") and family == "hub_cam" and entitled:
-            return [_DESIGN] + place(_SWARF_RIG) + [
+            return [_DESIGN] + place(_SWARF_FRUSTUM) + [
                 _MANUFACTURE] + place(_CAM_EXTENSION)
         if family == "swarf_cam" and before_act.startswith("ACT 10b2"):
             return [_MANUFACTURE]
@@ -111,34 +172,25 @@ def fixture_steps(family, before_act=None, entitled=True, raw=False, slots=None)
             return [_MANUFACTURE]
         return []
     if family in ("solids", "details", "resize", "vise", "part_cam", "showcase"):
-        rows = list(_SKELETON)
+        rows = list(BRACKET_PARAMETERS_PROFILES)
         if family != "solids":
-            rows += _through(_SOLIDS, "joint_create_origin", "StockCenter")
+            rows += FINISHED_BRACKET
         if family == "details":
-            rows += place(_component_block(_SOLIDS, "DatumBench", "find_geometry",
-                                           "kind", "cylinder_face"))
+            rows += place(DATUM_BENCH_DETAILS)
         if family == "resize":
-            rows += place(_component_block(_SOLIDS, "DatumBench", "model_extrude"))
+            rows += place(DATUM_BENCH_RESIZE)
             rows.append(("design_activate_component", {"occurrence": "root"}, "ok", None))
         if family in ("part_cam", "showcase"):
             rows += STOCK_VISE
         if family == "part_cam":
             rows += RECOGNITION
         if family == "showcase":
-            captured = next(i for i, row in enumerate(_VISE)
-                            if row[0] == "assembly_capture_position"
-                            and isinstance(row[1], dict)
-                            and row[1].get("action") == "capture")
-            rows += [row for row in _VISE[len(STOCK_VISE):captured + 1]
+            rows += [row for row in _VISE_SHOWCASE_POSE
                      if row[0] not in (_DWELL, "view_set", "view_screenshot")]
             rows += showcase_shapes(raw=raw, slots=selected)
         return rows
     if family in ("swarf_cam", "hub_cam"):
-        return [_MANUFACTURE,
-                ("cam_edit_tools", {"action": "add", "scope": "document",
-                 "add_tools": [{"from_type": "flat end mill", "diameter": "10 mm"}]},
-                 lambda p: p.get("added") == 1 and p.get("tool_count", 0) >= 1, None),
-                _DESIGN]
+        return list(_CAM_TOOL_LIBRARY)
     if family == "finale":
         return [("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
                 ("view_set", {"action": "display", "categories": ["sketches"],
@@ -157,8 +209,8 @@ def showcase_shapes(raw=False, slots=None):
     orbit = next(i for i in range(face + 1, len(_SOLIDS))
                  if _SOLIDS[i][0] == "model_pattern_circular")
     rows = (list(_MOTION[ball:torus])
-            + _component_block(_MOTION, "TorusRing", "joint_at_geometry")
-            + _component_block(_MOTION, "MateSeat", "design_recompute")
-            + _component_block(_SOLIDS, "FeatureCameo", "model_draft")
+            + _solids_component_block(_MOTION, "TorusRing", "joint_at_geometry")
+            + _solids_component_block(_MOTION, "MateSeat", "design_recompute")
+            + _solids_component_block(_SOLIDS, "FeatureCameo", "model_draft")
             + list(_SOLIDS[face:orbit + 1]))
     return list(rows) if raw else _placed(rows, FAMILY_SLOTS["showcase"] if slots is None else slots)

@@ -1083,6 +1083,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
 
     def fixture(rows_to_run, family, phase):
         """Run a local producer separately from the original judged-row ledger."""
+        phase_started = time.perf_counter()
         for step in judged_steps(rows_to_run):
             met(step_capability(step[2]))
         allowed = [step for step in rows_to_run if gate_allows(entitlements, step[2])]
@@ -1092,11 +1093,13 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                                                         "doc_activate"},
                          stop_on_failure=True)
         family_events.append({"family": family, "phase": phase,
-                              "steps": [list(row) for row in made]})
+                              "steps": [list(row) for row in made],
+                              "elapsed_s": max(0.0, time.perf_counter() - phase_started)})
         return not any(status in ("FAIL", "blocked", "pass*") for _tool, status, _note in made)
 
     def fixture_poll(family, entitled=True):
         """Certify local CAM producers before dependent narrative reads."""
+        phase_started = time.perf_counter()
         made, fixture_notes = [], {}
         targets = ((_SW_SETUP2,) + ((_SW_SETUP, _MX_SETUP) if entitled else ())
                    if family == "part_cam" else (_SW_SETUP, _MX_SETUP))
@@ -1107,15 +1110,18 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             if any(status in ("FAIL", "blocked", "pass*") for _tool, status, _note in made):
                 break
         family_events.append({"family": family, "phase": "fixture-generation",
-                              "steps": [list(row) for row in made]})
+                              "steps": [list(row) for row in made],
+                              "elapsed_s": max(0.0, time.perf_counter() - phase_started)})
         return not any(status in ("FAIL", "blocked", "pass*") for _tool, status, _note in made)
 
     def finish_family(family):
         """Discard all documents this family opened and restore the exact original handle."""
+        cleanup_started = time.perf_counter()
         census, _active, problem = _complete_open_documents()
         if problem:
             family_events.append({"family": family, "phase": "cleanup",
-                                  "steps": [["doc_get", "blocked", problem]]})
+                                  "steps": [["doc_get", "blocked", problem]],
+                                  "elapsed_s": max(0.0, time.perf_counter() - cleanup_started)})
             return False
         open_handles = {row["document_handle"] for row in census}
         created = open_handles - family_open_handles
@@ -1142,6 +1148,8 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         document_pin["owned_documents"] = []
         family_events.append({"family": family, "phase": "after-census",
                               "documents": sorted(open_handles), "active": home})
+        family_events.append({"family": family, "phase": "cleanup-total",
+                              "elapsed_s": max(0.0, time.perf_counter() - cleanup_started)})
         return True
 
     stopped = False
@@ -1257,12 +1265,14 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         steps = [s for s in steps if gate_allows(entitlements, s[2])]
         # judged_steps, not the act's raw list, is what pairs with the rows below - see its
         # docstring for what a dwell does to the pairing.
+        narrative_started = time.perf_counter()
         act_rows = run_steps(
             steps, ctx, trace=trace, timings=timings, shots_dir=shots_dir, act=name,
             document_pin=document_pin, guarded_tools=guarded_tools, stop_on_failure=True)
         if family_mode:
             family_events.append({"family": current_family, "phase": "narrative " + name,
-                                  "steps": [list(row) for row in act_rows]})
+                                  "steps": [list(row) for row in act_rows],
+                                  "elapsed_s": max(0.0, time.perf_counter() - narrative_started)})
         for step, (tool, status, note) in zip(judged_steps(steps), act_rows):
             rows.append((tool, status, note))
             if status in ("pass", "pass*") and predicate_kind(step[2]) == "value":
@@ -1287,6 +1297,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             targets = POLL_AFTER[name][mode]
             budget = {k: v for k, v in POLL_AFTER[name].items() if k == "max_polls"}
             poll_start = len(rows)
+            generation_started = time.perf_counter()
             for setup in ([targets] if isinstance(targets, str) else targets):
                 poll_generation(
                     rows, notes, setup, valued=valued,
@@ -1297,6 +1308,11 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                        for _tool, status, _note in rows[poll_start:]):
                     stopped = True
                     break
+            if family_mode:
+                family_events.append({"family": current_family, "phase": "generation " + name,
+                                      "steps": [list(row) for row in rows[poll_start:]],
+                                      "elapsed_s": max(0.0, time.perf_counter()
+                                                       - generation_started)})
         if stopped:
             break
         if document_pin.get("snapshot") is not None:

@@ -292,6 +292,32 @@ _SKELETON = [
     _watch_all(),                       # the whole part is drawn
 ]
 
+_PARAM_END = next(i for i, row in enumerate(_SKELETON)
+                  if row[0] == "param_get" and isinstance(row[1], dict)
+                  and row[1] == {})
+_BRACKET_COMPONENT_START = next(i for i, row in enumerate(_SKELETON)
+                                if row[0] == "model_create_component"
+                                and isinstance(row[1], dict) and row[1].get("name") == "Bracket")
+_BRACKET_PROFILE_START = next(i for i, row in enumerate(_SKELETON)
+                              if row[0] == "design_activate_component"
+                              and isinstance(row[1], dict)
+                              and row[1].get("occurrence") == "Bracket:1")
+_BRACKET_PROFILE_END = next(i for i, row in enumerate(_SKELETON)
+                            if row[0] == "sketch_dimension" and isinstance(row[1], dict)
+                            and row[1].get("sketch_name") == "BracketBoss")
+BRACKET_PARAMETERS = _SKELETON[:_PARAM_END + 1]
+_BRACKET_COMPONENT = _SKELETON[_PARAM_END + 1:_BRACKET_COMPONENT_START + 1]
+_SKELETON_BENCH = _SKELETON[_BRACKET_COMPONENT_START + 1:_BRACKET_PROFILE_START]
+BRACKET_PROFILES = _SKELETON[_BRACKET_PROFILE_START:_BRACKET_PROFILE_END + 1]
+_BRACKET_SKETCH_TAIL = _SKELETON[_BRACKET_PROFILE_END + 1:]
+_BRACKET_PROFILE_ROOT = next(row for row in _BRACKET_SKETCH_TAIL
+                             if row[0] == "design_activate_component"
+                             and isinstance(row[1], dict) and row[1].get("occurrence") == "root")
+BRACKET_PARAMETERS_PROFILES = (BRACKET_PARAMETERS + _BRACKET_COMPONENT + BRACKET_PROFILES
+                               + [_BRACKET_PROFILE_ROOT])
+_SKELETON = (BRACKET_PARAMETERS + _BRACKET_COMPONENT + _SKELETON_BENCH
+             + BRACKET_PROFILES + _BRACKET_SKETCH_TAIL)
+
 # --- the sketch TOOLS, as their own act: every beat that needs no solid, so the run draws before
 # it builds. What is missing from here is only what cannot be sketched in an empty
 # document - a dimension MEASURED to a model face, a text path REFUSED a model edge - and those

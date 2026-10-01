@@ -20,6 +20,7 @@ Run from the repo root:
 
 import argparse
 import inspect
+import json
 import os
 import sys
 
@@ -38,6 +39,7 @@ if COMMANDS_DIR not in sys.path:
     sys.path.insert(0, COMMANDS_DIR)
 
 MANIFEST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated", "TOOL_MANIFEST.md")
+README_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "README.md")
 
 # Tool name prefix -> family label. The order here is the manifest's section order; a tool falls into
 # the FIRST prefix it matches (so 'design_get' -> design, 'sys_find_tool' -> sys). A tool matching
@@ -280,6 +282,8 @@ _FAM_BEGIN = "<!-- BEGIN GENERATED FAMILIES (py -3 tests/gen_manifest.py) -->"
 _FAM_END = "<!-- END GENERATED FAMILIES -->"
 _CAT_BEGIN = "<!-- BEGIN GENERATED CATALOG (py -3 tests/gen_manifest.py) -->"
 _CAT_END = "<!-- END GENERATED CATALOG -->"
+_DEP_BEGIN = "<!-- BEGIN GENERATED ACT DEPENDENCIES (py -3 tests/gen_manifest.py) -->"
+_DEP_END = "<!-- END GENERATED ACT DEPENDENCIES -->"
 
 
 def render_families(data) -> str:
@@ -316,6 +320,42 @@ def render_catalog(data) -> str:
     return "\n".join(lines)
 
 
+def render_act_dependencies():
+    """Render the authored sweep act and local-producer map from the current program tables."""
+    live = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live")
+    if live not in sys.path:
+        sys.path.insert(0, live)
+    from verify_families import ACT_PRODUCER_OVERRIDES, FAMILY_DEPENDENCIES, PRODUCER_SLOTS
+    from verify_program import ACT_DEPENDENCIES
+
+    def labels(value):
+        return (value,) if isinstance(value, str) else value
+
+    lines = [_DEP_BEGIN, "### Family inputs and local producers", "",
+             "| Family | Default producers | Requires -> provides | Declared save slots | Camera cue |",
+             "|---|---|---|---|---|"]
+    for family, row in FAMILY_DEPENDENCIES.items():
+        producers = tuple(row["producers"])
+        slots = tuple(dict.fromkeys(slot for producer in producers
+                                    for slot in PRODUCER_SLOTS[producer]))
+        lines.append(f"| `{family}` | {', '.join(producers) or 'none'} | "
+                     f"{', '.join(labels(row['requires']))} -> {', '.join(labels(row['provides']))} | "
+                     f"{', '.join(slots) or 'none'} | {row['camera']} |")
+    lines.extend(["", "### Act policy readbacks", "",
+                  "Producer additions list late act-local setup beyond the family default. "
+                  "Entitlement and poll cells read the existing `ACT_NEEDS` and `POLL_AFTER` tables.", "",
+                  "| Act | Family | Producer additions | Workspace transitions | Precondition | Entitlement | Poll |",
+                  "|---|---|---|---|---|---|---|"])
+    for name, row in ACT_DEPENDENCIES.items():
+        producers = ", ".join(ACT_PRODUCER_OVERRIDES.get(name, ())) or "family default"
+        gate = row["entitlement"] or "always"
+        generation = json.dumps(row["generation"], ensure_ascii=True, separators=(",", ":"))
+        lines.append(f"| `{name}` | `{row['family']}` | {producers} | {row['workspace']} | "
+                     f"`{row['precondition'] or 'none'}` | `{gate}` | `{generation}` |")
+    lines.append(_DEP_END)
+    return "\n".join(lines)
+
+
 def _splice(path, begin, end, block, *, check=False):
     """Replace the region between begin/end markers in `path` with `block`. Returns True if already
     current. With check=True, does not write - just reports whether it would change."""
@@ -349,6 +389,7 @@ def main():
     rendered = render(data)
     fam_block = render_families(data)
     cat_block = render_catalog(data)
+    dependencies = render_act_dependencies()
 
     if args.check:
         stale = []
@@ -362,6 +403,8 @@ def main():
             stale.append("CLAUDE.md (families census)")
         if not _splice(TOOLS_CLAUDE_PATH, _CAT_BEGIN, _CAT_END, cat_block, check=True):
             stale.append("tools/CLAUDE.md (kinds+helpers catalog)")
+        if not _splice(README_PATH, _DEP_BEGIN, _DEP_END, dependencies, check=True):
+            stale.append("tests/README.md (sweep act dependencies)")
         if stale:
             print("Stale — run `py -3 tests/gen_manifest.py` and commit: " + ", ".join(stale),
                   file=sys.stderr)
@@ -373,6 +416,7 @@ def main():
         fh.write(rendered + "\n")
     _splice(CLAUDE_PATH, _FAM_BEGIN, _FAM_END, fam_block)
     _splice(TOOLS_CLAUDE_PATH, _CAT_BEGIN, _CAT_END, cat_block)
+    _splice(README_PATH, _DEP_BEGIN, _DEP_END, dependencies)
     print(f"Wrote {MANIFEST_PATH}, the CLAUDE.md families census, and the tools/CLAUDE.md catalog "
           f"({len(data['tools'])} tools, {len(data['kinds'])} kinds).")
 

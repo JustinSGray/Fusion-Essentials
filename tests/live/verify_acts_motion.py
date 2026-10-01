@@ -797,7 +797,7 @@ def _linked_screw_angle(joint, mm, deg_per_mm):
     return check
 
 
-_VISE = (
+_STOCK_VISE = (
     # THE BILLET FIRST, dressed before any of the fixture exists. Its look has to be settled before
     # the jaws are there to close on it - a stock that changes appearance halfway through the
     # clamping reads as the clamping doing it.
@@ -845,8 +845,9 @@ _VISE = (
         ("model_extrude", {"sketch_name": "HandleS", "profile_index": 0, "distance": 8},
          _extruded, None),
     ]
-) + [
-    ("design_activate_component", {"occurrence": "root"}, "ok", None),
+) + [("design_activate_component", {"occurrence": "root"}, "ok", None)]
+
+_VISE = _STOCK_VISE + [
     ("appearance_set", {"target": "ViseBase", "color": "#455A64"}, "ok", None),
     ("appearance_set", {"target": "JawFixed", "color": "#78909C"}, "ok", None),
     ("appearance_set", {"target": "JawMoving", "color": "#E5533C"}, "ok", None),
@@ -927,3 +928,8 @@ _VISE = (
     ("assembly_inspect_interference", {}, _fixture_rest_clean, None),
     ("view_screenshot", {"width": 500, "height": 400}, "ok", None),
 ]
+
+_VISE_CAPTURE = next(i for i, row in enumerate(_VISE)
+                    if row[0] == "assembly_capture_position"
+                    and isinstance(row[1], dict) and row[1].get("action") == "capture")
+_VISE_SHOWCASE_POSE = _VISE[len(_STOCK_VISE):_VISE_CAPTURE + 1]

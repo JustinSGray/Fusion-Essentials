@@ -832,7 +832,7 @@ _TARGET_SLASH = _target_begin() + [
 ] + _target_reads("ts_deleted", _TARGET_SLASH_GEOMETRY + [("A", "B", 5)], "ts_collision",
                   ("ts_collision_design", "Literal", "A/B", True)) + _target_end()
 
-# --- ACT 0: OVERTURE - orient, then open the one document the whole story lives in -------------
+# --- ACT 0: OVERTURE - orient, then open the first family document -----------------------------
 _OVERTURE = [
     ("doc_new", {}, _new_document, None),
     ("workspace_orient", {}, "ok", ("fusion_version", lambda p: p["fusion_version"])),

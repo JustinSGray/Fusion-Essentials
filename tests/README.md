@@ -24,6 +24,107 @@ py -3 tests/gen_all.py                       # regenerate the docs under tests/g
 `check_all.py` runs everything in dependency order and, when a stage fails, prints the command that
 repairs it. `py -3 tests/check_all.py --help` lists every stage.
 
+## Live sweep local inputs
+
+The family producers prepare only the state each owned document's acts consume. The map lists the
+authored dependencies and reads entitlement and generation policy from `verify_program.py`. Family
+state descriptions and named producer save slots are authored declarations, not exhaustive slot
+inference; workspace entries show literal transitions in each act, with `inherited` when none appears.
+Evidence times each setup fixture event separately; its span includes capability preflight and row
+filtering for those producer rows, while family census and document-open steps have their own events.
+Narrative time starts after gate filtering and ends before its later generation poll. Each generation
+poll has its own span. The existing `act_seconds` still includes its generation poll, so those values
+are not additive; `cleanup-total` covers teardown and home restoration as one span.
+
+<!-- BEGIN GENERATED ACT DEPENDENCIES (py -3 tests/gen_manifest.py) -->
+### Family inputs and local producers
+
+| Family | Default producers | Requires -> provides | Declared save slots | Camera cue |
+|---|---|---|---|---|
+| `sketch` | none | owned design document -> parametric bracket sketches | none | Skeleton and BracketBody |
+| `solids` | bracket-parameters-profiles | PartLen, PartWid, PartHt -> Bracket:1 solid, StockCenter | none | Bracket:1 |
+| `details` | bracket-parameters-profiles, finished-bracket, datum-details | Bracket:1 -> DatumBench, db_bore | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break, db_top, db_top2, db_bore | Bracket:1 and DatumBench |
+| `resize` | bracket-parameters-profiles, finished-bracket, datum-resize | Bracket:1, StockCenter -> Bracket:1, DatumBench | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break | Bracket:1 and DatumBench |
+| `vise` | bracket-parameters-profiles, finished-bracket | Bracket:1 -> clamped stock and vise | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break | ViseBase:1 and STOCK:1 |
+| `showcase` | bracket-parameters-profiles, finished-bracket, stock-vise, showcase-pose | Bracket:1, captured vise pose -> showcase fixtures and cameos | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break | ViseBase:1 and STOCK:1 |
+| `part_cam` | bracket-parameters-profiles, finished-bracket, stock-vise, recognition | Bracket:1, STOCK:1, StockCenter -> part CAM models and recognition inputs | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break, pocket_floor, recognized_cbore_walls | Bracket:1 and CAM setup |
+| `swarf_cam` | cam-tool-library | owned family document -> SwarfFrustum:1, SwarfSetup | none | SwarfFrustum:1 and setup |
+| `hub_cam` | cam-tool-library | owned family document -> hub CAM setup state | none | hub and CAM setup |
+| `surfaces` | none | owned family document -> family-local act state | none | authored act frames |
+| `mesh` | none | owned family document -> family-local act state | none | authored act frames |
+| `nesting` | none | owned family document -> family-local act state | none | authored act frames |
+| `motion` | none | owned family document -> family-local act state | none | authored act frames |
+| `cloud` | none | owned family document -> family-local act state | none | authored act frames |
+| `sheet_coupon` | none | owned family document -> family-local act state | none | authored act frames |
+| `sheet_selected` | none | owned family document -> family-local act state | none | authored act frames |
+| `sheet_positions` | none | owned family document -> family-local act state | none | authored act frames |
+| `sheet_flange` | none | owned family document -> family-local act state | none | authored act frames |
+| `finale` | none | owned family document -> family-local act state | none | authored act frames |
+
+### Act policy readbacks
+
+Producer additions list late act-local setup beyond the family default. Entitlement and poll cells read the existing `ACT_NEEDS` and `POLL_AFTER` tables.
+
+| Act | Family | Producer additions | Workspace transitions | Precondition | Entitlement | Poll |
+|---|---|---|---|---|---|---|
+| `ACT 0 - OVERTURE` | `sketch` | family default | inherited | `none` | `always` | `null` |
+| `ACT 1 - SKETCH + PARAMETERS` | `sketch` | family default | inherited | `none` | `always` | `null` |
+| `ACT 1b - SKETCH TOOLS` | `sketch` | family default | inherited | `none` | `always` | `null` |
+| `ACT 2 - SOLIDS` | `solids` | family default | inherited | `sketch_get` | `always` | `null` |
+| `ACT 3 - SURFACES` | `surfaces` | family default | inherited | `none` | `always` | `null` |
+| `ACT 4 - MESH` | `mesh` | family default | inherited | `none` | `always` | `null` |
+| `ACT 5 - DETAILS` | `details` | family default | inherited | `find_geometry` | `always` | `null` |
+| `ACT 6 - RESIZE` | `resize` | family default | inherited | `model_inspect` | `always` | `null` |
+| `ACT 6b - NESTING` | `nesting` | family default | inherited | `none` | `always` | `null` |
+| `ACT 7 - THE VISE` | `vise` | family default | inherited | `model_inspect` | `always` | `null` |
+| `ACT 7b - MOTION BENCH` | `motion` | family default | inherited | `none` | `always` | `null` |
+| `ACT 8 - SWARF CAMEO` | `swarf_cam` | family default | inherited | `none` | `always` | `null` |
+| `ACT 8b - THE HUB` | `hub_cam` | family default | inherited | `none` | `always` | `null` |
+| `ACT 9 - THE SHOWCASE` | `showcase` | family default | inherited | `none` | `always` | `null` |
+| `ACT 10a - CAM: JOB + GENERATE` | `part_cam` | family default | manufacture | `model_inspect` | `always` | `{"narrative":"DemoSetup","fallback":"Setup1"}` |
+| `ACT 10b - CAM: DELIVERABLES` | `part_cam` | family default | inherited | `cam_get` | `always` | `{"narrative":"Setup2","fallback":[]}` |
+| `ACT 10b1 - CAM: TEMPLATE MODES` | `part_cam` | family default | inherited | `cam_get` | `always` | `{"narrative":"TemplateGenerate","fallback":[]}` |
+| `ACT 10b1b - CAM: TEMPLATE CLEANUP` | `part_cam` | family default | inherited | `cam_get` | `always` | `null` |
+| `ACT 10b2 - CAM: COMPONENT SCOPE` | `swarf_cam` | family default | inherited | `none` | `always` | `{"narrative":"SwarfSetup2","fallback":"SwarfSetup2"}` |
+| `ACT 10c - CAM: EXTENSION STRATEGIES` | `swarf_cam` | family default | inherited | `none` | `machining_extension` | `{"narrative":["SwarfSetup","MultiAxisSetup"],"fallback":["SwarfSetup","MultiAxisSetup"]}` |
+| `ACT 10c4 - CAM: THE HUB JOB` | `hub_cam` | family default | inherited | `none` | `always` | `{"narrative":"HubTurn","fallback":[]}` |
+| `ACT 10c4b - CAM: THE TURNED PART` | `hub_cam` | family default | inherited | `none` | `always` | `null` |
+| `ACT 10c5 - CAM: THE HUB CONTOUR` | `hub_cam` | family default | inherited | `cam_get` | `always` | `{"narrative":"MillTop","fallback":[]}` |
+| `ACT 10c6 - CAM: THE DUMP ORACLE` | `hub_cam` | family default | inherited | `cam_get` | `always` | `null` |
+| `ACT 10c6b - CAM: THE 5-AXIS DUMP` | `swarf_cam` | family default | inherited | `none` | `always` | `null` |
+| `ACT 10c7 - CAM: THE MILLING CENSUS` | `hub_cam` | family default | inherited | `cam_get` | `always` | `{"narrative":"MillTop","fallback":[],"max_polls":70}` |
+| `ACT 10c8 - CAM: THE MILLING CENSUS READ` | `hub_cam` | family default | inherited | `cam_get` | `always` | `null` |
+| `ACT 10c8b - CAM: THE LONG FAMILIES` | `hub_cam` | family default | inherited | `cam_get` | `always` | `{"narrative":"MillTop","fallback":[],"max_polls":160}` |
+| `ACT 10c8c - CAM: THE LONG FAMILIES READ` | `hub_cam` | family default | inherited | `cam_get` | `always` | `null` |
+| `ACT 10c8d - CAM: POCKET CLEARING FIRST` | `hub_cam` | family default | inherited | `none` | `always` | `{"narrative":"PocketClearFirst","fallback":[]}` |
+| `ACT 10c8e - CAM: POCKET CLEARING READ` | `hub_cam` | family default | inherited | `cam_get` | `always` | `null` |
+| `ACT 10c9 - CAM: THE TURNING CENSUS` | `hub_cam` | family default | inherited | `cam_get` | `always` | `{"narrative":"HubTurn","fallback":[]}` |
+| `ACT 10c10 - CAM: THE TURNING CENSUS READ` | `hub_cam` | family default | inherited | `cam_get` | `always` | `null` |
+| `ACT 10c11 - CAM: THE EXTENSION FAMILIES` | `hub_cam` | family default | inherited | `none` | `machining_extension` | `{"narrative":"MillTop","fallback":[],"max_polls":70}` |
+| `ACT 10c12 - CAM: THE EXTENSION FAMILIES READ` | `hub_cam` | family default | inherited | `none` | `machining_extension` | `null` |
+| `ACT 10c13 - CAM: THE ROTARY FAMILIES` | `hub_cam` | family default | inherited | `none` | `machining_extension` | `{"narrative":"HubRotary","fallback":[],"max_polls":70}` |
+| `ACT 10c14 - CAM: THE ROTARY FAMILIES READ` | `hub_cam` | family default | inherited | `none` | `machining_extension` | `null` |
+| `ACT 10c15 - CAM: THE ADDITIVE BUILD` | `hub_cam` | swarf-frustum, cam-extension | inherited | `none` | `machining_extension` | `{"narrative":"MultiAxisSetup","fallback":[],"max_polls":70}` |
+| `ACT 10d - CAM: THE SECOND SETUP` | `part_cam` | family default | design -> manufacture | `cam_get` | `always` | `{"narrative":"FlipSetup","fallback":[]}` |
+| `ACT 10e - CAM: MULTI-SETUP POST` | `part_cam` | swarf-frustum, cam-scope, cam-extension | inherited | `cam_get` | `always` | `{"narrative":"document","fallback":[],"max_polls":160}` |
+| `ACT 10f - CAM: THE TREE LEFT BEHIND` | `part_cam` | family default | inherited | `cam_get` | `always` | `null` |
+| `ACT 11a - CLOUD: THE DATA MODEL` | `cloud` | family default | inherited | `none` | `cloud_tier` | `null` |
+| `ACT 11b - CLOUD: THE SAVED DOCUMENT` | `cloud` | family default | inherited | `none` | `cloud_tier` | `null` |
+| `ACT 11b2 - CLOUD: LINK GUARD REVIEW` | `cloud` | family default | inherited | `none` | `cloud_link_crash_review_authorization` | `null` |
+| `ACT 11c - CLOUD: THE DRAWING` | `cloud` | family default | inherited | `none` | `cloud_tier` | `null` |
+| `ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE` | `cloud` | family default | manufacture | `none` | `cloud_tier` | `null` |
+| `ACT 12 - SHEET METAL COUPON` | `sheet_coupon` | family default | manufacture | `none` | `always` | `{"narrative":"SM Sweep Laser Setup","fallback":[]}` |
+| `ACT 12b - SHEET METAL LASER OUTPUT` | `sheet_coupon` | family default | inherited | `none` | `always` | `{"narrative":"SM Sweep Laser Setup","fallback":[]}` |
+| `ACT 12b1 - SHEET METAL SOURCE UPDATE` | `sheet_coupon` | family default | inherited | `none` | `always` | `{"narrative":"SM Sweep Laser Setup","fallback":[]}` |
+| `ACT 12b2 - SHEET METAL CAM RESTORE` | `sheet_coupon` | family default | inherited | `none` | `always` | `null` |
+| `ACT 12c - SHEET METAL DRAWING` | `sheet_coupon` | family default | inherited | `none` | `cloud_tier` | `null` |
+| `ACT 12d - SHEET METAL CLEANUP` | `sheet_coupon` | family default | inherited | `none` | `always` | `null` |
+| `ACT 12e - SHEET METAL SELECTED BEND` | `sheet_selected` | family default | inherited | `none` | `always` | `null` |
+| `ACT 12f - SHEET METAL FOLD POSITIONS` | `sheet_positions` | family default | inherited | `none` | `always` | `null` |
+| `ACT 12g - SHEET METAL FLANGE FAMILY` | `sheet_flange` | family default | inherited | `none` | `always` | `null` |
+| `FINALE` | `finale` | family default | design | `none` | `always` | `null` |
+<!-- END GENERATED ACT DEPENDENCIES -->
+
 A pass is either LIVE-VERIFIED (the stamp on the measured API facts was checked against a running
 Fusion) or OFFLINE (you asked for it explicitly; the mocks were not re-confirmed). Either way it
 checks the live-run receipt: `tests/live/VERIFIED_TOOLS.md` carries a source hash from the last green

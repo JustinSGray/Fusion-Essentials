@@ -1191,3 +1191,29 @@ _SOLIDS = [
     *_SOLID_TOOL,
     *_TANGENT_PATH,
 ]
+
+
+def _component_block(steps, component, last_tool, last_key=None, last_value=None):
+    """Take one named component's rows through its last required effect."""
+    starts = [i for i, row in enumerate(steps)
+              if row[0] == "model_create_component" and isinstance(row[1], dict)
+              and row[1].get("name") == component]
+    if len(starts) != 1:
+        raise ValueError("component fixture boundary is not unique: " + component)
+    start = starts[0]
+    ends = [i for i in range(start + 1, len(steps))
+            if steps[i][0] == last_tool
+            and (last_key is None or (isinstance(steps[i][1], dict)
+                                      and steps[i][1].get(last_key) == last_value))]
+    if not ends:
+        raise ValueError("component fixture has no last effect: " + component)
+    return list(steps[start:ends[0] + 1])
+
+
+_STOCK_CENTER_END = next(i for i, row in enumerate(_SOLIDS)
+                         if row[0] == "joint_create_origin" and isinstance(row[1], dict)
+                         and row[1].get("name") == "StockCenter")
+FINISHED_BRACKET = list(_SOLIDS[:_STOCK_CENTER_END + 1])
+DATUM_BENCH_DETAILS = _component_block(_SOLIDS, "DatumBench", "find_geometry", "kind",
+                                       "cylinder_face")
+DATUM_BENCH_RESIZE = _component_block(_SOLIDS, "DatumBench", "model_extrude")

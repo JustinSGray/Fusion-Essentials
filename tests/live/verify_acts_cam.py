@@ -3935,7 +3935,7 @@ def _posted_turning(setup, program):
 # ACT 7c: the cameo the extension strategies are machined on, built while Design is still the
 # active workspace. The sketch and the component ride the sketch phase; what stays here is the
 # drafted extrude and the measurement that says the fixture came out as authored.
-_SWARF_RIG = [
+_SWARF_FRUSTUM = [
     ("model_create_component", {"name": _SW_COMP, "activate": True}, _made_component, None),
     ("sketch_create", {"plane": "xy", "name": _SW_SKETCH}, "ok", None),
     ("sketch_add_geometry", {"geometry": [{"kind": "rectangle",
@@ -3950,6 +3950,9 @@ _SWARF_RIG = [
                        "taper_deg": -12, "operation": "new"}, _extruded, None),
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
     ("model_inspect", {"target": _SW_COMP + ":1"}, _frustum_measured, None),
+]
+
+_SWARF_RIG = _SWARF_FRUSTUM + [
     # THE DIHEDRAL BENCH, built beside it: an L prism is the one shape whose edge census is known by
     # hand - 18 edges, of which exactly the one at the reflex corner is concave - so the edge_filter
     # path has a body to classify. Nothing later reads this body.

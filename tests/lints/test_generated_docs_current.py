@@ -27,6 +27,7 @@ _OUTPUT_TREE = os.path.join(TESTS_DIR, "generated")
 _SKILL_TREE = os.path.join(REPO_ROOT, ".claude", "skills", "parametric-cad-design")
 _OUTPUT_FILES = (
     os.path.join(TESTS_DIR, "api_surface.py"),
+    os.path.join(TESTS_DIR, "README.md"),
     os.path.join(REPO_ROOT, "CLAUDE.md"),
     os.path.join(REPO_ROOT, "commands", "mcpServer", "tools", "CLAUDE.md"),
 )

@@ -15,6 +15,31 @@ from conftest import load_tool_verify as _load_verify, register_all_tools
 
 
 class TestToolVerifyComplete:
+    def test_authored_act_dependencies_and_producer_saves_are_complete(self):
+        verify = _load_verify()
+        acts = {row[0] for row in verify.ACTS}
+        families = set(verify.FAMILY_PROGRAM.values())
+        assert set(verify.ACT_DEPENDENCIES) == acts
+        assert set(verify.FAMILY_DEPENDENCIES) == families
+        assert set(verify.PRODUCER_ROWS) == set(verify.PRODUCER_SLOTS)
+        assert set(verify.ACT_PRODUCER_OVERRIDES) <= acts
+
+        unknown = sorted({producer for row in verify.ACT_DEPENDENCIES.values()
+                          for producer in row["producers"]} - set(verify.PRODUCER_ROWS))
+        assert not unknown
+        missing_saves = {}
+        for producer, slots in verify.PRODUCER_SLOTS.items():
+            saved = {row[3][0] for row in verify.PRODUCER_ROWS[producer]
+                     if len(row) > 3 and isinstance(row[3], tuple)
+                     and row[3] and isinstance(row[3][0], str)}
+            absent = sorted(set(slots) - saved)
+            if absent:
+                missing_saves[producer] = absent
+        assert not missing_saves
+        for name, row in verify.ACT_DEPENDENCIES.items():
+            assert row["entitlement"] == verify.ACT_NEEDS.get(name)
+            assert row["generation"] == verify.POLL_AFTER.get(name)
+
     def test_every_tool_is_covered_excluded_or_pending(self):
         verify = _load_verify()
         registered = {i.primitive.name for i in register_all_tools()}

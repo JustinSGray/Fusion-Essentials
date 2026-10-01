@@ -26,7 +26,14 @@ import tool_verify  # noqa: E402
 import verify_core  # noqa: E402  probe_capabilities/capability_skip_reason read their tables here
 import verify_runner  # noqa: E402  source_hash reads SRC_ROOT/_HERE off ITS namespace, not the facade
 import verify_acts_doc  # noqa: E402  canonical document-handle lifecycle rows
-from verify_families import family_names, fixture_steps, showcase_shapes  # noqa: E402
+import verify_acts_cam  # noqa: E402
+import verify_acts_model_solids  # noqa: E402
+import verify_acts_motion  # noqa: E402
+import verify_acts_sketch  # noqa: E402
+from verify_families import (  # noqa: E402
+    BRACKET_PARAMETERS_PROFILES, FINISHED_BRACKET, DATUM_BENCH_DETAILS,
+    DATUM_BENCH_RESIZE, STOCK_VISE, _VISE_SHOWCASE_POSE, _SWARF_FRUSTUM,
+    family_names, fixture_steps, showcase_shapes)
 
 _ATTESTATION = {"implementation_fingerprint": "a" * 64, "schema_fingerprint": "b" * 64,
                 "load_id": "fixture-load", "session_id": "fixture-session"}
@@ -280,6 +287,7 @@ class _Clock:
 
     def __init__(self, elapsed):
         self.elapsed, self.reads = elapsed, 0
+        self.performance = 0.0
 
     def time(self):
         self.reads += 1
@@ -287,6 +295,10 @@ class _Clock:
 
     def sleep(self, seconds):
         pass
+
+    def perf_counter(self):
+        self.performance += 0.01
+        return self.performance
 
     def strftime(self, fmt):
         return "2026-07-11"
@@ -2653,6 +2665,11 @@ class TestOwnedFamilies:
         code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts)
         assert code == 0 and wrote == [True]
         assert evidence["receipt_written"] is True
+        timed = [row for row in evidence["family_events"] if "elapsed_s" in row]
+        assert timed and all(isinstance(row["elapsed_s"], (int, float))
+                             and row["elapsed_s"] >= 0 for row in timed)
+        assert {row["phase"] for row in timed} >= {
+            "setup", "narrative ACT 3 - SURFACES", "cleanup-total"}
         assert wire.created == 2 and wire.active == "session:home"
         assert set(wire.documents) == {"session:home", "session:intruder"}
 
@@ -2816,11 +2833,23 @@ def test_cam_fixtures_initialize_product_then_build_models_in_design():
 def test_late_part_cam_fixture_queries_its_placed_frustum_and_gates_extension():
     """The local top-face query follows its frustum and basic setup survives without extension."""
     base = fixture_steps("part_cam", before_act="ACT 10e", entitled=False)
+    raw = fixture_steps("part_cam", before_act="ACT 10e", entitled=False, raw=True)
     rectangle = next(geometry for tool, args, _pred, _save in base
                      if tool == "sketch_add_geometry" and args["sketch_name"] == "FrustumSketch"
                      for geometry in args["geometry"] if geometry["kind"] == "rectangle")
+    raw_rectangle = next(geometry for tool, args, _pred, _save in raw
+                         if tool == "sketch_add_geometry" and args["sketch_name"] == "FrustumSketch"
+                         for geometry in args["geometry"] if geometry["kind"] == "rectangle")
     top_face = next(args for tool, args, _pred, save in base
                     if tool == "find_geometry" and save and save[0] == "scope_top_face")
+    raw_top_face = next(args for tool, args, _pred, save in raw
+                        if tool == "find_geometry" and save and save[0] == "scope_top_face")
+    dx, dy = rectangle["x1"] - raw_rectangle["x1"], rectangle["y1"] - raw_rectangle["y1"]
+    assert rectangle["x2"] - raw_rectangle["x2"] == dx
+    assert rectangle["y2"] - raw_rectangle["y2"] == dy
+    assert top_face["nearest_to"] == [raw_top_face["nearest_to"][0] + dx,
+                                     raw_top_face["nearest_to"][1] + dy,
+                                     raw_top_face["nearest_to"][2]]
     assert top_face["nearest_to"][:2] == [
         (rectangle["x1"] + rectangle["x2"]) / 2,
         (rectangle["y1"] + rectangle["y2"]) / 2]
@@ -2829,3 +2858,62 @@ def test_late_part_cam_fixture_queries_its_placed_frustum_and_gates_extension():
     full = fixture_steps("part_cam", before_act="ACT 10e", entitled=True)
     assert [args["setup"] for tool, args, _pred, _save in full
             if tool == "cam_edit_setup"] == ["SwarfSetup2", "SwarfSetup", "MultiAxisSetup"]
+
+
+def test_bracket_and_datum_producers_keep_authored_geometry_and_root_context():
+    sketch = verify_acts_sketch
+    assert BRACKET_PARAMETERS_PROFILES == (
+        sketch.BRACKET_PARAMETERS + sketch._BRACKET_COMPONENT + sketch.BRACKET_PROFILES
+        + [sketch._BRACKET_PROFILE_ROOT])
+    assert any(row[0] == "param_get" for row in BRACKET_PARAMETERS_PROFILES)
+    assert any(row[0] == "model_create_component" and row[1].get("name") == "Bracket"
+               for row in BRACKET_PARAMETERS_PROFILES)
+    assert BRACKET_PARAMETERS_PROFILES[-1][0] == "design_activate_component"
+    assert BRACKET_PARAMETERS_PROFILES[-1][1]["occurrence"] == "root"
+    assert not any(row[0] == "sketch_create" and row[1].get("name") in ("Skeleton", "NamePlate")
+                   for row in BRACKET_PARAMETERS_PROFILES)
+    assert any(row[0] == "sketch_create" and row[1].get("name") == "Skeleton"
+               for row in sketch._SKELETON)
+    assert any(row[0] == "sketch_create" and row[1].get("name") == "NamePlate"
+               for row in sketch._SKELETON)
+
+    solids = verify_acts_model_solids
+    assert FINISHED_BRACKET == solids._SOLIDS[:solids._STOCK_CENTER_END + 1]
+    assert FINISHED_BRACKET[-1][1]["name"] == "StockCenter"
+    assert DATUM_BENCH_DETAILS[-1][0] == "find_geometry"
+    assert DATUM_BENCH_DETAILS[-1][3][0] == "db_bore"
+    assert DATUM_BENCH_RESIZE[-1][0] == "model_extrude"
+    assert DATUM_BENCH_RESIZE[-1][1]["sketch_name"] == "DBPad"
+
+
+def test_vise_and_cam_producers_stop_at_their_consumed_boundaries():
+    motion = verify_acts_motion
+    assert STOCK_VISE == list(motion._STOCK_VISE)
+    assert STOCK_VISE[-1] == ("design_activate_component", {"occurrence": "root"}, "ok", None)
+    appearances = [row[1].get("target") for row in STOCK_VISE if row[0] == "appearance_set"]
+    assert "STOCK" in appearances
+    assert not {"ViseBase", "JawFixed", "JawMoving", "LeadScrew"} & set(appearances)
+    capture = next(i for i, row in enumerate(motion._VISE)
+                   if row[0] == "assembly_capture_position"
+                   and row[1].get("action") == "capture")
+    assert _VISE_SHOWCASE_POSE == motion._VISE[len(STOCK_VISE):capture + 1]
+    assert _VISE_SHOWCASE_POSE[-1][1]["action"] == "capture"
+    assert any(row[0] == "appearance_set" for row in _VISE_SHOWCASE_POSE)
+
+    cam = verify_acts_cam
+    assert _SWARF_FRUSTUM == cam._SWARF_RIG[:len(_SWARF_FRUSTUM)]
+    assert _SWARF_FRUSTUM[-1][0] == "model_inspect"
+    assert any(row[0] == "model_create_component" and row[1].get("name") == cam._L_COMP
+               for row in cam._SWARF_RIG)
+    late = fixture_steps("part_cam", before_act="ACT 10e", entitled=False)
+    assert not any(row[0] == "model_create_component" and row[1].get("name") == cam._L_COMP
+                   for row in late)
+    early = fixture_steps("part_cam")
+    components = {row[1].get("name") for row in early + late
+                  if row[0] == "model_create_component"}
+    assert {"Bracket", cam._SW_COMP} <= components
+    ambiguous = next(row for row in cam._CAM_SCOPE
+                     if row[0] == "cam_select_geometry" and callable(row[1])
+                     and isinstance(row[2], verify_core._Refusal))
+    assert ambiguous[1]({"setup2_op": "fixture-op"})["bodies"] == ["Body1"]
+    assert "component" not in ambiguous[1]({"setup2_op": "fixture-op"})

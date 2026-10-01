@@ -29,8 +29,8 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source 66980bdaeb81235c736558c0df633dbc4ff0e035687f97914de7a1f0036a145e | Fusion 2706.0.97 | verified 2026-10-01
-Loaded: implementation 866f2d92cc82660ae08dca509d63a1e86ec79a6adf0267f084360915d46af999 | schema 57dab3b70416917fdbdace6ef29e0cc8df84a17a70ab199bd072afda2d94f3de | load 63a427899cf941268e4870f904d715ae | session 7f1c9ab6619c42a2b1e2dfb1cd0c4ca4
+Stamp: source dc3ee5066f2cf46fc60a9edd6b2022dbf0af119d9f191b2ba5bfb1223515ec44 | Fusion 2706.0.97 | verified 2026-10-01
+Loaded: implementation 866f2d92cc82660ae08dca509d63a1e86ec79a6adf0267f084360915d46af999 | schema 57dab3b70416917fdbdace6ef29e0cc8df84a17a70ab199bd072afda2d94f3de | load 69e8cc5e41354096b7337305e03f61bc | session 65083c6c62e04013b0954c541f1371bb
 
 203 covered / 1 called / 5 refusals-only / 4 skipped(reason) / 0 pending
 
@@ -162,7 +162,7 @@ Loaded: implementation 866f2d92cc82660ae08dca509d63a1e86ec79a6adf0267f084360915d
 | doc_insert_derive | covered |  |
 | doc_insert_import | covered | re-import that STEP from disk into the live design; then the DXF back onto a plane as sketches, an SVG into a sketch made for it, and IGES / SMT / f3d as solids - each with the format named explicitly, which is what makes the last row (a format contradicting its file's extension) a refusal instead of a silent mis-read |
 | doc_insert_occurrence | covered | insert the saved source into the host as an XREF - 'is_reference' is what gives doc_update_xref something to walk |
-| doc_new | covered | open the one document the whole story lives in |
+| doc_new | covered | open a local document for the current sweep family |
 | doc_open | covered | open the copy and then the generated drawing by lineage URN, each named back with the URN it resolved; the switch is async, so the doc_get after it is what says the session is on it |
 | doc_restore_version | covered | promote the FIRST version, one the tip has moved past - promoting the latest takes the tool's early return, with no promote call and no tip either side to compare. The open session keeps its parameters through it, and the save after it writes them as the new tip; a pending tip is reported, never called a failure |
 | doc_save | covered | version the source in place, twice: once after the parameter is added, and once for the edit the drawing refresh is read against |

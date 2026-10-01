@@ -32,7 +32,9 @@ from verify_acts_sheet import (_SHEET, _SHEET_CAM_READ, _SHEET_DRAWING,
                                _SHEET_CLEANUP, _SHEET_SELECTED, _SHEET_POSITIONS,
                                _SHEET_CAM_REFRESH, _SHEET_CAM_RESTORE)
 from verify_acts_sheet_flange import _SHEET_FLANGE
-from verify_families import FAMILY_GROUPS, FAMILY_SLOTS, family_names, fixture_steps
+from verify_families import (
+    ACT_PRODUCER_OVERRIDES, FAMILY_DEPENDENCIES, FAMILY_GROUPS, FAMILY_SLOTS,
+    PRODUCER_ROWS, PRODUCER_SLOTS, family_names, fixture_steps)
 from verify_core import CLOUD_LINK_CRASH_REVIEW, CLOUD_TIER, _DWELL, _PLANE_VIEW, _SKETCH_PLANE, _watch
 from verify_layout import (
     _CHUNK_OF, _COMPONENTS, _PATTERNED, _PLACED_BOX, _SLOTS, _family_slots, _framed,
@@ -494,6 +496,32 @@ POLL_AFTER = {
     "ACT 10e - CAM: MULTI-SETUP POST": {"narrative": "document", "fallback": [], "max_polls": 160},
 }
 
+ACT_DEPENDENCIES = {}
+for _act in ACTS:
+    _name, _precondition, _narrative, _fallback = _act
+    _family = FAMILY_PROGRAM[_name]
+    _family_dep = FAMILY_DEPENDENCIES[_family]
+    _producers = tuple(dict.fromkeys(
+        tuple(_family_dep["producers"]) + ACT_PRODUCER_OVERRIDES.get(_name, ())))
+    _slots = tuple(dict.fromkeys(slot for producer in _producers
+                                 for slot in PRODUCER_SLOTS[producer]))
+    _workspace_steps = (_narrative or []) + (_fallback or [])
+    _workspaces = tuple(dict.fromkeys(
+        step[1].get("workspace") for step in _workspace_steps
+        if step[0] == "view_switch_workspace" and isinstance(step[1], dict)))
+    ACT_DEPENDENCIES[_name] = {
+        "family": _family,
+        "producers": tuple(_producers),
+        "slots": _slots,
+        "requires": _family_dep["requires"],
+        "provides": _family_dep["provides"],
+        "workspace": " -> ".join(_workspaces) or "inherited",
+        "camera": _family_dep["camera"],
+        "precondition": _precondition[0] if _precondition else None,
+        "entitlement": ACT_NEEDS.get(_name),
+        "generation": POLL_AFTER.get(_name),
+    }
+
 # STEPS: the flat union of every act's narrative + fallback steps - the coverage ledger the
 # completeness lint reads (every registered tool must appear as some step's tool). run() iterates
 # ACTS (choosing narrative or fallback per act); STEPS exists so the lint sees the whole surface.
@@ -515,7 +543,7 @@ STORY = {
     "sheet_create_rip": ("split a filleted, shelled corner by face and by edge, each a landed "
                          "volume drop; the same edge's two vertices refused"),
     "sheet_create_join_by_bend": "bridge two plates' rim edges into one body with a new bend",
-    "doc_new": "open the one document the whole story lives in",
+    "doc_new": "open a local document for the current sweep family",
     "workspace_orient": ("orient: read the empty design before building; and the entitlement block "
                          "as the CAM job opens - exactly the four sentinel strategies, each "
                          "answering its own isGenerationAllowed flag rather than reading null. It "

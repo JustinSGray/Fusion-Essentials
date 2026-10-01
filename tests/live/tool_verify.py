@@ -147,8 +147,10 @@ from verify_acts_hub import (  # noqa: F401
 
 from verify_program import (  # noqa: F401
     _ACT_PROGRAM, _SKETCH_PHASE, _placed_boxes, ACTS, FAMILY_PROGRAM,
-    ACT_NEEDS, POLL_AFTER, STEPS, STORY,
+    ACT_DEPENDENCIES, ACT_NEEDS, POLL_AFTER, STEPS, STORY,
     EXCLUDED, PENDING)
+from verify_families import (  # noqa: F401
+    ACT_PRODUCER_OVERRIDES, FAMILY_DEPENDENCIES, PRODUCER_ROWS, PRODUCER_SLOTS)
 
 from verify_runner import (  # noqa: F401
     source_hash, _STAMP_RE, write_verified, check, _shoot, run_steps, judged_steps,
