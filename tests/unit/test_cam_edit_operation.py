@@ -11,6 +11,7 @@ live Fusion here — fakes mimic CAMParameters.
 
 import json
 import types
+import pytest
 
 from conftest import (FakeCAMFolder, FakeCAMParameter, FakeCAMParameters, FakeTool,
                       _NamedCollection, load_tool, make_cam)
@@ -1195,10 +1196,32 @@ class InvalidatingToolOp(FakeOp):
         self.isToolpathValid = False
 
 
+@pytest.fixture
+def selector_conflict_operation(monkeypatch):
+    """Install one operation with a held cutter and a different document-library cutter."""
+    op = FakeOp("Adaptive1", {"tool_stepover": "2."})
+    old_tool = FakeLibTool("Old Cutter", 3)
+    op.tool = old_tool
+    _install_op(monkeypatch, op, doc_tools=[FakeLibTool("New Cutter", 7)])
+    return op, old_tool
+
+
 class TestToolChange:
     """The WRITE side of Operation.tool: resolve a library tool by the addressing
     cam_create_operation takes, assign it, and compare what Operation.tool READS back - two fetches
     of one tool are different objects, so the description and tool number are the comparison."""
+
+    def test_conflicting_selectors_refuse_before_any_requested_edit(self, selector_conflict_operation):
+        op, old_tool = selector_conflict_operation
+        result = ce.handler(operation="Adaptive1", tool_scope="document", tool_library_url="u",
+                            tool_index=0, parameters={"tool_stepover": "5"},
+                            suppressed=True, rename="Changed", preset="Other")
+        assert result["isError"] is True
+        assert "tool_scope='document'" in result["message"] and "tool_library_url='u'" in result["message"]
+        assert "without document scope" in result["message"]
+        assert op.tool is old_tool and op.name == "Adaptive1" and op.toolPreset is None
+        assert op.isSuppressed is False and op.hasToolpath is True
+        assert op.parameters.itemByName("tool_stepover").expression == "2."
 
     def test_assigns_a_document_library_tool_and_reads_its_identity_back(self, monkeypatch):
         op = FakeOp("Adaptive1", {"tool_stepover": "2."})       # a template op arriving with no tool

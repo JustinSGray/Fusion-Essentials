@@ -1,6 +1,7 @@
 """Unit tests for model_pattern_rectangular.py - the grid, its directions and its counts."""
 
 import types
+import pytest
 from conftest import (BRepBody, BRepEdge, BRepFace, Circle3D, FakePoint, FakeVector3D, Line3D,
                       MakeComp, MakeDesign, Plane, _NamedCollection, entity_proxy, install,
                       load_tool, make_occurrence, payload)
@@ -272,7 +273,22 @@ class TestResolution:
         assert set(out["entities"]) == {"A:1", "B:1"}
 
 
+@pytest.fixture
+def rectangular_count_fixture():
+    """Install a single occurrence and its measured rectangular-pattern collection."""
+    return _install(["Block:1"])[0]
+
+
 class TestRectangular:
+
+    @pytest.mark.parametrize("quantity_two", [0, -2])
+    def test_invalid_second_quantity_refuses_before_feature_input(
+            self, rectangular_count_fixture, quantity_two):
+        res = pt.handler(occurrences="Block:1", quantity_one=2, quantity_two=quantity_two)
+        assert res["isError"] is True
+        assert f"quantity_two={quantity_two}" in res["message"] and "Use 1" in res["message"]
+        assert rectangular_count_fixture.last_input is None
+        assert rectangular_count_fixture.add_calls == 0
 
     def test_single_direction_scales_spacing(self):
         rf, _ = _install(["Block:1"])
@@ -331,12 +347,13 @@ class TestRectangular:
         assert "'direction_two': 'w' is not a world axis" in res["message"]
 
     def test_single_row_direction_two_none_in_payload(self):
-        _install(["Block:1"])
+        rf, _ = _install(["Block:1"])
         out = payload(pt.handler(occurrences="Block:1", quantity_one=4, spacing_one=10,
                                               quantity_two=1))
         # quantity_two==1 -> direction_two reported as None, total = quantity_one
         assert out["direction_two"] is None
         assert out["total_instances"] == 4
+        assert rf.last_input.dir_two[1] == ("real", 1) and rf.add_calls == 1
 
     def test_spacing_scaled_inches(self):
         rf, _ = _install(["Block:1"])

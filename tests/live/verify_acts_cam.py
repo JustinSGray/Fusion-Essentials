@@ -15,6 +15,7 @@ hasToolpath reads TRUE on an empty swarf toolpath, so it cannot answer that ques
 """
 
 import json
+import math
 import re
 import sys
 import time
@@ -24,6 +25,7 @@ from verify_core import (
     _extruded, _face_up_at, _fg, _fgn, _imported, _joint_origin_computed, _made_component,
     _matched, _measured, _near, _needs, _num, _param_read, _param_set_to, _pocket_selected,
     _recall, _refused, _selected_saved, _watch, facade)
+from verify_acts_model_sweep import _retire_compare, _retire_reads
 
 # THE NAMES THE STORY BUILDS UNDER, in one place for the acts that have to agree on them: the
 # modelling acts create the part and the parameter that drives it, the vise act creates the billet
@@ -835,6 +837,83 @@ def _wcs_origin_at(recall_key):
 # ACT 10a: CAM on the REAL part in the REAL fixture - job built and generated. The scratch-stock
 # rows remain as this act's fallback, so the CAM family stays covered when the story world
 # could not build.
+def _selector_tool_state(p):
+    """Return the complete cutter and requested feed/speed rows for selector comparisons."""
+    tool, params = p.get("tool") or {}, p.get("parameters") or {}
+    dimensions = tool.get("dimensions") or {}
+    diameter = dimensions.get("diameter")
+    rows = params.get("requested_parameters") or []
+    if (not tool.get("operation") or not _num(diameter) or not math.isfinite(diameter)
+            or diameter <= 0 or dimensions.get("units") != "mm"
+            or params.get("operation") != tool["operation"]
+            or params.get("requested_parameter_count") != len(rows) or len(rows) != 3
+            or {r.get("name") for r in rows} != {"tool_diameter", "tool_feedCutting", "tool_spindleSpeed"}
+            or any(not isinstance(r.get("expression"), str) for r in rows)):
+        return None
+    return {"tool": tool, "parameters": params}
+
+
+def _selector_operations_state(p):
+    """Return a complete operation census for the selector fixture's setup."""
+    rec, rows = _setup_operation_rows(p, CAM_SETUP)
+    if not rec or rec.get("operations_truncated") is not False or not rows or any(not r.get("name") for r in rows):
+        return None
+    return rec
+
+
+def _selector_cutter(diameter):
+    """Require independent Operation.tool geometry for a legal selector control."""
+    def check(p):
+        state = _selector_tool_state(p)
+        return _measured("selector control cutting diameter", state,
+                         state is not None and _near(state["tool"]["dimensions"].get("diameter"), diameter, .001)
+                         and state["tool"]["dimensions"].get("units") == "mm")
+    return check
+
+
+def _selector_conflict_rows():
+    """Exercise selector conflicts beside legal document/shared forms and unchanged witnesses."""
+    library = "systemlibraryroot://Samples/Milling Tools (Metric)"
+    operation = "SelectorControl"
+    read = {"include": ["tool", "parameters"], "operation": operation,
+            "parameter_names": ["tool_diameter", "tool_feedCutting", "tool_spindleSpeed"]}
+    rows = [("cam_get", {"include": ["library"], "scope": "fusion", "library": library},
+             lambda p: _measured("shared selector library index 0 is a 12 mm cutter", p.get("library"),
+                 any(t.get("index") == 0 and t.get("diameter_mm") == 12
+                     for t in (p.get("library") or {}).get("tools", []))), None),
+            ("cam_create_operation", {"setup": CAM_SETUP, "strategy": "face", "name": operation,
+                 "tool_library_url": library, "tool_index": 0, "generate": False},
+             _op_named(CAM_SETUP, "face", operation), None),
+            ("cam_get", read, _selector_cutter(12), None),
+            ("cam_edit_operation", {"operation": operation, "tool_scope": "document", "tool_index": _FLAT_MILL},
+             lambda p: p.get("operation") == operation and p.get("tool_index") == _FLAT_MILL, None),
+            ("cam_get", read, _selector_cutter(10), None),
+            ("cam_edit_operation", {"operation": operation, "tool_library_url": library, "tool_index": 0},
+             lambda p: p.get("operation") == operation and p.get("tool_index") == 0, None),
+            ("cam_get", read, _selector_cutter(12), None)]
+    def independent_reads(after):
+        result = _retire_reads("selector_refusal", [PART_COMP + ":1", STOCK_COMP + ":1"], [], after=after)
+        result.extend([
+            ("cam_get", {"include": ["operations"], "setup": CAM_SETUP},
+             _retire_compare("selector_operations", _selector_operations_state, after), None),
+            ("cam_get", read, _retire_compare("selector_target", _selector_tool_state, after), None),
+            ("cam_get", lambda c: {**read, "operation": _ctx_get(c, "face_op", "face witness")},
+             _retire_compare("selector_witness", _selector_tool_state, after), None)])
+        return result
+    rows.extend(independent_reads(False))
+    refusal = _refused("tool_scope='document'", "tool_library_url=", "without a URL")
+    rows.append(("cam_create_operation", {"setup": CAM_SETUP, "strategy": "face", "name": "SelectorRefused",
+                 "tool_scope": "document", "tool_library_url": library, "tool_index": _FLAT_MILL}, refusal, None))
+    rows.extend(independent_reads(True))
+    rows.append(("cam_edit_operation", {"operation": operation, "tool_scope": "document",
+                 "tool_library_url": library, "tool_index": _FLAT_MILL,
+                 "parameters": {"tool_feedCutting": "1234"}, "suppressed": True,
+                 "rename": "SelectorRenamed", "preset": "Default preset"}, refusal, None))
+    rows.extend(independent_reads(True))
+    rows.append(("cam_delete", {"entity": operation}, lambda p: _op_deleted(operation)(p), None))
+    return rows
+
+
 _CAM_STORY = [
     # the machining region: the part seated in the vise, which is what every CAM beat acts on.
     _watch([STOCK_COMP + ":1"]),
@@ -1056,6 +1135,7 @@ _CAM_STORY = [
                               "generate": False},
      _op_created(CAM_SETUP, "adaptive"),
      ("adaptive_op", _recall("adaptive_op", lambda p: p["operation"]))),
+    *_selector_conflict_rows(),
     ("cam_create_operation", {"setup": CAM_SETUP, "strategy": "contour2d",
                               "tool_scope": "document", "tool_index": _FLAT_MILL,
                               "generate": False},

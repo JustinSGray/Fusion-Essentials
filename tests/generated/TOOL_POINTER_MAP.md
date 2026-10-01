@@ -2695,6 +2695,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `mesh_remesh`
 - Triangle count is unchanged (
 - . Read the mesh back with mesh_get before building on it.
+- is negative. Use a positive density, or 0 for the API default.
 - No active design. Open or create a document first (see doc_new).
 - This design has no meshRemeshFeatures collection (mesh remesh unavailable here).
 - meshRemeshFeatures.createInput returned nothing.
@@ -3046,7 +3047,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'profile' is unused for action='remove'; remove it.
 - ' has unreadable timeline identity; nothing was edited.
 - ; roll after it with design_edit_timeline.
+- ': 'section_index'=0 is an endpoint, not an interior section. Choose an interior section index. Nothing was edited.
 - 's evaluated-health census is unreadable; nothing was edited.
+- Editing '': 'section_index'=0 is an endpoint, not an interior section. Choose an interior section index. Nothing was edited.
 - Restore it with model_edit_loft(feature='', action='retarget', section_index=, profile={'sketch': '', 'profile_index': }).
 
 ### `model_edit_sweep`
@@ -3084,6 +3087,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'to_object' is not used with extent='
 - '. Drop 'to_object', or use extent='to_face' (or the default 'distance').
 - extent='to_face' needs 'to_object' (a find_geometry face handle).
+- symmetric=true is not supported with extent=
+- and to_object. Use symmetric=false for a one-sided to-face extrude, or omit to_object and use extent='distance' with a non-zero distance for symmetry.
 - Provide a non-zero 'distance' to extrude, or 'to_object' to extrude up to a face.
 - '. Use: new, join, cut, intersect.
 - No active design. Create or open a document first (see doc_new).
@@ -3130,6 +3135,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - This extrude already goes BOTH ways from the sketch plane, so no 'distance' sign reaches a body it missed - the profile overlaps no participant body. Check where the profile sits, and 'target_bodie...
 - extent=through_all follows the sketch-plane normal; a sketch ON a body's face points AWAY from the material, so this direction hits only air. Pass a  'distance' to cut the other way into the body.
 - The extrude reached no body the way it went, and a sketch ON a body's face points its normal AWAY from the material. Pass a  'distance' to go the other way, or check the profile overlaps the body a...
+- symmetric=true is not supported with extent= and to_object. Use symmetric=false for a one-sided to-face extrude, or omit to_object and use extent='distance' with a non-zero distance for symmetry.
 - profile_index mixes the sketch text '' with other regions. A sketch text extrudes on its own - pass just '', and a separate call for the closed regions.
 - as_surface is not used with the sketch text '' - a text extrudes as a solid. Drop as_surface, or pass a closed profile / an open path.
 - Sketch '' has no closed profile to extrude. Draw a closed region (e.g. a rectangle or circle) first, or pass as_surface=true to extrude an open path into a surface.
@@ -3425,6 +3431,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `model_pattern_rectangular`
 - '. Use mm, cm, or in.
 - quantity_one must be >= 1.
+- must be >= 1. Use 1 for a single row.
 - spacing_one=0 would stack every instance exactly on the seed (coincident duplicates). Provide a non-zero spacing_one.
 - spacing_two=0 would stack the second-direction instances exactly on the first row (coincident duplicates). Provide a non-zero spacing_two.
 - No active design. Open or create a document with components first.
@@ -4211,6 +4218,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - returned no curves and the sketch still holds
 - curve(s), so nothing changed.
 - Re-read sketch_get(include_entities=true) for the current ids and pick a point ON the curve.
+- Fillet radius requested
+- . The edit REMAINS; retained sketch-local curves in
+- . Read sketch_get(include_entities=true) to inspect the arc and neighbors; the user can Undo this edit in Fusion's UI.
 - chamfer needs 'distance' > 0 (in 'units') - the setback along entity_one; got
 - chamfer takes EITHER 'distance_two' (a second setback) OR 'angle_deg' (the angle from entity_one), not both.
 - 'distance_two' must be > 0; got
@@ -4222,6 +4232,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - offset needs 'distance' > 0 (in 'units'); the SIDE comes from the pick point x1,y1, so the distance is a magnitude. Got .
 - extend changed nothing - the end nearest the pick point could not be extended. The sketch still holds  curve(s). Re-read sketch_get(include_entities=true) and pick a point ON the curve.
 - returned no curves and the sketch still holds  curve(s), so nothing changed. Re-read sketch_get(include_entities=true) for the current ids and pick a point ON the curve.
+- Fillet radius requested  , solved  . The edit REMAINS; retained sketch-local curves in : . Read sketch_get(include_entities=true) to inspect the arc and neighbors; the user can Undo this edit in Fu...
 
 ### `sketch_get`
 - 'entity_offset' must be a nonnegative integer, got

@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(TESTS_DIR, "live"))
 import tool_verify  # noqa: E402
 import verify_layout  # noqa: E402
 import verify_program  # noqa: E402
+import verify_acts_model_solids  # noqa: E402
 from verify_families import fixture_steps  # noqa: E402
 
 
@@ -393,3 +394,98 @@ def test_same_sketch_name_in_separate_family_documents_has_local_owner():
                for _name, _pre, narrative, _fallback in compiled["acts"])
     assert compiled["frames"]["mesh"]["planes"]["Shared"] == "xy"
     assert compiled["frames"]["nesting"]["planes"]["Shared"] == "xz"
+
+
+@pytest.fixture
+def direct_body_material_read():
+    """Return the measured direct-body bounds/material projection with an empty subtree body census."""
+    return {"target": "body 'Body1'", "kind": "body", "units": "mm",
+            "frame": "world axes (axis-aligned)", "box_read": "preciseBoundingBox", "oriented": False,
+            "x": 120.0, "y": 80.0, "z": 45.0,
+            "min_point": {"x": -60.0, "y": -40.0, "z": 0.0},
+            "max_point": {"x": 60.0, "y": 40.0, "z": 45.0},
+            "center": {"x": 0.0, "y": 0.0, "z": 22.5}, "lump_count": 1,
+            "mass": {"target": "body 'Body1'", "units": "mm", "accuracy_used": "very_high",
+                     "mass_kg": 2.441735, "volume": 311049.084447, "area": 41374.689466,
+                     "density_kg_per_cm3": 0.00785, "per_body": [], "per_body_count": 0,
+                     "per_body_truncated": False}}
+
+
+def test_scoped_direct_body_witness_accepts_measured_empty_subtree_census(direct_body_material_read):
+    state = verify_acts_model_solids._symmetric_target_body_state(direct_body_material_read)
+    assert state is not None
+    assert state["material"] == direct_body_material_read["mass"]
+    assert state["bounds"]["min_point"] == {"x": -60.0, "y": -40.0, "z": 0.0}
+    assert state["lump_count"] == 1 and state["material"]["per_body_count"] == 0
+
+
+@pytest.mark.parametrize("path", [("min_point", "z"), ("mass", "volume"), ("mass", "mass_kg"),
+                                  ("mass", "area"), ("lump_count",)])
+def test_scoped_direct_body_witness_refuses_unread_main_measurement(direct_body_material_read, path):
+    target = direct_body_material_read
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = None
+    assert verify_acts_model_solids._symmetric_target_body_state(direct_body_material_read) is None
+
+
+def test_geometry_contract_scratch_coordinates_survive_preceding_full_family_rows():
+    import verify_acts_sketch as sketch
+    import verify_acts_model_solids as solids
+    import verify_acts_model_sweep as sweep
+    coordinates = {"sketch_add_geometry", "sketch_edit_curve", "find_geometry", "model_construction"}
+    cases = [(sketch._fillet_radius_rows, "fillet_doc", {"fillet_doc": "scratch", "fillet_story": "home"}),
+             (solids._symmetric_target_rows, "extent_doc", {"extent_doc": "scratch", "extent_story": "home",
+                 "extent_block": "Body1", "extent_top": "face", "extent_ordinary": "Body2", "extent_distance": "Body3"}),
+             (sweep._loft_endpoint_rows, "endpoint_doc", {"endpoint_doc": "scratch", "endpoint_story": "home",
+                 "endpoint_body": "Body1"})]
+    compiled = verify_program.compile_program(verify_program._RAW_ACT_PROGRAM)["acts"]
+    for factory, key, context in cases:
+        authored = factory()
+        rows = next(rows for _name, _pre, rows, _fallback in compiled
+                    if any(save and save[0] == key for _tool, _args, _check, save in rows))
+        start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == key)
+        end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
+        def requests(selected):
+            return [(tool, args(context) if callable(args) else args)
+                    for tool, args, _check, _save in selected if tool in coordinates]
+        assert requests(rows[start:end]) == requests(authored), key
+
+
+def test_geometry_contract_scratch_root_resets_prior_sketch_cursor():
+    import verify_acts_sketch as sketch
+    import verify_acts_model_solids as solids
+    import verify_acts_model_sweep as sweep
+    prefix = [("sketch_create", {"plane": "xy", "name": "EditCorner"}, "ok", None),
+              ("sketch_add_geometry", {"sketch_name": "EditCorner", "geometry": [
+                  {"kind": "line", "x1": 600, "y1": 0, "x2": 660, "y2": 0}]}, "ok", None)]
+    coordinates = {"sketch_add_geometry", "sketch_edit_curve", "find_geometry", "model_construction"}
+    context = {"fillet_doc": "scratch", "extent_doc": "scratch", "endpoint_doc": "scratch",
+               "extent_block": "Body1", "extent_top": "face", "extent_ordinary": "Body2",
+               "extent_distance": "Body3", "endpoint_body": "Body1"}
+    def requests(rows):
+        return [(tool, args(context) if callable(args) else args)
+                for tool, args, _check, _save in rows if tool in coordinates]
+    for factory in (sketch._fillet_radius_rows, solids._symmetric_target_rows,
+                    sweep._loft_endpoint_rows):
+        authored = factory()
+        placed = verify_layout._placed(prefix + authored, verify_layout._SLOTS)[len(prefix):]
+        assert requests(placed) == requests(authored), factory.__name__
+
+
+def test_acquired_target_face_feeds_both_symmetric_extent_requests(monkeypatch):
+    faces = [{"position": p, "normal": n, "area": area, "handle": "face-" + str(i)}
+             for i, (p, n, area) in enumerate([
+                 ([10, 10, 10], [0, 0, 1], 400), ([10, 10, 0], [0, 0, -1], 400),
+                 ([10, 20, 5], [0, 1, 0], 200), ([20, 10, 5], [1, 0, 0], 200),
+                 ([10, 0, 5], [0, -1, 0], 200), ([0, 10, 5], [-1, 0, 0], 200)])]
+    payload = {"units": "mm", "match_count": 6, "returned": 6, "matches": faces}
+    monkeypatch.setitem(verify_acts_model_solids._RECALL, "extent_top", None)
+    rows = verify_acts_model_solids._symmetric_target_rows()
+    acquire = next(row for row in rows if row[0] == "find_geometry")
+    assert acquire[2](payload) is True
+    key, extract = acquire[3]
+    context = {"extent_doc": "scratch", key: extract(payload)}
+    requests = [args(context) for tool, args, _check, _save in rows if tool == "model_extrude"]
+    targets = [r for r in requests if r.get("symmetric") and "to_object" in r]
+    assert len(targets) == 2 and all(r["to_object"] == "face-0" for r in targets)

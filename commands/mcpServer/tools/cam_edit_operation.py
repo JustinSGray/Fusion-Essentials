@@ -14,7 +14,7 @@ from ._cam_common import (NONFINITE_POST, PARAM_READ, get_cam, enumeration_remed
                           expression_error, matched_quoting, op_primary_state, op_settled,
                           op_state_facts, operation_name_clash, owning_setup, parse_parameters,
                           resolve_cam_node, tool_dimensions, tree_nodes, unquote_expression,
-                          validity_basis)
+                          tool_selector_error, validity_basis)
 from ._cam_presets import resolve_operation_preset
 from .cam_create_operation import (_NO_INDEX, _doc_tool_at, _names_the_same_tool, _tool_at,
                                    _tool_facts, index_request_error, tool_index_of)
@@ -459,6 +459,9 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
             rename: str = "", tool_scope: str = "", tool_library_url: str = "",
             tool_index: int = -1) -> dict:
     """See TOOL_DESCRIPTION."""
+    selector_error = tool_selector_error(tool_scope, tool_library_url)
+    if selector_error:
+        return error(selector_error)
     if not (operation or "").strip():
         return error("Provide 'operation' - the CAM operation name to edit (see cam_get(include=['operations'])).")
 

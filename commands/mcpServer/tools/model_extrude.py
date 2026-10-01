@@ -431,6 +431,10 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
                      "extent='to_face' (or the default 'distance').")
     if ext_key == "to_face" and not use_to_object:
         return error("extent='to_face' needs 'to_object' (a find_geometry face handle).")
+    if use_to_object and symmetric:
+        return error(f"symmetric=true is not supported with extent={ext_key!a} and to_object. "
+                     "Use symmetric=false for a one-sided to-face extrude, or omit to_object "
+                     "and use extent='distance' with a non-zero distance for symmetry.")
     if ext_key == "distance" and _distance_missing(distance) and not use_to_object:
         return error("Provide a non-zero 'distance' to extrude, or 'to_object' to extrude up to a face.")
     if ext_key == "two_side":

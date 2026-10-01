@@ -6,6 +6,7 @@
 import math
 
 from verify_core import (
+    _activated, _box, _document_closed, _home_address, _new_document,
     _RECALL, _chamfered, _component_metadata, _ctx_get, _cut_on_its_pivot, _datum, _datum_plane, _drafted, _drafted_on_its_pivot, _drafted_symmetric, _drilled, _extent_measured, _extruded, _face_up_at, _fg, _fgn, _filleted, _gap_measured, _home_document, _joint_origin_at, _lofted, _made_component, _material_assigned, _matched, _measured, _metadata_set, _mirrored, _moved_occurrence, _captured, _near, _needs, _num, _offset_faces, _param_read, _param_traced, _patterned, _prof, _recall, _refused, _relation_measured, _relation_passes, _relation_read, _replaced_on_its_pivot, _sits_on_a_face, _swept, _unless, _watch)
 from verify_acts_cam import (
     MACHINING_EXTENSION)
@@ -17,14 +18,75 @@ from verify_layout import (
 
 
 from verify_acts_model_combine_revolve import (
-    _COMBINE_COMPLETE, _COMBINE_NONE, _COMBINE_NONROOT_PARTIAL, _COMBINE_PARTIAL, _REVOLVE_PARTICIPANTS, _combine_story_address)
+    _COMBINE_COMPLETE, _COMBINE_NONE, _COMBINE_NONROOT_PARTIAL, _COMBINE_PARTIAL, _REVOLVE_PARTICIPANTS, _combine_body, _combine_inspect, _combine_pin, _combine_story_address)
 from verify_acts_model_extrude_organization import (
     _extrude_edit_dependent)
 from verify_acts_model_precision import (
     _FINE_ANGLE_DEG, _HOLE_ACTIVE, _HOLE_ACTIVE_X0, _HOLE_HOST, _HOLE_VOLUME, _HOLE_X0, _PRECISION_READS, _control_top_args, _fine_angle_param, _fine_angle_plane, _hole_active_handle, _hole_active_tree, _hole_body_state, _hole_created, _hole_cylinder_args, _hole_cylinders, _hole_face_bounds, _hole_host_tree, _hole_inspect_args, _hole_lower_handle, _hole_timeline, _hole_upper_handle, _radius_body_size, _radius_filtered_handle, _scoped_bore_args, _scoped_hole_args, _scoped_top_args, _sweep_brep_list_edited, _sweep_dependent_survived, _sweep_edit_at_volume, _sweep_inspected_at_volume, _unscoped_hole_args)
 from verify_acts_model_sweep import (
     _LATER_OPERAND, _LOFT_ALIGNMENT, _LOFT_EDITOR, _LOFT_PARTICIPANTS, _SOLID_TOOL,
-    _SWEEP_EDIT_MODES, _TANGENT_PATH, _rolled_back_body)
+    _SWEEP_EDIT_MODES, _TANGENT_PATH, _retire_compare, _retire_material_state,
+    _retire_reads, _rolled_back_body)
+
+
+def _pattern_single_row_history(p):
+    """Require the created pattern's native counts and spacing from the independent timeline."""
+    rows = [r for r in (p.get("timeline") or {}).get("timeline", [])
+            if r.get("name") == _RECALL.get("count_pattern")]
+    params = {r.get("role"): r.get("value") for r in rows[0].get("params", [])} if len(rows) == 1 else {}
+    return _measured("single-row native pattern counts and spacing", params,
+                     params.get("countU") == 2 and params.get("CountV") == 1
+                     and _near(params.get("uSpaceDistance"), 3, .0001))
+
+
+def _pattern_single_row_material(p):
+    """Require two separate seed-sized solids spanning the requested single-row placement."""
+    state = _retire_material_state(p)
+    rows = (p.get("mass") or {}).get("per_body") or []
+    return _measured("two 4000 mm3 solids 30 mm apart along x", state,
+                     state is not None and len(rows) == 2
+                     and len({r.get("body") for r in rows}) == 2
+                     and all(_near(r.get("volume"), 4000, .001) for r in rows)
+                     and _near((p.get("mass") or {}).get("volume"), 8000, .001)
+                     and all(_near(p.get(axis), size, .001) for axis, size in zip("xyz", (50, 20, 10))))
+
+
+def _pattern_count_rows():
+    """Exercise second-count refusal and the legal single row on an owned document."""
+    rows = [("doc_get", {}, _home_document, ("count_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "count_home", "story")},
+             _new_document, ("count_doc", lambda p: p["document_handle"]))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(
+            c, "count_doc", args(c) if callable(args) else args), check, save))
+    for tool, args, check, save in _box("CountSeed") + _box("CountWitness", ox=100):
+        write(tool, args, check, save)
+    write("design_activate_component", {"occurrence": "CountSeed:1"})
+    rows.append(_watch(["CountSeed:1", "CountWitness:1"]))
+    rows.extend(_retire_reads("count_refusal", ["CountSeed:1", "CountWitness:1", ""], []))
+    for count in (0, -2):
+        write("model_pattern_rectangular", {"bodies": ["CountSeed"], "quantity_one": 2,
+              "spacing_one": 30, "quantity_two": count}, _refused(f"quantity_two={count}", "Use 1"))
+        rows.extend(_retire_reads("count_refusal", ["CountSeed:1", "CountWitness:1", ""], [], after=True))
+    write("model_pattern_rectangular", {"bodies": ["CountSeed"], "quantity_one": 2,
+          "spacing_one": 30, "quantity_two": 1}, _patterned("total_instances", 2),
+          ("count_pattern", _recall("count_pattern", lambda p: p["feature"])))
+    rows.extend([
+        ("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+         _pattern_single_row_history, None),
+        ("model_inspect", {"target": "CountSeed:1", "include": ["default", "mass"],
+                           "per_body": True, "units": "mm", "accuracy": "very_high"},
+         _pattern_single_row_material, None),
+        ("model_inspect", {"target": "CountWitness:1", "include": ["default", "mass"],
+                           "per_body": True, "units": "mm", "accuracy": "very_high"},
+         _retire_compare("count_refusal_CountWitness:1", _retire_material_state, True), None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, "count_home", "story"),
+             "expect_document": _ctx_get(c, "count_doc", "count scratch")}, "ok", None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "count_doc", "count scratch"),
+             "save_changes": False, "expect_document": _ctx_get(c, "count_home", "story")},
+         _document_closed, None),
+    ])
+    return rows
 
 _SOLIDS = [
     # The sketch acts have already drawn the whole scratch field by now, so a whole-model fit is a
@@ -1190,6 +1252,7 @@ _SOLIDS = [
     *_LOFT_ALIGNMENT,
     *_SOLID_TOOL,
     *_TANGENT_PATH,
+    *_pattern_count_rows(),
 ]
 
 
@@ -1217,3 +1280,89 @@ FINISHED_BRACKET = list(_SOLIDS[:_STOCK_CENTER_END + 1])
 DATUM_BENCH_DETAILS = _component_block(_SOLIDS, "DatumBench", "find_geometry", "kind",
                                        "cylinder_face")
 DATUM_BENCH_RESIZE = _component_block(_SOLIDS, "DatumBench", "model_extrude")
+
+
+def _symmetric_target_top(p):
+    """Acquire the unique measured top face of the owned 20 x 20 x 10 mm block."""
+    rows = p.get("matches") or []
+    top = [r for r in rows if r.get("position") == [10, 10, 10] and r.get("normal") == [0, 0, 1]]
+    valid = (p.get("units") == "mm" and p.get("match_count") == p.get("returned") == len(rows) == 6
+             and len(top) == 1 and top[0].get("handle") and _near(top[0].get("area"), 400, .001))
+    if valid:
+        _RECALL["extent_top"] = top[0]["handle"]
+    return _measured("one target top planar face at z=10", top, bool(valid))
+
+
+def _symmetric_target_body_state(p):
+    """Return a direct body's readable world bounds, connected lump and material without requiring subtree rows."""
+    mass = p.get("mass") or {}
+    bounds = {key: p.get(key) for key in ("min_point", "max_point", "center")}
+    values = [p.get(axis) for axis in "xyz"]
+    values += [(bounds[point] or {}).get(axis) for point in bounds for axis in "xyz"]
+    physical = [mass.get(key) for key in ("mass_kg", "volume", "area", "density_kg_per_cm3")]
+    if (p.get("kind") != "body" or p.get("units") != "mm"
+            or p.get("frame") != "world axes (axis-aligned)" or p.get("oriented") is not False
+            or not p.get("box_read") or type(p.get("lump_count")) is not int or p["lump_count"] != 1
+            or not isinstance(p.get("target"), str) or not p["target"].startswith("body ")
+            or mass.get("target") != p["target"] or mass.get("units") != "mm"
+            or mass.get("accuracy_used") != "very_high"
+            or not all(_num(v) and math.isfinite(v) for v in values)
+            or not all(_num(v) and math.isfinite(v) and v > 0 for v in physical)):
+        return None
+    return {"target": p["target"], "bounds": bounds, "size": [p[a] for a in "xyz"],
+            "lump_count": p["lump_count"], "material": {k: v for k, v in mass.items() if k != "note"}}
+
+
+def _symmetric_target_rows():
+    """Verify target-symmetry refusals and independently read both legal extent controls."""
+    from verify_acts_model_sweep import _retire_compare, _retire_reads
+    rows = [("doc_get", {}, _home_document, ("extent_story", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "extent_story", "story")},
+             _new_document, ("extent_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: _combine_pin(
+            c, "extent_doc", args(c) if callable(args) else args), check, save))
+
+    for name, low, high in (("Block", (0, 0), (20, 20)), ("TargetProfile", (5, 5), (9, 9)),
+                            ("DistanceProfile", (30, 0), (34, 4))):
+        write("sketch_create", {"name": name, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [
+            {"kind": "rectangle", "x1": low[0], "y1": low[1], "x2": high[0], "y2": high[1]}]})
+        if name == "Block":
+            write("model_extrude", {"sketch_name": name, "distance": 10}, _extruded,
+                  ("extent_block", lambda p: p["result_bodies"][0]))
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+    block_args = lambda c: {**_combine_inspect(_ctx_get(c, "extent_block", "target block")), "per_body": True}
+    rows += [("model_inspect", block_args, _combine_body("target block", (0, 0, 0), (20, 20, 10), 4000), None),
+             ("model_inspect", block_args, _retire_compare("extent_block_state", _symmetric_target_body_state, False), None),
+             ("find_geometry", lambda c: {"target": _ctx_get(c, "extent_block", "target block"),
+                                           "kind": "planar_face", "nearest_to": [10, 10, 10],
+                                           "max_results": 20, "units": "mm"}, _symmetric_target_top,
+              ("extent_top", lambda p: _RECALL["extent_top"]))]
+    rows += _retire_reads("extent_refusal", [""], [("", "TargetProfile"), ("", "DistanceProfile")])
+    for explicit in (True, False):
+        write("model_extrude", lambda c, explicit=explicit: {
+            "sketch_name": "TargetProfile", "to_object": _ctx_get(c, "extent_top", "target top face"),
+            "symmetric": True, **({"extent": "to_face"} if explicit else {})},
+            _refused("symmetric=true", "to_object", "symmetric=false", "omit to_object"))
+        rows += _retire_reads("extent_refusal", [""], [("", "TargetProfile"), ("", "DistanceProfile")], True)
+    write("model_extrude", lambda c: {"sketch_name": "TargetProfile", "extent": "to_face",
+        "to_object": _ctx_get(c, "extent_top", "target top face"), "symmetric": False}, _extruded,
+        ("extent_ordinary", lambda p: p["result_bodies"][0]))
+    rows.append(("model_inspect", lambda c: _combine_inspect(_ctx_get(c, "extent_ordinary", "one-sided result")),
+                 _combine_body("one-sided to-face", (5, 5, 0), (9, 9, 10), 160), None))
+    write("model_extrude", {"sketch_name": "DistanceProfile", "distance": 5, "symmetric": True}, _extruded,
+          ("extent_distance", lambda p: p["result_bodies"][0]))
+    rows += [("model_inspect", lambda c: _combine_inspect(_ctx_get(c, "extent_distance", "symmetric result")),
+              _combine_body("symmetric distance", (30, 0, -5), (34, 4, 5), 160), None),
+             ("model_inspect", block_args, _retire_compare("extent_block_state", _symmetric_target_body_state, True), None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "extent_story", "story"),
+                                         "expect_document": _ctx_get(c, "extent_doc", "scratch")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "extent_doc", "scratch"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "extent_story", "story")}, _document_closed, None)]
+    return rows
+
+
+_SOLIDS += _symmetric_target_rows()

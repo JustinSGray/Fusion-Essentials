@@ -127,6 +127,22 @@ def test_a_retarget_profile_drawn_after_the_loft_is_refused_before_any_roll(rig,
     assert (rolls, loft.assignments, timeline.markerPosition) == ([], 0, 5)
 
 
+def test_endpoint_zero_refuses_before_later_operand_reorder_advice(rig, monkeypatch):
+    loft, timeline = rig
+    reads, rolls = [], []
+    later = Sketch(name="S1Later", timeline_object=SimpleNamespace(index=14))
+    monkeypatch.setattr(mod._inputs.ProfileRef, "resolve", lambda _self, _raw, _scope: (
+        reads.append(True) or SimpleNamespace(parentSketch=later), None))
+    monkeypatch.setattr(loft.timelineObject, "rollTo", lambda _before: rolls.append(True) or timeline.roll())
+    result = mod.handler(feature="Loft1", action="retarget", section_index=0,
+                         profile={"sketch": "S1Later", "profile_index": 0})
+    message = error_message(result)
+    assert "'section_index'=0 is an endpoint" in message and "Choose an interior" in message
+    assert "Nothing was edited" in message and "Move it first" not in message
+    assert (reads, rolls, loft.assignments, timeline.markerPosition) == ([], [], 0, 5)
+    assert tuple(section.entity for section in loft.sections) == ("A", "B", "C")
+
+
 def test_retarget_changes_only_middle_section_and_material(rig):
     loft, timeline = rig
     result = mod.handler(feature="Loft1", action="retarget", section_index=1, profile="X")

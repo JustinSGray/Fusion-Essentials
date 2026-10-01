@@ -206,6 +206,9 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
         return error(f"'{label}' has unreadable timeline identity; nothing was edited.")
     if marker <= index:
         return error(f"'{label}' is after marker {marker}; roll after it with design_edit_timeline.")
+    if section_index == 0:
+        return error(f"Editing '{label}': 'section_index'=0 is an endpoint, not an interior section. "
+                     "Choose an interior section index. Nothing was edited.")
     if action == "retarget":
         early, _unresolved = _PROFILE.resolve(profile, component)
         refusal = later_operand_refusal(label, index, [early])

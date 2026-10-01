@@ -15,6 +15,8 @@ from verify_core import (
     _watch_all, _measured, _RECALL, _recall, _home_document, _home_address,
     _new_document, _document_closed, _activated, _near)
 from verify_layout import _px, _py
+from verify_acts_model_combine_revolve import _combine_pin
+from verify_acts_model_sweep import _retire_compare, _retire_sketch_state, _timeline_names
 
 
 def _split_public(stage):
@@ -1855,3 +1857,73 @@ def _anchor_retention_rows():
 
 
 _SKETCHWORK += _anchor_retention_rows()
+
+
+def _solved_fillet_effect(control=False):
+    """Read the retained arc radius, tangent neighbors and their solved coordinates."""
+    def check(p):
+        state = _retire_sketch_state(p)
+        entities = {r.get("id"): r for r in p.get("entities", [])}
+        arc = entities.get("arc:0", {})
+        lines = [entities.get("line:" + str(i), {}) for i in (0, 1)]
+        tangent = {tuple(sorted(r.get("entities", []))) for r in p.get("constraints", [])
+                   if r.get("type") == "tangent"}
+        radius = 10 if control else 18.7766
+        valid = (state is not None and p.get("units") == "mm" and p.get("is_fully_constrained") is False
+                 and p.get("counts", {}).get("lines") == 2 and p.get("counts", {}).get("arcs") == 1
+                 and _near(arc.get("radius"), radius, .001)
+                 and tangent == {("arc:0", "line:0"), ("arc:0", "line:1")})
+        if valid and not control:
+            old = _RECALL.get("fillet_before") or {}
+            prior = {r.get("id"): r for r in old.get("entities", [])}
+            valid = (lines[0].get("end") != prior.get("line:0", {}).get("end")
+                     and lines[1].get("start") != prior.get("line:1", {}).get("start")
+                     and _near(lines[0]["end"].get("x"), 214.6263, .001)
+                     and _near(lines[1]["start"].get("x"), 224.5797, .001))
+        return _measured("solved fillet radius and retained tangent neighbors", state, valid)
+    return check
+
+
+def _fillet_radius_rows():
+    """Verify a retained oblique-radius mismatch and the independent right-angle control."""
+    rows = [("doc_get", {}, _home_document, ("fillet_story", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "fillet_story", "story")},
+             _new_document, ("fillet_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+
+    def write(name, args, check="ok"):
+        rows.append((name, lambda c, args=args: _combine_pin(c, "fillet_doc", args), check, None))
+
+    for name, geometry in (("EditCorner", [{"kind": "line", "x1": 600, "y1": 0, "x2": 660, "y2": 0},
+                                          {"kind": "line", "x1": 660, "y1": 0, "x2": 660, "y2": 40}]),
+                           ("FilletPath", [{"kind": "polyline", "points": [[10, -30], [220, -30], [260, -55]]}])):
+        write("sketch_create", {"name": name, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": geometry})
+    write("view_set", {"action": "orient", "focus": ["EditCorner", "FilletPath"], "orientation": "top", "fit": True})
+    write("sketch_edit_curve", {"sketch_name": "EditCorner", "action": "fillet", "entity_one": "line:0",
+                                "entity_two": "line:1", "x1": 655, "y1": 0, "x2": 660, "y2": 5, "radius": 10},
+          lambda p: _near(p.get("radius"), 10, .001))
+    corner = lambda c: {"sketch_name": "EditCorner", "include_entities": True, "units": "mm"}
+    path = {"sketch_name": "FilletPath", "include_entities": True, "units": "mm"}
+    rows += [("sketch_get", corner, _solved_fillet_effect(True), None),
+             ("sketch_get", corner, _retire_compare("fillet_control", _retire_sketch_state, False), None),
+             ("sketch_get", path, _retire_compare("fillet_before", _retire_sketch_state, False), None),
+             ("design_get", {"include": ["timeline"], "max_results": 200},
+              _retire_compare("fillet_history", lambda p: p.get("timeline") if _timeline_names(p) is not None else None,
+                              False), None)]
+    write("sketch_edit_curve", {"sketch_name": "FilletPath", "action": "fillet", "entity_one": "line:0",
+                                "entity_two": "line:1", "x1": 200, "y1": -30, "x2": 230, "y2": -36, "radius": 20},
+          _refused("requested 20 mm", "solved", "REMAINS", "arc:0", "line:0", "line:1", "sketch_get"))
+    rows += [("sketch_get", path, _solved_fillet_effect(), None),
+             ("sketch_get", corner, _retire_compare("fillet_control", _retire_sketch_state, True), None),
+             ("design_get", {"include": ["timeline"], "max_results": 200},
+              _retire_compare("fillet_history", lambda p: p.get("timeline") if _timeline_names(p) is not None else None,
+                              True), None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "fillet_story", "story"),
+                                         "expect_document": _ctx_get(c, "fillet_doc", "scratch")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "fillet_doc", "scratch"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "fillet_story", "story")}, _document_closed, None)]
+    return rows
+
+
+_SKETCHWORK += _fillet_radius_rows()

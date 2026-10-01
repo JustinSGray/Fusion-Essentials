@@ -730,7 +730,8 @@ def _tangent_path_rows():
         {"kind": "polyline", "points": [[10, -30], [220, -30], [260, -55]]}]})
     write("sketch_edit_curve", {"sketch_name": "FilletPath", "action": "fillet",
                                 "entity_one": "line:0", "entity_two": "line:1", "radius": 20,
-                                "x1": 200, "y1": -30, "x2": 230, "y2": -36})
+                                "x1": 200, "y1": -30, "x2": 230, "y2": -36},
+          _refused("requested 20 mm", "solved", "REMAINS", "arc:0", "line:0", "line:1", "sketch_get"))
     rows.append(("sketch_get", {"sketch_name": "FilletPath", "include_entities": True},
                  lambda p: bool(_tangent_path_expected(p)),
                  ("tp_fillet_shape", _recall("tp_fillet_shape", _tangent_path_expected))))
@@ -1756,3 +1757,71 @@ def _loft_alignment_rows():
 
 
 _LOFT_ALIGNMENT = _loft_alignment_rows()
+
+
+def _loft_endpoint_rows():
+    """Refuse endpoint zero without reorder advice, then verify the legal later interior workflow."""
+    from verify_core import _activated
+    rows = [("doc_get", {}, _home_document, ("endpoint_story", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "endpoint_story", "story")},
+             _new_document, ("endpoint_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: _combine_pin(
+            c, "endpoint_doc", args(c) if callable(args) else args), check, save))
+
+    for offset, name in ((10, "MiddlePlane"), (20, "EndPlane")):
+        write("model_construction", {"kind": "plane", "plane": "xy", "offset": offset, "name": name},
+              _datum_plane("xy"))
+    for name, plane, radius in (("Start", "xy", 5), ("Middle", "MiddlePlane", 4), ("End", "EndPlane", 3)):
+        write("sketch_create", {"name": name, "plane": plane})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [
+            {"kind": "circle", "cx": 0, "cy": 0, "radius": radius}]})
+    write("model_loft", {"profiles": [{"sketch": name, "profile_index": 0}
+                                      for name in ("Start", "Middle", "End")], "operation": "new"},
+          _lofted, ("endpoint_body", lambda p: p["result_bodies"][0]))
+    write("sketch_create", {"name": "Later", "plane": "MiddlePlane"})
+    write("sketch_add_geometry", {"sketch_name": "Later", "geometry": [
+        {"kind": "circle", "cx": 0, "cy": 0, "radius": 6}]})
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+    body_args = lambda c: _combine_inspect(_ctx_get(c, "endpoint_body", "Loft body"))
+    rows.append(("model_inspect", body_args,
+                 _combine_body("original Loft", (-5, -5, 0), (5, 5, 20), 1026.2536), None))
+    rows += _retire_reads("loft_endpoint", [""], [])
+    write("model_edit_loft", {"feature": "Loft1", "action": "retarget", "section_index": 0,
+                              "profile": {"sketch": "Later", "profile_index": 0}},
+          _refused("'section_index'=0 is an endpoint", "Choose an interior", "Nothing was edited"))
+    rows += _retire_reads("loft_endpoint", [""], [], True)
+    write("model_edit_loft", {"feature": "Loft1", "action": "retarget", "section_index": 1,
+                              "profile": {"sketch": "Later", "profile_index": 0}},
+          _later_refusal("Later", 6, "Loft1", 5))
+    rows += _retire_reads("loft_endpoint", [""], [], True)
+    write("design_edit_timeline", {"action": "reorder", "feature": "Later@6", "to": "before",
+                                   "end_feature": "Loft1@5"},
+          lambda p: _measured("legal interior source moved before Loft", p,
+                               p.get("reordered") is True and (p.get("index_before"), p.get("index_after")) == (6, 5)))
+    rows += [("design_get", {"include": ["timeline"], "max_results": 200},
+              _timeline_reads("legal Loft source reorder keeps all seven rows healthy",
+                              lambda names: names == ["MiddlePlane", "EndPlane", "Start", "Middle", "End", "Later", "Loft1"]), None),
+             ("model_inspect", {**_combine_inspect(), "per_body": True},
+              _retire_compare("loft_endpoint_", _retire_material_state, True), None)]
+    write("model_edit_loft", {"feature": "Loft1", "action": "retarget", "section_index": 1,
+                              "profile": {"sketch": "Later", "profile_index": 0}},
+          lambda p: _measured("legal later interior section changed", p,
+                               p.get("edited") is True and p.get("definition_matches") is True
+                               and p.get("geometry_changed") is True and p.get("marker_restored") is True
+                               and p.get("outside_body_changes") == []))
+    rows += [("model_inspect", body_args,
+              _combine_body("retargeted Loft", (-6.107822, -6.107822, 0), (6.107822, 6.107822, 20), 1829.564155), None),
+             ("design_get", {"include": ["timeline"], "max_results": 200},
+              _timeline_reads("legal interior edit keeps every healthy timeline row and order",
+                              lambda names: names == ["MiddlePlane", "EndPlane", "Start", "Middle", "End", "Later", "Loft1"]), None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "endpoint_story", "story"),
+                                         "expect_document": _ctx_get(c, "endpoint_doc", "scratch")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "endpoint_doc", "scratch"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "endpoint_story", "story")}, _document_closed, None)]
+    return rows
+
+
+_LATER_OPERAND += _loft_endpoint_rows()

@@ -18,7 +18,7 @@ from ._cam_common import (CREATE_DEDUPE, _MANUAL_NC_STRATEGY, _length_capped, ca
                           choice_expressions, get_cam, find_setup, operation_nodes,
                           operation_name_clash, refresh_flat_setup_models, register_future, setups, setups_sharing_models,
                           sync_validity,
-                          unquote_expression, walk_cam_tree)
+                          tool_selector_error, unquote_expression, walk_cam_tree)
 # _read_tool_number is the one tool_number read; _tp is the one tool-parameter value read.
 from .cam_edit_tools import _read_tool_number, _tp
 
@@ -405,6 +405,9 @@ def handler(setup: str = "", strategy: str = "", tool_library_url: str = "",
             tool_index: int = -1, tool_scope: str = "", generate: bool = False,
             name: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
+    selector_error = tool_selector_error(tool_scope, tool_library_url)
+    if selector_error:
+        return error(selector_error)
     cam, cerr = get_cam()
     if not cam:
         return error(cerr)

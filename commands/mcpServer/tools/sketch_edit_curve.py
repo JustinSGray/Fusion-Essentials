@@ -111,6 +111,7 @@ _NEEDS = {
 
 # cm; a length gain smaller than this is noise, not an extension.
 _LENGTH_EPS_CM = 1e-9
+_RADIUS_TOL_CM = 1e-4  # 0.001 mm comparison tolerance.
 
 
 def _refuse_non_line(refs):
@@ -252,6 +253,23 @@ def handler(action: str = "", sketch_name: str = "", entity_one: str = "", entit
                      f"nothing changed.{tail} Re-read sketch_get(include_entities=true) for the "
                      "current ids and pick a point ON the curve.")
 
+    solved_radius = None
+    if act == "fillet":
+        arc = created[0] if created else None
+        solved_radius = safe(lambda: arc.radius)
+        readable = (isinstance(solved_radius, (int, float)) and not isinstance(solved_radius, bool)
+                    and math.isfinite(solved_radius) and solved_radius > 0)
+        if not readable or not math.isclose(solved_radius, radius * k, rel_tol=1e-6,
+                                           abs_tol=_RADIUS_TOL_CM):
+            retained = _curve_records(sketch, [arc, e1, e2], f)
+            for row, curve in zip(retained, [arc, e1, e2]):
+                row.update(safe(lambda c=curve: _sketch_detail._line_geo(c, f), {}))
+            observed = round(solved_radius * f, 6) if readable else None
+            return error(f"Fillet radius requested {radius!a} {unit}, solved {observed!a} {unit}. "
+                         f"The edit REMAINS; retained sketch-local curves in {unit}: {retained!a}. "
+                         "Read sketch_get(include_entities=true) to inspect the arc and neighbors; "
+                         "the user can Undo this edit in Fusion's UI.")
+
     errors_after, _warn_after, _total_after = _common.timeline_health(design)
     broke = [n for n in errors_after if n not in errors_before]
 
@@ -277,6 +295,8 @@ def handler(action: str = "", sketch_name: str = "", entity_one: str = "", entit
     }
     if act in _TWO_CURVE:
         out["entity_two"] = entity_two
+    if solved_radius is not None:
+        out["radius"] = round(solved_radius * f, 6)
     if source_curve_count is not None:
         out["source_curve_count"] = source_curve_count
     if broke:

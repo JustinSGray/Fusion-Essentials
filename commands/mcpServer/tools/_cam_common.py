@@ -30,6 +30,14 @@ MAP_BLURB = (
 app = adsk.core.Application.get()
 
 
+def tool_selector_error(scope, library_url):
+    """Return the refusal for simultaneous document and shared-library tool selectors."""
+    if (scope or "").strip().lower() == "document" and library_url:
+        return (f"tool_scope='document' conflicts with tool_library_url={library_url!a}. "
+                "Use document scope without a URL, or a library URL without document scope.")
+    return None
+
+
 def expression_error(p):
     """(error, warning) off a CAM parameter - a broken expression is stored verbatim and its value
     reads back 0.0, so only .error reveals it, while .warning fires on valid expressions too."""

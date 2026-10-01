@@ -9,18 +9,19 @@ nesting last, because it restructures what it nests.
 """
 
 import copy
+import math
 
 from verify_core import (
     EXPORT_DIR, _RECALL, _activated, _arranged, _base_feature_open, _box, _captured, _ctx_get,
     _datum_plane, _document_closed, _document_read, _drilled, _dwell, _extent_measured, _extruded,
     _fg, _fgn, _holder_computed, _home_address, _home_document, _made_component, _matched, _measured, _mesh_round_trip,
-    _needs, _new_document, _num, _packed, _prof, _rebuilt, _recall, _refused, _repair_no_op,
+    _near, _needs, _new_document, _num, _packed, _prof, _rebuilt, _recall, _refused, _repair_no_op,
     _same_face_area, _shelled, _split_bodies, _stitched, _trim_scoped_to_target, _unless,
     _unstitched, _watch)
 from verify_acts_cam import MACHINING_EXTENSION
 from verify_layout import _px, _py
 from verify_acts_model_sweep import (
-    _retire_compare, _retire_design_state, _retire_material_state, _retire_sketch_state)
+    _retire_compare, _retire_design_state, _retire_material_state, _retire_reads, _retire_sketch_state)
 
 
 def _base_feature_state(p):
@@ -1765,6 +1766,174 @@ def _mesh_pose_census(p):
                       "truncated": p.get("truncated"), "names": sorted(got)}, good)
 
 
+def _remesh_census_state(p):
+    """Return complete independently read mesh rows with comparable geometry facts."""
+    rows = p.get("meshes") or []
+    if (p.get("truncated") is not False or p.get("count") != len(rows) or not rows
+            or any(not r.get("handle") or not r.get("name")
+                   or not all(_num(r.get(k)) for k in ("triangle_count", "node_count", "area", "volume"))
+                   for r in rows)):
+        return None
+    return rows
+
+
+def _remesh_component_state(p):
+    """Return complete mixed-BRep material and world bounds for the four-body remesh witness."""
+    mass = p.get("mass") or {}
+    rows = mass.get("per_body")
+    bounds = {key: p.get(key) for key in ("frame", "box_read", "oriented", "units", "x", "y", "z",
+                                         "min_point", "max_point", "center")}
+    values = [p.get(axis) for axis in "xyz"]
+    values += [(p.get(point) or {}).get(axis) for point in ("min_point", "max_point", "center") for axis in "xyz"]
+    values += [mass.get(key) for key in ("mass_kg", "volume", "area", "density_kg_per_cm3")]
+    for group, keys in (("inertia_world", ("Ixx", "Iyy", "Izz", "Ixy", "Iyz", "Ixz")),
+                        ("principal_moments", ("i1", "i2", "i3")),
+                        ("radius_of_gyration", ("kx", "ky", "kz")),
+                        ("rotation_to_principal_rad", ("rx", "ry", "rz"))):
+        values += [(mass.get(group) or {}).get(key) for key in keys]
+    vectors = [mass.get("center_of_mass")]
+    vectors += [(mass.get("principal_axes") or {}).get(axis) for axis in "xyz"]
+    if (p.get("target") != "occurrence 'Msh:1'" or p.get("kind") != "occurrence"
+            or p.get("frame") != "world axes (axis-aligned)" or p.get("units") != "mm"
+            or not p.get("box_read") or p.get("oriented") is not False
+            or mass.get("target") != p["target"] or mass.get("units") != "mm"
+            or mass.get("accuracy") != "very_high" or mass.get("accuracy_used") != "very_high"
+            or not all(_num(v) and math.isfinite(v) for v in values)
+            or any(not isinstance(v, list) or len(v) != 3
+                   or not all(_num(n) and math.isfinite(n) for n in v) for v in vectors)
+            or not isinstance(rows, list) or mass.get("per_body_count") != len(rows) or len(rows) != 4
+            or mass.get("per_body_truncated") is not False
+            or mass.get("per_occurrence") != [] or mass.get("per_occurrence_count") != 0
+            or mass.get("per_occurrence_truncated") is not False):
+        return None
+    if (not all(mass[key] > 0 for key in ("mass_kg", "volume", "area"))
+            or any(not isinstance((mass.get(group) or {}).get(key), str)
+                   or not mass[group][key] for group in ("inertia_world", "principal_moments")
+                   for key in ("about", "units"))):
+        return None
+    expected = {"Body1": True, "Body2": True, "Body3": True, "Body4": False}
+    if ({r.get("body") for r in rows} != set(expected)
+            or any(r.get("is_solid") is not expected[r["body"]] or r.get("occurrence", "unread") is not None
+                   or type(r.get("lump_count")) is not int or r["lump_count"] != 1
+                   or not all(_num(r.get(key)) and math.isfinite(r[key]) and r[key] >= 0
+                              and (r[key] > 0 if r["is_solid"] else True)
+                              for key in ("mass_kg", "volume")) for r in rows)):
+        return None
+    return {"bounds": bounds, "material": {k: v for k, v in mass.items() if k != "note"}}
+
+
+def _remesh_source_state(p):
+    """Return readable BRep source bounds and material independently of adjacent meshes."""
+    state = _mesh_pose_body_signature(p)
+    if (p.get("kind") != "body" or p.get("units") != "mm"
+            or not all(_num(v) for point in state[0] for v in point)
+            or not all(_num(v) and v > 0 for v in state[1:])):
+        return None
+    return state
+
+
+def _remesh_target_state(p):
+    """Return readable target bounds, material, mesh counts and topology flags."""
+    state = _mesh_pose_mesh_signature(p)
+    if (p.get("kind") != "mesh" or p.get("units") != "mm"
+            or not all(_num(v) for point in state[0] for v in point)
+            or not all(_num(v) for v in state[1:5])
+            or not all(type(v) is bool for v in state[5:])):
+        return None
+    return state
+
+
+def _remesh_control_effect(name):
+    """Compare the independent target geometry and every untouched mesh with their pre-call rows."""
+    def check(p):
+        now = _remesh_census_state(p)
+        before = _RECALL.get("density_control_meshes")
+        result = _RECALL.get("density_control_result") or {}
+        changed = [r for r in now or [] if r.get("name") == name]
+        initial = [r for r in before or [] if r.get("name") == name]
+        after = result.get("after") or {}
+        valid = (now is not None and before is not None and len(changed) == len(initial) == 1
+                 and [r for r in now if r.get("name") != name] == [r for r in before if r.get("name") != name])
+        if valid:
+            row, prior = changed[0], initial[0]
+            valid = (row.get("triangle_count") == after.get("triangle_count")
+                     and _near(row.get("area"), after.get("area_cm2", -1) * 100, .0001)
+                     and _near(row.get("volume"), after.get("volume_cm3", -1) * 1000, .001)
+                     and row.get("triangle_count") > 0 and row.get("volume") > 0
+                     and any(row[k] != prior[k] for k in ("triangle_count", "area", "volume")))
+        return _measured("remesh target changed and other meshes stayed exact", {"name": name, "before": initial,
+                         "after": changed, "reported": after}, valid)
+    return check
+
+
+def _remesh_control_history(p):
+    """Require one new BaseFeature after a legal remesh with every prior timeline row retained."""
+    now = _retire_design_state(p)
+    before = _RECALL.get("density_control_design")
+    result = _RECALL.get("density_control_result") or {}
+    timeline = (now or {}).get("timeline") or {}
+    rows = timeline.get("timeline") or []
+    summary = timeline.get("summary") or {}
+    prior_summary = ((before or {}).get("timeline") or {}).get("summary") or {}
+    expected_states = dict(prior_summary.get("states") or {})
+    expected_states["healthy"] = expected_states.get("healthy", 0) + 1
+    return _measured("one legal-remesh BaseFeature with prior history retained", timeline,
+                     now is not None and before is not None
+                     and timeline.get("count") == before["timeline"]["count"] + 1
+                     and rows[:-1] == before["timeline"]["timeline"]
+                     and rows[-1].get("name") == result.get("base_feature")
+                     and rows[-1].get("type") == "BaseFeature"
+                     and rows[-1].get("health", "healthy") == "healthy"
+                     and rows[-1].get("is_suppressed", False) is False
+                     and summary.get("states") == expected_states
+                     and isinstance(prior_summary.get("exceptions"), list)
+                     and summary.get("exceptions") == prior_summary["exceptions"])
+
+
+def _remesh_density_rows():
+    """Exercise negative-density preservation and zero/omitted/positive native controls."""
+    rows = []
+    for name in ("MDensityZero", "MDensityOmitted", "MDensityPositive"):
+        rows.append(("save_as_mesh", lambda c, name=name: {
+            "body": _ctx_get(c, "cyl_body", "cylinder source"), "name": name, "quality": "low"}, "ok", None))
+    rows.extend(_retire_reads("density_refusal", ["Msh:1"], [], material_read=_remesh_component_state))
+    def source_reads(after):
+        return [("model_inspect", {"target": target,
+                    "include": ["default", "mass"], "accuracy": "very_high", "units": "mm"},
+                 _retire_compare("density_source_" + key, _remesh_source_state, after), None)
+                for key, target in (("cylinder", "Msh:1:Body2"), ("box", "Msh:1:Body1"))]
+    rows.extend(source_reads(False))
+    rows.extend([
+        ("mesh_get", {"target": "Msh"}, _retire_compare("density_refusal_meshes", _remesh_census_state, False), None),
+        ("model_inspect", {"target": "MC", "units": "mm"},
+         _retire_compare("density_refusal_target", _remesh_target_state, False), None),
+        ("mesh_remesh", {"mesh": "MC", "density": -1}, _refused("density=-1 is negative", "0 for the API default"), None),
+        ("mesh_get", {"target": "Msh"}, _retire_compare("density_refusal_meshes", _remesh_census_state, True), None),
+        ("model_inspect", {"target": "MC", "units": "mm"},
+         _retire_compare("density_refusal_target", _remesh_target_state, True), None),
+    ])
+    rows.extend(_retire_reads("density_refusal", ["Msh:1"], [], after=True, material_read=_remesh_component_state))
+    rows.extend(source_reads(True))
+    for name, density in (("MDensityZero", 0), ("MDensityOmitted", None), ("MDensityPositive", 1)):
+        args = {"mesh": name}
+        if density is not None:
+            args["density"] = density
+        rows.extend([
+            ("mesh_get", {"target": "Msh"}, _retire_compare("density_control_meshes", _remesh_census_state, False), None),
+            ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                "max_depth": 10, "max_results": 2000}, _retire_compare("density_control_design", _retire_design_state, False), None),
+            ("mesh_remesh", args, lambda p, density=density: p.get("remeshed") is True
+                and p.get("design_mode") == "parametric" and bool(p.get("base_feature"))
+                and (p.get("density_applied") == density if density == 1 else "density_applied" not in p),
+             ("density_control_result", _recall("density_control_result", lambda p: p))),
+            ("mesh_get", {"target": "Msh"}, _remesh_control_effect(name), None),
+            ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                "max_depth": 10, "max_results": 2000}, _remesh_control_history, None),
+        ])
+        rows.extend(source_reads(True))
+    return rows
+
+
 # ACT 7: MESH - a scratch solid becomes a mesh, then the mesh family works it (one mesh per op).
 _MESH = [
     # A fresh asymmetric 20 x 10 x 5 mm source: identity conversion is the control, then the
@@ -1980,6 +2149,7 @@ _MESH = [
     # 'density' is set-then-read-back off the input (a build that drops it refuses), and the
     # before/after triangle counts are read off the model - 'changed' is null when either count
     # could not be read at all, which is a remesh nothing was measured about.
+    *_remesh_density_rows(),
     ("mesh_remesh", {"mesh": "MC", "density": 1},
      lambda p: p.get("density_applied") == 1 and (p["after"]["triangle_count"] or 0) > 0
      and p.get("changed") is not None, None),

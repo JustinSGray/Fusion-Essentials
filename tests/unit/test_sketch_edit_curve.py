@@ -7,6 +7,7 @@ the SketchCurvesChanged postcondition.
 """
 
 import math
+from types import SimpleNamespace
 
 import adsk.core
 import pytest
@@ -199,6 +200,7 @@ class TestGuards:
         install(mod, make_design(sketches=[sk]))
         monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: FakePoint(x, y, z))
         arc = make_sketch_curve("A0", length=1.5)
+        monkeypatch.setattr(arc, "radius", 0.2, raising=False)
 
         def _add_fillet(*args):
             sketch_curves_edit(sk.sketchCurves.sketchArcs, add=[arc])
@@ -208,6 +210,7 @@ class TestGuards:
         out = payload(mod.handler(action="fillet", entity_one="line:0", entity_two="spline:0",
                                   x1=1, y1=1, x2=2, y2=2, radius=2))
         assert out["resulting"] == [{"id": "arc:0", "length": 15.0}]
+        assert out["radius"] == 2
 
     def test_chamfer_refuses_a_non_line(self, mod, monkeypatch):
         arc = make_sketch_curve("A0", length=3.0)
@@ -427,9 +430,10 @@ class TestSingleCurveEdits:
 
 
 class TestFilletChamferOffset:
-    def test_fillet_passes_both_pick_points_and_a_centimetre_radius(self, mod, sketch):
+    def test_fillet_passes_both_pick_points_and_a_centimetre_radius(self, mod, sketch, monkeypatch):
         calls = []
         arc = make_sketch_curve("A0", length=1.5)
+        monkeypatch.setattr(arc, "radius", 0.3, raising=False)
         sketch.sketchCurves.sketchArcs.addFillet = _recorder(calls, arc)
         out = payload(mod.handler(action="fillet", entity_one="line:0", entity_two="line:1",
                                   x1=10, y1=0, x2=0, y2=20, radius=3))
@@ -583,3 +587,69 @@ class TestExtendIsJudgedByLength:
         line0.extend = _extends(line0, 4.0)
         assert "extend changed nothing" in error_message(
             mod.handler(action="extend", entity_one="line:0", x1=1, y1=1))
+
+
+@pytest.fixture
+def solved_fillet(mod, sketch, monkeypatch):
+    """A retained tangent arc and two neighbors with solved sketch-local endpoints."""
+    arc = make_sketch_curve("A0", length=1.04907)
+    monkeypatch.setattr(arc, "radius", 1.87766, raising=False)
+    for curve, start, end in ((arc, (21.46263, -2.99993), (22.45797, -3.28542)),
+                              (_lines(sketch).item(0), (1, -3.00044), (21.46263, -2.99993)),
+                              (_lines(sketch).item(1), (22.45797, -3.28542), (26.00017, -5.49973))):
+        monkeypatch.setattr(curve, "startSketchPoint",
+                            SimpleNamespace(geometry=FakePoint(*start, 0)), raising=False)
+        monkeypatch.setattr(curve, "endSketchPoint",
+                            SimpleNamespace(geometry=FakePoint(*end, 0)), raising=False)
+
+    def add_fillet(*_args):
+        sketch_curves_edit(sketch.sketchCurves.sketchArcs, add=[arc])
+        return arc
+
+    monkeypatch.setattr(sketch.sketchCurves.sketchArcs, "addFillet", add_fillet, raising=False)
+    return arc
+
+
+class TestSolvedFilletRadius:
+    @pytest.mark.parametrize("units,radius,observed", [("mm", 20, 18.7766), ("cm", 2, 1.87766),
+                                                       ("in", 20 / 25.4, 0.739236)])
+    def test_mismatch_names_solved_radius_and_retained_neighbors(self, mod, sketch, solved_fillet,
+                                                               units, radius, observed):
+        result = mod.handler(action="fillet", sketch_name="Plate", entity_one="line:0",
+                             entity_two="line:1", x1=200, y1=-30, x2=230, y2=-36,
+                             radius=radius, units=units)
+        message = error_message(result)
+        assert f"requested {radius!a} {units}" in message
+        assert f"solved {observed!a} {units}" in message
+        assert "REMAINS" in message and "arc:0" in message and "line:0" in message and "line:1" in message
+        assert "'start':" in message and "'end':" in message and "sketch-local" in message
+        assert "sketch_get(include_entities=true)" in message and "user can Undo" in message
+        assert sketch.sketchCurves.sketchArcs.item(0) is solved_fillet
+        assert sketch.sketchCurves.count == 3
+
+    @pytest.mark.parametrize("units,radius", [("mm", 10), ("cm", 1), ("in", 10 / 25.4),
+                                              ("mm", 10.0005)])
+    def test_matching_solved_radius_is_reported_in_requested_units(self, mod, solved_fillet,
+                                                                 monkeypatch, units, radius):
+        monkeypatch.setattr(solved_fillet, "radius", 1)
+        result = payload(mod.handler(action="fillet", entity_one="line:0", entity_two="line:1",
+                                     x1=655, y1=0, x2=660, y2=5, radius=radius, units=units))
+        assert result["radius"] == pytest.approx(round(mod._common.CM_TO_UNIT[units], 6))
+
+    def test_unread_radius_cannot_claim_the_request_landed(self, mod, solved_fillet, monkeypatch):
+        monkeypatch.setattr(solved_fillet, "radius", None)
+        message = error_message(mod.handler(action="fillet", entity_one="line:0", entity_two="line:1",
+                                           x1=655, y1=0, x2=660, y2=5, radius=10))
+        assert "solved None mm" in message and "REMAINS" in message and "sketch_get" in message
+
+    def test_changed_neighbor_count_without_a_returned_arc_is_not_radius_success(self, mod, sketch,
+                                                                                monkeypatch):
+        def remove_neighbor(*_args):
+            sketch_curves_edit(_lines(sketch), remove=[_lines(sketch).item(1)])
+            return None
+
+        monkeypatch.setattr(sketch.sketchCurves.sketchArcs, "addFillet", remove_neighbor, raising=False)
+        message = error_message(mod.handler(action="fillet", entity_one="line:0", entity_two="line:1",
+                                           x1=655, y1=0, x2=660, y2=5, radius=10))
+        assert "requested 10 mm, solved None mm" in message and "REMAINS" in message
+        assert sketch.sketchCurves.count == 1

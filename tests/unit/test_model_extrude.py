@@ -10,6 +10,7 @@ passed in, without a real design.
 
 import json
 import types
+import pytest
 
 import adsk.fusion
 
@@ -947,7 +948,27 @@ def _install_geom(faces=None, bodies=None):
     return ef
 
 
+@pytest.fixture
+def to_face_guard_rig(monkeypatch):
+    """An existing target face and extrude constructor with tracked native writes."""
+    features = _install_geom(faces={"F": BRepFace(None)})
+    reads = []
+    original = ex._common.design
+    monkeypatch.setattr(ex._common, "design", lambda: reads.append(True) or original())
+    return features, reads
+
+
 class TestToObject:
+    @pytest.mark.parametrize("extent", ["to_face", "distance"])
+    def test_symmetry_to_target_is_refused_before_resolution_or_native_input(self, to_face_guard_rig,
+                                                                            extent):
+        features, reads = to_face_guard_rig
+        result = ex.handler(sketch_name="S", to_object="F", extent=extent, symmetric=True)
+        assert result["isError"] is True
+        assert f"extent='{extent}'" in result["message"] and "symmetric=true" in result["message"]
+        assert "symmetric=false" in result["message"] and "omit to_object" in result["message"]
+        assert features.last_input is None and features.added is False and reads == []
+
     def test_extrude_to_face_uses_to_entity_extent(self):
         face = BRepFace(None)
         ef = _install_geom(faces={"F": face})

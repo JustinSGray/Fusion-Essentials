@@ -738,19 +738,14 @@ class TestDocumentToolScope:
         res = cco.handler(setup="Setup1", strategy="face", tool_scope="document", tool_index=0)
         assert res["isError"] is True and "empty" in res["message"].lower()
 
-    def test_document_scope_ignores_url(self, monkeypatch):
-        # tool_scope=document WINS over a supplied url: the tool comes from the document library and
-        # url resolution is never attempted - a bogus url must not even be looked at.
+    def test_conflicting_tool_selectors_refuse_before_creation(self, monkeypatch):
         cam = _install(monkeypatch, doc_tools=(_tool("Demo Tool"),))
-
-        def _boom(url, idx):
-            raise AssertionError("url resolution attempted despite tool_scope=document")
-        monkeypatch.setattr(cco, "_tool_at", _boom)
-        out = _payload(cco.handler(setup="Setup1", strategy="face",
-                                   tool_scope="document", tool_index=0, generate=False,
-                                   tool_library_url="bogus://not-a-library"))
-        assert cam.setups.item(0).operations.item(0).tool.description == "Demo Tool"
-        assert out["operation"] == "Op1"
+        result = cco.handler(setup="Setup1", strategy="face", tool_scope="document",
+                             tool_index=0, generate=False, tool_library_url="u")
+        assert result["isError"] is True
+        assert "tool_scope='document'" in result["message"] and "tool_library_url='u'" in result["message"]
+        assert "without a URL" in result["message"]
+        assert cam.setups.item(0).operations.count == 0
 
     def test_no_ref_at_all_errors(self, monkeypatch):
         # neither tool_scope=document nor a url -> a clear error
