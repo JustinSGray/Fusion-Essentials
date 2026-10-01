@@ -166,6 +166,24 @@ def _download_overwrite_args(ctx):
             "file_name": DOWNLOAD_FILE, "overwrite": True}
 
 
+def _download_boolean_args(ctx):
+    """Prepare the existing owned preimage for a malformed Boolean refusal."""
+    args = _download_refusal_args(ctx)
+    args.update(overwrite="false", expect_document="session:BOOLEAN-GUARD-MISMATCH")
+    return args
+
+
+def _cloud_boolean_unchanged(p, download=False):
+    """Check the complete census and optional exact local preimage after a Boolean refusal."""
+    if p != _RECALL.get("cloud_boolean_census"):
+        return False
+    if not download:
+        return True
+    proof = _RECALL.get("download_probe") or {}
+    return (_disk_facts(os.path.join(DOWNLOAD_RUN_DIR, DOWNLOAD_FILE)) == proof.get("preimage")
+            and os.listdir(DOWNLOAD_RUN_DIR) == [DOWNLOAD_FILE])
+
+
 # --- predicates: each reads keys the tool PUBLISHES, and reports what it read ------------------
 
 def _hub_is(hub, project):
@@ -2793,6 +2811,11 @@ _CLOUD_DATA = [
      _known_child_excluded, None),
     ("data_get", {"project": PROJECT, "folder": RUN_PATH, "recursive": True},
      _known_file_listing(RUN_PATH, MOVED_PATH, True), None),
+    ("doc_get", {}, _home_document,
+     ("cloud_boolean_census", _recall("cloud_boolean_census", lambda p: p))),
+    ("data_download_file", _download_boolean_args,
+     _refused("Invalid Boolean for 'overwrite'", "'false'", "Use true or false."), None),
+    ("doc_get", {}, lambda p: _cloud_boolean_unchanged(p, download=True), None),
     ("data_download_file", _download_refusal_args,
      _refused(DOWNLOAD_FILE, "overwrite=true"), None),
     ("data_download_file", _download_overwrite_args, _downloaded, None),
@@ -2804,6 +2827,12 @@ _CLOUD_DATA = [
     ("data_delete_folder", lambda c: _dependent_folder_args(c, "run_folder_id", RUN_FOLDER),
      _refused("is not empty", "immediate files: 0, subfolders: 1",
               "1 file(s) and 1 subfolder(s) total", "recursive_confirm"), None),
+    ("data_delete_file", {"document_id": "urn:adsk.wipprod:dm.lineage:BOOLEAN-GUARD-NONEXISTENT",
+                          "force": "false", "expect_document": "session:BOOLEAN-GUARD-MISMATCH"},
+     _refused("Invalid Boolean for 'force'", "'false'", "Use true or false."), None),
+    ("doc_get", {}, _cloud_boolean_unchanged, None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "cloud_file", "the uploaded file")},
+     _file_record(MOVED_PATH, complete=None), None),
     ("data_delete_file", lambda c: {"document_id": _ctx_get(c, "cloud_file", "the uploaded file"),
                                     "confirm_name": _ctx_get(c, "cloud_file_name", "its name")},
      _file_deleted, None),

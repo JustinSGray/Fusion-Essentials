@@ -111,6 +111,26 @@ def _call(server, name, arguments):
     }))
 
 
+@pytest.fixture
+def boolean_tool(server):
+    """Register declared properties on a tool that records each dispatched argument unchanged."""
+    from mcpServer.mcp_primitives.item import Item
+    from mcpServer.mcp_primitives.tool import Tool
+
+    calls = []
+
+    def register(properties):
+        tool = Tool.create_simple(name="boolean_probe", description="Boolean test tool")
+        for name, schema in properties.items():
+            tool.add_input_property(name, schema)
+        tool.strict_schema()
+        server.register(Item.create_tool_item(
+            tool=tool, handler=lambda **kw: calls.append(kw) or _ok(), run_on_main_thread=False))
+        return calls
+
+    return register
+
+
 class TestBareWireMarker:
     def test_the_marker_strips_every_description_and_nothing_else(self, server, mcp_server_module,
                                                                   tmp_path, monkeypatch):
@@ -385,6 +405,80 @@ class TestToolsCallArgumentValidation:
         }))
         assert response["result"]["isError"] is False
         assert seen["kwargs"] == {}
+
+
+class TestToolsCallBooleanValidation:
+    @pytest.mark.parametrize("value", ["false", "true", "", "caf\u00e9", 0, 1, 0.0, 1.0,
+                                       None, [], [False], {}, {"flag": False}])
+    def test_malformed_boolean_never_dispatches(self, server, boolean_tool, value):
+        calls = boolean_tool({"flag": {"type": "boolean"}})
+        result = _call(server, "boolean_probe", {"flag": value})["result"]
+        assert result["isError"] is True and calls == []
+        assert "'flag'" in result["message"] and ascii(value) in result["message"]
+        assert "Use true or false." in result["message"]
+        assert result["message"].isascii()
+        assert result["content"][0]["text"] == result["message"]
+
+    def test_real_booleans_and_omission_reach_handler_unchanged(self, server, boolean_tool):
+        calls = boolean_tool({"flag": {"type": "boolean"}})
+        for arguments in ({}, {"flag": False}, {"flag": True}):
+            assert _call(server, "boolean_probe", arguments)["result"]["isError"] is False
+        assert calls[0] == {}
+        assert calls[1]["flag"] is False and calls[2]["flag"] is True
+
+    def test_nullable_boolean_allows_only_explicit_null_and_booleans(self, server, boolean_tool):
+        calls = boolean_tool({"flag": {"type": ["boolean", "null"]}})
+        for value in (None, False, True):
+            assert _call(server, "boolean_probe", {"flag": value})["result"]["isError"] is False
+            assert calls[-1]["flag"] is value
+        assert _call(server, "boolean_probe", {"flag": "false"})["result"]["isError"] is True
+        assert len(calls) == 3
+
+    def test_mixed_boolean_unions_preserve_other_declared_types(self, server, boolean_tool):
+        calls = boolean_tool({"text": {"type": ["boolean", "string"]},
+                              "value": {"type": ["boolean", "integer", "number", "string"]}})
+        for value in (False, True, 0, 1, 0.5, "false"):
+            arguments = {"text": "false", "value": value}
+            assert _call(server, "boolean_probe", arguments)["result"]["isError"] is False
+            assert calls[-1]["text"] == "false" and calls[-1]["value"] is value
+
+    @pytest.mark.parametrize("arguments, path", [
+        ({"shape": {"capped": "false"}}, "shape.capped"),
+        ({"flags": [True, 0]}, "flags[1]"),
+        ({"jobs": [{"enabled": True}, {"enabled": "false"}]}, "jobs[1].enabled"),
+        ({"groups": [[True], [1]]}, "groups[1][0]"),
+    ])
+    def test_nested_boolean_refusal_names_full_path_and_never_dispatches(
+            self, server, boolean_tool, arguments, path):
+        calls = boolean_tool({
+            "shape": {"type": "object", "properties": {"capped": {"type": "boolean"}}},
+            "flags": {"type": "array", "items": {"type": "boolean"}},
+            "jobs": {"type": "array", "items": {
+                "type": "object", "properties": {"enabled": {"type": "boolean"}}}},
+            "groups": {"type": "array", "items": {
+                "type": "array", "items": {"type": "boolean"}}},
+        })
+        result = _call(server, "boolean_probe", arguments)["result"]
+        assert result["isError"] is True and calls == []
+        assert repr(path) in result["message"] and "Use true or false." in result["message"]
+
+    def test_nested_valid_leaves_and_undeclared_fields_are_unchanged(
+            self, server, boolean_tool, mcp_server_module, monkeypatch):
+        calls = boolean_tool({
+            "shape": {"type": "object", "properties": {"capped": {"type": "boolean"}}},
+            "flags": {"type": "array", "items": {"type": ["boolean", "null"]}},
+            "jobs": {"type": "array", "items": {
+                "type": "object", "properties": {"enabled": {"type": "boolean"}}}},
+            "params": {"type": "array", "items": {"type": "object"}},
+        })
+        monkeypatch.setattr(mcp_server_module, "_SCHEMA_OMITTED_ARGS",
+                            {"boolean_probe": frozenset({"legacy"})})
+        arguments = {"shape": {"capped": False, "extra": "false"},
+                     "flags": [False, True, None], "jobs": [{}, {"enabled": True}],
+                     "params": [{"favorite": "false"}], "legacy": "false"}
+        assert _call(server, "boolean_probe", arguments)["result"]["isError"] is False
+        assert calls == [arguments]
+        assert calls[0]["shape"]["capped"] is False and calls[0]["jobs"][1]["enabled"] is True
 
 
 class TestToolsCallEnumValidation:

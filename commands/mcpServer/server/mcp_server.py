@@ -483,18 +483,7 @@ class SimpleMCPServer:
 
     def _validate_tool_arguments(self, tool_name: str, item: Item,
                                  arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Check `arguments` against item.primitive.input_schema before dispatch.
-
-        Argument NAMES are checked here, and any argument whose schema property declares an `enum`
-        is checked against it: a permissive client that sends an out-of-enum value (e.g.
-        find_geometry kind="faces") would otherwise get silent wrong behavior (match_count:0) instead
-        of a correction. Unknown keys are rejected ONLY when the tool's wire schema declares
-        additionalProperties=false - a lenient schema stays lenient, so the schema never promises what
-        the server then refuses. Keys a handler deliberately accepts off-schema pass through
-        (_SCHEMA_OMITTED_ARGS). Failures come back as isError TOOL results rather than JSON-RPC
-        protocol errors - a deliberate deviation from the spec's invalid-params bucket: an in-band
-        result is what a calling agent can actually read and self-correct from.
-        """
+        """Check names, required keys, enums and Boolean leaves in item.primitive.input_schema."""
         schema = item.primitive.input_schema or {}
         properties = schema.get("properties") or {}
         required = schema.get("required") or []
@@ -521,6 +510,39 @@ class SimpleMCPServer:
         if enum_error is not None:
             return enum_error
 
+        for name, property_schema in properties.items():
+            if name in arguments and isinstance(property_schema, dict):
+                boolean_error = self._validate_boolean(tool_name, property_schema,
+                                                       arguments[name], name)
+                if boolean_error is not None:
+                    return boolean_error
+        return None
+
+    def _validate_boolean(self, tool_name: str, schema: Dict[str, Any],
+                          value: Any, path: str) -> Optional[Dict[str, Any]]:
+        """Reject non-Booleans at declared Boolean leaves, following properties and array items."""
+        declared_types = schema.get("type", [])
+        if isinstance(declared_types, str):
+            declared_types = [declared_types]
+        if ("boolean" in declared_types
+                and all(kind in ("boolean", "null") for kind in declared_types)):
+            if type(value) is not bool and not (value is None and "null" in declared_types):
+                return self._tool_error_result(
+                    f"Invalid Boolean for {path!a} in tool {tool_name!a}: {value!a}. "
+                    "Use true or false.")
+        if isinstance(value, dict):
+            for name, property_schema in (schema.get("properties") or {}).items():
+                if name in value and isinstance(property_schema, dict):
+                    failure = self._validate_boolean(tool_name, property_schema, value[name],
+                                                     f"{path}.{name}")
+                    if failure is not None:
+                        return failure
+        elif isinstance(value, list) and isinstance(schema.get("items"), dict):
+            for index, element in enumerate(value):
+                failure = self._validate_boolean(tool_name, schema["items"], element,
+                                                 f"{path}[{index}]")
+                if failure is not None:
+                    return failure
         return None
 
     def _validate_enums(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:

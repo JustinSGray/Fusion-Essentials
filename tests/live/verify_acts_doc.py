@@ -9,6 +9,7 @@ so the CAM job is what the sweep ends on; and the discard. `reload_smoke` is the
 run() fires after every act: the add-in reload, which restarts the server and so can be no step.
 """
 
+import copy
 import json
 import os
 import time
@@ -711,6 +712,71 @@ def _target_end():
 
 
 _TARGET_CUBE = [("Witness", "Cube", None)]
+
+
+def _boolean_suppressed(p):
+    """Check actual missing material and the sole suppressed feature against the baseline."""
+    expected = copy.deepcopy(_RECALL.get("bool_seed_design"))
+    if expected is None:
+        return None
+    nodes = expected["tree"]["children"]
+    if len(nodes) != 1 or nodes[0].get("component") != "Witness":
+        return None
+    nodes[0]["body_count"] = 0
+    nodes[0].pop("bodies", None)
+    timeline = expected["timeline"]
+    hits = [r for r in timeline["timeline"] if r.get("component") == "Witness"
+            and r.get("type") == "ExtrudeFeature"]
+    if len(hits) != 1:
+        return None
+    hits[0].update(is_suppressed=True, health="suppressed")
+    timeline["summary"]["states"] = {"healthy": len(timeline["timeline"]) - 1, "suppressed": 1}
+    actual = {"tree": p.get("tree"), "timeline": p.get("timeline")}
+    return actual if actual == expected else None
+
+
+def _boolean_reads(tag, baseline=None, suppressed=False):
+    """Read the owned Boolean coupon's history, material and open-document census."""
+    rows = [_target_row("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 3, "max_results": 200}, tag + "_design",
+                _boolean_suppressed if suppressed else _target_design,
+                baseline + "_design" if baseline else None),
+            _target_row("doc_get", {"max_results": 1000}, tag + "_doc", _target_document,
+                baseline + "_doc" if baseline else None)]
+    if not suppressed:
+        rows.append(_target_row("model_inspect", {"target": "Witness:1", "include": ["default", "mass"],
+                "per_body": True, "accuracy": "very_high", "units": "mm"}, tag + "_body",
+                _target_material, baseline + "_body" if baseline else None))
+    return rows
+
+
+_BOOLEAN_FLAGS = _target_begin() + _boolean_reads("bool_seed")
+for _bool_tool, _bool_args, _bool_path in [
+    ("design_edit_timeline", lambda c: {"action": "suppress", "suppressed": "false",
+        "feature": _target_address(c, "bool_seed_design", "Witness", "Extrude1")}, "suppressed"),
+    ("doc_close", lambda c: {"close_all": "false", "save_changes": False,
+        "expect_document": _ctx_get(c, "story_doc", "the inactive story document")}, "close_all"),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "target_doc", "the owned coupon"), "save_changes": "false",
+        "expect_document": _ctx_get(c, "story_doc", "the inactive story document")}, "save_changes"),
+    ("cam_post", lambda c: {"program_name": "BooleanGuardNonexistent", "output_folder": EXPORT_DIR,
+        "overwrite": "false", "expect_document": _ctx_get(c, "story_doc", "the inactive story document")}, "overwrite"),
+    ("form_create", lambda c: {"primitive": {"shape": "cylinder", "size": [10, 10], "spans": [8, 2],
+        "capped": "false"}, "expect_document": _ctx_get(c, "story_doc", "the inactive story document")}, "primitive.capped"),
+]:
+    _BOOLEAN_FLAGS += [(_bool_tool, _bool_args,
+        _refused("Invalid Boolean for " + repr(_bool_path), "'false'", "Use true or false."), None)]
+    _BOOLEAN_FLAGS += _boolean_reads("bool_refused_" + _bool_path, "bool_seed")
+for _bool_tag, _bool_flag in [("true", {"suppressed": True}), ("omitted", {})]:
+    _BOOLEAN_FLAGS += [("design_edit_timeline", lambda c, flags=_bool_flag: {"action": "suppress",
+        "feature": _target_address(c, "bool_seed_design", "Witness", "Extrude1"), **flags},
+        lambda p: p.get("is_suppressed") is True, None)]
+    _BOOLEAN_FLAGS += _boolean_reads("bool_" + _bool_tag, suppressed=True)
+    _BOOLEAN_FLAGS += [("design_edit_timeline", lambda c: {"action": "suppress", "suppressed": False,
+        "feature": _target_address(c, "bool_seed_design", "Witness", "Extrude1")},
+        lambda p: p.get("is_suppressed") is False, None)]
+    _BOOLEAN_FLAGS += _boolean_reads("bool_restored_" + _bool_tag, "bool_seed")
+_BOOLEAN_FLAGS += _target_end()
+
 _TARGET_CONFIRMATION = _target_begin() + [
     ("model_create_component", {"name": "Suffix", "activate": True}, _made_component, None),
 ] + _target_circle("Suffix", "Tail", 3) + _target_reads("tc_end", _TARGET_CUBE + [("Suffix", "Tail", 3)]) + [
@@ -721,7 +787,7 @@ _TARGET_CONFIRMATION = _target_begin() + [
      _refused("Refusing:", "DISCARDS 1 timeline item(s)", "confirm_delete_after_marker=true"), None),
 ] + _target_reads("tc_false", _TARGET_CUBE, "tc_rolled") + [
     ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": "false"},
-     _refused("confirm_delete_after_marker must be a Boolean, got 'false'", "false for a preview or true"), None),
+     _refused("Invalid Boolean for 'confirm_delete_after_marker'", "'false'", "Use true or false."), None),
 ] + _target_reads("tc_string", _TARGET_CUBE, "tc_rolled") + [
     ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": True},
      lambda p: p.get("deleted_after_marker") is True and p.get("deleted_timeline_entries") == 1, None),
@@ -889,7 +955,7 @@ _OVERTURE = [
      "refused", None),
     # a tier-R member names the member and the reason, with nothing written.
     ("sys_set_preferences", {"member": "network.proxyHost", "value": "127.0.0.1"}, "refused", None),
-] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE + _TARGET_CONFIRMATION + _TARGET_HIDDEN + _TARGET_SLASH
+] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE + _BOOLEAN_FLAGS + _TARGET_CONFIRMATION + _TARGET_HIDDEN + _TARGET_SLASH
 
 # --- THE SHOWCASE: the finished fixture photographed, renamed, exported and read back -----------
 # It runs BEFORE the machining acts so the sweep ends on the CAM job and its post, which is the
