@@ -15,6 +15,7 @@ program's parameters, writing (or not writing) a file there.
 
 import itertools
 import json
+import pytest
 import os
 import types
 
@@ -561,6 +562,27 @@ def _fusion_lib(names, root="fusion://root"):
 class TestFusionPostScope:
     """The lathe and mill-turn posts live in the library this installation ships; post_scope='fusion'
     is the scope that resolves them."""
+
+    @pytest.mark.parametrize("name", ["fanuc turning", "missing"])
+    def test_capped_name_refuses_before_program_creation(self, monkeypatch, tmp_path, name):
+        lib = _fusion_lib(["fanuc turning.cps", "haas turning.cps"])
+        cam = _install(monkeypatch, _CAM([_Setup("S1", [_Op("Face1")])]))
+        monkeypatch.setattr(cp, "_post_library", lambda: lib)
+        monkeypatch.setitem(cp._POST_MAX_ASSETS, "fusion", 1)
+        result = cp.handler(post=name, post_scope="fusion", output_folder=str(tmp_path),
+                            program_name="1001")
+        assert result["isError"] is True and "absence is unknown" in result["message"]
+        assert cam.ncPrograms.count == 0 and cam.posted == []
+
+    def test_seen_exact_post_url_works_despite_cap(self, monkeypatch, tmp_path):
+        lib = _fusion_lib(["fanuc turning.cps", "haas turning.cps"])
+        cam = _install(monkeypatch, _CAM([_Setup("S1", [_Op("Face1")])]))
+        monkeypatch.setattr(cp, "_post_library", lambda: lib)
+        monkeypatch.setitem(cp._POST_MAX_ASSETS, "fusion", 1)
+        data = _payload(cp.handler(post="fusion://root/fanuc turning.cps", post_scope="fusion",
+                                   output_folder=str(tmp_path), program_name="1001"))
+        assert data["post_config"] == "fusion://root/fanuc turning.cps"
+        assert cam.ncPrograms.count == 1
 
     def test_fusion_resolves_a_shipped_post_by_case_folded_name(self, monkeypatch, tmp_path):
         # THE fusion bite: the name matches an asset leafName under Fusion360LibraryLocation, the

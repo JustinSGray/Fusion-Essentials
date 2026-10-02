@@ -4936,3 +4936,127 @@ _CAM_GREEN = [
     ("cam_get_status", {"target": "Setup2"}, _all_current("setup 'Setup2'", exactly=4), None),
     ("cam_get_status", {}, _all_current("the document"), None),
 ]
+
+
+def _lookup_guarded(payload):
+    """Require native correlation guards, exact-address controls and unchanged rejected state."""
+    return _measured("bounded native lookup and correlation checks", payload,
+                     payload.get("passed") is True and payload.get("checks")
+                     and all(value is True for value in payload["checks"].values()))
+
+
+def _lookup_library_args(_ctx):
+    """Probe capped names and seen exact URLs against native shipped libraries without writes."""
+    script = """import adsk.cam, json, sys
+
+def run(context):
+    ct = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools.cam_edit_tools'))
+    cp = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools.cam_post'))
+    cc = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools._cam_common'))
+    libraries = adsk.cam.CAMManager.get().libraryManager.toolLibraries
+    root = libraries.urlByLocation(adsk.cam.LibraryLocations.Fusion360LibraryLocation)
+    assets = list(libraries.childAssetURLs(root))
+    assert len(assets) > 1
+    asset = assets[0]
+    original = ct.library_assets
+    post_cap = cp._POST_MAX_ASSETS['fusion']
+    checks = {}
+    try:
+        ct.library_assets = lambda lib, url: cc.library_assets(lib, url, max_assets=1)
+        target, problem = ct._resolve_target('fusion', asset.leafName)
+        checks['tool_name_refused'] = target is None and 'was capped' in (problem or '')
+        target, exact_problem = ct._resolve_target('fusion', asset.toString())
+        checks['tool_exact_seen_url'] = target is not None and exact_problem is None
+        checks['tool_miss_unknown'] = 'absence is unknown' in (ct._resolve_target('fusion', 'SweepLookupMissing')[1] or '')
+        posts = cp._post_library()
+        post_root = posts.urlByLocation(adsk.cam.LibraryLocations.Fusion360LibraryLocation)
+        post_assets = list(posts.childAssetURLs(post_root))
+        assert len(post_assets) > 1
+        post = post_assets[0]
+        cp._POST_MAX_ASSETS['fusion'] = 1
+        config, _, problem = cp._resolve_library_post(post.leafName, 'fusion')
+        checks['post_name_refused'] = config is None and 'was capped' in (problem or '')
+        config, label, exact_problem = cp._resolve_library_post(post.toString(), 'fusion')
+        checks['post_exact_seen_url'] = config is not None and label == post.toString() and exact_problem is None
+        checks['post_miss_unknown'] = 'absence is unknown' in (cp._resolve_library_post('SweepLookupMissing', 'fusion')[2] or '')
+    finally:
+        ct.library_assets = original
+        cp._POST_MAX_ASSETS['fusion'] = post_cap
+    checks['diagnostic_caps_restored'] = ct.library_assets is original and cp._POST_MAX_ASSETS['fusion'] == post_cap
+    print(json.dumps({'passed': all(checks.values()), 'checks': checks, 'diagnostic_asset_cap': 1, 'tool_url': asset.toString(), 'post_url': post.toString()}))
+"""
+    return {"script": script, "read_only": True}
+
+
+def _lookup_gui_args(correlation, unique=False):
+    """Exercise one bundled GUI correlation on the owned operation and return native effects."""
+    script = """import adsk.core, adsk.cam, json, sys, uuid
+from types import SimpleNamespace
+from contextlib import redirect_stdout
+from io import StringIO
+
+def run(context):
+    app = adsk.core.Application.get()
+    cam = adsk.cam.CAM.cast(app.activeProduct)
+    assert cam is not None and cam.setups.count == 1
+    setup = cam.setups.item(0)
+    assert setup.name == 'LookupGuardSetup' and setup.allOperations.count == 1
+    op = setup.allOperations.item(0)
+    assert op.name == 'LookupGuardOperation'
+    command = next(m for n,m in sys.modules.items() if n.endswith('.commands.updateTools.entry'))
+    def state():
+        return {'tool': json.loads(op.tool.toJson()), 'preset': {'name': op.toolPreset.name, 'id': op.toolPreset.id} if op.toolPreset else None, 'count': cam.documentToolLibrary.count}
+    before = state()
+    library = adsk.cam.ToolLibrary.createEmpty()
+    for diameter in DIAMETERS:
+        item = json.loads(json.dumps(before['tool']))
+        item['guid'] = str(uuid.uuid4())
+        for key in ('DC', 'SFDM', 'shoulder-diameter', 'tip-diameter'):
+            item['geometry'][key] = diameter
+        library.add(adsk.cam.Tool.createFromJson(json.dumps(item)))
+    assert library.count == len(DIAMETERS)
+    original_ui = command.ui
+    messages = []
+    console = StringIO()
+    try:
+        command.ui = SimpleNamespace(messageBox=lambda message: messages.append(message))
+        with redirect_stdout(console):
+            command.replace_with_library_tool([op], library, CORRELATION)
+    finally:
+        command.ui = original_ui
+    after = state()
+    checks = {'ui_restored': command.ui is original_ui}
+    if UNIQUE:
+        checks['unique_tool_landed'] = after['tool']['geometry']['DC'] == DIAMETERS[0]
+        checks['unique_document_entry'] = after['count'] == before['count'] + 1
+        checks['unique_preset_preserved'] = after['preset'] == before['preset']
+        checks['unique_no_notice'] = messages == []
+    else:
+        checks['tool_preset_catalog_unchanged'] = after == before
+        checks['ambiguity_named'] = 'ambiguous' in console.getvalue().lower() and CORRELATION in console.getvalue()
+        checks['notice_present'] = len(messages) == 1 and 'could not be correlated' in messages[0]
+    print(json.dumps({'passed': all(checks.values()), 'checks': checks, 'correlation': CORRELATION, 'unique': UNIQUE, 'before_diameter': before['tool']['geometry']['DC'], 'after_diameter': after['tool']['geometry']['DC'], 'before_count': before['count'], 'after_count': after['count'], 'preset': after['preset']}))
+"""
+    script = script.replace("DIAMETERS", repr((9,) if unique else (8, 12)))
+    script = script.replace("CORRELATION", repr(correlation)).replace("UNIQUE", repr(unique))
+    return lambda _ctx: {"script": script, "read_only": False}
+
+
+_CAM_LOOKUP_GUARDS = [
+    ("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
+    ("cam_create_setup", {"name": "LookupGuardSetup", "models": ["LookupGuard:1"]},
+     lambda p: p.get("created") is True and p.get("model_count") == 1, None),
+    ("cam_edit_tools", {"action": "add", "add_tools": [{"from_type": "flat end mill",
+       "diameter": "6 mm", "description": "SweepLookup", "product_id": "SweepLookup"}]},
+     lambda p: p.get("added") == 1 and p.get("tool_count") == 1, None),
+    ("cam_create_operation", {"setup": "LookupGuardSetup", "strategy": "face", "generate": False,
+       "tool_scope": "document", "tool_index": 0, "name": "LookupGuardOperation"},
+     lambda p: p.get("operation") == "LookupGuardOperation" and p.get("generation_started") is False, None),
+    ("sys_execute_script", _lookup_library_args, _lookup_guarded, None),
+    ("sys_execute_script", _lookup_gui_args("Description"), _lookup_guarded, None),
+    ("sys_execute_script", _lookup_gui_args("Product ID"), _lookup_guarded, None),
+    ("sys_execute_script", _lookup_gui_args("Description", unique=True), _lookup_guarded, None),
+    ("cam_get", {"include": ["tool"], "operation": "LookupGuardOperation"},
+     lambda p: _measured("unique GUI match independently reads 9 mm", p.get("tool") or {},
+                        ((p.get("tool") or {}).get("dimensions") or {}).get("diameter") == 9), None),
+]

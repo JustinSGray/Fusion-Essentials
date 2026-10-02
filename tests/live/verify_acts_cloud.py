@@ -266,6 +266,116 @@ def _file_record(folder_path, complete=True):
     return check
 
 
+def _capped_name_move_probe(ctx):
+    """Build a read-only native probe for capped name lookup and exact-URN control."""
+    file_name = _ctx_get(ctx, "cloud_file_name", "the uploaded file")
+    file_id = _ctx_get(ctx, "cloud_file", "the uploaded file")
+    project_id = _ctx_get(ctx, "data_root_summary", "the configured project")["project_id"]
+    script = f'''import json, sys
+
+def run(context):
+    import adsk.core
+    def module(suffix):
+        found = [m for m in sys.modules.values()
+                 if str(getattr(m, '__name__', '')).endswith(suffix)]
+        assert len(found) == 1, (suffix, len(found))
+        return found[0]
+    dc = module('.mcpServer.tools._data_common')
+    dr = module('._data_read')
+    move = module('.data_move_file')
+    app = adsk.core.Application.get()
+    projects = [p for p in app.data.dataProjects.asArray() if p.id == {json.dumps(project_id)}]
+    assert len(projects) == 1
+    project = projects[0]
+    folder, missing = dc._resolve_folder_path(project.rootFolder,
+                                               dc._split_path({json.dumps(RUN_PATH)}))
+    assert folder is not None and missing is None
+    files = folder.dataFiles.asArray()
+    children = folder.dataFolders.asArray()
+    assert files and children
+    chosen = files[0]
+    assert chosen.name == {json.dumps(file_name)} and chosen.id == {json.dumps(file_id)}
+    before_parent = chosen.parentFolder.id
+    assert before_parent == folder.id
+    old_cap = dr._MAX_FILES
+    try:
+        dr._MAX_FILES = 1
+        refused = move.handler(file=chosen.name, project={json.dumps(PROJECT)},
+                               folder={json.dumps(RUN_PATH)},
+                               target_folder={json.dumps(RUN_PATH)})
+    finally:
+        dr._MAX_FILES = old_cap
+    cap_restored = dr._MAX_FILES == old_cap
+    after_refusal = chosen.parentFolder.id
+    original_find_project = dc._find_project
+    def injected_project_error(*args, **kwargs):
+        raise RuntimeError('synthetic project lookup failure')
+    try:
+        dc._find_project = injected_project_error
+        project_error = move.handler(file=chosen.name, project={json.dumps(PROJECT)},
+                                      folder={json.dumps(RUN_PATH)},
+                                      target_folder={json.dumps(RUN_PATH)})
+    finally:
+        dc._find_project = original_find_project
+    project_finder_restored = dc._find_project is original_find_project
+    after_project_error = chosen.parentFolder.id
+    exact = move.handler(file=chosen.id, project={json.dumps(PROJECT)},
+                         target_folder={json.dumps(RUN_PATH)})
+    after_exact = chosen.parentFolder.id
+    def outcome(result):
+        text = (result.get('content') or [{{}}])[0].get('text', '')
+        try:
+            payload = json.loads(text)
+        except Exception:
+            payload = text
+        return {{'is_error': result.get('isError'), 'payload': payload}}
+    print(json.dumps({{'file_name': chosen.name, 'file_id': chosen.id,
+        'folder_id': folder.id, 'file_count': len(files), 'child_folder_count': len(children),
+        'before_parent_id': before_parent, 'after_refusal_parent_id': after_refusal,
+        'after_project_error_parent_id': after_project_error,
+        'after_exact_parent_id': after_exact, 'cap_restored': cap_restored,
+        'project_finder_restored': project_finder_restored,
+        'project_lookup_error_injected': True,
+        'capped_by_name': outcome(refused), 'injected_project_error': outcome(project_error),
+        'exact_urn': outcome(exact)}}))
+'''
+    return {"script": script, "read_only": True}
+
+
+def _capped_name_move_result(stdout):
+    """Check the cap refusal, unchanged parent and exact-URN idempotence from the native probe."""
+    if isinstance(stdout, dict):
+        result = stdout
+    else:
+        try:
+            result = json.loads(stdout)
+        except Exception as exc:
+            raise AssertionError(f"native cloud lookup probe did not return JSON: {stdout!r}") from exc
+    limited = result.get("capped_by_name") or {}
+    injected = result.get("injected_project_error") or {}
+    exact = result.get("exact_urn") or {}
+    refusal = limited.get("payload") or ""
+    project_error = injected.get("payload") or ""
+    moved = exact.get("payload") or {}
+    return _measured(
+        "capped name move refused before mutation and exact URN stayed idempotent",
+        result,
+        result.get("file_count", 0) >= 1 and result.get("child_folder_count", 0) >= 1
+        and bool(result.get("file_name")) and str(result.get("file_id") or "").startswith("urn:")
+        and result.get("cap_restored") is True
+        and limited.get("is_error") is True and "name census is incomplete" in refusal
+        and result.get("before_parent_id") == result.get("after_refusal_parent_id")
+        and result.get("project_lookup_error_injected") is True
+        and result.get("project_finder_restored") is True
+        and injected.get("is_error") is True
+        and "synthetic project lookup failure" in project_error
+        and "data_get(project_id=<id>)" in project_error
+        and "as 'file'" in project_error
+        and result.get("before_parent_id") == result.get("after_project_error_parent_id")
+        and exact.get("is_error") is False and moved.get("already_in_target") is True
+        and result.get("before_parent_id") == result.get("after_exact_parent_id"))
+
+
 # The cloud finishes with a saved file on its own clock (its record reads is_complete False for
 # tens of seconds after the save answers, and past a full minute on a slow day - an uploaded
 # marker measured so), and both the drawing generator and a delete need it finished. Bounded:
@@ -2805,6 +2915,9 @@ _CLOUD_DATA = [
      _same_root_files, None),
     ("data_get", {"project": PROJECT, "folder": RUN_PATH, "include": ["summary"]},
      _folder_summary(RUN_PATH, "run_folder_id", 1, 1), None),
+    ("sys_execute_script", _capped_name_move_probe, _capped_name_move_result, None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "cloud_file", "the uploaded file")},
+     _file_record(RUN_PATH, complete=None), None),
     ("data_get", {"project": PROJECT, "folder": MOVED_PATH, "include": ["summary"]},
      _folder_summary(MOVED_PATH, "moved_folder_id", 0, 0), None),
     ("data_move_file", lambda c: {"file": _ctx_get(c, "cloud_file", "the uploaded file"),

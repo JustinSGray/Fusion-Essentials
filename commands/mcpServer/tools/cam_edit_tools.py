@@ -199,6 +199,13 @@ def _resolve_target(scope, library):
                      f"{', '.join(safe(lambda a=a: a.leafName) for a in found)}.{capped}"
     lib_url = next((a for a in found if safe(lambda a=a: a.toString()) == target), None)
     if lib_url is None:
+        if truncated:
+            candidates = assets_named(found, {target.lower()})
+            urls = [str(safe(lambda a=a: a.toString())) for a in candidates]
+            return None, (f"Cannot resolve {scope} library '{target}' by name: the library walk "
+                          "was capped, so uniqueness or absence is unknown. "
+                          + (f"Known matching urls: {', '.join(urls)}. " if urls else "")
+                          + "Pass an exact library url from cam_get(include=['library']).")
         # The leafName-or-stem matcher every library resolve shares - refuses two assets answering
         # one name rather than picking the first the folder walk reached.
         named = assets_named(found, {target.lower()})

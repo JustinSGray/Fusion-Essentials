@@ -2755,6 +2755,21 @@ class TestResolveTargetShared:
         target, err = ct._resolve_target("cloud", "Team Mill")
         assert target is None and "Could not load cloud library 'Team Mill'" in err
 
+    def test_capped_name_refuses_but_seen_exact_url_remains_addressable(self, monkeypatch):
+        asset = _AssetURL("Team Mill")
+        monkeypatch.setattr(ct, "_tool_libraries", lambda: self._libs([asset]))
+        monkeypatch.setattr(ct, "library_assets", lambda libs, root: ([asset], True))
+        target, err = ct._resolve_target("cloud", "Team Mill")
+        assert target is None and "was capped" in err and asset.toString() in err
+        target, err = ct._resolve_target("cloud", asset.toString())
+        assert err is None and target.is_document is False
+
+    def test_capped_miss_does_not_claim_absence(self, monkeypatch):
+        monkeypatch.setattr(ct, "_tool_libraries", lambda: self._libs([]))
+        monkeypatch.setattr(ct, "library_assets", lambda libs, root: ([], True))
+        target, err = ct._resolve_target("cloud", "Ghost")
+        assert target is None and "absence is unknown" in err
+
     def test_two_libraries_sharing_a_leaf_name_are_refused_not_the_first(self, monkeypatch):
         # two DISTINCT assets both leafed 'Team Mill' (different folders) - the by-name resolve
         # must not pick whichever one the folder walk reached first.

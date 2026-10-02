@@ -60,6 +60,7 @@ are not additive; `cleanup-total` covers teardown and home restoration as one sp
 | `sheet_positions` | none | owned family document -> family-local act state | none | authored act frames |
 | `sheet_flange` | none | owned family document -> family-local act state | none | authored act frames |
 | `small_edits` | none | owned family document -> family-local act state | none | authored act frames |
+| `lookup` | none | owned family document -> family-local act state | none | authored act frames |
 | `finale` | none | owned family document -> family-local act state | none | authored act frames |
 
 ### Act policy readbacks
@@ -125,6 +126,7 @@ Producer additions list late act-local setup beyond the family default. Entitlem
 | `ACT 12f - SHEET METAL FOLD POSITIONS` | `sheet_positions` | family default | inherited | `none` | `always` | `null` |
 | `ACT 12g - SHEET METAL FLANGE FAMILY` | `sheet_flange` | family default | inherited | `none` | `always` | `null` |
 | `ACT 13 - SMALL EDIT SAFETY` | `small_edits` | family default | inherited | `none` | `always` | `null` |
+| `ACT 14 - LOOKUP TARGETING` | `lookup` | family default | manufacture | `none` | `always` | `null` |
 | `FINALE` | `finale` | family default | design | `none` | `always` | `null` |
 <!-- END GENERATED ACT DEPENDENCIES -->
 

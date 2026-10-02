@@ -276,11 +276,6 @@ _FIRST_MATCH_ALLOWLIST = {
     # the one an expression resolves against.
     "_param_common._find_parameter":
         "parameter names are the identifiers expressions reference - unique by construction",
-    # These two search the CLOUD data model. The FOLDER name space is measured unique; the PROJECT
-    # one is not established, and that resolver returns the first sibling carrying the name.
-    "_data_common._find_project":
-        "one hub's projects, matched case-insensitively; whether a hub can hold two projects of "
-        "one name is not established here",
     "_data_common._child_folder_by_name":
         "one folder's immediate subfolders, a name space measured UNIQUE: adding a subfolder under "
         "a name a sibling already carries raises '3 : CB_NAE - Another object with the same name "

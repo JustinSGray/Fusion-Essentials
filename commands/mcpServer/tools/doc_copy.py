@@ -109,8 +109,11 @@ def handler(document_id: str = "", name: str = "",
         if not (source_project or source_project_id):
             return error("When using 'name', also provide 'source_project' "
                                       "(name) or 'source_project_id' so the lookup is unambiguous.")
-        sproj, savail = _find_project(data, name=source_project or None,
-                                      project_id=source_project_id or None)
+        try:
+            sproj, savail = _find_project(data, name=source_project or None,
+                                          project_id=source_project_id or None)
+        except Exception as e:
+            return error(f"Could not resolve source project: {e}")
         if not sproj:
             ident = source_project_id or source_project
             return error(f"Source project not found: {ident}. Available: "
@@ -178,7 +181,11 @@ def handler(document_id: str = "", name: str = "",
         src = matches[0][0]
 
     # --- resolve the destination project + folder ---
-    dproj, davail = _find_project(data, name=project or None, project_id=project_id or None)
+    try:
+        dproj, davail = _find_project(data, name=project or None,
+                                      project_id=project_id or None)
+    except Exception as e:
+        return error(f"Could not resolve destination project: {e}")
     if not dproj:
         ident = project_id or project
         return error(f"Destination project not found: {ident}. Available: "

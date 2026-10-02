@@ -29,8 +29,8 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source ea280a68ecb1c2a0a4a4f7e32ba7803eb9f550eaa373e81bc2af990afecb79e7 | Fusion 2706.0.116 | verified 2026-10-02
-Loaded: implementation 96d12bde23f30185787bb960c3453a8867cf4166c002f4f5e139523901d6ba00 | schema b47030442a9522709c3b55ce843a5bb5787fc3cb6182f0a5db15c453cd226484 | load ce33bb6ca4ea426cbc336c1f7ec9b0cc | session 1a6efc80a3ad41acbcf79781a0cadda9
+Stamp: source a616b8b4d5a764a498cde28fc4660967041b477df249d6371b7b3bcc53dec2bb | Fusion 2706.0.116 | verified 2026-10-02
+Loaded: implementation e1258ba23f86a23fff1ae3dd4e3e0a89b90bac533e85abb23bc48d651e4a9e13 | schema 0f082bb58bc62e4c99146893e7fc097a19daed55af248965cae72dc442600938 | load fd6b7b662ed54eabb0a8c5636d978fa1 | session 5fabf7b4a0e147bdb1cf9f9ea4c19b1e
 
 205 covered / 0 called / 5 refusals-only / 3 skipped(reason) / 0 pending
 
@@ -93,6 +93,7 @@ Loaded: implementation 96d12bde23f30185787bb960c3453a8867cf4166c002f4f5e13952390
 | ACT 12f - SHEET METAL FOLD POSITIONS | narrative |
 | ACT 12g - SHEET METAL FLANGE FAMILY | narrative |
 | ACT 13 - SMALL EDIT SAFETY | narrative |
+| ACT 14 - LOOKUP TARGETING | narrative |
 | FINALE | narrative |
 
 | tool | status | step (the demo's shot list) |

@@ -37,6 +37,7 @@ FAMILY_GROUPS = (
     ("sheet_positions", ("ACT 12f",)),
     ("sheet_flange", ("ACT 12g",)),
     ("small_edits", ("ACT 13 -",)),
+    ("lookup", ("ACT 14 -",)),
     ("finale", ("FINALE",)),
 )
 FAMILY_SLOTS = {}
@@ -199,6 +200,8 @@ def fixture_steps(family, before_act=None, entitled=True, raw=False, slots=None)
                               "visible": False}, "ok", None)]
     if family == "small_edits":
         return _box("EditTarget")
+    if family == "lookup":
+        return _box("LookupGuard")
     return []
 
 

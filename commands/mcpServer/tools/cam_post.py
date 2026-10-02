@@ -132,7 +132,15 @@ def _resolve_library_post(post, post_scope):
     def leaf(a):
         return safe(lambda a=a: a.leafName) or ""
 
-    matches = [a for a in assets if _norm_post_name(leaf(a)) == want]
+    matches = [a for a in assets if safe(lambda a=a: a.toString()) == post]
+    if not matches:
+        matches = [a for a in assets if _norm_post_name(leaf(a)) == want]
+        if truncated:
+            urls = [str(safe(lambda a=a: a.toString())) for a in matches]
+            return None, None, (f"Cannot resolve {post_scope} post '{post}' by name: the search "
+                                "was capped, so uniqueness or absence is unknown. "
+                                + (f"Known matching urls: {', '.join(urls)}. " if urls else "")
+                                + "Pass an exact post asset url from this library, or retry a complete listing.")
     if not matches:
         # The shipped library answers with hundreds of names, so what the listing cannot carry is
         # COUNTED by the shared renderer rather than dropped.
@@ -969,7 +977,7 @@ tool = (
     Tool.create_simple(name="cam_post", description=TOOL_DESCRIPTION)
     .add_input_property("scope", {"type": "string"})
     .add_input_property("post", {"type": "string",
-            "description": "post_scope=local: a .cps path or a name in the post folder. Otherwise a post NAME in that library."})
+            "description": "local: .cps path or post-folder name. Otherwise a post name or exact library asset URL."})
     .add_input_property(_POST_SCOPE_CHOICE.name, _POST_SCOPE_CHOICE.schema())
     .add_input_property("output_folder", {"type": "string"})
     .add_input_property("program_name", {"type": "string",

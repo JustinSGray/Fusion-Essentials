@@ -163,10 +163,11 @@ class LibraryTool:
 def replace_with_library_tool(operations: List[adsk.cam.Operation], library: ToolLibrary, correlation_type: str):
     timer.mark('replace_tool')
     # Iterate through each operation in the setup and replace the tool with the library tool
-    library_tool_description: Dict[str, int] = {}
-    library_tool_product_ids: Dict[str, int] = {}
+    library_tool_description: Dict[str, List[int]] = {}
+    library_tool_product_ids: Dict[str, List[int]] = {}
     library_tool_geometry_hash: Dict[str, int] = {}
     library_tool_used: List[LibraryTool] = []
+    library_tool_details: List[Dict[str, str]] = []
     bad_correlation = False
     cam = adsk.cam.CAM.cast(app.activeProduct)
     dtl = cam.documentToolLibrary
@@ -178,9 +179,16 @@ def replace_with_library_tool(operations: List[adsk.cam.Operation], library: Too
         tool_json = json.loads(tool.toJson(), parse_float=lambda x: round(float(x), 3)) # APIDUMB: All the floats coming out of a newly opened file are .3f so we need to do this so the hash matches
         library_tool_used.append(LibraryTool(tool))
         lib_num = library_tool_used.__len__() - 1
-        
-        library_tool_description[tool_json["description"]] = lib_num
-        library_tool_product_ids[tool_json["product-id"]] = lib_num
+        library_tool_details.append({
+            "description": tool_json["description"],
+            "product-id": tool_json["product-id"],
+        })
+        description = tool_json["description"]
+        if description != '':
+            library_tool_description.setdefault(description, []).append(lib_num)
+        product_id = tool_json["product-id"]
+        if product_id != '':
+            library_tool_product_ids.setdefault(product_id, []).append(lib_num)
         if "geometry" in tool_json.keys():
             geometry = json.dumps(remove_tip_keys(tool_json["geometry"]))
             geometry_hash = sha256(geometry.encode()).hexdigest()
@@ -207,22 +215,41 @@ def replace_with_library_tool(operations: List[adsk.cam.Operation], library: Too
         # pad the string to 32 characters
         print_str += ' ' * (32 - len(operation.name))
         library_tool = None
+        matching_candidates = None
         if correlation_type == 'Description':
             description = tool_json["description"]
             print_str += f'matching by Description: {description}'
             if description != '': # dont match if the description is empty
-                library_tool = library_tool_description.get(description)
+                matching_candidates = library_tool_description.get(description)
         elif correlation_type == 'Product ID':
             product_id = tool_json["product-id"]
             print_str += f'matching by Product ID: {product_id}'
             if product_id != '': # dont match if the product id is empty
-                library_tool = library_tool_product_ids.get(product_id)
+                matching_candidates = library_tool_product_ids.get(product_id)
         elif correlation_type == 'Geometry':
             geometry = json.dumps(remove_tip_keys(tool_json["geometry"]))
             geometry_hash = sha256(geometry.encode()).hexdigest()
             geom_debug += f'{geometry_hash}: \"{geometry}\"\n'
             print_str += f'matching by Geometry Hash: {geometry_hash}'
             library_tool = library_tool_geometry_hash.get(geometry_hash)
+        if matching_candidates:
+            if len(matching_candidates) == 1:
+                library_tool = matching_candidates[0]
+            else:
+                selector = 'Description' if correlation_type == 'Description' else 'Product ID'
+                selector_value = tool_json["description" if selector == 'Description' else "product-id"]
+                candidate_details = [
+                    f'{index}: description={library_tool_details[index]["description"]!r}, '
+                    f'product-id={library_tool_details[index]["product-id"]!r}'
+                    for index in matching_candidates[:8]
+                ]
+                if len(matching_candidates) > 8:
+                    candidate_details.append('...')
+                print_str += (
+                    f'\t Ambiguous {selector} {selector_value!r}; skipped, '
+                    f'{len(matching_candidates)} candidate library indices/details: '
+                    f'[{"; ".join(candidate_details)}]'
+                )
         timer.mark(f'replace_tool:set_tool')
         if library_tool is not None:
             lib_tool = library_tool_used[library_tool]

@@ -9,8 +9,11 @@ target sits reading as absence, a local cache path standing in for a lineage URN
 claimed off a call that cannot produce one of its buckets.
 """
 
+import ast
 import json
 import os
+from pathlib import Path
+import re
 import sys
 from copy import deepcopy
 
@@ -28,6 +31,44 @@ def _step(narrative, tool, nth=0):
     hits = [s for s in narrative if s[0] == tool]
     assert len(hits) > nth, f"{tool} has {len(hits)} step(s) in this act"
     return hits[nth]
+
+
+class TestCappedNameMoveProbe:
+    def test_generated_script_matches_python_run_contract_and_predicate_accepts_decoded_output(self):
+        ctx = {"cloud_file_name": "owned.png", "cloud_file": "urn:owned",
+               "data_root_summary": {"project_id": "project-id"}}
+        script = acts._capped_name_move_probe(ctx)["script"]
+        parsed = ast.parse(script)
+        runs = [node for node in parsed.body
+                if isinstance(node, ast.FunctionDef) and node.name == "run"]
+        assert len(runs) == 1 and len(runs[0].args.args) == 1
+
+        repo = Path(acts.__file__).parents[2]
+        execute_source = ast.parse(
+            (repo / "commands" / "mcpServer" / "tools" / "sys_execute_script.py")
+            .read_text(encoding="utf-8"))
+        handler = next(node for node in execute_source.body
+                       if isinstance(node, ast.FunctionDef) and node.name == "handler")
+        patterns = [ast.literal_eval(call.args[0]) for call in ast.walk(handler)
+                    if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Name) and call.func.value.id == "re"
+                    and call.func.attr == "search" and call.args]
+        assert len(patterns) == 1 and re.search(patterns[0], script)
+
+        result = {"file_name": "owned.png", "file_id": "urn:owned", "folder_id": "folder-id",
+                  "file_count": 1, "child_folder_count": 1,
+                  "before_parent_id": "folder-id", "after_refusal_parent_id": "folder-id",
+                  "after_project_error_parent_id": "folder-id",
+                  "after_exact_parent_id": "folder-id", "cap_restored": True,
+                  "project_finder_restored": True,
+                  "project_lookup_error_injected": True,
+                  "capped_by_name": {"is_error": True,
+                                     "payload": "name census is incomplete after the cap"},
+                  "injected_project_error": {"is_error": True,
+                      "payload": ("synthetic project lookup failure; "
+                                  "data_get(project_id=<id>), then pass that id as 'file'.")},
+                  "exact_urn": {"is_error": False, "payload": {"already_in_target": True}}}
+        assert acts._capped_name_move_result(result) is True
 
 
 @pytest.fixture

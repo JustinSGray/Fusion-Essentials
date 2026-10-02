@@ -131,3 +131,44 @@ def test_an_unmatched_operation_keeps_its_tool(match_tools):
     assert operation.tool is original and document_tools.tools == []
     assert any("Unmatched" in log and "No Match Found" in log for log in logs)
     assert len(messages) == 1 and "could not be correlated" in messages[0]
+
+
+@pytest.mark.parametrize(
+    "correlation,duplicate_values,following_values,expected_details",
+    [
+        ("Description", ("same description", "first id", "second id"),
+         ("unique description", "unique id"),
+         ("candidate library indices/details: [0: description='same description', "
+          "product-id='first id'; 1: description='same description', product-id='second id']")),
+        ("Product ID", ("first description", "same id", "second description"),
+         ("unique description", "unique id"),
+         ("candidate library indices/details: [0: description='first description', "
+          "product-id='same id'; 1: description='second description', product-id='same id']")),
+    ],
+)
+def test_duplicate_selector_skips_ambiguous_operation_and_continues(
+        match_tools, correlation, duplicate_values, following_values, expected_details):
+    if correlation == "Description":
+        duplicate_a = JsonTool(duplicate_values[0], duplicate_values[1], 1.0)
+        duplicate_b = JsonTool(duplicate_values[0], duplicate_values[2], 2.0)
+        original = JsonTool(duplicate_values[0], "original id", 8.0)
+        following_tool = JsonTool(following_values[0], following_values[1], 9.0)
+        target = JsonTool(following_values[0], following_values[1], 3.0)
+    else:
+        duplicate_a = JsonTool(duplicate_values[0], duplicate_values[1], 1.0)
+        duplicate_b = JsonTool(duplicate_values[2], duplicate_values[1], 2.0)
+        original = JsonTool("original description", duplicate_values[1], 8.0)
+        following_tool = JsonTool("following description", following_values[1], 9.0)
+        target = JsonTool("target description", following_values[1], 3.0)
+    ambiguous = OperationRecord("Ambiguous", original)
+    original_preset = ambiguous.toolPreset
+    following = OperationRecord("Following", following_tool)
+    library = ToolRecords([duplicate_a, duplicate_b, target])
+
+    document_tools, logs, messages = match_tools([ambiguous, following], library, correlation)
+
+    assert ambiguous.tool is original and ambiguous.toolPreset is original_preset
+    assert following.tool is target and following.toolPreset is target.preset
+    assert document_tools.tools == [target]
+    assert any("Ambiguous" in log and "skipped" in log and expected_details in log for log in logs)
+    assert len(messages) == 1 and "could not be correlated" in messages[0]

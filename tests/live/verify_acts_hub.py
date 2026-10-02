@@ -1052,6 +1052,11 @@ _HUB_TURNED_READ = [
     ("cam_post", {"scope": HUB_TURN_SETUP, "post": "fanuc turning", "post_scope": "fusion",
                   "output_folder": EXPORT_DIR + "/nc", "program_name": "3001"},
      _posted_turning(HUB_TURN_SETUP, "3001"), None),
+    ("cam_post", {"scope": HUB_TURN_SETUP, "post": "system://fanuc turning.cps",
+                  "post_scope": "fusion", "output_folder": EXPORT_DIR + "/nc",
+                  "program_name": "3002"},
+     lambda p: _posted_turning(HUB_TURN_SETUP, "3002")(p)
+     and p.get("post_config") == "system://fanuc turning.cps", None),
 ]
 
 

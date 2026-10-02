@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 691
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 692
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -41,7 +41,7 @@ close orphans, factor duplicated guards into shared helpers.
 - `find_geometry`  <- 55  (desc 14, note 41)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 6, note 30)
-- `cam_get`  <- 33  (desc 15, note 18)
+- `cam_get`  <- 34  (desc 15, note 19)
 - `model_inspect`  <- 30  (desc 5, note 25)
 - `sketch_get`  <- 26  (desc 7, note 19)
 - `doc_open`  <- 25  (desc 5, note 20)
@@ -731,6 +731,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - This tool is not used by any operation.
 - Every parameter's name/expression/value (null where unreadable, or non-scalar - see value_kind). Lengths in 'value' are internal centimetres; 'expression' carries the tool's own unit. 'formula_sour...
 - scope='{scope}' is the libraries this Fusion installation ships, which this tool only READS - '{action}' was refused. Copy the tool out instead: action='list' at this scope for its libraries and th...
+- Cannot resolve  library '' by name: the library walk was capped, so uniqueness or absence is unknown. Pass an exact library url from cam_get(include=['library']).
 - Summary rows only (diameter/flutes/type/description/number/product identity). For a tool's FULL parameter list - every dimension by name/expression/value - call action='parameters' with that tool's...
 - '{diameter}' was not applied and nothing was added: this tool reads {flag} true, and a 'diameter' override writes only the cutting diameter (tool_isMill/tool_isDrill) or the nozzle (tool_isJet). Th...
 - '{diameter}' was not applied and nothing was added: every one of {flags} reads false on this tool and its '{dia}' does not read isEditable true, so no row here reads as the size it cuts at and the ...
@@ -882,6 +883,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' stored operations could not be enumerated; no flat refresh or post was attempted.
 - Flat paths were generated, but fail-on-post behavior did not read back; no NC file was posted.
 - Post config not found for ''. Tried: . Provide a full .cps path, or a post name in the personal () or installed () post folder. post_scope=fusion resolves the same name against the posts this insta...
+- Cannot resolve  post '' by name: the search was capped, so uniqueness or absence is unknown. Pass an exact post asset url from this library, or retry a complete listing.
 - Provide 'post' - the post processor: for post_scope=local a full .cps path or a name in the personal/installed post folder; for cloud/hub/fusion the NAME of a post in that library.
 - The post's message names the PROGRAM NUMBER, and program_name '' is not a number - retry with a numeric program_name such as '1001'.
 - program_operation_count: unsuppressed operations in scope; posted_operations: valid toolpaths in scope (hasToolpath and not errored). Suppressed operations are excluded from both counts and NC output.
@@ -1055,6 +1057,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - dataFolders.add returned a folder but '
 - ' does not appear when '
 - ' is re-listed - the creation did not land.
+- Could not resolve project:
 - Could not access project root folder:
 - Could not prepare parent path '
 - Failed to create folder '
@@ -1065,7 +1068,9 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Project creation returned nothing for '
 - dataProjects.add returned a project but '
 - ' does not appear when the projects are re-listed - the creation did not land.
+- Could not verify whether project '
 - Failed to create project '
+- ), but could not verify it by re-listing projects:
 
 ### `data_delete_file`
 - The file's reference state could not be read (
@@ -1220,6 +1225,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Upload returned no future object.
 - ' reports FAILED immediately - the file was not accepted. Check the format and the destination folder.
 - Upload is asynchronous and processes on the cloud (neutral formats like STEP are translated into a Fusion design). Poll data_get_upload_status(handle=upload_handle) for the actual uploading/process...
+- Could not resolve project:
 - Could not access project root folder:
 - Upload failed to start for '
 - Destination folder path not found: '
@@ -1761,9 +1767,11 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - . Use data_get, or pass document_id (URN).
 - files share it in project '
 - . Fusion allows same-name files in different folders; refusing rather than copying the wrong one. Pass document_id (the lineage URN above) to copy one exactly.
+- Could not resolve destination project:
 - Could not access destination project root:
 - Copy failed for document '
 - findFileById failed for '
+- Could not resolve source project:
 - source_folder path not found: '
 - '. Folders at project root:
 - . Use data_get(include=['folders']) to see the structure.
@@ -1963,6 +1971,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Fusion declined to save '
 - ' (saveAs returned false). The complete name readback did not establish whether this call landed, so no success is reported.
 - NAME COLLISION - see 'name_collision'.
+- Could not resolve destination project:
 - Could not access destination project root:
 - saveAs returned false for '
 - ', and the destination name census was incomplete, so whether a file landed is unconfirmed:
