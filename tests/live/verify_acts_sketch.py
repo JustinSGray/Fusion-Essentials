@@ -1707,17 +1707,27 @@ def _anchor_state(key, stage):
                or not isinstance(r.get("centroid"), list) or len(r["centroid"]) != 3
                or not all(type(x) in (int, float) and isfinite(x) for x in r["centroid"]) for r in p["profiles"]):
             return _measured("readable profiles", p["profiles"], False)
+        pattern = key == "PatternPreflight"
+        if pattern:
+            facts.update({k: p.get(k) for k in ("fixed_curve_count", "reference_curve_count", "linked_curve_count",
+                                                "construction_count", "driving_dimension_count")})
+            if any(facts[k] != 0 for k in ("fixed_curve_count", "reference_curve_count", "linked_curve_count",
+                                          "construction_count", "driving_dimension_count")):
+                return _measured("unchanged pattern fixed and dimension flags", facts, False)
         if stage == "before":
             selected = []
-            for ends in (([10, 10], [30, 10]), ([100, 100], [120, 100])):
+            endpoints = (([0, 0], [20, 0]),) if pattern else (([10, 10], [30, 10]), ([100, 100], [120, 100]))
+            for ends in endpoints:
                 hits = [e["id"] for e in entities if e.get("type") == "line"
                         and [[e.get(k, {}).get(a) for a in "xy"] for k in ("start", "end")] == list(ends)]
                 if len(hits) != 1:
                     return _measured("independent anchor/control endpoints", entities, False)
                 selected += hits
             circles = [e for e in entities if e.get("type") == "circle"]
-            good = (counts.get("lines") == 2 and counts.get("points") == 6 and len(circles) == counts.get("circles") == 1
-                    and circles[0].get("center") == {"x": 60.0, "y": 10.0} and circles[0].get("radius") == 5.0
+            good = (counts.get("lines") == (1 if pattern else 2) and counts.get("points") == (4 if pattern else 6)
+                    and len(circles) == counts.get("circles") == 1
+                    and circles[0].get("center") == {"x": 40.0 if pattern else 60.0, "y": 0.0 if pattern else 10.0}
+                    and circles[0].get("radius") == 5.0
                     and p["constraint_count"] == p["dimension_count"] == 0 and p["profile_count"] == 1
                     and all(type(e.get(k)) is bool for e in entities if e.get("type") in ("line", "circle")
                             for k in ("construction", "fixed", "reference", "linked")))
@@ -1730,10 +1740,31 @@ def _anchor_state(key, stage):
             return _measured("preflight preserves the full disclosed sketch", facts, facts == old)
         prior = {e["id"]: e for e in old.get("entities", [])}
         new = [e for i, e in by.items() if i not in prior]
+        if pattern:
+            line, circle = _RECALL.get(key + "_ids", [None, None])
+            added = [e for e in new if e.get("type") == "circle"]
+            points = [e for e in new if e.get("type") == "point"]
+            midpoint = [e["id"] for e in points if e.get("position") == {"x": 10.0, "y": 0.0}]
+            expected = dict(old.get("counts", {}), circles=3, points=7)
+            centers = sorted((e["center"]["x"], e["center"]["y"]) for e in added)
+            wanted = ([{"type": "midpoint", "entities": [midpoint[0], line]},
+                       {"type": "circular_pattern", "entities": [midpoint[0], circle]}] if len(midpoint) == 1 else None)
+            good = (all(by.get(i) == e for i, e in prior.items()) and facts["frame"] == old.get("frame")
+                    and facts["is_fully_constrained"] == old.get("is_fully_constrained")
+                    and facts["compute_deferred"] == old.get("compute_deferred")
+                    and counts == expected and len(new) == 5 and len(points) == 3 and len(added) == 2
+                    and len(centers) == 2 and all(_near(x, -5, .001) for x, _y in centers)
+                    and _near(centers[0][1], -25.980762114, .001) and _near(centers[1][1], 25.980762114, .001)
+                    and all(e.get("radius") == 5 and all(e.get(k) is False for k in
+                            ("construction", "fixed", "reference", "linked")) for e in added)
+                    and all(any(e.get("position") == c.get("center") for e in points) for c in added)
+                    and p["constraints"] == wanted and p["dimensions"] == []
+                    and p["profile_count"] == 3 and all(e in facts["profiles"] for e in old.get("profiles", [])))
+            return _measured("three solved circles with midpoint relations and unchanged source", facts, good)
         line, control, circle = _RECALL.get(key + "_ids", [None] * 3)
         centers = [e["id"] for e in prior.values() if e.get("type") == "point"
                    and e.get("position") == {"x": 60.0, "y": 10.0}]
-        n = 1 if stage in ("success", "con_success", "geometry") else 2
+        n = 0 if stage == "mixed" else 1 if stage in ("success", "con_success", "geometry") else 2
         added_points = [e for e in new if e.get("type") == "point"]
         expected_position = {"x": 40.0, "y": 40.0} if stage == "geometry" else {"x": 20.0, "y": 10.0}
         expected_counts = dict(old.get("counts", {}))
@@ -1776,7 +1807,7 @@ def _anchor_partial(geometry=False, dimension=False):
     def check(p):
         before = {"curves": 4 if geometry else 3, "points": 7 if geometry else 6,
                   "constraints": 0 if geometry or dimension else 1, "dimensions": int(dimension)}
-        change = {"curves": 0, "points": 0 if geometry else 2, "constraints": 0 if geometry else 2, "dimensions": 0}
+        change = {"curves": 0, "points": 2 if dimension else 0, "constraints": 2 if dimension else 0, "dimensions": 0}
         return _measured("per-entry counts exclude the completed prefix", p,
                          p.get("drawn" if geometry else "dimensioned" if dimension else "constrained") == 1 and p.get("requested") == 3
                          and len(p.get("results", [])) == 1 and p["results"][0].get("index") == 0
@@ -1798,7 +1829,7 @@ def _anchor_retention_rows():
                     "expect_document": _ctx_get(c, "anchor_doc", "anchor document")}, check, None))
 
     for key, stage in (("AnchorSurface", "unchanged"), ("AnchorConKind", "unchanged"), ("AnchorKind", "unchanged"),
-                       ("AnchorConSolver", "solver"), ("AnchorDimSolver", "solver"),
+                       ("AnchorConSolver", "unchanged"), ("AnchorDimSolver", "solver"),
                        ("AnchorMixed", "mixed"), ("AnchorDimMixed", "dim_mixed"), ("AnchorGeometry", "geometry"),
                        ("AnchorConSuccess", "con_success"), ("AnchorSuccess", "success")):
         write("sketch_create", {"name": key, "plane": "xy"})
@@ -1845,7 +1876,8 @@ def _anchor_retention_rows():
         verdict = (_anchor_partial(stage == "geometry", stage == "dim_mixed") if stage in ("mixed", "dim_mixed", "geometry")
                    else "ok" if stage in ("success", "con_success")
                    else _refused("points=+2, constraints=+2", "sketch_get(include_entities=true)") if stage == "solver"
-                   else _refused("points=+0", "constraints=+0", "needs 'surface'" if key == "AnchorSurface" else "LINE"))
+                   else _refused("points=+0", "constraints=+0", "needs 'surface'" if key == "AnchorSurface"
+                                 else "SAME line midpoint" if key == "AnchorConSolver" else "LINE"))
         write(tool, arguments, verdict)
         rows.append(("sketch_get", read_args, _anchor_state(key, stage), None))
         rows.append(("design_get", {"include": ["default", "timeline"], "max_results": 200}, _anchor_history(key, False), None))
@@ -1857,6 +1889,51 @@ def _anchor_retention_rows():
 
 
 _SKETCHWORK += _anchor_retention_rows()
+
+
+def _pattern_preflight_rows():
+    """Check midpoint preflight refusals and three solved circle instances with a separate sketch witness."""
+    rows = [("doc_get", {}, _home_document, ("pattern_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "pattern_home", "home")},
+             _new_document, ("pattern_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+
+    def write(tool, args, check="ok"):
+        rows.append((tool, lambda c, args=args: _combine_pin(c, "pattern_doc", args(c) if callable(args) else args), check, None))
+
+    for name, geometry in (("PatternPreflight", [{"kind": "line", "x1": 0, "y1": 0, "x2": 20, "y2": 0},
+                                               {"kind": "circle", "cx": 40, "cy": 0, "radius": 5}]),
+                           ("PatternWitness", [{"kind": "line", "x1": 10, "y1": 10, "x2": 30, "y2": 10},
+                                              {"kind": "circle", "cx": 60, "cy": 10, "radius": 5},
+                                              {"kind": "line", "x1": 100, "y1": 100, "x2": 120, "y2": 100}])):
+        write("sketch_create", {"name": name, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": geometry})
+    target = {"sketch_name": "PatternPreflight", "include_entities": True, "max_results": 200, "units": "mm"}
+    witness = {"sketch_name": "PatternWitness", "include_entities": True, "max_results": 200, "units": "mm"}
+    history = {"include": ["default", "timeline"], "max_results": 200}
+    rows += [("sketch_get", target, _anchor_state("PatternPreflight", "before"),
+              ("pattern_ids", lambda _p: _RECALL["PatternPreflight_ids"])),
+             ("sketch_get", witness, _anchor_state("PatternWitness", "before"), None),
+             ("design_get", history, _anchor_history("PatternPreflight", True), None)]
+    for knobs, reason in (({"quantity": 1}, "quantity >= 2"),
+                          ({"quantity": 3, "suppressed": [True]}, "needs 2 flag(s)"),
+                          ({"quantity": 3}, None)):
+        def args(c, knobs=knobs):
+            line, circle = _ctx_get(c, "pattern_ids", "current source ids")
+            return {"sketch_name": "PatternPreflight", "constraints": [{"constraint": "circular_pattern",
+                    "entity_one": line + ":mid", "entities": circle, **knobs}]}
+        write("sketch_constrain", args, _refused(reason, "points=+0", "constraints=+0") if reason else "ok")
+        rows += [("sketch_get", target, _anchor_state("PatternPreflight", "unchanged" if reason else "pattern"), None),
+                 ("sketch_get", witness, _anchor_state("PatternWitness", "unchanged"), None),
+                 ("design_get", history, _anchor_history("PatternPreflight", False), None)]
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "pattern_home", "home"),
+                                        "expect_document": _ctx_get(c, "pattern_doc", "scratch")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "pattern_doc", "scratch"), "save_changes": False,
+                                     "expect_document": _ctx_get(c, "pattern_home", "home")}, _document_closed, None)]
+    return rows
+
+
+_SKETCHWORK += _pattern_preflight_rows()
 
 
 def _solved_fillet_effect(control=False):

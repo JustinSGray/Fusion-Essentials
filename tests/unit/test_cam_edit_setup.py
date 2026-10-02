@@ -162,6 +162,30 @@ def _payload(result):
 # ── guards ───────────────────────────────────────────────────────────────────
 
 class TestGuards:
+    @pytest.mark.parametrize("extra,offender", [
+        ({"rename": "SetupB"}, "SetupB"),
+        ({"parameters": {"NoSuchProbeParameter": "1 mm"}}, "NoSuchProbeParameter"),
+        ({"models": ["MissingProbeBody"]}, "MissingProbeBody"),
+        ({"wcs": {"bogus": True}}, "bogus"),
+    ])
+    def test_mode_independent_refusal_preserves_stock_mode_and_setup(self, monkeypatch, extra, offender):
+        cam = _install(monkeypatch, setups=("SetupA", "SetupB"))
+        target = cam.setups.item(0)
+        target.stockMode = _STOCK_MODES["FixedBoxStock"]
+        def state():
+            return [(s.name, s.stockMode, s.fixtureEnabled, s.machine,
+                     tuple(s.models), tuple(s.fixtures), tuple(s.stockSolids),
+                     [(p.name, p.expression, p.value.value) for p in s.parameters._coll._items]) for s in cam.setups]
+        before = state()
+        result = ces.handler(setup="SetupA", stock_mode="fixed_cylinder", **extra)
+        assert result["isError"] is True and offender in result["message"]
+        assert state() == before
+        control = _payload(ces.handler(setup="SetupA", stock_mode="fixed_cylinder"))
+        assert control["stock_mode_set"] == "fixed_cylinder"
+        assert target.stockMode == _STOCK_MODES["FixedCylinderStock"]
+        _payload(ces.handler(setup="SetupA", stock_mode="fixed_box"))
+        assert state() == before
+
     def test_no_cam(self, monkeypatch):
         monkeypatch.setattr(ces, "get_cam", lambda: (None, "no CAM data"))
         res = ces.handler(setup="Setup1", parameters={"stockZHigh": "1"})

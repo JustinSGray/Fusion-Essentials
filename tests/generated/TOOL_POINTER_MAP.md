@@ -4144,6 +4144,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The sketch is NOT fully constrained yet - dimension the remaining freedom with sketch_dimension, or retry with result_option='option3', which may adjust geometry within tolerance to close the solve.
 - The strategy settings were REQUESTED - Fusion ignores one that does not apply to this geometry, and reports no strategy back, so read the dimensions it added to see which layout landed.
 - a 'text:<index>' ref applies to constraint=fix / unfix only - no other constraint takes a sketch TEXT as an operand. '' takes .
+- '' and '' name the SAME line midpoint, so there is nothing to constrain. Name two different anchors, or drop the call; sketch_get(include_entities=true) lists the source geometry.
 - '' and '' resolve to ONE sketch point, so there is nothing to constrain. Name two different points, or drop the call; sketch_get(include_entities=true) lists them.
 - of  anchor lines took the  - the text's anchor is left partly locked. Re-read the sketch with sketch_get before relying on its constrained state.
 - '' needs BOTH direction lines -  did not resolve. A null direction is documented as the sketch X axis but the API refuses it ('invalid argument directionOneEntity').

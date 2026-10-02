@@ -22,10 +22,11 @@ import time
 
 from verify_core import (
     EXPORT_DIR, MACHINE_NAME, NOTE_MAX, Parked, TEMPLATE_NAME, _RECALL, _box, _ctx_get, _dwell,
-    _extruded, _face_up_at, _fg, _fgn, _imported, _joint_origin_computed, _made_component,
+    _activated, _document_closed, _extruded, _face_up_at, _fg, _fgn, _home_address, _home_document,
+    _imported, _joint_origin_computed, _made_component, _new_document,
     _matched, _measured, _near, _needs, _num, _param_read, _param_set_to, _pocket_selected,
     _recall, _refused, _selected_saved, _watch, facade)
-from verify_acts_model_sweep import _retire_compare, _retire_reads
+from verify_acts_model_sweep import _retire_compare, _retire_material_state, _retire_reads
 
 # THE NAMES THE STORY BUILDS UNDER, in one place for the acts that have to agree on them: the
 # modelling acts create the part and the parameter that drives it, the vise act creates the billet
@@ -837,6 +838,218 @@ def _wcs_origin_at(recall_key):
 # ACT 10a: CAM on the REAL part in the REAL fixture - job built and generated. The scratch-stock
 # rows remain as this act's fallback, so the CAM family stays covered when the story world
 # could not build.
+def _setup_preflight_state(p, mode):
+    """Return complete paired setup facts, checking the target mode before normalizing that field."""
+    rows = p.get("setups")
+    if (p.get("setup_count") != 2 or p.get("truncated") is not False
+            or not isinstance(rows, list) or [r.get("name") for r in rows] != ["SetupA", "SetupB"]):
+        return None
+    for row in rows:
+        wcs = row.get("wcs") or {}
+        if (row.get("operation_type") != "MillingOperation" or type(row.get("is_active")) is not bool
+                or row.get("machine") is not None or row.get("operation_count") != 0 or row.get("folder_count") != 0
+                or row.get("model_lists_truncated") is not False or "model_lists_unreadable" in row
+                or row.get("selected_models") != ["Source:1"] or row.get("fixtures") != [] or row.get("stock_solids") != []
+                or row.get("stock_mode") != (mode if row["name"] == "SetupA" else "relative_box")
+                or wcs.get("units") != "mm" or not wcs.get("origin_mode") or not wcs.get("orientation_mode")
+                or any(not isinstance(wcs.get(k), list) or len(wcs[k]) != 3
+                       or any(not _num(v) or not math.isfinite(v) for v in wcs[k])
+                       for k in ("origin", "x_axis", "y_axis", "z_world"))):
+            return None
+    return [{**row, "stock_mode": "fixed_box"} if row["name"] == "SetupA" else row for row in rows]
+
+
+_SETUP_PREFLIGHT_PARAMS = (
+    "job_type", "wcs_orientation_mode", "wcs_orientation_axisZ", "wcs_orientation_flipZ",
+    "wcs_orientation_axesZX_unselected_default", "wcs_orientation_axesZY_unselected_default",
+    "wcs_orientation_axesXY_unselected_default", "wcs_orientation_axesXZ_unselected_default",
+    "wcs_orientation_cSys", "wcs_orientation_axisX", "wcs_orientation_flipX", "wcs_orientation_axisY",
+    "wcs_orientation_flipY", "wcs_origin_turning", "wcs_origin_mode", "wcs_origin_point",
+    "wcs_model_point", "wcs_origin_boxPoint", "wcs_stock_point")
+
+
+def _setup_preflight_parameters(p, setup, exact=False):
+    """Return disclosed visible/extents facts or the measured job/WCS expression slice."""
+    params = p.get("parameters") or {}
+    if params.get("setup") != setup:
+        return None
+    if not exact:
+        sections, extents = params.get("sections"), params.get("stock_extents") or {}
+        if not isinstance(sections, dict) or not sections or extents.get("units") != "mm":
+            return None
+        rows = [r for group in sections.values() for r in group]
+        if (params.get("parameter_count") != len(rows) or not rows
+                or any(not r.get("name") or not isinstance(r.get("expression"), str) for r in rows)
+                or any(not _num((extents.get(k) or {}).get("value"))
+                       or not math.isfinite(extents[k]["value"])
+                       or not isinstance(extents[k].get("expression"), str)
+                       for k in ("stockXLow", "stockXHigh", "stockYLow", "stockYHigh", "stockZLow", "stockZHigh",
+                                 "surfaceXLow", "surfaceXHigh", "surfaceYLow", "surfaceYHigh", "surfaceZLow", "surfaceZHigh"))):
+            return None
+        return {k: v for k, v in params.items() if k != "note"}
+    rows = params.get("requested_parameters")
+    if (not isinstance(rows, list) or params.get("requested_parameter_count") != len(_SETUP_PREFLIGHT_PARAMS)
+            or len(rows) != len(_SETUP_PREFLIGHT_PARAMS) or [r.get("name") for r in rows] != list(_SETUP_PREFLIGHT_PARAMS)
+            or any(r.get("requested_name") != r.get("name") or not isinstance(r.get("expression"), str) for r in rows)):
+        return None
+    return rows
+
+
+def _setup_preflight_material(p):
+    """Return the independently measured source cube or offset witness material and bounds."""
+    state = _retire_material_state(p)
+    size, x = (20, 0) if p.get("target") == "occurrence 'Source:1'" else (10, 40)
+    if (state is None or p.get("target") not in ("occurrence 'Source:1'", "occurrence 'SetupWitness:1'")
+            or len(state["bodies"]) != 1 or not _near(state["shape"]["volume"], size**3, .001)
+            or not all(_near(p.get(k), size, .001) for k in "xyz")
+            or any(not _near((p.get(point) or {}).get(axis), value, .001)
+                   for point, values in (("min_point", (x, 0, 0)), ("max_point", (x+size, size, size)))
+                   for axis, value in zip("xyz", values))):
+        return None
+    return state
+
+
+def _setup_preflight_rows():
+    """Refuse four mode-independent setup inputs without moving paired setups or source/witness state."""
+    rows = [("doc_get", {}, _home_document, ("setup_preflight_home", _home_address))]
+    rows += _retire_reads("setup_preflight_home", [PART_COMP + ":1", STOCK_COMP + ":1"], [])
+    rows += [("doc_new", lambda c: {"expect_document": _ctx_get(c, "setup_preflight_home", "CAM story")},
+              _new_document, ("setup_preflight_doc", lambda p: p["document_handle"])),
+             ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    def write(tool, args, check="ok"):
+        rows.append((tool, lambda c: {**args, "expect_document": _ctx_get(c, "setup_preflight_doc", "setup scratch")}, check, None))
+    def geometry(p):
+        from verify_acts_model_solids import _edge_extent_geometry
+        return _edge_extent_geometry(p) if p.get("returned") == 18 else None
+    for name, x, size in (("Source", 0, 20), ("SetupWitness", 40, 10)):
+        write("model_create_component", {"name": name, "activate": True}, _made_component)
+        write("sketch_create", {"name": name + "Profile", "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name + "Profile", "units": "mm", "geometry": [
+            {"kind": "rectangle", "x1": x, "y1": 0, "x2": x+size, "y2": size}]})
+        write("model_extrude", {"sketch_name": name + "Profile", "distance": size, "units": "mm", "operation": "new"}, _extruded)
+    write("design_activate_component", {"occurrence": "root"})
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+    write("view_switch_workspace", {"workspace": "manufacture"})
+    for name in ("SetupA", "SetupB"):
+        write("cam_create_setup", {"name": name, "operation_type": "milling", "models": ["Source:1"]},
+              lambda p, name=name: p.get("created") is True and p.get("setup_name") == name
+              and p.get("operation_type") == "milling" and p.get("model_count") == 1 and p.get("operation_count") == 0)
+    def mode_edit(mode):
+        write("cam_edit_setup", {"setup": "SetupA", "stock_mode": mode},
+              lambda p: p.get("edited") is True and p.get("setup") == "SetupA" and p.get("stock_mode_set") == mode)
+    mode_edit("fixed_box")
+    write("cam_edit_setup", {"setup": "SetupB", "stock_mode": "relative_box"},
+          lambda p: p.get("setup") == "SetupB" and p.get("stock_mode_set") == "relative_box")
+    def stock_offsets(p):
+        state = _setup_preflight_parameters(p, "SetupB") or {}
+        found = [r for group in state.get("sections", {}).values() for r in group
+                 if r.get("name") in ("job_stockOffsetSides", "job_stockOffsetTop")]
+        _measured("captured readable side and top stock expressions", found,
+                  len(found) == 2 and {r.get("name") for r in found} == {"job_stockOffsetSides", "job_stockOffsetTop"}
+                  and all(isinstance(r.get("expression"), str) and r["expression"] for r in found))
+        return {r["name"]: r["expression"] for r in found}
+    def snapshot(after, mode="fixed_box"):
+        rows.extend(_retire_reads("setup_preflight", ["Source:1", "SetupWitness:1"], [], after,
+                                  material_read=_setup_preflight_material))
+        for target in ("Source:1", "SetupWitness:1"):
+            rows.append(("find_geometry", lambda c, target=target: {"target": target, "units": "mm", "max_results": 100},
+                         _retire_compare("setup_preflight_geometry_" + target, geometry, after), None))
+        rows.append(("cam_get", lambda c: {"include": ["setups"], "units": "mm"},
+                     _retire_compare("setup_preflight_setups", lambda p: _setup_preflight_state(p, mode), after), None))
+        for setup in ("SetupA", "SetupB"):
+            same = after and (setup == "SetupB" or mode == "fixed_box")
+            key = "setup_preflight_" + ("control_" if mode == "fixed_cylinder" and setup == "SetupA" else "") + setup
+            rows.append(("cam_get", lambda c, setup=setup: {"include": ["parameters"], "setup": setup, "units": "mm"},
+                         _retire_compare(key, lambda p, setup=setup: _setup_preflight_parameters(p, setup), same),
+                         ("setup_stock_before", _recall("setup_stock_before", stock_offsets)) if not after and setup == "SetupB" else None))
+            rows.append(("cam_get", lambda c, setup=setup: {"include": ["parameters"], "setup": setup,
+                         "parameter_names": list(_SETUP_PREFLIGHT_PARAMS)},
+                         _retire_compare(key + "_job_wcs",
+                             lambda p, setup=setup: _setup_preflight_parameters(p, setup, True), same), None))
+    snapshot(False)
+    for extra, offender in (({"rename": "SetupB"}, "SetupB"),
+                            ({"parameters": {"NoSuchProbeParameter": "1 mm"}}, "NoSuchProbeParameter"),
+                            ({"models": ["MissingProbeBody"]}, "MissingProbeBody"),
+                            ({"wcs": {"bogus": True}}, "bogus")):
+        write("cam_edit_setup", {"setup": "SetupA", "stock_mode": "fixed_cylinder", **extra}, _refused(offender))
+        snapshot(True)
+    mode_edit("fixed_cylinder")
+    snapshot(True, "fixed_cylinder")
+    mode_edit("fixed_box")
+    snapshot(True)
+    unlock_read = {"include": ["parameters"], "setup": "SetupB", "parameter_names": ["job_continueMachining"]}
+    def unlock_parameter(p):
+        params = p.get("parameters") or {}
+        found = params.get("requested_parameters") or []
+        if (params.get("setup") != "SetupB" or params.get("requested_parameter_count") != 1 or len(found) != 1
+                or found[0].get("name") != "job_continueMachining" or found[0].get("requested_name") != "job_continueMachining"
+                or not isinstance(found[0].get("expression"), str)):
+            return None
+        return found[0]
+    def unlock_before(p):
+        row = unlock_parameter(p)
+        return _measured("the second setup's continue parameter before unlocking", row,
+                         row is not None and row.get("editable") is False and row.get("expression") == "false")
+    rows.append(("cam_get", lambda c: unlock_read, unlock_before,
+                 ("setup_unlock_before", _recall("setup_unlock_before", unlock_parameter))))
+    write("cam_edit_setup", {"setup": "SetupB", "stock_mode": "previous_setup", "parameters": {"job_continueMachining": "true"}},
+          lambda p: p.get("setup") == "SetupB" and p.get("stock_mode_set") == "previous_setup"
+          and p.get("previous_setup_name") == "SetupA" and p.get("updated_count") == 1
+          and [(r.get("name"), r.get("after")) for r in p.get("changed") or []] == [("job_continueMachining", "true")])
+    rows.append(("cam_get", lambda c: unlock_read,
+                 lambda p: _measured("the pre-mode parameter wrapper edits the unlocked native row", unlock_parameter(p),
+                     unlock_parameter(p) is not None and unlock_parameter(p).get("expression") == "true"
+                     and unlock_parameter(p).get("editable") is True), None))
+    rows.append(("cam_get", lambda c: {"include": ["setups"], "setup": "SetupB"},
+                 lambda p: (_complete_setup_row(p, "SetupB") or {}).get("stock_mode") == "previous_setup"
+                 and (_complete_setup_row(p, "SetupB") or {}).get("selected_models") == ["Source:1"], None))
+    rows.append(("cam_get", lambda c: {"include": ["setups"], "setup": "SetupA"},
+                 lambda p: _measured("the first setup remains unchanged during the unlock control", _complete_setup_row(p, "SetupA"),
+                     bool(_RECALL.get("setup_preflight_setups"))
+                     and _complete_setup_row(p, "SetupA") == _RECALL["setup_preflight_setups"][0]), None))
+    rows.extend(_retire_reads("setup_preflight", ["Source:1", "SetupWitness:1"], [], True,
+                              material_read=_setup_preflight_material))
+    for target in ("Source:1", "SetupWitness:1"):
+        rows.append(("find_geometry", lambda c, target=target: {"target": target, "units": "mm", "max_results": 100},
+                     _retire_compare("setup_preflight_geometry_" + target, geometry, True), None))
+    rows.append(("cam_edit_setup", lambda c: {"setup": "SetupB", "parameters": {
+                 "job_continueMachining": _ctx_get(c, "setup_unlock_before", "continue parameter")["expression"]},
+                 "expect_document": _ctx_get(c, "setup_preflight_doc", "setup scratch")},
+                 lambda p: p.get("setup") == "SetupB" and p.get("updated_count") == 1, None))
+    rows.append(("cam_get", lambda c: unlock_read,
+                 lambda p: _measured("the continue expression restores while unlocked", unlock_parameter(p),
+                     unlock_parameter(p) is not None and bool(_RECALL.get("setup_unlock_before"))
+                     and unlock_parameter(p).get("expression") == _RECALL["setup_unlock_before"]["expression"]), None))
+    write("cam_edit_setup", {"setup": "SetupB", "stock_mode": "relative_box"},
+          lambda p: p.get("setup") == "SetupB" and p.get("stock_mode_set") == "relative_box")
+    rows.append(("cam_get", lambda c: unlock_read,
+                 _retire_compare("setup_unlock_before", unlock_parameter, True), None))
+    write("cam_edit_setup", {"setup": "SetupB", "parameters": {"job_stockOffsetSides": "2 mm", "job_stockOffsetTop": "2 mm"}},
+          lambda p: p.get("setup") == "SetupB" and p.get("updated_count") == 2)
+    def stock_offset_effect(p):
+        state = _setup_preflight_state(p, "fixed_box")
+        before = _RECALL.get("setup_preflight_setups")
+        wanted = ([before[0], {**before[1], "wcs": {**before[1]["wcs"], "origin": [10.0, 10.0, 22.0]}}]
+                  if before else None)
+        return _measured("larger stock offsets move the actual WCS and preserve the other setup", state,
+                         state is not None and state == wanted and state != before)
+    rows.append(("cam_get", lambda c: {"include": ["setups"], "units": "mm"}, stock_offset_effect, None))
+    rows.extend(_retire_reads("setup_preflight", ["Source:1", "SetupWitness:1"], [], True,
+                              material_read=_setup_preflight_material))
+    rows.append(("cam_edit_setup", lambda c: {"setup": "SetupB", "parameters":
+                 _ctx_get(c, "setup_stock_before", "captured side and top stock expressions"),
+                 "expect_document": _ctx_get(c, "setup_preflight_doc", "setup scratch")},
+                 lambda p: p.get("setup") == "SetupB" and p.get("updated_count") == 2, None))
+    snapshot(True)
+    write("view_switch_workspace", {"workspace": "design"})
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "setup_preflight_home", "CAM story"),
+               "expect_document": _ctx_get(c, "setup_preflight_doc", "setup scratch")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "setup_preflight_doc", "setup scratch"), "save_changes": False,
+               "expect_document": _ctx_get(c, "setup_preflight_home", "CAM story")}, _document_closed, None)]
+    rows.extend(_retire_reads("setup_preflight_home", [PART_COMP + ":1", STOCK_COMP + ":1"], [], True))
+    return rows
+
+
 def _selector_tool_state(p):
     """Return the complete cutter and requested feed/speed rows for selector comparisons."""
     tool, params = p.get("tool") or {}, p.get("parameters") or {}
@@ -914,7 +1127,7 @@ def _selector_conflict_rows():
     return rows
 
 
-_CAM_STORY = [
+_CAM_STORY = _setup_preflight_rows() + [
     # the machining region: the part seated in the vise, which is what every CAM beat acts on.
     _watch([STOCK_COMP + ":1"]),
     # a scratch sketch inside the part's footprint, drawn while Design is still the active

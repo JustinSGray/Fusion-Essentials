@@ -24,6 +24,8 @@ import verify_acts_model_solids  # noqa: E402
 from verify_families import fixture_steps  # noqa: E402
 import verify_acts_motion  # noqa: E402
 import verify_acts_doc  # noqa: E402
+import verify_acts_cam  # noqa: E402
+import verify_acts_sketch  # noqa: E402
 
 
 @pytest.fixture
@@ -743,3 +745,47 @@ def test_unread_timeline_owned_scene_keeps_local_cube_and_read_order_in_full_fam
     cameras = [args for tool, args in requests(rows[start:end]) if tool == "view_set"]
     assert cameras == [{"action": "orient", "orientation": "iso-top-right", "fit": True,
                         "expect_document": "scratch"}]
+
+
+def test_setup_preflight_scene_keeps_owned_source_witness_and_requests_in_full_family():
+    rows = [row for _name, _pre, narrative, _fallback in verify_program.ACTS for row in narrative]
+    context = {"setup_preflight_home": "home", "setup_preflight_doc": "scratch",
+               "setup_unlock_before": {"expression": "false"},
+               "setup_stock_before": {"job_stockOffsetSides": "captured sides", "job_stockOffsetTop": "captured top"}}
+    start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == "setup_preflight_home")
+    end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
+    wanted = {"model_create_component", "sketch_add_geometry", "model_extrude", "view_set",
+              "cam_create_setup", "cam_edit_setup"}
+    def requests(selected):
+        return [(tool, args(context) if callable(args) else args) for tool, args, _check, _save in selected if tool in wanted]
+    authored = verify_acts_cam._setup_preflight_rows()
+    assert requests(rows[start:end]) == requests(authored)
+    boxes = [args["geometry"] for tool, args in requests(authored) if tool == "sketch_add_geometry"]
+    assert boxes == [[{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 20, "y2": 20}],
+                     [{"kind": "rectangle", "x1": 40, "y1": 0, "x2": 50, "y2": 10}]]
+    assert [args for tool, args in requests(authored) if tool == "view_set"] == [
+        {"action": "orient", "orientation": "iso-top-right", "fit": True, "expect_document": "scratch"}]
+    edits = [args for tool, args in requests(authored) if tool == "cam_edit_setup"]
+    assert edits[1] == {"setup": "SetupB", "stock_mode": "relative_box", "expect_document": "scratch"}
+    assert edits[-2:] == [
+        {"setup": "SetupB", "parameters": {"job_stockOffsetSides": "2 mm", "job_stockOffsetTop": "2 mm"},
+         "expect_document": "scratch"},
+        {"setup": "SetupB", "parameters": context["setup_stock_before"], "expect_document": "scratch"}]
+
+
+def test_midpoint_preflight_scene_keeps_original_source_and_read_order_in_full_family():
+    rows = [row for _name, _pre, narrative, _fallback in verify_program.ACTS for row in narrative]
+    context = {"pattern_home": "home", "pattern_doc": "scratch", "pattern_ids": ["line:0", "circle:0"]}
+    start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == "pattern_home")
+    end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
+    wanted = {"sketch_create", "sketch_add_geometry", "sketch_constrain", "sketch_get", "design_get"}
+    def requests(selected):
+        return [(tool, args(context) if callable(args) else args) for tool, args, _check, _save in selected if tool in wanted]
+    authored = verify_acts_sketch._pattern_preflight_rows()
+    assert requests(rows[start:end]) == requests(authored)
+    geometry = [args["geometry"] for tool, args in requests(authored) if tool == "sketch_add_geometry"]
+    assert geometry[0] == [{"kind": "line", "x1": 0, "y1": 0, "x2": 20, "y2": 0},
+                           {"kind": "circle", "cx": 40, "cy": 0, "radius": 5}]
+    constraints = [args["constraints"][0] for tool, args in requests(authored) if tool == "sketch_constrain"]
+    assert [r["quantity"] for r in constraints] == [1, 3, 3]
+    assert constraints[1]["suppressed"] == [True] and "suppressed" not in constraints[2]

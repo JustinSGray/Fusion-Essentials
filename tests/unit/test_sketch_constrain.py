@@ -653,6 +653,25 @@ class TestEntityAnchors:
     does (_common.parse_anchor_ref / anchor_point): a point slot handed 'circle:0:center' gets that
     circle's own centre point, so centring a circle takes no hunt for the right 'point:N'."""
 
+    @pytest.mark.parametrize("extra,reason", [({"quantity": 1}, "quantity >= 2"),
+        ({"quantity": 3, "suppressed": [True]}, "needs 2 flag(s)")])
+    def test_circular_inputs_refuse_before_midpoint_minting(self, install, extra, reason):
+        s = _anchored_sketch(); install(s)
+        result = _constrain(constraint="circular_pattern", entities="circle:0", entity_one="line:0:mid", **extra)
+        assert result["isError"] is True and reason in result["message"]
+        assert s.sketchPoints.count == 2 and s.geometricConstraints.count == 0
+        assert s.sketchPoints.added == [] and s.geometricConstraints.calls == []
+        assert not s.sketchCurves.sketchLines.item(0).isFixed and not s.sketchCurves.sketchCircles.item(0).isFixed
+
+    @pytest.mark.parametrize("other", ["line:0:mid", "LINE:00:midpoint"])
+    def test_repeated_mid_source_refuses_before_either_anchor_mints(self, install, other):
+        s = _anchored_sketch(); install(s)
+        result = _constrain(constraint="coincident", entity_one="line:0:mid", entity_two=other)
+        assert result["isError"] is True and "SAME line midpoint" in result["message"]
+        assert "sketch_get(include_entities=true)" in result["message"]
+        assert s.sketchPoints.added == [] and s.geometricConstraints.calls == []
+        assert s.sketchPoints.count == 2 and s.geometricConstraints.count == 0
+
     @pytest.mark.parametrize("entry, reason", [
         ({"constraint": "coincident_to_surface", "entity_one": "line:0:mid"}, "needs 'surface'"),
         ({"constraint": "coincident", "entity_one": "line:0:mid", "entity_two": "circle:0:mid"}, "LINE")])
@@ -666,6 +685,7 @@ class TestEntityAnchors:
     @pytest.mark.parametrize("prefix", [False, True])
     def test_solver_refusal_reports_its_own_retained_counts(self, install, monkeypatch, prefix):
         s = _anchored_sketch(); install(s)
+        s.sketchCurves.sketchLines._items[1] = _AnchoredLine("L1", _endpoint("L1S", 0, 2), _endpoint("L1E", 2, 2))
         monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
         record = s.geometricConstraints._rec
 
@@ -679,7 +699,7 @@ class TestEntityAnchors:
         monkeypatch.setattr(s.geometricConstraints, "_rec", counted_record)
         monkeypatch.setattr(s.geometricConstraints, "addCoincident", refuse)
         entries = [{"constraint": "horizontal", "entity_one": "line:1"}] if prefix else []
-        entries += [{"constraint": "coincident", "entity_one": "line:0:mid", "entity_two": "line:0:mid"},
+        entries += [{"constraint": "coincident", "entity_one": "line:0:mid", "entity_two": "line:1:mid"},
                     {"constraint": "vertical", "entity_one": "line:1"}]
         result = sc.handler(constraints=entries, sketch_name="S")
         assert s.sketchPoints.count == 4 and s.geometricConstraints.count == 2 + int(prefix)

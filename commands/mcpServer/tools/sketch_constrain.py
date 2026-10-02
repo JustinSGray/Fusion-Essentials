@@ -624,6 +624,17 @@ def _one(sketch, k, entry):
     if kerr:
         return None, kerr
 
+    flags = None
+    if kind == "circ_pattern":
+        try:
+            if int(quantity) < 2:
+                return None, f"'{cname}' needs quantity >= 2. Got {quantity}."
+            flags, ferr = _suppressed_flags(suppressed, int(quantity), cname)
+            if ferr:
+                return None, ferr
+        except Exception as e:
+            return None, f"Could not apply {cname}: {e} | '{cname}' takes {_REQUIRES[cname]}."
+
     # A ref's optional third segment names WHICH point of the entity is meant ('circle:0:center') -
     # the same grammar sketch_dimension reads, parsed here before the bare ref is resolved.
     base_one, anchor_one, aerr = _common.parse_anchor_ref(entity_one)
@@ -668,6 +679,13 @@ def _one(sketch, k, entry):
             _point, perr = _common.anchor_preflight(entity, anchor)
             if perr:
                 return None, f"{slot}: {perr}"
+    if cname == "coincident" and anchor_one in ("mid", "midpoint") and anchor_two in ("mid", "midpoint"):
+        kind_one, _, index_one = base_one.strip().lower().rpartition(":")
+        kind_two, _, index_two = base_two.strip().lower().rpartition(":")
+        if kind_one == kind_two == "line" and int(index_one) == int(index_two):
+            return None, (f"'{entity_one}' and '{entity_two}' name the SAME line midpoint, so there is "
+                          "nothing to constrain. Name two different anchors, or drop the call; "
+                          "sketch_get(include_entities=true) lists the source geometry.")
     surf = None
     if kind == "entity_surface":
         surf, serr = _SURFACE.resolve(surface, cname)
@@ -703,7 +721,6 @@ def _one(sketch, k, entry):
 
     gc = safe(lambda: sketch.geometricConstraints)
     auto_before = None
-    flags = None
 
     try:
         if kind == "auto":
@@ -762,11 +779,6 @@ def _one(sketch, k, entry):
                 return None, derr
             result_obj = _apply_offset(gc, cname, ents, d1)
         elif kind == "circ_pattern":
-            if int(quantity) < 2:
-                return None, f"'{cname}' needs quantity >= 2. Got {quantity}."
-            flags, ferr = _suppressed_flags(suppressed, int(quantity), cname)
-            if ferr:
-                return None, ferr
             result_obj, perr = _apply_circ_pattern(gc, ents, e1, int(quantity), float(angle),
                                                    bool(symmetric), flags)
             if perr:

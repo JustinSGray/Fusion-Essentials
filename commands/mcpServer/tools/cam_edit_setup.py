@@ -283,6 +283,36 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
         return error(serr)
     target = node.obj
 
+    if want_rename:
+        clash = setup_name_clash(cam, want_rename, safe(lambda: target.name) or setup)
+        if clash:
+            return error(clash)
+    sp = safe(lambda: target.parameters)
+    resolved_params = {}
+    missing = []
+    for name in wanted:
+        p = safe(lambda name=name: sp.itemByName(name)) if sp else None
+        if p is None:
+            missing.append(name)
+        else:
+            resolved_params[name] = p
+    if missing:
+        return error(f"Setup '{setup}' has no parameter(s): {', '.join(missing)}. "
+                     "(Read the setup's parameter names first; only existing ones are settable.)")
+
+    resolved_bodies = {}
+    for arg, names in body_args.items():
+        bodies, berr = _resolve_bodies(names)
+        if berr:
+            return error(f"{arg}: {berr}")
+        resolved_bodies[arg] = bodies
+
+    resolved_wcs = {}
+    if want_wcs:
+        resolved_wcs, werr = _resolve_wcs(wcs)
+        if werr:
+            return error(werr)
+
     # stock_mode can UNLOCK another wanted parameter (job_continueMachining reads isEditable False
     # until 'previous_setup' lands) - applied and verified FIRST, so the lock check below sees the
     # post-mode state instead of forcing a caller into two calls.
@@ -309,24 +339,6 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
                          f"Setup.stockMode now reads '{applied_mode}'.")
         stock_mode_applied = {"stock_mode_set": applied_mode, "was_stock_mode": was_stock_mode}
 
-    # ── validate EVERYTHING else before applying anything more (no half-edited setup) ──
-    if want_rename:
-        clash = setup_name_clash(cam, want_rename, safe(lambda: target.name) or setup)
-        if clash:
-            return error(clash)
-    sp = safe(lambda: target.parameters)
-    resolved_params = {}
-    missing = []
-    for name in wanted:
-        p = safe(lambda name=name: sp.itemByName(name)) if sp else None
-        if p is None:
-            missing.append(name)
-        else:
-            resolved_params[name] = p
-    if missing:
-        return error(f"Setup '{setup}' has no parameter(s): {', '.join(missing)}. "
-                     "(Read the setup's parameter names first; only existing ones are settable.)")
-
     # A parameter reading isEditable False takes the assignment without raising and keeps the
     # expression it held (measured: 274 of a setup's 304 read False), so refuse before any write.
     # read_flag, not safe(..., True): a flag that reads None did not answer, and cannot refuse.
@@ -342,25 +354,12 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
                      "cam_get(include=['parameters'], setup=...) marks each refusing row "
                      "editable false.")
 
-    resolved_bodies = {}
-    for arg, names in body_args.items():
-        bodies, berr = _resolve_bodies(names)
-        if berr:
-            return error(f"{arg}: {berr}")
-        resolved_bodies[arg] = bodies
-
     resolved_machine = None
     if want_machine:
         m_obj, m_label, m_err = resolve_machine(want_machine)
         if m_err:
             return error(m_err)
         resolved_machine = (m_obj, m_label)
-
-    resolved_wcs = {}
-    if want_wcs:
-        resolved_wcs, werr = _resolve_wcs(wcs)
-        if werr:
-            return error(werr)
 
     # ── apply parameters first (before bodies/machine/wcs, so a rollback here leaves the setup as found) ──
     changed = []
