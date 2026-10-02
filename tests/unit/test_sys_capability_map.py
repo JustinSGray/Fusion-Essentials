@@ -10,6 +10,8 @@ rather than probing one itself.
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from conftest import load_tool
 
 cm = load_tool("sys_capability_map")
@@ -28,7 +30,18 @@ def _payload(result):
     return json.loads(result["content"][0]["text"])
 
 
+@pytest.fixture
+def find_family(monkeypatch):
+    monkeypatch.setattr(cm, "get_tools", lambda: [_item("find_geometry")])
+
+
 class TestFamilyMap:
+    def test_find_summary_requires_prompt_use_and_reacquisition(self, find_family):
+        family = _payload(cm.handler())["families"][0]
+        assert family["family"] == "find" and family["entry_tool"] == "find_geometry"
+        assert "short-lived" in family["summary"] and "use promptly" in family["summary"]
+        assert "re-find if stale" in family["summary"] and "stable" not in family["summary"]
+
     def test_groups_by_prefix_with_summary_entry_and_count(self):
         _install(["cam_get", "cam_create_setup", "cam_generate",
                   "sketch_create", "sketch_constrain"])

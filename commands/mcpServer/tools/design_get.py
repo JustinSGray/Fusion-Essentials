@@ -369,6 +369,8 @@ def _owner_fields(obj):
     if ent is None:
         return {}
     name = safe(lambda: ent.parentComponent.name)
+    if not name and safe(lambda: ent.objectType) == "adsk::fusion::ConstructionPlane":
+        name = safe(lambda: ent.component.name)
     return {"component": name} if isinstance(name, str) and name else {}
 
 

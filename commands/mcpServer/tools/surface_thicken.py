@@ -52,6 +52,12 @@ def handler(faces=None, thickness: float = 0.0, units: str = "mm",
     face_ents, ferr = _THICKEN_FACES.resolve(faces)
     if ferr:
         return error(ferr)
+    sources = ([safe(lambda f=f: f.body) for f in face_ents]
+               if op_key in ("new", "new_body") else [])
+    source_visibility = [{"face_index": i, "body": safe(lambda b=b: b.name),
+                          "before": {"light_bulb_on": _common.read_flag(lambda b=b: b.isLightBulbOn),
+                                     "visible": _common.read_flag(lambda b=b: b.isVisible)}}
+                         for i, b in enumerate(sources)]
     coll = adsk.core.ObjectCollection.create()
     for f in face_ents:
         coll.add(f)
@@ -133,6 +139,22 @@ def handler(faces=None, thickness: float = 0.0, units: str = "mm",
         "symmetric": bool(symmetric),
         "note": note,
     }
+    if sources:
+        for b, row in zip(sources, source_visibility):
+            row["after"] = {"light_bulb_on": _common.read_flag(lambda b=b: b.isLightBulbOn),
+                            "visible": _common.read_flag(lambda b=b: b.isVisible)}
+            if not row["body"] or any(v is None for side in ("before", "after")
+                                      for v in row[side].values()):
+                if "source_visibility" not in unverified:
+                    unverified.append("source_visibility")
+            before, after = row["before"]["visible"], row["after"]["visible"]
+            if type(before) is bool and type(after) is bool and before != after:
+                state, action = ("hidden", "show") if before else ("shown", "hide")
+                label = row["body"] or f"face {row['face_index']} source"
+                payload["note"] += (f" Source '{label}' became {state}. Read "
+                                    f"design_get(include=['tree'], tree_bodies=true), then "
+                                    f"view_set(action='{action}', target=[<body handle>]).")
+        payload["source_visibility"] = source_visibility
     if landed_total is None:
         unverified.append("thickness")
         payload["note"] += " Not read back off the feature: thickness."

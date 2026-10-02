@@ -627,8 +627,12 @@ def _do_orient(design, orientation, focus, fit, projection="", perspective_angle
     note = "Camera aimed. Call view_screenshot to capture."
     if focus:
         if fit:
-            note = (f"Camera aimed and framed on '{applied.get('focus')}'. Call view_screenshot "
-                    "to capture.")
+            if applied.get("no_measurable_size"):
+                note = (f"Camera re-aimed at '{applied.get('focus')}'; the focus has no measurable "
+                        "size, so size-based framing is not established. Call view_screenshot to capture.")
+            else:
+                note = (f"Camera aimed and framed on '{applied.get('focus')}'. Call view_screenshot "
+                        "to capture.")
         else:
             note = (f"Camera re-aimed at '{applied.get('focus')}' WITHOUT zooming to it - "
                     "fit=false keeps the current eye-to-target distance. Pass fit=true (the "

@@ -1005,6 +1005,8 @@ class TestFocusFraming:
         assert out["applied"]["no_measurable_size"] is True
         assert out["applied"]["frame_ratio"] is None
         assert iv.app.activeViewport.camera.viewExtents == before   # zoom untouched
+        assert "re-aimed" in out["note"] and "no measurable size" in out["note"]
+        assert "framing is not established" in out["note"] and "framed on" not in out["note"]
 
     def test_a_zero_size_perspective_focus_is_re_aimed_without_scale(self, monkeypatch):
         import adsk.core

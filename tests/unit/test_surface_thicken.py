@@ -119,6 +119,49 @@ def _unidentifiable(name):
     return body
 
 
+@pytest.fixture
+def visibility_scene(monkeypatch):
+    def build(before, after, unread=None):
+        source = BRepBody("Sheet", is_solid=False, light_bulb=before)
+        wall = BRepBody("Wall", is_solid=True)
+        tf = FakeThickenFeatures(result_bodies=[wall], created_faces=[_face_on(wall)])
+        original_add = tf.add
+        def add(inp):
+            feature = original_add(inp)
+            source.isLightBulbOn = after
+            if unread == "after":
+                go_stale(source, attrs=("isLightBulbOn",))
+            return feature
+        monkeypatch.setattr(tf, "add", add)
+        _wire(tf, handle_map={"F1": _face_on(source)}, standing_bodies=[source])
+        if unread == "before":
+            go_stale(source, attrs=("isLightBulbOn",))
+        return source
+    return build
+
+
+class TestSourceVisibilityDisclosure:
+    @pytest.mark.parametrize("before,after,state,action", [(True, False, "hidden", "show"),
+                                                           (False, True, "shown", "hide")])
+    def test_new_wall_discloses_both_native_visibility_transitions(self, visibility_scene, before, after, state, action):
+        visibility_scene(before, after)
+        out = payload(se.handler(faces=["F1", "F1"], thickness=1, chaining=False))
+        assert out["source_visibility"] == [
+            {"face_index": i, "body": "Sheet", "before": {"light_bulb_on": before, "visible": before},
+             "after": {"light_bulb_on": after, "visible": after}} for i in range(2)]
+        assert f"Source 'Sheet' became {state}" in out["note"] and f"action='{action}'" in out["note"]
+        assert "include=['tree']" in out["note"] and "target=[<body handle>]" in out["note"]
+        assert "source_visibility" not in out.get("unverified", [])
+
+    @pytest.mark.parametrize("unread", ["before", "after"])
+    def test_unread_visibility_does_not_become_a_false_transition(self, visibility_scene, unread):
+        visibility_scene(True, False, unread)
+        out = payload(se.handler(faces=["F1"], thickness=1, chaining=False))
+        row = out["source_visibility"][0]
+        assert row[unread] == {"light_bulb_on": None, "visible": None}
+        assert "source_visibility" in out["unverified"] and "became" not in out["note"]
+
+
 class TestOffsetThickenKind:
 
     def test_thicken_produces_a_solid(self):
@@ -176,14 +219,14 @@ class TestOffsetThickenKind:
         _wire(tf, handle_map={"F1": BRepFace(None)})
         out = payload(se.handler(faces=["F1"], thickness=3, units="mm"))
         assert out["thickness"] == 3.0           # the wall's own parameter, in the caller's units
-        assert "unverified" not in out
+        assert "thickness" not in out.get("unverified", [])
 
     def test_unreadable_thickness_is_flagged_unverified_not_silently_echoed(self):
         tf = FakeThickenFeatures(result_bodies=[BRepBody("Wall1", is_solid=True)],
                                  thickness_readable=False)
         _wire(tf, handle_map={"F1": BRepFace(None)})
         out = payload(se.handler(faces=["F1"], thickness=3, units="mm"))
-        assert out["unverified"] == ["thickness"]
+        assert "thickness" in out["unverified"]
         assert "Not read back off the feature: thickness." in out["note"]
         assert out["thickness"] == 3.0           # the request, published only because it is flagged
 

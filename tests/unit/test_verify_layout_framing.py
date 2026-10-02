@@ -27,6 +27,44 @@ import verify_acts_doc  # noqa: E402
 import verify_acts_cam  # noqa: E402
 import verify_acts_sketch  # noqa: E402
 import verify_acts_cloud  # noqa: E402
+import verify_acts_mesh  # noqa: E402
+
+
+@pytest.mark.parametrize("factory,home,context", [
+    (verify_acts_doc._product_disclosure_rows, "disclosure_home", {
+        "disclosure_home": "home", "disclosure_doc": "scratch", "disclosure_witness": "Body1",
+        "disclosure_stock": "Body2", "disclosure_DatumA": "plane-a", "disclosure_DatumB": "plane-b",
+        "disclosure_fresh_face": "fresh-face"}),
+    (verify_acts_mesh._thicken_visibility_rows, "thicken_home", {
+        "thicken_home": "home", "thicken_doc": "scratch", "thicken_visible": "Body1", "thicken_hidden": "Body2",
+        "thicken_witness": "Body3", "thicken_face": "source-face", "thicken_wall_visible": "Body4",
+        "thicken_wall_hidden": "Body5", "thicken_visible_after": {"Body1": "fresh-source1"},
+        "thicken_hidden_after": {"Body2": "fresh-source2"}})])
+def test_product_disclosure_scenes_keep_local_geometry_fresh_consumers_and_recovery(factory, home, context):
+    rows = [row for _name, _pre, narrative, _fallback in verify_program.ACTS for row in narrative]
+    start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == home)
+    end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
+    wanted = {"sketch_create", "sketch_add_geometry", "sketch_get", "model_create_component", "model_construction",
+              "model_extrude", "surface_extrude", "surface_thicken", "find_geometry", "model_inspect", "view_set"}
+    def requests(selected):
+        return [(tool, args(context) if callable(args) else args) for tool, args, _check, _save in selected if tool in wanted]
+    authored = requests(factory())
+    assert requests(rows[start:end]) == authored
+    if home == "disclosure_home":
+        parameter = next(args(context) if callable(args) else args
+                         for tool, args, _check, _save in rows[start:end] if tool == "param_add")
+        assert parameter == {"name": "DisclosureHeight", "expression": "10 mm", "unit": "mm", "expect_document": "scratch"}
+        reads = [a for t, a in authored if t == "sketch_get"]
+        assert [(a["sketch_name"], a["component"]) for a in reads] == [("DatumAPick", "DatumA:1"), ("DatumBPick", "DatumB:1")]
+        assert any(t == "model_inspect" and a["target"] == "fresh-face" for t, a in authored)
+        create = next(row for row in factory() if row[0] == "model_create_component" and row[1](context)["name"] == "EmptyFocus")
+        assert create[2]({"created": True, "activated": False, "occurrence": "EmptyFocus:1", "full_path": "EmptyFocus:1"}) is True
+    else:
+        recovery = [a for t, a in authored if t == "view_set" and a.get("target") in (["fresh-source1"], ["fresh-source2"])]
+        assert recovery == [{"action": "show", "target": ["fresh-source1"], "expect_document": "scratch"},
+                            {"action": "hide", "target": ["fresh-source2"], "expect_document": "scratch"}]
+        lines = [a["geometry"] for t, a in authored if t == "sketch_add_geometry"]
+        assert lines[:2] == [[{"kind": "line", "x1": x, "y1": 20, "x2": x + 10, "y2": 20}] for x in (0, 30)]
 
 
 def test_saved_configuration_scene_keeps_owned_local_geometry_refusals_and_close():

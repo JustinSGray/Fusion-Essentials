@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 691
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 693
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -37,7 +37,7 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
-- `design_get`  <- 55  (desc 12, note 43)
+- `design_get`  <- 56  (desc 12, note 44)
 - `find_geometry`  <- 55  (desc 14, note 41)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 6, note 30)
@@ -4541,6 +4541,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - No active design. Create or open a document first (see doc_new).
 - Thicken reported success but the feature owns no result body - no wall was created, so there is nothing to read isSolid back off.
 - Thicken reported success but no CREATED body reads isSolid=true - the wall did not close into a solid. The feature remains in the timeline; inspect it with model_inspect or remove it with design_de...
+- Source '' became . Read design_get(include=['tree'], tree_bodies=true), then view_set(action='', target=[<body handle>]).
 - WARNING: operation='join' fused NOTHING - the wall landed as a NEW free-floating body () because the sheet touches no existing solid. Move it into contact (model_move) and thicken again, or pass op...
 
 ### `surface_trim`
@@ -4736,8 +4737,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - occurrences, so only the first
 - had their visibility saved - restore will not reinstate the rest. Camera and visual style are complete.
 - Camera aimed. Call view_screenshot to capture.
-- Camera aimed and framed on '
-- '. Call view_screenshot to capture.
 - ' WITHOUT zooming to it - fit=false keeps the current eye-to-target distance. Pass fit=true (the default) to frame it.
 - has a readable bounding box, so there is nothing to frame on. Re-run with fit=false to re-aim only.
 - Unknown orientation '
@@ -4751,6 +4750,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ', and cameraType could not be read back - projection and focus are unverified.
 - ', and projection reads back '
 - ' - the requested projection did not take and focus is unverified.
+- '; the focus has no measurable size, so size-based framing is not established. Call view_screenshot to capture.
+- Camera aimed and framed on '
+- '. Call view_screenshot to capture.
 - ' but the camera's cameraType could not be read back - the projection is unverified.
 - ' but the viewport camera reads back '
 - ' - the change did not take.
@@ -4823,6 +4825,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Projection reads '' after staging the projection, but the viewport frame could not be read before aiming at ''; the focus was not applied.
 - Could not read what the viewport currently shows, so the view could not be framed on '' and the camera was NOT moved. Re-run with fit=false to re-aim only.
 - Could not measure '' against the current view (a bounding box, the camera's axes, or its extents would not read), so the view is NOT framed on it. Re-run with fit=false to re-aim only.
+- Camera re-aimed at ''; the focus has no measurable size, so size-based framing is not established. Call view_screenshot to capture.
 - Camera re-aimed at '' WITHOUT zooming to it - fit=false keeps the current eye-to-target distance. Pass fit=true (the default) to frame it.
 - standoff_fallback_cm=: the camera's eye-target distance did not read as a positive number, so  cm stood in as the standoff for this orient.
 - Set 'perspective_angle_deg'= but the camera's perspectiveAngle could not be read back - the field of view is unverified.

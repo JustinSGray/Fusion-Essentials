@@ -749,6 +749,22 @@ class TestHasCam:
         assert dg._has_cam(None) is False
 
 
+@pytest.fixture
+def plane_owner_timeline():
+    scene = TestTimelineSlice()
+    rows = [scene._owned_row(0, "Witness", "Root"), scene._owned_row(1, "Pick", "DatumA")]
+    for index, owner in ((2, "DatumA"), (3, "DatumB")):
+        row = scene._tlobj(index, "PlaneTwin", entity_name="ConstructionPlane")
+        row.entity.objectType = "adsk::fusion::ConstructionPlane"
+        row.entity.component = SimpleNamespace(name=owner)
+        rows.append(row)
+    occurrence = scene._tlobj(4, " DatumB:1", entity_name="Occurrence")
+    occurrence.entity.objectType = "adsk::fusion::Occurrence"
+    occurrence.entity.component = SimpleNamespace(name="DatumB")
+    rows.append(occurrence)
+    return scene._design_with(rows)
+
+
 class TestTimelineSlice:
     """Timeline slice logic moved into design_get (_entity_type / _object_summary / _slice_timeline)."""
 
@@ -809,6 +825,14 @@ class TestTimelineSlice:
         out, _ = dg._slice_timeline(d, include_suppressed=True, group="")
         assert [(r["name"], r["component"]) for r in out["timeline"]] == [
             ("Sketch1", "Slider"), ("Sketch1", "Ball")]
+
+    def test_construction_planes_use_measured_owner_without_occurrence_fallback(self, plane_owner_timeline):
+        out, err = dg._slice_timeline(plane_owner_timeline, include_suppressed=True, group="")
+        assert err is None
+        rows = out["timeline"]
+        assert [(r["name"], r.get("component")) for r in rows] == [
+            ("Witness", None), ("Pick", "DatumA"), ("PlaneTwin", "DatumA"),
+            ("PlaneTwin", "DatumB"), (" DatumB:1", None)]
 
     def test_the_root_owner_is_dropped_as_noise(self):
         # in a single-component design EVERY row would name the root: a column that never varies

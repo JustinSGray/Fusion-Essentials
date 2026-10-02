@@ -19,10 +19,11 @@ import urllib.request
 from verify_core import (
     BASE, EXPORT_DIR, NOTE_MAX, SERVER_NAME, SVG_PATH, _RECALL, _activated, _ctx_get,
     _document_closed, _document_read, _exported_bytes, _extruded, _fg, _home_address,
-    _home_document, _imported_curves, _imported_sketches, _made_component, _measured,
-    _new_document, _num, _param_added, _param_deleted, _param_read, _recall, _refused, _watch, facade)
+    _home_document, _imported_curves, _imported_sketches, _made_component, _made_component_inactive, _measured,
+    _new_document, _num, _param_added, _param_deleted, _param_read, _param_set_to, _recall, _refused, _watch, facade)
 from verify_layout import _DRIFT_CHUNKS, drift_row
-from verify_acts_model_sweep import _retire_compare, _retire_design_state, _retire_material_state
+from verify_acts_model_sweep import (
+    _retire_compare, _retire_design_state, _retire_material_state, _sweep_mode_shape, _sweep_mode_box_equal)
 
 
 def _kernel_rules_present(p, field="kernel"):
@@ -1039,6 +1040,171 @@ def _timeline_health_rows():
     return rows
 
 
+def _disclosure_plane_state(p):
+    """Return complete history/tree and independently indexed plane owners."""
+    state = _retire_design_state(p)
+    datums = p.get("datums") or {}
+    rows = datums.get("datums") or []
+    if (state is None or datums.get("match_count") != datums.get("returned") or len(rows) != 2
+            or datums.get("returned") != 2 or datums.get("truncated") is not False):
+        return None
+    planes = [r for r in state["timeline"]["timeline"] if r.get("type") == "ConstructionPlane"]
+    if (len(planes) != 2 or {(r.get("name"), r.get("component")) for r in planes}
+            != {("PlaneTwin", "DatumA"), ("PlaneTwin", "DatumB")}):
+        return None
+    for datum in rows:
+        owner = datum.get("component")
+        if (owner not in ("DatumA", "DatumB") or datum.get("name") != "PlaneTwin"
+                or datum.get("kind") != "construction_plane" or datum.get("placement_count") != 1
+                or datum.get("occurrences") != [owner + ":1"] or datum.get("occurrences_truncated")
+                or not any(row.get("index") == datum.get("timeline_index")
+                           and row.get("component") == owner for row in planes)):
+            return None
+    return {**state, "datums": datums}
+
+
+def _disclosure_poses(p):
+    """Return the complete three empty placed components and their finite bases."""
+    rows = p.get("occurrences") or []
+    expected = {"DatumA:1": [30, 0, 0], "DatumB:1": [60, 0, 0], "EmptyFocus:1": [40, 0, 0]}
+    if (p.get("units") != "mm" or p.get("occurrences_truncated") is not False
+            or p.get("occurrence_count") != 3 or len(rows) != 3
+            or {r.get("name") for r in rows} != set(expected)):
+        return None
+    for row in rows:
+        if (row.get("body_count") != 0 or row.get("origin") != expected[row["name"]]
+                or any(type(row.get(k)) is not bool for k in ("grounded", "ground_to_parent"))
+                or any(not isinstance(row.get(k), list) or len(row[k]) != 3
+                       or any(not _num(v) or not math.isfinite(v) for v in row[k])
+                       for k in ("x_axis", "y_axis", "z_axis"))):
+            return None
+    return rows
+
+
+def _disclosure_witness_material(p):
+    """Return the full independently measured root cube material and finite bounds."""
+    shape = _sweep_mode_shape(p)
+    expected = {"min": dict.fromkeys("xyz", 0), "max": dict.fromkeys("xyz", 20)}
+    if (p.get("units") != "mm" or p.get("lump_count") != 1
+            or not _sweep_mode_box_equal(shape, expected)
+            or not _num(shape["volume"]) or abs(shape["volume"] - 8000) > .001
+            or not _num(shape["area"]) or abs(shape["area"] - 2400) > .001):
+        return None
+    return {"shape": shape, "mass": p["mass"]}
+
+
+def _product_disclosure_rows():
+    """Disclose plane owners, empty focus and handle lifetime in one owned scene."""
+    rows = [("doc_get", {}, _home_document, ("disclosure_home", _home_address)),
+            ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                            "tree_handles": True, "max_results": 2000},
+             _retire_compare("disclosure_home_design", _retire_design_state, False), None),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "disclosure_home", "home")},
+             _new_document, ("disclosure_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c: {**(args(c) if callable(args) else args),
+                     "expect_document": _ctx_get(c, "disclosure_doc", "owned disclosure scene")}, check, save))
+    write("param_add", {"name": "DisclosureHeight", "expression": "10 mm", "unit": "mm"},
+          _param_added("DisclosureHeight", 10))
+    for name, coords, distance, key in (("Witness", (0, 0, 20, 20), "20 mm", "disclosure_witness"),
+                                         ("Stock", (100, 0, 110, 8), "DisclosureHeight", "disclosure_stock")):
+        write("sketch_create", {"name": name, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name, "units": "mm", "geometry": [
+            dict(zip(("kind", "x1", "y1", "x2", "y2"), ("rectangle", *coords)))]})
+        write("model_extrude", {"sketch_name": name, "distance": distance, "operation": "new"},
+              _extruded, (key, lambda p: p["result_bodies"][0]))
+    for owner, x, z in (("DatumA", 30, 3), ("DatumB", 60, 7)):
+        write("design_activate_component", {"occurrence": "root"})
+        write("model_create_component", {"name": owner, "x": x, "activate": True, "units": "mm"}, _made_component)
+        write("model_construction", {"kind": "plane", "mode": "offset", "plane": "xy",
+              "offset": z, "name": "PlaneTwin", "units": "mm"}, lambda p, owner=owner: p.get("component") == owner)
+        rows.append(("find_geometry", lambda c, owner=owner: {"target": owner + ":1", "kind": "construction_plane",
+                     "name": "PlaneTwin", "units": "mm", "max_results": 10},
+                     lambda p, owner=owner, x=x, z=z: p.get("match_count") == p.get("returned") == 1
+                     and p["matches"][0].get("position") == [x, 0, z]
+                     and p["matches"][0].get("normal") == [0, 0, 1]
+                     and p["matches"][0].get("occurrence") == owner + ":1", _fg("disclosure_" + owner)))
+        write("sketch_create", lambda c, owner=owner: {"name": owner + "Pick", "plane": _ctx_get(c, "disclosure_" + owner, "plane")},
+              lambda p, owner=owner, x=x, z=z: p.get("component") == owner
+              and (p.get("frame") or {}).get("space") == "world" and p["frame"].get("origin_mm") == [x, 0, z])
+        rows.append(("sketch_get", lambda c, owner=owner: {"sketch_name": owner + "Pick", "component": owner + ":1", "include_entities": True},
+                     lambda p, owner=owner, x=x, z=z: p.get("component") == owner
+                     and (p.get("frame") or {}).get("space") == "world"
+                     and p["frame"].get("origin_mm") == [x, 0, z]
+                     and p["frame"].get("normal") == [0, 0, 1], None))
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "EmptyFocus", "x": 40, "activate": False, "units": "mm"}, _made_component_inactive)
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+    def unchanged(after=False):
+        rows.append(("design_get", lambda c: {"include": ["tree", "timeline", "datums"], "tree_bodies": True,
+                     "tree_handles": True, "max_results": 2000},
+                     _retire_compare("disclosure_read_design", _disclosure_plane_state, after), None))
+        rows.append(("assembly_get", lambda c: {"include": ["poses"], "units": "mm", "max_occurrences": 100},
+                     _retire_compare("disclosure_read_poses", _disclosure_poses, after), None))
+        rows.append(("model_inspect", lambda c: {"target": "", "include": ["default", "mass"], "per_body": True,
+                     "units": "mm", "accuracy": "very_high"},
+                     _retire_compare("disclosure_read_material", _retire_material_state, after), None))
+        rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, "disclosure_witness", "cube"), "units": "mm", "max_results": 100},
+                     _retire_compare("disclosure_witness_geometry", _timeline_cube_geometry, after), None))
+    unchanged()
+    rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "disclosure_witness", "cube"),
+                 "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                 _retire_compare("disclosure_witness_material", _disclosure_witness_material, False), None))
+    for fit in (True, False):
+        def focus(p, fit=fit):
+            a, note = p.get("applied") or {}, p.get("note", "")
+            return (a.get("focus") == "EmptyFocus:1" and a.get("orientation") == "front"
+                    and (a.get("no_measurable_size") is True and a.get("frame_ratio") is None
+                         and "no measurable size" in note and "framed on" not in note if fit else "WITHOUT zooming" in note))
+        write("view_set", {"action": "orient", "orientation": "front", "focus": "EmptyFocus:1", "fit": fit}, focus)
+        rows.append(("workspace_orient", lambda c: {}, lambda p: _camera_target(p) == (0, 0, 0), None))
+        unchanged(True)
+    write("view_set", {"action": "orient", "orientation": "front", "fit": False},
+          lambda p: "focus" not in (p.get("applied") or {}) and "Camera aimed" in p.get("note", ""))
+    unchanged(True)
+    write("view_set", {"action": "orient", "orientation": "front", "focus": "Witness", "fit": True},
+          lambda p: "framed on 'Witness'" in p.get("note", "")
+          and _num((p.get("applied") or {}).get("frame_ratio")) and p["applied"]["frame_ratio"] > 0)
+    rows.append(("workspace_orient", lambda c: {}, lambda p: _camera_target(p) == (1, 1, 0), None))
+    unchanged(True)
+    rows.append(("sys_capability_map", {}, lambda p: any(r.get("family") == "find"
+                 and r.get("entry_tool") == "find_geometry" and "short-lived" in r.get("summary", "")
+                 and "re-find if stale" in r.get("summary", "") and "stable" not in r.get("summary", "")
+                 for r in p.get("families") or []), None))
+    write("param_set", {"name": "DisclosureHeight", "expression": "13 mm"}, _param_set_to("DisclosureHeight", 13))
+    rows.append(("param_get", {"name": "DisclosureHeight"}, _param_read("DisclosureHeight", 13), None))
+    rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "disclosure_stock", "driven box"),
+                 "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                 lambda p: _num((p.get("mass") or {}).get("volume")) and abs(p["mass"]["volume"] - 1040) < .001
+                 and [p.get(k) for k in "xyz"] == [10, 8, 13], None))
+    def fresh_face(p):
+        faces = [r for r in p["matches"] if r.get("kind") == "planar_face"
+                 and r.get("position") == [10, 10, 20] and r.get("normal") == [0, 0, 1]]
+        _measured("one fresh witness top face", faces, len(faces) == 1)
+        return faces[0]["handle"]
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, "disclosure_witness", "fresh cube handles"), "units": "mm", "max_results": 100},
+                 _retire_compare("disclosure_witness_geometry", _timeline_cube_geometry, True), ("disclosure_fresh_face", fresh_face)))
+    rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "disclosure_fresh_face", "fresh witness top face"), "units": "mm"},
+                 lambda p: p.get("kind") == "face" and p.get("oriented") is False
+                 and p.get("min_point") == {"x": 0, "y": 0, "z": 20}
+                 and p.get("max_point") == {"x": 20, "y": 20, "z": 20}
+                 and p.get("center") == {"x": 10, "y": 10, "z": 20}, None))
+    rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "disclosure_witness", "cube"),
+                 "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                 _retire_compare("disclosure_witness_material", _disclosure_witness_material, True), None))
+    write("param_set", {"name": "DisclosureHeight", "expression": "10 mm"}, _param_set_to("DisclosureHeight", 10))
+    unchanged(True)
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "disclosure_home", "home"),
+                                        "expect_document": _ctx_get(c, "disclosure_doc", "owned scene")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "disclosure_doc", "owned scene"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "disclosure_home", "home")}, _document_closed, None),
+             ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                             "tree_handles": True, "max_results": 2000},
+              _retire_compare("disclosure_home_design", _retire_design_state, True), None)]
+    return rows
+
+
 # --- ACT 0: OVERTURE - orient, then open the first family document -----------------------------
 _OVERTURE = [
     ("doc_new", {}, _new_document, None),
@@ -1162,7 +1328,7 @@ _OVERTURE = [
      "refused", None),
     # a tier-R member names the member and the reason, with nothing written.
     ("sys_set_preferences", {"member": "network.proxyHost", "value": "127.0.0.1"}, "refused", None),
-] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE + _BOOLEAN_FLAGS + _TARGET_CONFIRMATION + _TARGET_HIDDEN + _TARGET_SLASH + _timeline_health_rows()
+] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE + _BOOLEAN_FLAGS + _TARGET_CONFIRMATION + _TARGET_HIDDEN + _TARGET_SLASH + _timeline_health_rows() + _product_disclosure_rows()
 
 # --- THE SHOWCASE: the finished fixture photographed, renamed, exported and read back -----------
 # It runs BEFORE the machining acts so the sweep ends on the CAM job and its post, which is the

@@ -21,7 +21,9 @@ from verify_core import (
 from verify_acts_cam import MACHINING_EXTENSION
 from verify_layout import _px, _py
 from verify_acts_model_sweep import (
-    _retire_compare, _retire_design_state, _retire_material_state, _retire_reads, _retire_sketch_state)
+    _retire_compare, _retire_design_state, _retire_material_state, _retire_reads, _retire_sketch_state,
+    _sweep_mode_shape, _sweep_mode_box_equal)
+from verify_acts_model_solids import _edge_extent_geometry
 
 
 def _mesh_remedy_census(p):
@@ -1582,6 +1584,172 @@ _MACHINING = [
     ("model_compute_holder", lambda c: {"body": _ctx_get(c, "hp_body", "holder body"), "axis": _ctx_get(c, "hp_axis", "holder axis"), "end_datum": _ctx_get(c, "hp_datum", "holder datum")}, _holder_computed, None),
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
 ]
+
+def _thicken_source_geometry(p):
+    """Read the complete planar sheet geometry apart from its disclosed visibility."""
+    rows = _edge_extent_geometry(p)
+    if (rows is None or len(rows) != 5 or sum(r["kind"] == "planar_face" for r in rows) != 1
+            or sum(r["kind"] == "line_edge" for r in rows) != 4
+            or next(r for r in rows if r["kind"] == "planar_face")["area"] != 60):
+        return None
+    return [{k: v for k, v in r.items() if k != "hidden"} for r in rows]
+
+
+def _thicken_material(p):
+    """Read finite solid bounds and physical properties for the wall or witness."""
+    shape = _sweep_mode_shape(p)
+    if (p.get("kind") != "body" or p.get("units") != "mm" or p.get("lump_count") != 1
+            or not _sweep_mode_box_equal(shape, shape)
+            or any(not _num(shape[k]) or not math.isfinite(shape[k]) or shape[k] <= 0 for k in ("volume", "area"))):
+        return None
+    return {"shape": shape, "mass": p.get("mass")}
+
+
+def _thicken_witness_material(p):
+    """Read the independently placed five millimeter cube's complete physical snapshot."""
+    state = _thicken_material(p)
+    if (state is None or not _near(state["shape"]["volume"], 125, .0001)
+            or not _near(state["shape"]["area"], 150, .0001)
+            or [p.get(a) for a in "xyz"] != [5, 5, 5]
+            or p.get("min_point") != {"x": 60, "y": 0, "z": 0}
+            or p.get("max_point") != {"x": 65, "y": 5, "z": 5}):
+        return None
+    return state
+
+
+def _thicken_visibility_rows():
+    """Check two source visibility transitions and typed recovery in an owned scene."""
+    rows = [("doc_get", {}, _home_document, ("thicken_home", _home_address)),
+            ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True, "max_results": 2000},
+             _retire_compare("thicken_home_design", _retire_design_state, False), None),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "thicken_home", "home")}, _new_document,
+             ("thicken_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c: {**(args(c) if callable(args) else args),
+                     "expect_document": _ctx_get(c, "thicken_doc", "owned thicken scene")}, check, save))
+    for role, x in (("visible", 0), ("hidden", 30)):
+        name = "Sheet_" + role
+        write("sketch_create", {"name": name, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name, "units": "mm", "geometry": [
+            {"kind": "line", "x1": x, "y1": 20, "x2": x + 10, "y2": 20}]})
+        write("surface_extrude", {"sketch_name": name, "distance": 6, "units": "mm", "operation": "new"},
+              lambda p: p.get("created") is True and p.get("is_solid") is False and len(p.get("result_bodies") or []) == 1,
+              ("thicken_" + role, lambda p: p["result_bodies"][0]))
+    write("sketch_create", {"name": "Witness", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "Witness", "units": "mm", "geometry": [
+        {"kind": "rectangle", "x1": 60, "y1": 0, "x2": 65, "y2": 5}]})
+    write("model_extrude", {"sketch_name": "Witness", "distance": 5, "units": "mm", "operation": "new"},
+          _extruded, ("thicken_witness", lambda p: p["result_bodies"][0]))
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+    write("view_set", lambda c: {"action": "hide", "target": [_ctx_get(c, "thicken_hidden", "second sheet")]},
+          lambda p: p.get("bodies") == [{"body": "Body2", "light_bulb_on": False, "visible": False}])
+    def design_read(key, phase, before=None):
+        def check(p):
+            state = _retire_design_state(p)
+            bodies = (p.get("tree") or {}).get("root_bodies")
+            expected = {"Body1": (False, phase != "visible_after"), "Body2": (False, phase == "hidden_after"),
+                        "Body3": (True, True)}
+            if phase not in ("baseline",):
+                expected["Body4"] = (True, True)
+            if phase in ("hidden_after", "hidden_restored"):
+                expected["Body5"] = (True, True)
+            valid = (state is not None and isinstance(bodies, list) and len(bodies) == len(expected)
+                     and {b.get("name") for b in bodies} == set(expected)
+                     and all((b.get("is_solid"), b.get("visible")) == expected[b["name"]]
+                             and isinstance(b.get("handle"), str) and b["handle"] for b in bodies)
+                     and p["tree"].get("child_count") == 0)
+            if before and valid:
+                prior = _RECALL[before]
+                old, now = prior["timeline"]["timeline"], state["timeline"]["timeline"]
+                added = phase.endswith("after")
+                valid = (now[:-1] == old and len(now) == len(old) + 1
+                         and now[-1].get("type") == "ThickenFeature" and now[-1].get("health", "healthy") == "healthy"
+                         if added else now == old)
+                old_bodies = {b["name"]: b for b in prior["tree"]["root_bodies"]}
+                valid = valid and all({k: v for k, v in b.items() if k != "visible"} ==
+                                      {k: v for k, v in old_bodies[b["name"]].items() if k != "visible"}
+                                      for b in bodies if b["name"] in old_bodies)
+            _measured("source visibility with complete held body/history census", p, valid)
+            _RECALL[key] = state
+            return True
+        def handles(p):
+            return {b["name"]: b["handle"] for b in p["tree"]["root_bodies"]}
+        rows.append(("design_get", lambda c: {"include": ["tree", "timeline"], "tree_bodies": True,
+                     "tree_handles": True, "max_results": 2000}, check, (key, handles)))
+    def controls(after):
+        for role in ("visible", "hidden"):
+            rows.append(("find_geometry", lambda c, role=role: {"target": _ctx_get(c, "thicken_" + role, "source sheet"),
+                         "units": "mm", "max_results": 100},
+                         _retire_compare("thicken_geometry_" + role, _thicken_source_geometry, after), None))
+        rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "thicken_witness", "witness"),
+                     "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                     _retire_compare("thicken_witness_material", _thicken_witness_material, after), None))
+        def witness_geometry(p):
+            geometry = _edge_extent_geometry(p)
+            if (geometry is None or len(geometry) != 18
+                    or sum(r["kind"] == "planar_face" for r in geometry) != 6
+                    or sum(r["kind"] == "line_edge" for r in geometry) != 12):
+                return None
+            return geometry
+        rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, "thicken_witness", "witness"),
+                     "units": "mm", "max_results": 100},
+                     _retire_compare("thicken_witness_geometry", witness_geometry, after), None))
+    design_read("thicken_baseline", "baseline")
+    controls(False)
+    for role, x, body, action, before in (("visible", 0, "Body1", "show", "thicken_baseline"),
+                                         ("hidden", 30, "Body2", "hide", "thicken_visible_restored")):
+        rows.append(("find_geometry", lambda c, role=role: {"target": _ctx_get(c, "thicken_" + role, "source sheet"),
+                     "kind": "planar_face", "units": "mm", "max_results": 10},
+                     lambda p, x=x: p.get("match_count") == p.get("returned") == 1
+                     and p["matches"][0].get("position") == [x + 5, 20, 3] and p["matches"][0].get("area") == 60,
+                     _fg("thicken_face")))
+        def landed(p, body=body, role=role, action=action):
+            want_before = role == "visible"
+            return (p.get("thickened") is True and p.get("is_solid") is True and p.get("thickness") == 1
+                    and len(p.get("result_bodies") or []) == 1
+                    and p.get("source_visibility") == [{"face_index": 0, "body": body,
+                        "before": {"light_bulb_on": want_before, "visible": want_before},
+                        "after": {"light_bulb_on": not want_before, "visible": not want_before}}]
+                    and ("became hidden" if want_before else "became shown") in p.get("note", "")
+                    and "action='" + action + "'" in p["note"])
+        write("surface_thicken", lambda c: {"faces": [_ctx_get(c, "thicken_face", "sheet face")], "thickness": 1,
+              "units": "mm", "symmetric": False, "chaining": False, "operation": "new"}, landed,
+              ("thicken_wall_" + role, lambda p: p["result_bodies"][0]))
+        after_key = "thicken_" + role + "_after"
+        design_read(after_key, role + "_after", before)
+        controls(True)
+        def wall(p, x=x):
+            state = _thicken_material(p)
+            return (state is not None and _near(state["shape"]["volume"], 60, .0001)
+                    and [p.get(a) for a in "xyz"] == [10, 1, 6]
+                    and p.get("min_point") == {"x": x, "y": 19, "z": 0}
+                    and p.get("max_point") == {"x": x + 10, "y": 20, "z": 6})
+        rows.append(("model_inspect", lambda c, role=role: {"target": _ctx_get(c, "thicken_wall_" + role, "new wall"),
+                     "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"}, wall, None))
+        rows.append(("find_geometry", lambda c, role=role: {"target": _ctx_get(c, "thicken_wall_" + role, "new wall"), "units": "mm", "max_results": 100},
+                     lambda p: _edge_extent_geometry(p) is not None and len(p["matches"]) == 18
+                     and sum(r["kind"] == "planar_face" for r in p["matches"]) == 6
+                     and sum(r["kind"] == "line_edge" for r in p["matches"]) == 12, None))
+        write("view_set", lambda c, action=action, key=after_key, body=body: {
+              "action": action, "target": [_ctx_get(c, key, "fresh tree body handles")[body]]},
+              lambda p, body=body, role=role: p.get("bodies") == [{"body": body,
+                  "light_bulb_on": role == "visible", "visible": role == "visible"}])
+        design_read("thicken_" + role + "_restored", role + "_restored", after_key)
+        controls(True)
+        rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "thicken_wall_visible", "first wall control"),
+                     "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                     _retire_compare("thicken_first_wall", _thicken_material, role == "hidden"), None))
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "thicken_home", "home"),
+                                        "expect_document": _ctx_get(c, "thicken_doc", "owned scene")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "thicken_doc", "owned scene"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "thicken_home", "home")}, _document_closed, None),
+             ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True, "max_results": 2000},
+              _retire_compare("thicken_home_design", _retire_design_state, True), None)]
+    return rows
+
+
+_MACHINING += _thicken_visibility_rows()
 
 # ACT 7b: NESTING - model_arrange as a FUNCTION of its boundary. It runs after the
 # parametric resize on purpose: the solver restructures the parts it nests under new
