@@ -72,13 +72,19 @@ def handler(name: str = "", expression: str = "", unit: str = "mm",
     if params:
         if not isinstance(params, list):
             return error("'params' must be a list of {name, expression, ...} dicts.")
+        for i, spec in enumerate(params):
+            if isinstance(spec, dict) and "favorite" in spec and type(spec["favorite"]) is not bool:
+                value = ascii(spec["favorite"])
+                value = value[:77] + "..." if len(value) > 80 else value
+                return error(f"params[{i}].favorite={value} must be JSON true or false. "
+                             "No parameters added; omit favorite to keep the default false.")
         results = []
         for i, spec in enumerate(params):
             if not isinstance(spec, dict):
                 return error(f"params[{i}] must be a dict with 'name' and 'expression'.")
             res, err = _add_one(design, spec.get("name", ""), spec.get("expression", ""),
                                 spec.get("unit", "mm"), spec.get("comment", ""),
-                                bool(spec.get("favorite", False)))
+                                spec.get("favorite", False))
             if err:
                 return error(f"params[{i}]: {err} ({len(results)} added before this).")
             results.append(res)

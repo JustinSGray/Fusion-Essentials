@@ -23,6 +23,7 @@ import verify_program  # noqa: E402
 import verify_acts_model_solids  # noqa: E402
 from verify_families import fixture_steps  # noqa: E402
 import verify_acts_motion  # noqa: E402
+import verify_acts_doc  # noqa: E402
 
 
 @pytest.fixture
@@ -724,3 +725,21 @@ def test_placed_extent_refusal_scene_keeps_recorded_pose_and_local_requests_in_f
     assert [(r["distance"], r["symmetric"], "target_bodies" in r) for r in cuts] == [
         (1, False, True), (-1, False, True), (1, True, True)]
     assert all(r["component"] == "PlacedStock:1" for r in cuts)
+
+
+def test_unread_timeline_owned_scene_keeps_local_cube_and_read_order_in_full_family():
+    rows = [row for _name, _pre, narrative, _fallback in verify_program.ACTS for row in narrative]
+    context = {"timeline_home": "home", "timeline_doc": "scratch"}
+    start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == "timeline_home")
+    end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
+    wanted = {"sketch_add_geometry", "model_extrude", "view_set", "workspace_orient", "model_base_feature", "design_set_mode"}
+    def requests(selected):
+        return [(tool, args(context) if callable(args) else args) for tool, args, _check, _save in selected if tool in wanted]
+    authored = verify_acts_doc._timeline_health_rows()
+    assert requests(rows[start:end]) == requests(authored)
+    assert [tool for tool, _args in requests(authored)] == [
+        "sketch_add_geometry", "model_extrude", "view_set", "workspace_orient", "model_base_feature",
+        "workspace_orient", "model_base_feature", "workspace_orient", "design_set_mode", "workspace_orient"]
+    cameras = [args for tool, args in requests(rows[start:end]) if tool == "view_set"]
+    assert cameras == [{"action": "orient", "orientation": "iso-top-right", "fit": True,
+                        "expect_document": "scratch"}]

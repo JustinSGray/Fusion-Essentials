@@ -11,6 +11,7 @@ run() fires after every act: the add-in reload, which restarts the server and so
 
 import copy
 import json
+import math
 import os
 import time
 import urllib.request
@@ -21,6 +22,7 @@ from verify_core import (
     _home_document, _imported_curves, _imported_sketches, _made_component, _measured,
     _new_document, _num, _param_added, _param_deleted, _param_read, _recall, _refused, _watch, facade)
 from verify_layout import _DRIFT_CHUNKS, drift_row
+from verify_acts_model_sweep import _retire_compare, _retire_design_state, _retire_material_state
 
 
 def _kernel_rules_present(p, field="kernel"):
@@ -750,6 +752,80 @@ def _boolean_reads(tag, baseline=None, suppressed=False):
     return rows
 
 
+def _favorite_parameter_state(p):
+    """Return every readable user parameter's complete value/flag row without accepting a capped census."""
+    rows = p.get("user_parameters")
+    if (not isinstance(rows, list) or p.get("walk_truncated") or p.get("truncated")
+            or p.get("user_parameter_count") != p.get("matched") or p.get("matched") != p.get("returned")
+            or p.get("returned") != len(rows) or len({r.get("name") for r in rows}) != len(rows)
+            or any(not r.get("name") or not isinstance(r.get("expression"), str) or not r["expression"]
+                   or r.get("unit") != "mm" or not isinstance(r.get("comment"), str)
+                   or type(r.get("favorite")) is not bool or not _num(r.get("value"))
+                   or not _num(r.get("value_internal")) or r.get("value_units") != "mm" for r in rows)):
+        return None
+    return sorted(rows, key=lambda row: row["name"])
+
+
+def _favorite_batch_rows():
+    """Exercise nested favorite preflight and real Boolean effects on the existing owned coupon."""
+    rows = []
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c: {**args, "expect_document": _ctx_get(c, "target_doc", "Boolean coupon")}, check, save))
+    for name in ("ScratchFlag", "UntouchedFlag"):
+        write("param_add", {"name": name, "expression": "10 mm", "unit": "mm", "favorite": False},
+              lambda p, name=name: p.get("added") is True and (p.get("parameter") or {}).get("name") == name
+              and p.get("favorite") is False,
+              ("favorite_fixture", lambda p: p["parameter"]["name"]) if name == "ScratchFlag" else None)
+    def census(tag, added=None):
+        def state(p):
+            actual, before = _favorite_parameter_state(p), _RECALL.get("favorite_baseline")
+            if actual is None:
+                return None
+            if tag == "favorite_baseline":
+                return actual if ([r["name"] for r in actual] == ["ScratchFlag", "UntouchedFlag"]
+                    and all(r["favorite"] is False and r["value"] == 10 and r["value_internal"] == 1
+                            and r["expression"] == "10 mm" and r["comment"] == "" for r in actual)) else None
+            if not isinstance(before, list):
+                return None
+            expected_names = [r["name"] for r in before] + ([added[0]] if added else [])
+            if sorted(r["name"] for r in actual) != sorted(expected_names):
+                return None
+            if any(r != old for old in before for r in actual if r["name"] == old["name"]):
+                return None
+            extra = [r for r in actual if r["name"] not in {old["name"] for old in before}]
+            if added and (len(extra) != 1 or extra[0]["favorite"] is not added[1]
+                          or extra[0]["expression"] != "2 mm" or extra[0]["value"] != 2
+                          or extra[0]["value_internal"] != .2 or extra[0]["comment"] != ""):
+                return None
+            return actual
+        rows.append(_target_row("param_get", {"include_generated": True, "max_results": 100}, tag, state))
+        rows.extend(_boolean_reads(tag + "_witness", "bool_seed"))
+    census("favorite_baseline")
+    for prefix in (False, True):
+        specs = ([{"name": "BatchPrefix", "expression": "2 mm", "unit": "mm", "favorite": False}] if prefix else [])
+        specs.append({"name": "BatchFlag", "expression": "2 mm", "unit": "mm", "favorite": "false"})
+        write("param_add", {"params": specs},
+              _refused(f"params[{int(prefix)}].favorite='false'", "JSON true or false", "No parameters added"))
+        census("favorite_refused_" + str(prefix))
+    for suffix, favorite in (("Omitted", None), ("True", True), ("False", False)):
+        name = "Batch" + suffix
+        spec = {"name": name, "expression": "2 mm", "unit": "mm"}
+        if favorite is not None:
+            spec["favorite"] = favorite
+        wanted = favorite is True
+        write("param_add", {"params": [spec]}, lambda p, wanted=wanted: p.get("added_count") == 1
+              and len(p.get("results") or []) == 1 and p["results"][0].get("favorite") is wanted)
+        census("favorite_control_" + suffix, (name, wanted))
+        write("param_delete", {"name": name}, lambda p, name=name: p.get("deleted") is True and p.get("name") == name)
+        census("favorite_retired_" + suffix)
+    for name in ("ScratchFlag", "UntouchedFlag"):
+        write("param_delete", {"name": name}, lambda p, name=name: p.get("deleted") is True and p.get("name") == name)
+    rows.append(("param_get", {"include_generated": True, "max_results": 100},
+                 lambda p: _measured("all owned favorite parameters retired", p, _favorite_parameter_state(p) == []), None))
+    rows.extend(_boolean_reads("favorite_all_retired", "bool_seed"))
+    return rows
+
+
 _BOOLEAN_FLAGS = _target_begin() + _boolean_reads("bool_seed")
 for _bool_tool, _bool_args, _bool_path in [
     ("design_edit_timeline", lambda c: {"action": "suppress", "suppressed": "false",
@@ -775,7 +851,7 @@ for _bool_tag, _bool_flag in [("true", {"suppressed": True}), ("omitted", {})]:
         "feature": _target_address(c, "bool_seed_design", "Witness", "Extrude1")},
         lambda p: p.get("is_suppressed") is False, None)]
     _BOOLEAN_FLAGS += _boolean_reads("bool_restored_" + _bool_tag, "bool_seed")
-_BOOLEAN_FLAGS += _target_end()
+_BOOLEAN_FLAGS += _favorite_batch_rows() + _target_end()
 
 _TARGET_CONFIRMATION = _target_begin() + [
     ("model_create_component", {"name": "Suffix", "activate": True}, _made_component, None),
@@ -831,6 +907,137 @@ _TARGET_SLASH = _target_begin() + [
      lambda p: p.get("deleted") is True and p.get("feature") == "A/B", None),
 ] + _target_reads("ts_deleted", _TARGET_SLASH_GEOMETRY + [("A", "B", 5)], "ts_collision",
                   ("ts_collision_design", "Literal", "A/B", True)) + _target_end()
+
+def _timeline_cube_material(p):
+    """Return the measured complete 20 mm cube material and bounds, or None when unread."""
+    state = _retire_material_state(p)
+    if (state is None or len(state["bodies"]) != 1
+            or abs(state["shape"]["volume"] - 8000) > .001
+            or abs(state["shape"]["area"] - 2400) > .001
+            or any(abs(state["shape"][side][axis] - value) > .001
+                   for side, value in (("min", 0), ("max", 20)) for axis in "xyz")):
+        return None
+    return state
+
+
+def _timeline_cube_geometry(p):
+    """Return the complete finite cube face-edge or vertex census without handle text."""
+    rows = p.get("matches")
+    vertex = p.get("kind_filter") == "vertex"
+    if (p.get("units") != "mm" or not isinstance(rows, list)
+            or p.get("match_count") != p.get("returned") or p.get("returned") != len(rows)
+            or len(rows) != (8 if vertex else 18)):
+        return None
+    kinds = [r.get("kind") for r in rows]
+    if (kinds.count("vertex") != 8 if vertex else
+            kinds.count("planar_face") != 6 or kinds.count("line_edge") != 12):
+        return None
+    for row in rows:
+        if (not isinstance(row.get("handle"), str) or not row["handle"]
+                or not isinstance(row.get("position"), list) or len(row["position"]) != 3
+                or any(not _num(v) or not math.isfinite(v) for v in row["position"])):
+            return None
+        if row["kind"] != "vertex":
+            metric, value = ("area", 400) if row["kind"] == "planar_face" else ("length", 20)
+            vector = row.get("normal" if metric == "area" else "direction")
+            if (not _num(row.get(metric)) or not math.isfinite(row[metric]) or abs(row[metric] - value) > .001
+                    or not isinstance(vector, list) or len(vector) != 3
+                    or any(not _num(v) or not math.isfinite(v) for v in vector)):
+                return None
+    return sorted([{k: v for k, v in row.items() if k != "handle"} for row in rows],
+                  key=lambda row: (row["kind"], row["position"]))
+
+
+def _timeline_health_rows():
+    """Read unavailable history in the owned base edit and converted direct cube without changing it."""
+    rows = [("doc_get", {}, _home_document, ("timeline_home", _home_address)),
+            ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                            "max_depth": 10, "max_results": 2000},
+             _retire_compare("timeline_home_design", _retire_design_state, False), None),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "timeline_home", "home")},
+             _new_document, ("timeline_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    def write(tool, args, check="ok"):
+        rows.append((tool, lambda c: {**args, "expect_document": _ctx_get(c, "timeline_doc", "owned cube")}, check, None))
+    write("sketch_create", {"name": "Witness", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "Witness", "units": "mm", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 20, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "Witness", "distance": 20, "units": "mm", "operation": "new"}, _extruded)
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+
+    def snapshot(tag, count, after=False):
+        direct = count is None
+        def mode(p):
+            detail = p.get("mode_detail") or {}
+            valid = (all(k in p for k in ("feature_count", "timeline_healthy"))
+                     and "timeline_feature_count" in detail
+                     and p.get("design_type") == ("direct" if direct else "parametric")
+                     and p.get("feature_count") == count and p.get("timeline_healthy") is (None if direct else True)
+                     and detail.get("has_timeline") is (not direct) and detail.get("timeline_feature_count") == count
+                     and (not direct or "model_base_feature(action='finish')" in p.get("note", "")))
+            return p if valid else None
+        rows.append(("design_get", lambda c: {"include": ["default", "mode"]},
+                     _retire_compare("timeline_mode_" + tag, mode, after), None))
+        rows.append(("model_inspect", lambda c: {"target": "", "include": ["default", "mass"],
+                     "per_body": True, "accuracy": "very_high", "units": "mm"},
+                     _retire_compare("timeline_cube_material", _timeline_cube_material, tag != "parametric" or after), None))
+        for kind in ("", "vertex"):
+            rows.append(("find_geometry", lambda c, kind=kind: {"target": "Body1", "units": "mm", "max_results": 100,
+                         **({"kind": kind} if kind else {})},
+                         _retire_compare("timeline_cube_" + kind, _timeline_cube_geometry, tag != "parametric" or after), None))
+        if direct:
+            rows.append(("design_get", lambda c: {"include": ["timeline"]}, _refused("no timeline", "not a parametric design"), None))
+        else:
+            def history(p):
+                state = _retire_design_state(p)
+                tl = (state or {}).get("timeline") or {}
+                return state if (tl.get("count") == count and (tl.get("summary") or {}).get("states") == {"healthy": count}
+                                 and (tl.get("summary") or {}).get("exceptions") == []) else None
+            rows.append(("design_get", lambda c: {"include": ["tree", "timeline"], "tree_bodies": True,
+                         "tree_handles": True, "max_depth": 10, "max_results": 2000},
+                         _retire_compare("timeline_history_" + tag, history, after), None))
+
+    def orient(count):
+        def check(p):
+            health, design = p.get("health") or {}, p.get("design") or {}
+            unread = count is None
+            expected = {"timeline_features": count, "timeline_errors": None if unread else 0,
+                        "timeline_warnings": None if unread else 0, "timeline_suppressed": None if unread else 0,
+                        "timeline_markers": None if unread else 0, "timeline_rolled_back": None if unread else False,
+                        "is_healthy": None if unread else True}
+            valid = (all(k in health and (health[k] is v if v is None or type(v) is bool else
+                         type(health[k]) is int and health[k] == v) for k, v in expected.items())
+                     and health.get("joint_count") == 0 and health.get("broken_joints") == []
+                     and health.get("broken_relations") == [] and health.get("out_of_date_references") == []
+                     and health.get("unresolved_references") == [] and design.get("bodies") == 1
+                     and design.get("mode") == ("direct" if unread else "parametric")
+                     and ("not observed zero/healthy history" in p.get("note", "")
+                          and not p.get("note", "").startswith("No compute errors") if unread else
+                          p.get("note", "").startswith("No compute errors")))
+            return _measured("orientation qualifies only unavailable history", p, valid)
+        return check
+    for tag, count in (("parametric", 2), ("open_base", None), ("finished_base", 3), ("direct", None)):
+        if tag == "open_base":
+            write("model_base_feature", {"action": "start", "base_feature": "HealthScope"},
+                  lambda p: p.get("editing") is True and p.get("base_feature") == "HealthScope" and p.get("open_scope_count") == 1)
+        elif tag == "finished_base":
+            write("model_base_feature", {"action": "finish", "base_feature": "HealthScope"},
+                  lambda p: p.get("editing") is False and p.get("design_mode_now") == "parametric"
+                  and p.get("open_scope_count") == 0 and [r.get("name") for r in p.get("closed_scopes") or []] == ["HealthScope"])
+        elif tag == "direct":
+            write("design_set_mode", {"target": "direct", "confirm_history_loss": True},
+                  lambda p: p.get("converted") is True and p.get("history_discarded") is True and p.get("now") == "direct")
+        snapshot(tag, count)
+        rows.append(("workspace_orient", lambda c: {}, orient(count), None))
+        snapshot(tag, count, True)
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "timeline_home", "home"),
+               "expect_document": _ctx_get(c, "timeline_doc", "owned cube")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "timeline_doc", "owned cube"), "save_changes": False,
+               "expect_document": _ctx_get(c, "timeline_home", "home")}, _document_closed, None),
+             ("design_get", lambda c: {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+               "max_depth": 10, "max_results": 2000}, _retire_compare("timeline_home_design", _retire_design_state, True), None)]
+    return rows
+
 
 # --- ACT 0: OVERTURE - orient, then open the first family document -----------------------------
 _OVERTURE = [
@@ -955,7 +1162,7 @@ _OVERTURE = [
      "refused", None),
     # a tier-R member names the member and the reason, with nothing written.
     ("sys_set_preferences", {"member": "network.proxyHost", "value": "127.0.0.1"}, "refused", None),
-] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE + _BOOLEAN_FLAGS + _TARGET_CONFIRMATION + _TARGET_HIDDEN + _TARGET_SLASH
+] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE + _BOOLEAN_FLAGS + _TARGET_CONFIRMATION + _TARGET_HIDDEN + _TARGET_SLASH + _timeline_health_rows()
 
 # --- THE SHOWCASE: the finished fixture photographed, renamed, exported and read back -----------
 # It runs BEFORE the machining acts so the sweep ends on the CAM job and its post, which is the

@@ -209,14 +209,11 @@ def _selection_echo():
 
 
 def _timeline_rollup(design):
-    """(errors, warnings, suppressed, markers, total) timeline COUNTS by healthState (2/1/3). A
-    null/other state is a non-computing MARKER - a Snapshot has none - counted distinctly so it is
-    never folded into an implied healthy; the total reconciles as errors+warnings+suppressed+
-    markers+healthy."""
+    """Return timeline state counts, or null counts when the timeline is unavailable."""
     errors = warnings = suppressed = markers = total = 0
     tl = safe(lambda: design.timeline)
     if tl is None:
-        return errors, warnings, suppressed, markers, total   # direct-mode designs have no timeline
+        return (None,) * 5
     for o in _common.iter_collection(tl):
         total += 1
         hs = safe(lambda o=o: o.healthState)
@@ -596,7 +593,8 @@ def handler() -> dict:
 
     errors, warnings, suppressed, markers, tl_total = _timeline_rollup(design)
     marker_pos, marker_count = _common.timeline_marker(design)
-    rolled_back = bool(marker_pos is not None and marker_count and marker_pos < marker_count)
+    rolled_back = (None if tl_total is None else
+                   bool(marker_pos is not None and marker_count and marker_pos < marker_count))
     joint_count, broken_joints, joints_unknown = _joint_rollup(design)
     # MEASURED: a failed assembly constraint left this read healthy while only a deeper
     # include=['relations'] slice named it, so relation health rides the first call.
@@ -638,8 +636,8 @@ def handler() -> dict:
         # so no isOutOfDate read can carry it (measured: a template holding one read is_healthy
         # true under a note declaring the document clean).
         "unresolved_references": unresolved,
-        "is_healthy": (errors == 0 and not broken_joints and not broken_relations
-                       and not out_of_date and not rolled_back and not unresolved),
+        "is_healthy": (False if errors or broken_joints or broken_relations or out_of_date or rolled_back or unresolved
+                       else None if tl_total is None else True),
     }
     # Present only when a compute state did NOT read, so the two lists above are never taken for a
     # complete census - is_healthy is a verdict over the entities that HAVE a state.
@@ -729,8 +727,12 @@ def handler() -> dict:
         verdict = (f"Attention ({', '.join(bits)}) - see health + the fix_* pointer(s). These CAN be "
                    "intentional on a fixture/CAM template (parked alternates, pinned refs) or a "
                    "deliberate mid-history roll; confirm before treating as broken. ")
+    elif tl_total is None:
+        verdict = "Timeline health is unavailable; no failed joints, relations, or stale references were observed. "
     else:
         verdict = "No compute errors, failed joints, or stale references. "
+    if tl_total is None:
+        verdict += "Timeline counts and rolled-back state are null, not observed zero/healthy history. "
     # A timeline warning is stated distinctly, never folded into a clean bill and never counted as
     # unhealthy.
     if warnings:

@@ -13,6 +13,8 @@ No live Fusion — fakes model exactly the read surface the handler touches.
 import json
 import types
 
+import pytest
+
 import adsk.cam
 import adsk.core
 
@@ -49,6 +51,39 @@ from conftest import (
 )
 
 wo = load_tool("workspace_orient")
+
+
+@pytest.fixture
+def unread_history(monkeypatch):
+    def orient(fault):
+        root = FakeRoot(joints=[FakeJoint("Joint1", 2 if fault == "joint" else 0)])
+        des = FakeDesign(root, design_type=0)
+        doc = _doc(design=des, refs=[_ref("Linked", out_of_date=True)] if fault == "reference" else [])
+        app = FakeApplication(active_document=doc, active_product=des)
+        monkeypatch.setattr(wo, "app", app)
+        monkeypatch.setattr(wo._common, "app", app)
+        monkeypatch.setattr(adsk.fusion.Design, "cast", lambda value: des)
+        monkeypatch.setattr(adsk.cam.CAM, "cast", lambda value: None)
+        def unavailable(_design):
+            raise RuntimeError("3 : this is not a parametric design")
+        monkeypatch.setattr(MakeDesign, "timeline", property(unavailable), raising=False)
+        return _payload(wo.handler())
+    return orient
+
+
+@pytest.mark.parametrize("fault", [None, "joint", "reference"])
+def test_unavailable_history_is_not_zero_or_healthy_and_keeps_independent_faults(unread_history, fault):
+    out = unread_history(fault)
+    health = out["health"]
+    assert all(health[key] is None for key in (
+        "timeline_features", "timeline_errors", "timeline_warnings", "timeline_suppressed",
+        "timeline_markers", "timeline_rolled_back"))
+    assert health["is_healthy"] is (None if fault is None else False)
+    assert health["joint_count"] == 1
+    assert health["broken_joints"] == (["Joint1"] if fault == "joint" else [])
+    assert health["out_of_date_references"] == (["Linked"] if fault == "reference" else [])
+    assert "not observed zero/healthy history" in out["note"] and "Finish Form" in out["note"]
+    assert not out["note"].startswith("No compute errors")
 
 
 # ── fakes: just the read surface workspace_orient touches ───────────────────────────────────────

@@ -488,7 +488,7 @@ def _framed(steps, layout=None):
             # the chunk runs to the NEXT create: a later part's body is not this part's body, and
             # framing this occurrence on it would aim the camera at the wrong slot.
             end = next((j for j in range(i + 1, len(steps))
-                        if steps[j][0] == "model_create_component"), len(steps))
+                        if steps[j][0] in ("model_create_component", "doc_new", "doc_activate", "doc_close")), len(steps))
             body = next((k for k in range(i + 1, end) if steps[k][0] in _BODY_MAKERS), None)
             if body is not None:
                 note(comp, body, comp + ":1")

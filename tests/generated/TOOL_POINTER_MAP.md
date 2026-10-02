@@ -3710,6 +3710,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - User parameter added; timeline verified (no new errors).
 - 'params' must be a list of {name, expression, ...} dicts.
 - user parameters added; timeline verified.
+- must be JSON true or false. No parameters added; omit favorite to keep the default false.
 - ] must be a dict with 'name' and 'expression'.
 
 ### `param_delete`

@@ -7,6 +7,8 @@ as the parameter reads it rather than as it was asked for. The fakes below model
 
 from types import SimpleNamespace
 
+import pytest
+
 import adsk.core
 
 import live_api_facts
@@ -134,6 +136,30 @@ class TestAddBatch:
         _stub_design(monkeypatch, design)
         out = _payload(params.handler(name="Solo", expression="9 mm"))
         assert out["added"] is True and up.itemByName("Solo") is not None
+
+    @pytest.mark.parametrize("bad", ["false", "true", 0, 1, None])
+    @pytest.mark.parametrize("prefix", [False, True])
+    def test_malformed_favorite_refuses_entire_batch_before_any_add(self, monkeypatch, bad, prefix):
+        up = FakeUserParameters([FakeUserParameter(name="Witness", expression="10 mm")])
+        _stub_design(monkeypatch, _design(up, make_timeline("A")))
+        specs = ([{"name": "Good", "expression": "1 mm"}] if prefix else [])
+        specs.append({"name": "Bad", "expression": "2 mm", "favorite": bad})
+        response = params.handler(params=specs)
+        assert response["isError"] is True
+        assert f"params[{int(prefix)}].favorite=" in response["message"]
+        assert "JSON true or false" in response["message"] and "No parameters added" in response["message"]
+        assert up._added == [] and up.count == 1 and up.itemByName("Witness").expression == "10 mm"
+
+    def test_boolean_and_omitted_batch_favorites_keep_actual_readback(self, monkeypatch):
+        up = FakeUserParameters([])
+        _stub_design(monkeypatch, _design(up, make_timeline("A")))
+        result = _payload(params.handler(params=[
+            {"name": "Default", "expression": "2 mm"},
+            {"name": "On", "expression": "2 mm", "favorite": True},
+            {"name": "Off", "expression": "2 mm", "favorite": False}]))
+        assert result["added_count"] == 3
+        assert [r["favorite"] for r in result["results"]] == [False, True, False]
+        assert [up.itemByName(name).isFavorite for name in ("Default", "On", "Off")] == [False, True, False]
 
 
 class TextRefusingUserParameters(FakeUserParameters):

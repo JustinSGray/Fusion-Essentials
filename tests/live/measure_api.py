@@ -3026,7 +3026,8 @@ ROWS = [
                   "workspace switch to TSplineEnvironment is queue-ordered and unbounded "
                   "(activeCommand SelectCommand, activeEditObject the Component, "
                   "formFeatures.count 0, no isEditing on the feature), so the typed reads report "
-                  "mode 'direct' with the timeline unavailable and claim no edit; form_create "
+                  "mode 'direct' with null timeline counts and unknown health unless an independent "
+                  "failure is observed, and claim no edit; form_create "
                   "refuses because the design reads direct; the edit then finishes on the Form's "
                   "token and the timeline reads its count from before the typed calls"),
         "encoded_in": ("_inputs.py current_design_type; _design_common.py no_timeline_reason and "
@@ -3046,11 +3047,17 @@ ROWS = [
 """),
         "wire_checks": [
             ("workspace_orient", {}, _payload_check(
-                "workspace_orient design.mode direct, null parameters, is_healthy a bool",
+                "workspace_orient direct mode, null parameters/history, qualified health",
                 lambda p: (p.get("design") or {}).get("mode") == "direct"
                 and "parameters" in (p.get("design") or {})
                 and (p.get("design") or {}).get("parameters") is None
-                and isinstance((p.get("health") or {}).get("is_healthy"), bool))),
+                and all(k in (p.get("health") or {}) and p["health"][k] is None for k in (
+                    "timeline_features", "timeline_errors", "timeline_warnings", "timeline_suppressed",
+                    "timeline_markers", "timeline_rolled_back"))
+                and "is_healthy" in (p.get("health") or {})
+                and p["health"]["is_healthy"] is (False if any(p["health"].get(k) for k in (
+                    "broken_joints", "broken_relations", "out_of_date_references", "unresolved_references")) else None)
+                and "not observed zero/healthy history" in p.get("note", ""))),
             ("design_get", {}, _payload_check(
                 "design_get design_type direct",
                 lambda p: p.get("design_type") == "direct")),
