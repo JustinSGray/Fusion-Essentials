@@ -29,10 +29,10 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source 963bb9c6c939b224a366403eabd8971c8d921fc6e12b99296bd7c39248778a2e | Fusion 2706.0.97 | verified 2026-10-01
-Loaded: implementation 5ad4f95abf478102b98ff008c15bda9bac6091b92eebde7ab83704f3d8f2957f | schema 9ddcda164b73b1ded54151109dc62d75d893cca21e03f9ce6a12a5a43418df6e | load 5c61a210ac4c40daa1260bc6ea44e985 | session 9faf3e05cc924a199d3fcaea22de4115
+Stamp: source 6c9c4b9629031a54fbe62b99d35d5bbb9701b8d2f5b7dd64419af732bca67fd9 | Fusion 2706.0.97 | verified 2026-10-01
+Loaded: implementation 96dd007e1a5bb44d2570dbd3bf50115fca7c09ce6530801f5135de5e973231c8 | schema 9ddcda164b73b1ded54151109dc62d75d893cca21e03f9ce6a12a5a43418df6e | load bd7704f7f7b845a1baca92d643bcdc0a | session dc65365fc96d4194b04799eb205469e9
 
-204 covered / 0 called / 5 refusals-only / 4 skipped(reason) / 0 pending
+205 covered / 0 called / 5 refusals-only / 3 skipped(reason) / 0 pending
 
 | act | mode |
 |---|---|
@@ -82,6 +82,7 @@ Loaded: implementation 5ad4f95abf478102b98ff008c15bda9bac6091b92eebde7ab83704f3d
 | ACT 11b2 - CLOUD: LINK GUARD REVIEW | skipped(cloud_link_crash_review_authorization not entitled (deferred and unverified; separate owner-approved crash review and code change required)) |
 | ACT 11c - CLOUD: THE DRAWING | narrative |
 | ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE | narrative |
+| ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS | narrative |
 | ACT 12 - SHEET METAL COUPON | narrative |
 | ACT 12b - SHEET METAL LASER OUTPUT | narrative |
 | ACT 12b1 - SHEET METAL SOURCE UPDATE | narrative |
@@ -143,7 +144,7 @@ Loaded: implementation 5ad4f95abf478102b98ff008c15bda9bac6091b92eebde7ab83704f3d
 | data_upload_file | covered | upload the run's marker PNG into that folder - a non-Fusion file, which is the only kind that can come back down again - and mint the poll handle the status read below asks with |
 | design_activate_component | covered | step into each part to build its sketch, and back out to the root once the hub's last feature has landed |
 | design_add_instance | covered | place two more pin-cameo instances and read the landed paths back, the second naming the component while two of it already stand; the self-nesting target refused |
-| design_configure | skipped: configuration table needs a SAVED document (a DataFile to carry it); opt-in tier - the appearance/material columns need that document too, and a body's material reads back only after the geometry catches up with the activation |  |
+| design_configure | covered | saved public create/add B; unknown expression and wrong-unit setter failures remove the fresh column with public IDs, complete parameters/material/history and separate source/witness geometry unchanged; legal active-B13 drives the actual 10x8x13 mm solid while the witness stays exact. Cell values are not exposed by public reads; the scratch cloud file is retained. |
 | design_delete_feature | covered | add a wart feature then delete it; health diff. In the Cascade document, deleting the extrude names everything that left with it (also_deleted plus any unnamed count), matched against the timeline count read before and after; deleting the creased Form names exactly its fillet, and the timeline reads two rows shorter |
 | design_delete_occurrence | covered | delete a scratch occurrence |
 | design_edit_timeline | covered | roll the marker back a step and to the end, refuse a discard without the confirmation, refuse an unknown feature and a bad group range, and tag a feature with an attribute then delete it - the value and the design-wide count are read back both ways, and a second delete is refused; then the 'name@index' form a FeatureRef refusal hands back, resolved against each object's OWN .index (the index design_get publishes), with the neighbouring index refused as a miss. In the Cascade document, suppressing the sketch names the extrude and shell it switched off and unsuppressing names them back, checked against the timeline and the restored volume; with the two grouped, the suppress carries a census_caveat naming 1 collapsed group while design_get's group= listing shows both members suppressed. The creased Form's suppress and unsuppress name exactly its fillet. action='reorder' moves a sketch drawn after its sweep to sit before it, by the call the editors' refusal names, read back on design_get's timeline; a sketch projecting the sweep's edge is refused with Fusion's CIRCULAR_DEPENDENCY and every row stays where it was; an earlier item moves later; a direct move after the last row refuses unchanged, then its two-move remedy makes the item last, read back after each move. SKIPPED(rig): the AMBIGUOUS-name refusal itself needs two same-named timeline features, and no tool on this surface renames a feature, so the sweep cannot mint the pair |

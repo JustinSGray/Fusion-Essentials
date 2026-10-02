@@ -26,6 +26,30 @@ import verify_acts_motion  # noqa: E402
 import verify_acts_doc  # noqa: E402
 import verify_acts_cam  # noqa: E402
 import verify_acts_sketch  # noqa: E402
+import verify_acts_cloud  # noqa: E402
+
+
+def test_saved_configuration_scene_keeps_owned_local_geometry_refusals_and_close():
+    context = {"configure_home": "session:home", "configure_owned": "session:coupon", "configure_urn": "urn:coupon"}
+    authored = verify_acts_cloud._CLOUD_CONFIGURE
+    compiled = next(rows for name, _pre, rows, _fallback in verify_program.ACTS
+                    if name == "ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS")
+    def requests(rows):
+        return [(tool, args(context) if callable(args) else args) for tool, args, _check, _save in rows
+                if tool in {"sketch_create", "sketch_add_geometry", "model_extrude", "design_configure",
+                            "doc_save_as", "doc_close", "design_activate_component"}]
+    assert requests(compiled) == requests(authored)
+    outlines = [args for tool, args in requests(compiled) if tool == "sketch_add_geometry"]
+    assert [p["geometry"] for p in outlines] == [
+        [{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 8}],
+        [{"kind": "rectangle", "x1": 40, "y1": 0, "x2": 45, "y2": 5}]]
+    assert [args["distance"] for tool, args in requests(compiled) if tool == "model_extrude"] == ["ProbeW", "5 mm"]
+    columns = [args for tool, args in requests(compiled) if tool == "design_configure" and args["action"] == "add_parameter"]
+    assert [p["values"] for p in columns] == [{"B": "NoSuchProbe * 2"}, {"B": "5 kg"}, {"B": "13 mm"}]
+    assert all(p["expect_document"] == "session:coupon" for p in columns)
+    assert next(args for tool, args in requests(compiled) if tool == "doc_close") == {
+        "name": "session:coupon", "save_changes": False, "expect_document": "session:coupon"}
+    assert verify_program.ACT_NEEDS["ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS"] == verify_program.CLOUD_TIER
 
 
 @pytest.fixture

@@ -5,7 +5,7 @@
 
 The acts that touch an operator's own Autodesk hub, and so run only where cloud_config names
 one (verify_core._cloud_tier_probe). Each act creates run-stamped artifacts under the configured
-folder. The CAM persistence coupon is retained; other artifacts are removed with read-back.
+folder. CAM persistence and configuration coupons are retained; other artifacts are removed with read-back.
 Each act ends by activating the document the session was on when the tier started, so a chunk
 boundary can fall between them and a partial run leaves the session where it found it.
 """
@@ -14,11 +14,14 @@ import hashlib
 import json
 import os
 import time
+import copy
 
 from cloud_config import FOLDER, HUB, PROJECT
 from verify_acts_cam import (
     _launched_on, _op_created, _preset_applied, _template_applied, _template_path_state)
 from verify_acts_model_precision import _section_camera
+from verify_acts_model_solids import _edge_extent_geometry, _symmetric_target_body_state
+from verify_acts_model_sweep import _retire_compare, _retire_design_state, _retire_material_state
 from verify_core import (
     EXPORT_DIR, MARKER_PNG, NOTE_MAX, _RECALL, _activated, _ctx_get, _document_closed,
     _driven_slide, _dwell, _extruded, _face_up_at, _fg, _home_address, _home_document, _jointed,
@@ -3962,3 +3965,165 @@ _CLOUD_CAM_PERSISTENCE = [
     ("doc_get", {"max_results": 1000},
      _cam_persistence_document("cam_persist_home", absent_key="cam_persist_reopened"), None),
 ]
+
+
+def _configure_table_state(p):
+    """Return the saved table's complete two-row/column identities without claiming cell values."""
+    table = p.get("configurations") or {}
+    rows, columns = table.get("configurations"), table.get("columns")
+    if (not table.get("table_id") or table.get("active_configuration") != "B"
+            or table.get("configuration_count") != 2 or not isinstance(rows, list) or len(rows) != 2
+            or {r.get("name") for r in rows} != {"Configuration 1", "B"}
+            or any(not r.get("id") or type(r.get("is_active")) is not bool
+                   or r["is_active"] != (r.get("name") == "B") for r in rows)
+            or len({r["id"] for r in rows}) != 2 or sum(r["is_active"] for r in rows) != 1
+            or not isinstance(columns, list) or not columns or table.get("truncated")
+            or any(not c.get("id") or not c.get("title") or not c.get("type") for c in columns)
+            or len({c["id"] for c in columns}) != len(columns)):
+        return None
+    return table
+
+
+def _configure_parameters(p):
+    """Return the complete readable owned parameter row, including physical values."""
+    rows = p.get("user_parameters")
+    if (p.get("user_parameter_count") != 1 or p.get("matched") != 1 or p.get("returned") != 1
+            or not isinstance(rows, list) or len(rows) != 1 or rows[0].get("name") != "ProbeW"
+            or rows[0].get("unit") != "mm" or rows[0].get("value_units") != "mm"
+            or not isinstance(rows[0].get("expression"), str)
+            or not all(_num(rows[0].get(k)) for k in ("value", "value_internal"))):
+        return None
+    return p
+
+
+def _configure_column_rows():
+    """Build the owned saved setter-refusal scene and active-configuration geometry control."""
+    name = "SweepConfigureColumn." + _STAMP
+    def write(args):
+        return lambda c: dict(args, expect_document=_ctx_get(c, "configure_owned", "the configuration coupon"))
+    def history(p):
+        state = _retire_design_state(p)
+        tl = (state or {}).get("timeline") or {}
+        return state if (tl.get("count") == 4 and (tl.get("summary") or {}).get("states") == {"healthy": 4}
+                         and (tl.get("summary") or {}).get("exceptions") == []) else None
+    def saved(p):
+        return (_document_is(name)(p) and _home_address(p) == _RECALL.get("configure_owned")
+                and p["active"]["document_id"] == _RECALL.get("configure_urn"))
+    def material(p):
+        state = _retire_material_state(p)
+        return p if (state is not None and len(state["bodies"]) == 2
+                     and {r["body"] for r in state["bodies"]} == {"Body1", "Body2"}) else None
+    def reads(after=False):
+        def table(p):
+            state = _configure_table_state(p)
+            if not after and (state is None or len(state["columns"]) != 1
+                              or state["columns"][0]["title"] != "Part Number"):
+                return None
+            return state
+        rows = [("design_get", {"include": ["configurations"]},
+                 _retire_compare("configure_table", table, after), None),
+                ("param_get", {}, _retire_compare("configure_params", _configure_parameters, after), None),
+                ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                                "max_depth": 10, "max_results": 2000},
+                 _retire_compare("configure_history", history, after), None),
+                ("model_inspect", {"include": ["default", "mass"], "units": "mm",
+                                   "accuracy": "very_high", "per_body": True},
+                 _retire_compare("configure_material", material, after), None)]
+        for body in ("Body1", "Body2"):
+            def initial_body(p, body=body):
+                state = _symmetric_target_body_state(p)
+                size, minimum, maximum, volume = ([10, 8, 10], [0, 0, 0], [10, 8, 10], 800) if body == "Body1" else (
+                    [5, 5, 5], [40, 0, 0], [45, 5, 5], 125)
+                return state if (state is not None and state["size"] == size
+                                 and [state["bounds"]["min_point"][a] for a in "xyz"] == minimum
+                                 and [state["bounds"]["max_point"][a] for a in "xyz"] == maximum
+                                 and _near(state["material"]["volume"], volume, .001)) else None
+            rows += [("model_inspect", _lit({"target": body, "include": ["default", "mass"], "units": "mm",
+                                             "accuracy": "very_high", "per_body": True}),
+                      _retire_compare("configure_" + body, initial_body, after), None),
+                     ("find_geometry", _lit({"target": body, "units": "mm", "max_results": 100}),
+                      _retire_compare("configure_" + body + "_geometry", _edge_extent_geometry, after), None)]
+        return rows
+    def legal_table(p):
+        now, old = _configure_table_state(p), _RECALL.get("configure_table")
+        new = [c for c in (now or {}).get("columns", []) if c.get("id") not in {c["id"] for c in (old or {}).get("columns", [])}]
+        return _measured("one fresh ProbeW column with unchanged existing table identities", now,
+                         now is not None and old is not None and len(new) == 1 and new[0]["title"] == "ProbeW"
+                         and new[0]["type"] == "ConfigurationParameterColumn"
+                         and {k: v for k, v in now.items() if k != "columns"} == {k: v for k, v in old.items() if k != "columns"}
+                         and [c for c in now["columns"] if c not in new] == old["columns"]
+                         and new[0]["id"] == _RECALL.get("configure_legal_column"))
+    def legal_params(p):
+        old = copy.deepcopy(_RECALL.get("configure_params"))
+        if old:
+            old["user_parameters"][0].update(expression="13 mm", value=13.0, value_internal=1.3)
+        return _measured("active B drives actual ProbeW to 13 mm", p,
+                         old is not None and _configure_parameters(p) == old)
+    def legal_body(p):
+        state = _symmetric_target_body_state(p)
+        return _measured("actual driven 10x8x13 mm solid, 1040 mm3", state,
+                         state is not None and state["size"] == [10, 8, 13]
+                         and state["bounds"]["min_point"] == {"x": 0, "y": 0, "z": 0}
+                         and state["bounds"]["max_point"] == {"x": 10, "y": 8, "z": 13}
+                         and _near(state["material"]["volume"], 1040, .001))
+    rows = [("doc_get", {}, _home_document, ("configure_home", _recall("configure_home", _home_address))),
+            ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                            "max_depth": 10, "max_results": 2000},
+             _retire_compare("configure_home_design", _retire_design_state, False), None),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "configure_home", "the home session")},
+             _new_document, ("configure_owned", _recall("configure_owned", lambda p: p["document_handle"]))),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("param_add", write({"name": "ProbeW", "expression": "10 mm", "unit": "mm"}), "ok", None)]
+    for sketch, x, width, depth, distance, body in [("ConfigureStock", 0, 10, 8, "ProbeW", "Body1"),
+                                                  ("ConfigureWitness", 40, 5, 5, "5 mm", "Body2")]:
+        rows += [("sketch_create", write({"name": sketch, "plane": "xy"}), "ok", None),
+                 ("sketch_add_geometry", write({"sketch_name": sketch, "units": "mm", "geometry": [
+                     {"kind": "rectangle", "x1": x, "y1": 0, "x2": x + width, "y2": depth}]}), "ok", None),
+                 ("model_extrude", write({"sketch_name": sketch, "distance": distance, "units": "mm", "operation": "new"}),
+                  lambda p, body=body: _extruded(p) and p.get("result_bodies") == [body], None)]
+    rows += [("view_set", write({"action": "orient", "orientation": "iso-top-right", "fit": True}), "ok", None),
+             ("doc_save_as", write({"name": name, "project": PROJECT, "folder": FOLDER, "create_path": False}),
+              _saved_as(name, FOLDER), ("configure_urn", _recall("configure_urn", lambda p: p["document_id"]))),
+             ("doc_get", {}, saved, None),
+             ("design_configure", write({"action": "create"}),
+              lambda p: p.get("configured") is True and p.get("created") is True
+              and p.get("configurations") == ["Configuration 1"], None),
+             ("design_configure", write({"action": "add_configuration", "name": "B"}),
+              lambda p: p.get("configuration") == "B" and p.get("active_configuration") == "B"
+              and p.get("configurations") == ["Configuration 1", "B"], None),
+             ("doc_get", {}, saved, None)] + reads()
+    for expression in ("NoSuchProbe * 2", "5 kg"):
+        rows += [("design_configure", write({"action": "add_parameter", "parameter": "ProbeW", "values": {"B": expression}}),
+                  _refused("'ProbeW' cell 'B'", repr(expression), "invalid expression", "The new column was removed.",
+                           "design_get(include=['configurations'])"), None)] + reads(True)
+    rows += [("design_configure", write({"action": "add_parameter", "parameter": "ProbeW", "values": {"B": "13 mm"}}),
+              lambda p: p.get("parameter") == "ProbeW" and p.get("set") == 1 and bool(p.get("column_id")),
+              ("configure_legal_column", _recall("configure_legal_column", lambda p: p["column_id"]))),
+             ("design_get", {"include": ["configurations"]}, legal_table, None),
+             ("param_get", {}, legal_params, None),
+             ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                             "max_depth": 10, "max_results": 2000},
+              _retire_compare("configure_history", history, True), None),
+             ("model_inspect", {"include": ["default", "mass"], "units": "mm",
+                                "accuracy": "very_high", "per_body": True},
+              lambda p: material(p) is not None and _near(p["mass"]["volume"], 1165, .001)
+              and _near(p["mass"]["area"], 778, .001), None),
+             ("model_inspect", _lit({"target": "Body1", "include": ["default", "mass"], "units": "mm",
+                                     "accuracy": "very_high", "per_body": True}), legal_body, None),
+             ("model_inspect", _lit({"target": "Body2", "include": ["default", "mass"], "units": "mm",
+                                     "accuracy": "very_high", "per_body": True}),
+              _retire_compare("configure_Body2", _symmetric_target_body_state, True), None),
+             ("find_geometry", _lit({"target": "Body2", "units": "mm", "max_results": 100}),
+              _retire_compare("configure_Body2_geometry", _edge_extent_geometry, True), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "configure_owned", "the coupon"), "save_changes": False,
+                                      "expect_document": c["configure_owned"]}, _document_closed, None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "configure_home", "the home session")}, _activated(), None),
+             ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("configure_home")
+              and all(r.get("document_handle") != _RECALL.get("configure_owned") for r in p["open_documents"]), None),
+             ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                             "max_depth": 10, "max_results": 2000},
+              _retire_compare("configure_home_design", _retire_design_state, True), None)]
+    return rows
+
+
+_CLOUD_CONFIGURE = _configure_column_rows()

@@ -14,7 +14,7 @@ from verify_acts_cam import (
     _CAM_TEMPLATE_CLEANUP, _CAM_TEMPLATE_MODES, _MX_SETUP, _SW_SETUP, _SW_SETUP2, _SWARF_RIG,
     _TEMPLATE_GENERATE_SETUP)
 from verify_acts_cloud import (
-    _CLOUD_CAM_PERSISTENCE, _CLOUD_DATA, _CLOUD_DOC, _CLOUD_DRAWING, _CLOUD_LINK)
+    _CLOUD_CAM_PERSISTENCE, _CLOUD_CONFIGURE, _CLOUD_DATA, _CLOUD_DOC, _CLOUD_DRAWING, _CLOUD_LINK)
 from verify_acts_census import (
     HUB_POCKET_SETUP, _CENSUS_EXT, _CENSUS_EXT_READ, _CENSUS_LONG, _CENSUS_LONG_READ, _CENSUS_MILL,
     _CENSUS_MILL_READ, _CENSUS_POCKET, _CENSUS_POCKET_READ, _CENSUS_TURN, _CENSUS_TURN_READ)
@@ -191,6 +191,7 @@ _ACT_PROGRAM = [
     ("ACT 11b2 - CLOUD: LINK GUARD REVIEW", None, _CLOUD_LINK, []),
     ("ACT 11c - CLOUD: THE DRAWING", None, _CLOUD_DRAWING, []),
     ("ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE", None, _CLOUD_CAM_PERSISTENCE, []),
+    ("ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS", None, _CLOUD_CONFIGURE, []),
     ("ACT 12 - SHEET METAL COUPON", None, _SHEET, []),
     ("ACT 12b - SHEET METAL LASER OUTPUT", None, _SHEET_CAM_READ, []),
     ("ACT 12b1 - SHEET METAL SOURCE UPDATE", None, _SHEET_CAM_REFRESH, []),
@@ -426,6 +427,7 @@ ACT_NEEDS = {
     "ACT 11b2 - CLOUD: LINK GUARD REVIEW": CLOUD_LINK_CRASH_REVIEW,
     "ACT 11c - CLOUD: THE DRAWING": CLOUD_TIER,
     "ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE": CLOUD_TIER,
+    "ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS": CLOUD_TIER,
     "ACT 10c - CAM: EXTENSION STRATEGIES": MACHINING_EXTENSION,
     "ACT 10c11 - CAM: THE EXTENSION FAMILIES": MACHINING_EXTENSION,
     "ACT 10c12 - CAM: THE EXTENSION FAMILIES READ": MACHINING_EXTENSION,
@@ -1277,6 +1279,11 @@ STORY = {
                          "why it is a post-run beat and not a row in an act"),
     # THE OPT-IN CLOUD TIER (ACT 11a-c). Every row below runs only where cloud_config names a hub,
     # and an unconfigured run reports each of these tools skipped(cloud_tier not entitled).
+    "design_configure": ("saved public create/add B; unknown expression and wrong-unit setter failures "
+                         "remove the fresh column with public IDs, complete parameters/material/history "
+                         "and separate source/witness geometry unchanged; legal active-B13 drives the "
+                         "actual 10x8x13 mm solid while the witness stays exact. Cell values are not "
+                         "exposed by public reads; the scratch cloud file is retained."),
     "data_get": ("the hub this run is signed in to and the configured project listed in it - the "
                  "row that puts on the ledger WHICH hub the artifacts were made in; then the "
                  "uploaded file's own record (where it sits, and whether the cloud has finished "
@@ -1373,7 +1380,6 @@ EXCLUDED = {
                          "down-then-up watch or the sys_find_tool smoke did not come back"),
     "sys_request_selection": "waits on a human pick (user-present tier)",
     "design_set_mode": "irreversible parametric->direct conversion; not run unattended",
-    "design_configure": "configuration table needs a SAVED document (a DataFile to carry it); opt-in tier - the appearance/material columns need that document too, and a body's material reads back only after the geometry catches up with the activation",
     # The rest of the cloud tier. The tools that write into an operator's hub are DRIVEN by ACT 11a-c
     # behind the cloud_tier capability, so an unconfigured run reports them skipped(cloud_tier not
     # entitled) rather than listed here; these two are not driven even with a config.

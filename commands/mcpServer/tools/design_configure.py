@@ -305,7 +305,15 @@ def _do_add_parameter(design, table, parameter, values):
         cell = safe(lambda rname=rname: col.getCellByRowName(rname))
         if cell is None:
             return error(f"No cell for configuration '{rname}' in the '{parameter}' column.")
-        cell.expression = str(expr) # MUTATION
+        try:
+            cell.expression = str(expr) # MUTATION
+        except Exception as exc:
+            removed = _column_rolled_back(table, col)
+            return error(f"Setting '{parameter}' cell '{rname}' to {expr!r} failed: {exc}"
+                         + (f" ({n} earlier cell(s) read back)" if n else "") + ". "
+                         + ("The new column was removed." if removed else
+                            "New-column removal is unconfirmed.")
+                         + " Read design_get(include=['configurations']) before retrying.")
         # An unreadable read-back is a FAILURE, not a pass - the same rule the material path
         # states; a silently dropped write reads back None here.
         got = safe(lambda cell=cell: cell.expression)

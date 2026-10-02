@@ -1307,6 +1307,10 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - The column could NOT be auto-removed and is still on the table - delete it before retrying.
 - after the set - the expression '
 - ' did not verifiably take
+- Read design_get(include=['configurations']) before retrying.
+- The new column was removed.
+- New-column removal is unconfirmed.
+- earlier cell(s) read back)
 - Provide 'feature' - the timeline feature name to suppress per configuration.
 - suppressed_in names unknown configurations:
 - addSuppressColumn for '

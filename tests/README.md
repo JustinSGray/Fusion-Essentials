@@ -113,6 +113,7 @@ Producer additions list late act-local setup beyond the family default. Entitlem
 | `ACT 11b2 - CLOUD: LINK GUARD REVIEW` | `cloud` | family default | inherited | `none` | `cloud_link_crash_review_authorization` | `null` |
 | `ACT 11c - CLOUD: THE DRAWING` | `cloud` | family default | inherited | `none` | `cloud_tier` | `null` |
 | `ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE` | `cloud` | family default | manufacture | `none` | `cloud_tier` | `null` |
+| `ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS` | `cloud` | family default | inherited | `none` | `cloud_tier` | `null` |
 | `ACT 12 - SHEET METAL COUPON` | `sheet_coupon` | family default | manufacture | `none` | `always` | `{"narrative":"SM Sweep Laser Setup","fallback":[]}` |
 | `ACT 12b - SHEET METAL LASER OUTPUT` | `sheet_coupon` | family default | inherited | `none` | `always` | `{"narrative":"SM Sweep Laser Setup","fallback":[]}` |
 | `ACT 12b1 - SHEET METAL SOURCE UPDATE` | `sheet_coupon` | family default | inherited | `none` | `always` | `{"narrative":"SM Sweep Laser Setup","fallback":[]}` |

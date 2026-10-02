@@ -1353,6 +1353,18 @@ def _top(design):
     return design.configurationTopTable
 
 
+@pytest.fixture
+def rejecting_parameter_cells(monkeypatch, col_design):
+    def assign(cell, value):
+        if value in ("NoSuchProbe * 2", "5 kg"):
+            raise RuntimeError("3 : invalid expression")
+        cell._expression = "10 mm" if value is None else value
+
+    monkeypatch.setattr(ConfigurationParameterCell, "expression",
+                        property(lambda cell: cell._expression, assign), raising=False)
+    return col_design
+
+
 # ── create: the refusals around the conversion itself ────────────────────────
 
 class TestCreateRefusals:
@@ -1452,6 +1464,46 @@ class TestRenameConfigurationRefusals:
 # ── add_parameter: the refusals around the parameter column ────────────────
 
 class TestAddParameterRefusals:
+    @pytest.mark.parametrize("expression,prefix", [("NoSuchProbe * 2", {}),
+                                                   ("5 kg", {"Default": "13 mm"})])
+    def test_setter_exception_removes_only_new_column_and_reports_prior_cells(self, rejecting_parameter_cells,
+                                                                            expression, prefix):
+        table = _top(rejecting_parameter_cells)
+        kept = table.columns.addParameterColumn(rejecting_parameter_cells.allParameters.itemByName("plate_len"))
+        kept.id = "kept"
+        kept.getCellByRowName("Default").expression = "10 mm"
+        result = dc.handler(action="add_parameter", parameter="plate_len", values={**prefix, "Small": expression})
+        assert result["isError"] is True
+        message = result["message"]
+        assert f"Setting 'plate_len' cell 'Small' to {expression!r} failed: 3 : invalid expression" in message
+        assert "The new column was removed." in message
+        assert "design_get(include=['configurations'])" in message
+        assert ("1 earlier cell(s) read back" in message) is bool(prefix)
+        assert table.columns.added == [kept]
+        assert kept.getCellByRowName("Default").expression == "10 mm"
+
+    @pytest.mark.parametrize("outcome", ["false", "ignored", "unread"])
+    def test_setter_exception_cannot_claim_unverified_column_removal(self, rejecting_parameter_cells,
+                                                                  monkeypatch, outcome):
+        table = _top(rejecting_parameter_cells)
+        real = table.columns.addParameterColumn
+        def build(parameter):
+            column = real(parameter)
+            if outcome == "false":
+                monkeypatch.setattr(column, "deleteMe", lambda: False)
+            elif outcome == "ignored":
+                column.delete_lands = False
+            else:
+                monkeypatch.setattr(_Columns, "count", property(lambda columns: None))
+            return column
+        monkeypatch.setattr(table.columns, "addParameterColumn", build)
+        result = dc.handler(action="add_parameter", parameter="plate_len", values={"Small": "5 kg"})
+        assert result["isError"] is True
+        assert "New-column removal is unconfirmed." in result["message"]
+        assert "The new column was removed." not in result["message"]
+        assert "design_get(include=['configurations'])" in result["message"]
+        assert len(table.columns.added) == (0 if outcome == "unread" else 1)
+
     def test_a_missing_parameter_name_is_refused(self, col_design):
         res = dc.handler(action="add_parameter", parameter="", values={"Default": "5 mm"})
         assert res["isError"] is True and "Provide 'parameter'" in res["message"]
