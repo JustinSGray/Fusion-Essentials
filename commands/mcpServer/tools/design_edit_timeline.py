@@ -14,7 +14,7 @@ from . import _design_common
 from . import _inputs
 from ._common import error, ok, outcome_clause, safe, short_ref, timeline_health
 
-_ACTIONS = ("roll", "reorder", "suppress", "group", "ungroup", "delete_after_marker",
+_ACTIONS = ("roll", "reorder", "suppress", "group", "ungroup", "group_state", "delete_after_marker",
             "set_attribute", "delete_attribute")
 _PLACES = ("before", "after")            # roll to a named item - TimelineObject.rollTo(rollBefore)
 _STEPS = ("beginning", "end", "next", "previous")   # roll with no feature - the Timeline marker moves
@@ -63,11 +63,62 @@ def _sample(labels):
     return ", ".join(head) + (f" and {more} more" if more > 0 else "")
 
 
-def _groups(timeline):
+def _groups(timeline, strict=False):
     """Every TimelineGroup, unreadable slots dropped. Read from timelineGroups, NOT from
     timeline.item(): an EXPANDED group is absent from the timeline enumeration entirely - only its
     members appear there - so a walk of timeline.item() sees collapsed groups only."""
-    return list(_common.iter_collection(safe(lambda: timeline.timelineGroups)))
+    collection = safe(lambda: timeline.timelineGroups)
+    if strict:
+        count = _common.counted(lambda: collection.count)
+        if count is None or count < 0:
+            return None
+        groups = [safe(lambda i=i: collection.item(i)) for i in range(count)]
+        return groups if all(g is not None and isinstance(safe(lambda g=g: g.name), str)
+                             and safe(lambda g=g: g.name) for g in groups) else None
+    return list(_common.iter_collection(collection))
+
+
+def _do_group_state(timeline, feature, collapsed):
+    """Set an unfold group's collapse flag and verify its retained wrapper and canonical members."""
+    if not feature or type(collapsed) is not bool:
+        return error("action='group_state' needs feature='<group name>' and collapsed=true/false. "
+                     "Read design_get(include=['timeline']) for its unfold group.")
+    groups = _groups(timeline, strict=True)
+    if groups is None:
+        return error("Timeline groups could not be listed completely. Nothing changed; read design_get(include=['timeline']).")
+    group, why = _inputs.resolve_timeline_object(groups, feature, "the unfold group")
+    if why:
+        return error(why)
+    before, why = _design_common.unfold_group_members(group)
+    was = _common.read_flag(lambda: group.isCollapsed)
+    name = safe(lambda: group.name)
+    if before is None or was is None or _common.read_flag(lambda: group.isValid) is not True:
+        return error(f"'{name}': {why or 'group validity/collapse state could not be confirmed'}. Nothing changed; "
+                     "read design_get(include=['timeline'], group='<group name>').")
+    if was is collapsed:
+        return error(f"'{name}' already reads collapsed={collapsed}. Nothing changed.")
+    key = _common.native_identity(group)
+    try:
+        group.isCollapsed = collapsed
+    except Exception as exc:
+        return error(f"Setting '{name}' collapsed={collapsed} failed: {exc}. Read design_get(include=['timeline']).")
+    fresh_groups = _groups(timeline, strict=True)
+    fresh, why = (_inputs.resolve_timeline_object(fresh_groups, name, "the unfold group")
+                  if fresh_groups is not None else (None, "group census unread"))
+    now_key = _common.native_identity(fresh)
+    canonical = (None if key is None or now_key is None else key == now_key)
+    if (why or _common.read_flag(lambda: group.isValid) is not True
+            or safe(lambda: _common._native_of(group) == _common._native_of(fresh)) is not True
+            or _common.read_flag(lambda: group.isCollapsed) is not collapsed
+            or _common.read_flag(lambda: fresh.isCollapsed) is not collapsed
+            or _design_common.unfold_group_members(group)[0] != before or _design_common.unfold_group_members(fresh)[0] != before
+            or canonical is False):
+        return error(f"'{name}' collapse change or preserved membership is unconfirmed. "
+                     "Read design_get(include=['timeline'], group='<group name>') before retrying.")
+    return ok({"group": name, "was_collapsed": was, "is_collapsed": collapsed,
+               "member_count": len(before), "group_canonical_identity_verified": canonical,
+               "note": "Group state re-read; original valid group and canonical member/owner identities retained. "
+                       "A null group identity verdict means its canonical key was unavailable."})
 
 
 def _member_span(group):
@@ -653,7 +704,7 @@ def _do_delete_attribute(design, feature, group, name):
 
 
 def handler(action: str = "roll", feature: str = "", to: str = "before", end_feature: str = "",
-            name: str = "", suppressed: bool = True,
+            name: str = "", suppressed: bool = True, collapsed=None,
             confirm_delete_after_marker: bool = False, attribute_group: str = "",
             attribute_name: str = "", attribute_value: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
@@ -683,6 +734,8 @@ def handler(action: str = "roll", feature: str = "", to: str = "before", end_fea
         return _do_group(timeline, feature, (end_feature or "").strip(), name)
     if action == "ungroup":
         return _do_ungroup(timeline, feature)
+    if action == "group_state":
+        return _do_group_state(timeline, feature, collapsed)
     if action == "set_attribute":
         return _do_set_attribute(design, feature, attribute_group, attribute_name, attribute_value)
     if action == "delete_attribute":
@@ -691,8 +744,7 @@ def handler(action: str = "roll", feature: str = "", to: str = "before", end_fea
 
 
 TOOL_DESCRIPTION = (
-    "Drive the timeline. Items after the marker are not computed; roll to='end' when done. Names "
-    "from design_get(include=['timeline'])."
+    "Edit timeline items from design_get(include=['timeline']); roll to='end' when done."
 )
 
 tool = (
@@ -700,13 +752,15 @@ tool = (
     .add_input_property(*_ACTION.as_property())
     .add_input_property(*_TO.as_property())
     .add_input_property("feature", {"type": "string",
-            "description": "Item to move/suppress/tag, roll's anchor, or a group's first item."})
+            "description": "Item/anchor or group name."})
     .add_input_property("end_feature", {"type": "string",
             "description": "Group's last item, or reorder's anchor."})
     .add_input_property("name", {"type": "string",
             "description": "New group's name."})
     .add_input_property("suppressed", {"type": "boolean",
             "description": "False unsuppresses."})
+    .add_input_property("collapsed", {"type": "boolean",
+            "description": "group_state: collapse/expand one unfold plus optional refold."})
     .add_input_property("confirm_delete_after_marker", {"type": "boolean",
             "description": "Without it, previews and refuses."})
     .add_input_property("attribute_group", {"type": "string"})

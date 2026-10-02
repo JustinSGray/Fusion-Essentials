@@ -11,11 +11,12 @@ from . import _inputs
 from ._common import timeline_health as _timeline_health
 
 MAP_BLURB = (
-    "MODE: get_mode_handler - the 'mode' slice; health_handler - the error/warning rollup; "
+    "MODE: get_mode_handler/health_handler - mode and health; "
     "run_in_base_feature/base_feature_run_wrapper - a mutation in an always-finished "
     "base-feature scope; "
-    "timeline_census/timeline_item_key/census_caveat - the census a delete or suppress diffs; "
+    "timeline_census/timeline_item_key/census_caveat - an edit census; "
     "collapsed_group_hint/hidden_twin_hint - a grouped member's miss or hidden twin; "
+    "unfold_group_members - the bounded group-state member census; "
     "no_timeline_reason")
 
 # A delete or suppress reply appends this when its before/after census could not be diffed.
@@ -98,6 +99,9 @@ def collapsed_group_holding(timeline, want):
 
 def hidden_twin_hint(timeline, want, visible):
     """The refusal for an unindexed selector with visible hits and a collapsed member twin."""
+    unfold_hint = _collapsed_unfold_hint(timeline, want)
+    if unfold_hint:
+        return f"'{want}' also matches {_inputs._candidates_listed(visible)}. " + unfold_hint
     holder = collapsed_group_holding(timeline, want)
     if not holder:
         return None
@@ -108,6 +112,10 @@ def hidden_twin_hint(timeline, want, visible):
 
 def collapsed_group_hint(timeline, want, roll=False):
     """The miss sentence for a collapsed group's member (target the group for a roll, else ungroup)."""
+    if not roll:
+        unfold_hint = _collapsed_unfold_hint(timeline, want)
+        if unfold_hint:
+            return unfold_hint
     holder = collapsed_group_holding(timeline, want)
     if not holder:
         return None
@@ -117,6 +125,92 @@ def collapsed_group_hint(timeline, want, roll=False):
         return head + f" Target '{holder}' itself - rolling to a collapsed group works."
     return head + (f" Run design_edit_timeline(action='ungroup', feature='{holder}') - its items "
                    "are kept - then retry.")
+
+
+def unfold_group_members(group):
+    """Return a complete canonical owner/member census or its unread/unsupported-shape reason."""
+    count = _common.counted(lambda: group.count)
+    if count is None or count < 0:
+        return None, "member count could not be read"
+    if count not in (1, 2):
+        return None, "group_state supports only one unfold and an optional refold"
+    rows = []
+    for i in range(count):
+        item = safe(lambda i=i: group.item(i))
+        entity = safe(lambda: item.entity)
+        kind = safe(lambda: entity.objectType)
+        name = safe(lambda: item.name)
+        key = _common.native_identity(entity)
+        owner = _common.native_identity(safe(lambda: entity.parentComponent))
+        if key is None or owner is None or not isinstance(name, str) or not name or not isinstance(kind, str):
+            return None, f"member {i} identity/type/name/owner could not be read"
+        if kind.rsplit('::', 1)[-1] not in ('UnfoldFeature', 'RefoldFeature'):
+            return None, "group_state supports only one unfold and an optional refold"
+        rows.append((key, owner, name, kind))
+    if (len({r[0] for r in rows}) != count or len({r[1] for r in rows}) != 1
+            or sum(r[3].endswith('::UnfoldFeature') for r in rows) != 1):
+        return None, "group_state needs one unfold, an optional refold and distinct members with one owner"
+    return rows, None
+
+
+def _collapsed_unfold_hint(timeline, want):
+    """Return safe expansion and qualified retry advice for one matched hidden UnfoldFeature."""
+    matches = []
+    groups = safe(lambda: timeline.timelineGroups)
+    count = _common.counted(lambda: groups.count)
+    uncertain = ("Hidden feature/group identity could not be read completely. Read "
+                 "design_get(include=['timeline'], group='<group name>'); keep an unfold group intact.")
+    if count is None or count < 0:
+        return uncertain
+    for i in range(count):
+        group = safe(lambda i=i: groups.item(i))
+        collapsed = _common.read_flag(lambda: group.isCollapsed)
+        if group is None or collapsed is None:
+            return uncertain
+        if not collapsed:
+            continue
+        n = _common.counted(lambda: group.count)
+        if n is None or n < 0:
+            return uncertain
+        members = [safe(lambda j=j: group.item(j)) for j in range(n)]
+        if any(item is None or not isinstance(safe(lambda item=item: item.name), str)
+               or not safe(lambda item=item: item.name) for item in members):
+            return uncertain
+        base, _index = _inputs._parse_address(want)
+        scope, label = _inputs._split_qualified(base if base is not None else want)
+        if scope is not None and any(safe(lambda item=item: item.name).lower() == label.lower()
+                and not _inputs._owner_component_name(item) for item in members):
+            return uncertain
+        for item in _inputs._match_timeline_objects(members, want):
+            entity = safe(lambda: item.entity)
+            kind = safe(lambda: entity.objectType)
+            if not isinstance(kind, str):
+                return uncertain
+            if kind != 'adsk::fusion::UnfoldFeature':
+                continue
+            name = safe(lambda: item.name)
+            owner = _inputs._owner_component_name(item)
+            holder = safe(lambda: group.name)
+            if name and owner and holder:
+                members_read, reason = unfold_group_members(group)
+                if members_read is None and 'could not be read' in reason:
+                    return uncertain
+                matches.append((holder, f"{owner}/{name}", members_read is not None))
+            else:
+                return uncertain
+    if len(matches) > 1:
+        return uncertain
+    if not matches:
+        return None
+    holder, target, supported = matches[0]
+    if not supported:
+        return (f"'{target}' is inside collapsed group '{holder}', whose member shape is outside "
+                "group_state's one-unfold/optional-refold support. Inspect the group with "
+                f"design_get(include=['timeline'], group='{holder}'), expand it in Fusion, then "
+                f"retry the original action with '{target}'. Keep the unfold group intact.")
+    return (f"'{target}' is inside collapsed group '{holder}'. Run design_edit_timeline("
+            f"action='group_state', feature='{holder}', collapsed=false), then retry the original "
+            f"action with qualified reference '{target}'. Keep the unfold group intact.")
 
 
 # ── shared mode reads (all via the ONE true reader) ─────────────────────────

@@ -1964,6 +1964,8 @@ class TestCreatedDatumHandle:
         comp.constructionPlanes.result_token = "PLANE-TOKEN"
         out = _payload(cn.handler(kind="plane", plane="xy", offset=5))
         assert out["handle"] == "PLANE-TOKEN"
+        assert "pass it as 'plane' to sketch_create" in out["note"]
+        assert "NAME instead" not in out["note"]
 
     def test_point_handle_is_the_created_objects_token(self):
         comp = _install()

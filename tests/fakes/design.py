@@ -998,6 +998,7 @@ class FakeTimeline:
     every read here throws with it, so a caller cannot lean on one that was never measured."""
     def __init__(self, items=(), marker=None, raises=None, move_ok=True):
         self._items = list(items)
+        self._timeline_groups = _NamedCollection()
         self._marker = len(self._items) if marker is None else marker
         self._raises = raises
         self._move_ok = move_ok
@@ -1014,6 +1015,14 @@ class FakeTimeline:
 
     def item(self, i):
         return self._read(_NamedCollection(self._items).item(i))
+
+    @property
+    def timelineGroups(self):
+        return self._read(self._timeline_groups)
+
+    @timelineGroups.setter
+    def timelineGroups(self, value):
+        self._timeline_groups = value
 
     @property
     def markerPosition(self):

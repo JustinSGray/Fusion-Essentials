@@ -310,8 +310,8 @@ def _space_unread(design, obj):
 _HANDLE_NOTE = {
     "axis": ("'handle' is this axis's entityToken - pass it (or the datum's name in this component) "
              "as 'axis' to model_pattern_circular, model_revolve, or model_move."),
-    "plane": ("'handle' is this plane's entityToken - pass it as 'plane' to model_mirror, "
-              "view_section, or model_split; sketch_create takes this datum's NAME instead."),
+    "plane": ("'handle' is this plane's entityToken - pass it as 'plane' to sketch_create, "
+              "model_mirror, view_section, or model_split."),
     "point": ("'handle' is this point's entityToken - pass it (or the datum's name in this "
               "component) in model_construction's 'points' or 'to_object'."),
 }

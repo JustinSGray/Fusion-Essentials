@@ -1118,13 +1118,17 @@ def _product_disclosure_rows():
         write("design_activate_component", {"occurrence": "root"})
         write("model_create_component", {"name": owner, "x": x, "activate": True, "units": "mm"}, _made_component)
         write("model_construction", {"kind": "plane", "mode": "offset", "plane": "xy",
-              "offset": z, "name": "PlaneTwin", "units": "mm"}, lambda p, owner=owner: p.get("component") == owner)
+              "offset": z, "name": "PlaneTwin", "units": "mm"}, lambda p, owner=owner: p.get("component") == owner
+              and isinstance(p.get("handle"), str) and bool(p["handle"])
+              and "pass it as 'plane' to sketch_create" in p.get("note", "")
+              and "NAME instead" not in p.get("note", ""),
+              ("disclosure_" + owner, lambda p: p["handle"]))
         rows.append(("find_geometry", lambda c, owner=owner: {"target": owner + ":1", "kind": "construction_plane",
                      "name": "PlaneTwin", "units": "mm", "max_results": 10},
                      lambda p, owner=owner, x=x, z=z: p.get("match_count") == p.get("returned") == 1
                      and p["matches"][0].get("position") == [x, 0, z]
                      and p["matches"][0].get("normal") == [0, 0, 1]
-                     and p["matches"][0].get("occurrence") == owner + ":1", _fg("disclosure_" + owner)))
+                     and p["matches"][0].get("occurrence") == owner + ":1", None))
         write("sketch_create", lambda c, owner=owner: {"name": owner + "Pick", "plane": _ctx_get(c, "disclosure_" + owner, "plane")},
               lambda p, owner=owner, x=x, z=z: p.get("component") == owner
               and (p.get("frame") or {}).get("space") == "world" and p["frame"].get("origin_mm") == [x, 0, z])
@@ -1156,7 +1160,8 @@ def _product_disclosure_rows():
             a, note = p.get("applied") or {}, p.get("note", "")
             return (a.get("focus") == "EmptyFocus:1" and a.get("orientation") == "front"
                     and (a.get("no_measurable_size") is True and a.get("frame_ratio") is None
-                         and "no measurable size" in note and "framed on" not in note if fit else "WITHOUT zooming" in note))
+                         and "no measurable size" in note and "framed on" not in note if fit else
+                         "WITHOUT zooming" in note and "attempt framing when the focus has measurable size" in note))
         write("view_set", {"action": "orient", "orientation": "front", "focus": "EmptyFocus:1", "fit": fit}, focus)
         rows.append(("workspace_orient", lambda c: {}, lambda p: _camera_target(p) == (0, 0, 0), None))
         unchanged(True)

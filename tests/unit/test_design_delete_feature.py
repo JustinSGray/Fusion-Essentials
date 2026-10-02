@@ -117,6 +117,7 @@ class TestFindByName:
     def test_a_collapsed_groups_member_is_refused_naming_the_group_and_the_ungroup_call(self):
         # timeline.item() lists a collapsed group as one item, so its member reads as a miss.
         members = [_tl("Sketch1", 0), _tl("Extrude1", 1)]
+        members[1].entity.objectType = "adsk::fusion::ExtrudeFeature"
         group = _tl("CascadeG", 0, is_group=True)
         group.isCollapsed, group.count, group.item = True, 2, lambda i: members[i]
         tl = _install([group, _tl("Fillet1", 1)])

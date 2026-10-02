@@ -33,6 +33,15 @@ def handler(stationary_face="", bend_faces=None, all_bends=False):
         return error("Every bend_face must belong to the stationary face's body.")
     if safe(lambda: body.isSheetMetal) is not True:
         return error("stationary_face must belong to a sheet-metal body. Use sheet_convert first.")
+    pending, unread = _sheet_common.pending_unfolds(_common.design())
+    if unread:
+        return error(f"Unfold preflight: {unread}. Nothing unfolded. Read design_get(include=['timeline']) "
+                     "and inspect existing unfold/refold features before retrying.")
+    if pending:
+        target = pending[0]
+        return error(f"Serial unfold policy: pending unfold(s) {_common.named_with_remainder(pending)}. "
+                     f"Nothing unfolded. Finish sheet_create_refold(unfold='{target}') before another unfold; "
+                     "read design_get(include=['timeline']) for its group if hidden.")
     before = safe(lambda: body.faces.count)
     if before is None:
         return error("Body topology could not be read before unfolding; re-read its geometry.")

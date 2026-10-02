@@ -4,15 +4,76 @@
 """Shared sheet-metal rule, component, edge and flat-pattern reads."""
 
 import adsk.core
-from . import _assert, _geom
+from . import _assert, _geom, _common
 from ._common import counted, iter_collection, measured, ptxyz, safe
 
 MAP_BLURB = ("rule_row/scoped_rules/matching_rules/component_row/sheet_edge_faces/bend_face_count/bend_wall_groups/"
-             "flat_pattern_row - scoped rules, component state, a rim edge's faces, cylinder-face "
+             "flat_pattern_row/pending_unfolds - scoped rules, pending unfold preflight, component state, a rim edge's faces, cylinder-face "
              "count, bend walls paired per axis, flat health and optional geometry")
 
 _RULE_VALUES = ("thickness", "bendRadius", "gap", "reliefWidth", "reliefDepth",
                 "reliefRemnant", "twoBendReliefSize", "threeBendReliefRadius")
+
+
+def pending_unfolds(design):
+    """Return qualified pending unfolds or an incomplete/inconsistent design-wide census error."""
+    root_key = _common.native_identity(safe(lambda: design.rootComponent))
+    components = safe(lambda: design.allComponents)
+    count = counted(lambda: components.count)
+    if root_key is None or count is None or count < 1:
+        return None, "allComponents/root identity could not be read"
+    owners, names, pending = [], [], []
+    unread = object()
+    for i in range(count):
+        comp = safe(lambda i=i: components.item(i))
+        key, name = _common.native_identity(comp), safe(lambda: comp.name)
+        if key is None or key in owners or not isinstance(name, str) or not name:
+            return None, f"allComponents slot {i} identity/name could not be read uniquely"
+        owners.append(key)
+        names.append(name.lower())
+        sets = {}
+        for kind, opposite in (("unfoldFeatures", "refoldFeature"), ("refoldFeatures", "unfoldFeature")):
+            collection = safe(lambda kind=kind: getattr(comp.features, kind))
+            n = counted(lambda: collection.count)
+            if n is None or n < 0:
+                return None, f"'{name}' {kind} count could not be read"
+            rows = {}
+            for j in range(n):
+                feature = safe(lambda j=j: collection.item(j))
+                identity = _common.native_identity(feature)
+                owner = _common.native_identity(safe(lambda: feature.parentComponent))
+                label = safe(lambda: feature.name)
+                linked = safe(lambda opposite=opposite: getattr(feature, opposite), unread)
+                if (identity is None or identity in rows or owner != key
+                        or not isinstance(label, str) or not label or linked is unread):
+                    return None, f"'{name}' {kind} slot {j} identity/owner/association could not be read"
+                if linked is None:
+                    linked_key = None
+                else:
+                    linked_key = _common.native_identity(linked)
+                    back = safe(lambda: getattr(linked, 'unfoldFeature' if opposite == 'refoldFeature' else 'refoldFeature'))
+                    if (linked_key is None or _common.native_identity(safe(lambda: linked.parentComponent)) != key
+                            or _common.native_identity(back) != identity):
+                        return None, f"'{name}/{label}' has an unread or inconsistent reciprocal association"
+                rows[identity] = (label, linked_key)
+            sets[kind] = rows
+        unfolds, refolds = sets["unfoldFeatures"], sets["refoldFeatures"]
+        for identity, (label, linked) in unfolds.items():
+            if linked is None:
+                if sum(other.lower() == label.lower() for other, _linked in unfolds.values()) != 1:
+                    return None, f"pending '{name}/{label}' has an ambiguous unfold name; acquire exact timeline addresses"
+                pending.append((name, label))
+            elif linked not in refolds or refolds[linked][1] != identity:
+                return None, f"'{name}/{label}' refold is absent from its owner's collection"
+        for identity, (label, linked) in refolds.items():
+            if linked is None or linked not in unfolds or unfolds[linked][1] != identity:
+                return None, f"'{name}/{label}' unfold is absent from its owner's collection"
+    if owners.count(root_key) != 1:
+        return None, "allComponents did not include the root exactly once"
+    for name, label in pending:
+        if names.count(name.lower()) != 1:
+            return None, f"pending '{name}/{label}' has an ambiguous component name; acquire exact timeline addresses"
+    return [f"{name}/{label}" for name, label in pending], None
 
 
 def scoped_rules(design, scope):

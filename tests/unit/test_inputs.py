@@ -2667,7 +2667,7 @@ class TestFeatureRefResolve:
         # the member is absent from the walk and its bare number is no visible index or name
         design = MakeDesign(design_type=1)
         design.timeline = FakeTimeline([FakeTimelineObject("Extrude1", 0, entity=object())])
-        member = FakeTimelineObject("5", 2, entity=object())
+        member = FakeTimelineObject("5", 2, entity=types.SimpleNamespace(objectType="adsk::fusion::ExtrudeFeature"))
         group = types.SimpleNamespace(name="Imports", isCollapsed=True, count=1,
                                       item=lambda i: member)
         design.timeline.timelineGroups = _NamedCollection([group])

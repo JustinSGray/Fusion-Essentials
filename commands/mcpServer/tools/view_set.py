@@ -635,8 +635,8 @@ def _do_orient(design, orientation, focus, fit, projection="", perspective_angle
                         "to capture.")
         else:
             note = (f"Camera re-aimed at '{applied.get('focus')}' WITHOUT zooming to it - "
-                    "fit=false keeps the current eye-to-target distance. Pass fit=true (the "
-                    "default) to frame it.")
+                    "fit=false keeps the current eye-to-target distance. Pass fit=true to attempt "
+                    "framing when the focus has measurable size.")
     if standoff_fallback is not None:
         cm = f"{standoff_fallback:g}"
         applied["standoff_fallback_cm"] = standoff_fallback

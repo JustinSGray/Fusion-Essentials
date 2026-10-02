@@ -993,7 +993,8 @@ class TestFocusFraming:
         is a different behaviour, not a tuning."""
         assert iv._FRAME_MARGIN > 1.0
 
-    def test_a_focus_with_no_measurable_size_is_re_aimed_not_refused(self, monkeypatch):
+    @pytest.mark.parametrize("fit", [True, False])
+    def test_a_focus_with_no_measurable_size_is_re_aimed_not_refused(self, monkeypatch, fit):
         """A point sketch spans nothing on either screen axis. There is no size to scale to, but
         aiming at it is still exactly what was asked for - so the zoom is left alone and the payload
         says so, rather than failing a framing the caller was right to request."""
@@ -1001,12 +1002,16 @@ class TestFocusFraming:
         _install(monkeypatch, [FakeOcc("Part", bbox=make_bbox((0, 0, 0), (2, 2, 2)))])
         monkeypatch.setattr(iv._common, "find_sketch", lambda d, n, remedy=None: (point, None))
         before = iv.app.activeViewport.camera.viewExtents
-        out = _payload(iv.handler(action="orient", orientation="top", focus="W3Pt"))
-        assert out["applied"]["no_measurable_size"] is True
-        assert out["applied"]["frame_ratio"] is None
+        out = _payload(iv.handler(action="orient", orientation="top", focus="W3Pt", fit=fit))
         assert iv.app.activeViewport.camera.viewExtents == before   # zoom untouched
-        assert "re-aimed" in out["note"] and "no measurable size" in out["note"]
-        assert "framing is not established" in out["note"] and "framed on" not in out["note"]
+        assert "re-aimed" in out["note"] and "framed on" not in out["note"]
+        if fit:
+            assert out["applied"]["no_measurable_size"] is True
+            assert out["applied"]["frame_ratio"] is None
+            assert "no measurable size" in out["note"] and "framing is not established" in out["note"]
+        else:
+            assert "WITHOUT zooming" in out["note"]
+            assert "attempt framing when the focus has measurable size" in out["note"]
 
     def test_a_zero_size_perspective_focus_is_re_aimed_without_scale(self, monkeypatch):
         import adsk.core

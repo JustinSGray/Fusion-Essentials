@@ -28,6 +28,7 @@ import verify_acts_cam  # noqa: E402
 import verify_acts_sketch  # noqa: E402
 import verify_acts_cloud  # noqa: E402
 import verify_acts_mesh  # noqa: E402
+import verify_acts_sheet  # noqa: E402
 
 
 @pytest.mark.parametrize("factory,home,context", [
@@ -56,6 +57,13 @@ def test_product_disclosure_scenes_keep_local_geometry_fresh_consumers_and_recov
         assert parameter == {"name": "DisclosureHeight", "expression": "10 mm", "unit": "mm", "expect_document": "scratch"}
         reads = [a for t, a in authored if t == "sketch_get"]
         assert [(a["sketch_name"], a["component"]) for a in reads] == [("DatumAPick", "DatumA:1"), ("DatumBPick", "DatumB:1")]
+        planes = [row for row in factory() if row[0] == "model_construction"]
+        for row, owner in zip(planes, ("DatumA", "DatumB")):
+            assert row[3][0] == "disclosure_" + owner and row[3][1]({"handle": "native-plane"}) == "native-plane"
+        consumers = [a for t, a in authored if t == "sketch_create" and a["name"].endswith("Pick")]
+        assert [a["plane"] for a in consumers] == ["plane-a", "plane-b"]
+        assert all(row[3] is None for row in factory() if row[0] == "find_geometry"
+                   and row[1](context).get("kind") == "construction_plane")
         assert any(t == "model_inspect" and a["target"] == "fresh-face" for t, a in authored)
         create = next(row for row in factory() if row[0] == "model_create_component" and row[1](context)["name"] == "EmptyFocus")
         assert create[2]({"created": True, "activated": False, "occurrence": "EmptyFocus:1", "full_path": "EmptyFocus:1"}) is True
@@ -893,3 +901,53 @@ def test_joint_preflight_material_accepts_recorded_body_rows_without_per_body_ar
     payload["mass"]["area"] = 384
     payload["mass"]["per_body"][1]["volume"] = 159
     assert verify_acts_motion._joint_preflight_material(payload) is None
+
+
+def test_sheet_serial_scene_keeps_local_coupons_and_typed_group_recovery_in_full_family():
+    rows = [row for _name, _pre, narrative, _fallback in verify_program.ACTS for row in narrative]
+    ctx = {'serial_home_handle': 'home', 'serial_doc': 'scratch', 'serial_witness': 'witness',
+           'serial_rim': 'rim', 'serial_stationary': 'top', 'serial_other_face': 'other', 'serial_unfold': 'Unfold1'}
+    start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == 'serial_home_handle')
+    end = next(i for i in range(start, len(rows)) if rows[i][0] == 'doc_close')
+    authored = verify_acts_sheet._sheet_serial_rows()
+    wanted = {'sketch_add_geometry', 'model_create_component', 'sheet_create_flange', 'sheet_create_unfold',
+              'sheet_create_refold', 'design_edit_timeline', 'view_set', 'assembly_get', 'find_geometry'}
+    def requests(selected):
+        return [(t, a(ctx) if callable(a) else a) for t, a, _c, _s in selected if t in wanted]
+    assert requests(rows[start:end]) == requests(authored)
+    boxes = [a['geometry'] for t, a in requests(authored) if t == 'sketch_add_geometry']
+    assert boxes == [[{'kind': 'rectangle', 'x1': 220, 'y1': 0, 'x2': 240, 'y2': 20}],
+                     [{'kind': 'rectangle', 'x1': 0, 'y1': 0, 'x2': 80, 'y2': 40}],
+                     [{'kind': 'rectangle', 'x1': 100, 'y1': 0, 'x2': 180, 'y2': 40}]]
+    assert [(a['feature'], a['collapsed']) for t, a in requests(authored) if t == 'design_edit_timeline'] == [
+        ('Group1', True), ('Group1', False)]
+    assert [a['unfold'] for t, a in requests(authored) if t == 'sheet_create_refold'] == [
+        'SerialA/Unfold1', 'SerialA/Unfold1', 'SerialB/Unfold1']
+    assert authored[4][:2] == ('design_activate_component', {'occurrence': 'root'})
+    assert all(t != 'sys_execute_script' for t, _a, _c, _s in authored)
+
+
+def test_serial_sheet_pose_admission_rejects_finite_nonidentity_basis():
+    rows = [{'name': name + ':1', 'component': name, 'body_count': 1, 'origin': [0, 0, 0],
+             'x_axis': [1, 0, 0], 'y_axis': [0, 1, 0], 'z_axis': [0, 0, 1],
+             'grounded': False, 'ground_to_parent': False} for name in ('SerialA', 'SerialB')]
+    value = {'units': 'mm', 'occurrence_count': 2, 'occurrences_truncated': False, 'occurrences': rows}
+    assert verify_acts_sheet._serial_sheet_poses(value) is not None
+    rows[1]['x_axis'] = [0, 1, 0]
+    assert verify_acts_sheet._serial_sheet_poses(value) is None
+
+
+def test_serial_sheet_history_rejects_missing_or_failed_summary(monkeypatch):
+    old = {'index': 0, 'name': 'Base1', 'type': 'FlangeFeature'}
+    fresh = {'index': 1, 'name': 'Unfold1', 'type': 'UnfoldFeature', 'component': 'SerialA'}
+    before = {'timeline': {'timeline': [old]}}
+    current = {'timeline': {'timeline': [old, fresh], 'summary': {'states': {'healthy': 2}, 'exceptions': []}}}
+    monkeypatch.setitem(verify_acts_sheet._RECALL, 'serial_stage_design', before)
+    monkeypatch.setattr(verify_acts_sheet, '_retire_design_state', lambda p: p)
+    check = verify_acts_sheet._serial_sheet_history('SerialA', 'UnfoldFeature')
+    assert check(current)
+    for states in (None, {'healthy': 1, 'unknown': 1}):
+        monkeypatch.setitem(verify_acts_sheet._RECALL, 'serial_stage_design', before)
+        current['timeline']['summary']['states'] = states
+        with pytest.raises(AssertionError):
+            check(current)

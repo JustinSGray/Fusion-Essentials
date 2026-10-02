@@ -10,13 +10,15 @@ import re
 
 from cloud_config import FOLDER, PROJECT
 from verify_acts_cam import _operation_row, _op_valid
-from verify_acts_model_sweep import _retire_reads, _retire_compare, _retire_material_state
+from verify_acts_model_sweep import (_retire_reads, _retire_compare, _retire_material_state,
+                                    _retire_design_state, _sweep_mode_shape)
+from verify_acts_model_solids import _edge_extent_geometry
 from verify_acts_cloud import (_drawing_terminal, _drawing_terminal_payload,
                                _file_settled, _opened, _version_args, _version_record,
                                _version_settled, _version_snapshot, _versioned, _version_current)
 
 from verify_core import (EXPORT_DIR, _RECALL, _ctx_get, _dwell, _extruded, _measured, facade,
-                         _near, _recall, _refused)
+                         _near, _recall, _refused, _home_address)
 
 _SEED = "SM Sweep Seed"
 _SEED2 = "SM Sweep Second Seed"
@@ -1347,6 +1349,208 @@ _SHEET_SELECTED = _SHEET_BUILD + [
     ("doc_get", {"max_results": 1000}, _story_restored, None),
 ]
 
+
+
+def _serial_sheet_geometry(p, folded=False):
+    """Return complete sheet geometry, excluding planar parameter frames only for folded restoration."""
+    rows = _edge_extent_geometry(p)
+    if rows is None:
+        return None
+    return [{k: v for k, v in row.items() if not (folded and row['kind'] == 'planar_face' and k == 'frame')}
+            for row in rows]
+
+
+def _serial_sheet_poses(p):
+    """Return the two finite identity placements independently of changing folded body bounds."""
+    rows = p.get('occurrences')
+    if (p.get('units') != 'mm' or p.get('occurrences_truncated') is not False
+            or p.get('occurrence_count') != 2 or not isinstance(rows, list) or len(rows) != 2
+            or {r.get('name') for r in rows} != {'SerialA:1', 'SerialB:1'}):
+        return None
+    fields = ('name', 'component', 'origin', 'x_axis', 'y_axis', 'z_axis', 'grounded', 'ground_to_parent', 'body_count')
+    for r in rows:
+        if (r.get('body_count') != 1 or r.get('origin') != [0, 0, 0]
+                or [r.get(k) for k in ('x_axis', 'y_axis', 'z_axis')] != [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+                or any(type(r.get(k)) is not bool for k in ('grounded', 'ground_to_parent'))
+                or any(not isinstance(r.get(k), list) or len(r[k]) != 3
+                       or any(type(v) not in (int, float) or not math.isfinite(v) for v in r[k])
+                       for k in ('x_axis', 'y_axis', 'z_axis'))):
+            return None
+    return sorted([{k: r[k] for k in fields} for r in rows], key=lambda r: r['name'])
+
+
+def _serial_witness_material(p):
+    """Require the independent root 20 mm cube's complete physical properties and world bounds."""
+    shape = _sweep_mode_shape(p)
+    if (p.get('units') != 'mm' or p.get('lump_count') != 1
+            or shape['min'] != {'x': 220, 'y': 0, 'z': 0} or shape['max'] != {'x': 240, 'y': 20, 'z': 20}
+            or not _near(shape['volume'], 8000, .001) or not _near(shape['area'], 2400, .001)):
+        return None
+    return {'shape': shape, 'mass': p.get('mass')}
+
+
+def _serial_sheet_history(owner, kind):
+    """Require one healthy feature with the prior rows and every other owner retained."""
+    def check(p):
+        state = _retire_design_state(p)
+        old = _RECALL.get('serial_stage_design')
+        rows = (state or {}).get('timeline', {}).get('timeline') or []
+        prior = (old or {}).get('timeline', {}).get('timeline') or []
+        valid = (state is not None and old is not None and rows[:-1] == prior
+                 and len(rows) == len(prior) + 1 and rows[-1].get('type') == kind
+                 and rows[-1].get('component') == owner
+                 and rows[-1].get('health', 'healthy') == 'healthy'
+                 and (state['timeline'].get('summary') or {}).get('states') == {'healthy': len(rows)}
+                 and (state['timeline'].get('summary') or {}).get('exceptions') == [])
+        if valid:
+            _RECALL['serial_stage_design'] = state
+        return _measured('serial sheet adds one healthy owned feature', rows, valid)
+    return check
+
+
+def _sheet_serial_rows():
+    """Refuse an overlapping unfold and recover a collapsed unfold group through typed calls."""
+    rows = [('doc_get', {'max_results': 1000}, lambda p: _retire_compare('serial_home', _home_snapshot, False)(p),
+             ('serial_home_handle', _home_address)),
+            ('design_get', {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True, 'max_results': 2000},
+             _retire_compare('serial_home_design', _retire_design_state, False), None),
+            ('model_inspect', {'include': ['default', 'mass'], 'per_body': True, 'units': 'mm', 'accuracy': 'very_high'},
+             _retire_compare('serial_home_material', _retire_material_state, False), None),
+            ('doc_new', lambda c: {'expect_document': _ctx_get(c, 'serial_home_handle', 'home')},
+             lambda p: p.get('created') is True and p.get('is_active') is True,
+             ('serial_doc', lambda p: p['document_handle'])),
+            ('design_activate_component', {'occurrence': 'root'}, 'ok', None)]
+    def write(tool, args, check='ok', save=None):
+        rows.append((tool, lambda c: {**(args(c) if callable(args) else args),
+                     'expect_document': _ctx_get(c, 'serial_doc', 'owned serial scene')}, check, save))
+    write('sketch_create', {'name': 'SerialWitness', 'plane': 'xy'})
+    write('sketch_add_geometry', {'sketch_name': 'SerialWitness', 'units': 'mm', 'geometry': [
+        {'kind': 'rectangle', 'x1': 220, 'y1': 0, 'x2': 240, 'y2': 20}]})
+    write('model_extrude', {'sketch_name': 'SerialWitness', 'distance': 20, 'operation': 'new', 'units': 'mm'},
+          _extruded)
+    def witness_handle(p):
+        bodies = (p.get('tree') or {}).get('root_bodies') or []
+        _measured('one independently acquired root witness body', bodies,
+                  _retire_design_state(p) is not None and len(bodies) == 1 and bool(bodies[0].get('handle'))
+                  and bodies[0].get('is_solid') is True and bodies[0].get('visible') is True)
+        return bodies[0]['handle']
+    rows.append(('design_get', lambda c: {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True, 'max_results': 2000},
+                 lambda p: _retire_design_state(p) is not None, ('serial_witness', witness_handle)))
+    for owner, x in (('SerialA', 0), ('SerialB', 100)):
+        write('design_activate_component', {'occurrence': 'root'})
+        write('model_create_component', {'name': owner, 'sheet_metal': True, 'activate': True},
+              lambda p, owner=owner: p.get('component') == owner and p.get('sheet_metal') is True and p.get('activated') is True)
+        write('sketch_create', {'name': owner + 'Base', 'plane': 'xy'})
+        write('sketch_add_geometry', {'sketch_name': owner + 'Base', 'units': 'mm', 'geometry': [
+            {'kind': 'rectangle', 'x1': x, 'y1': 0, 'x2': x + 80, 'y2': 40}]})
+        write('sheet_create_flange', {'kind': 'base', 'profile': {'sketch': owner + 'Base', 'profile_index': 0}, 'component': owner},
+              lambda p: p.get('created') is True and p.get('kind') == 'base' and _near(p.get('thickness_mm'), 2.5, .001))
+        def rim(p, x=x):
+            matches = [r for r in p.get('matches') or [] if r.get('kind') == 'line_edge'
+                       and all(_near(a, b, .001) for a, b in zip(r.get('position') or [], (x + 80, 20, 2.5)))
+                       and len(r.get('position') or []) == 3 and _near(r.get('length'), 40, .001)]
+            _measured('one base-flange rim edge', matches, len(matches) == 1 and bool(matches[0].get('handle')))
+            return matches[0]['handle']
+        rows.append(('find_geometry', {'target': owner + ':1', 'kind': 'line_edge', 'units': 'mm', 'max_results': 100},
+                     lambda p: _edge_extent_geometry(p) is not None, ('serial_rim', rim)))
+        write('sheet_create_flange', lambda c: {'kind': 'edge', 'edges': [_ctx_get(c, 'serial_rim', 'rim edge')], 'distance': 10, 'units': 'mm'},
+              lambda p: p.get('created') is True and p.get('bend_faces_after') == p.get('bend_faces_before', -2) + 2)
+    write('design_activate_component', {'occurrence': 'root'})
+    write('view_set', {'action': 'orient', 'orientation': 'iso-top-right', 'focus': ['SerialA:1', 'SerialB:1'], 'fit': True})
+    def geometry(owner, key, after=False, folded=False):
+        rows.append(('find_geometry', lambda c: {'target': _ctx_get(c, 'serial_witness', 'witness') if owner == 'Witness' else owner + ':1',
+                     'units': 'mm', 'max_results': 200},
+                     _retire_compare(key, lambda p: _serial_sheet_geometry(p, folded), after), None))
+    def controls(owner, other):
+        geometry(other, 'serial_held_' + other, False)
+        geometry('Witness', 'serial_witness_geometry', False)
+        rows.append(('model_inspect', {'target': other + ':1', 'include': ['default', 'mass'], 'per_body': True, 'units': 'mm', 'accuracy': 'very_high'},
+                     _retire_compare('serial_held_material', _retire_material_state, False), None))
+        rows.append(('model_inspect', lambda c: {'target': _ctx_get(c, 'serial_witness', 'witness'), 'include': ['default', 'mass'],
+                     'units': 'mm', 'accuracy': 'very_high'}, _retire_compare('serial_witness_material', _serial_witness_material, False), None))
+    def held(other):
+        geometry(other, 'serial_held_' + other, True)
+        geometry('Witness', 'serial_witness_geometry', True)
+        rows.append(('model_inspect', {'target': other + ':1', 'include': ['default', 'mass'], 'per_body': True, 'units': 'mm', 'accuracy': 'very_high'},
+                     _retire_compare('serial_held_material', _retire_material_state, True), None))
+        rows.append(('model_inspect', lambda c: {'target': _ctx_get(c, 'serial_witness', 'witness'), 'include': ['default', 'mass'],
+                     'units': 'mm', 'accuracy': 'very_high'}, _retire_compare('serial_witness_material', _serial_witness_material, True), None))
+        rows.append(('assembly_get', {'include': ['poses'], 'units': 'mm', 'max_occurrences': 100},
+                     _retire_compare('serial_poses', _serial_sheet_poses, True), None))
+    rows.append(('assembly_get', {'include': ['poses'], 'units': 'mm', 'max_occurrences': 100},
+                 _retire_compare('serial_poses', _serial_sheet_poses, False), None))
+    for owner, other in (('SerialA', 'SerialB'), ('SerialB', 'SerialA')):
+        controls(owner, other)
+        geometry(owner, 'serial_folded_' + owner, False, True)
+        rows.append(('model_inspect', {'target': owner + ':1', 'include': ['default', 'mass'], 'per_body': True, 'units': 'mm', 'accuracy': 'very_high'},
+                     _retire_compare('serial_folded_material', _retire_material_state, False), None))
+        rows.extend(_retire_reads('serial_stage', [], []))
+        rows.append(('find_geometry', {'target': owner + ':1', 'kind': 'planar_face', 'units': 'mm', 'max_results': 100},
+                     _top_face(3000), ('serial_stationary', lambda p: _top_match(p, 3000)['handle'])))
+        write('sheet_create_unfold', lambda c: {'stationary_face': _ctx_get(c, 'serial_stationary', 'broad stationary face'), 'all_bends': True},
+              lambda p: p.get('created') is True and p.get('all_bends') is True and (p.get('faces_moved') or 0) > 0,
+              ('serial_unfold', _recall('serial_unfold', lambda p: p['feature'])))
+        rows.append(('design_get', {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True, 'max_results': 2000},
+                     _serial_sheet_history(owner, 'UnfoldFeature'), None))
+        rows.append(('model_inspect', {'target': owner + ':1', 'include': ['default', 'mass'], 'units': 'mm', 'accuracy': 'very_high'},
+                     lambda p, owner=owner: _near(p.get('z'), 2.5, .001) and _near(p.get('x'), 90.654866776, .001)
+                     and _near((p.get('mass') or {}).get('volume'), 9065.486677646199, .001), None))
+        held(other)
+        if owner == 'SerialA':
+            rows.extend(_retire_reads('serial_pending', ['', 'SerialA:1', 'SerialB:1'], []))
+            for target in ('SerialA', 'SerialB'):
+                geometry(target, 'serial_pending_' + target)
+            rows.append(('find_geometry', {'target': 'SerialB:1', 'kind': 'planar_face', 'units': 'mm', 'max_results': 100},
+                         _top_face(3000), ('serial_other_face', lambda p: _top_match(p, 3000)['handle'])))
+            write('sheet_create_unfold', lambda c: {'stationary_face': _ctx_get(c, 'serial_other_face', 'other sheet face'), 'all_bends': True},
+                  _refused('Serial unfold policy', 'SerialA/', 'sheet_create_refold'))
+            rows.extend(_retire_reads('serial_pending', ['', 'SerialA:1', 'SerialB:1'], [], after=True))
+            for target in ('SerialA', 'SerialB'):
+                geometry(target, 'serial_pending_' + target, True)
+            def group_state(collapsed):
+                write('design_edit_timeline', {'action': 'group_state', 'feature': 'Group1', 'collapsed': collapsed},
+                      lambda p, collapsed=collapsed: p.get('group') == 'Group1' and p.get('is_collapsed') is collapsed
+                      and p.get('member_count') == 1 and p.get('group_canonical_identity_verified') is None)
+                rows.append(('design_get', {'include': ['timeline'], 'group': 'Group1', 'max_results': 100},
+                             lambda p: (p.get('timeline') or {}).get('returned') == 1
+                             and all(r.get('component') == 'SerialA' and r.get('type') == 'UnfoldFeature'
+                                     and r.get('parent_group') == 'Group1' for r in p['timeline']['timeline']), None))
+                rows.append(('design_get', {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True, 'max_results': 2000},
+                             lambda p, collapsed=collapsed: _retire_design_state(p) is not None
+                             and (p['timeline'].get('groups') or {}).get('Group1') == 1
+                             and (p['timeline'].get('summary') or {}).get('exceptions') == []
+                             and len([r for r in p['timeline']['timeline'] if r.get('name') == 'Group1'
+                                      and r.get('is_group') is True and r.get('is_collapsed') is True
+                                      and r.get('member_count') == 1]) == int(collapsed), None))
+                held('SerialB')
+                geometry('SerialA', 'serial_pending_SerialA', True)
+            group_state(True)
+            rows.extend(_retire_reads('serial_collapsed', ['', 'SerialA:1', 'SerialB:1'], []))
+            write('sheet_create_refold', lambda c: {'unfold': 'SerialA/' + _ctx_get(c, 'serial_unfold', 'pending unfold')},
+                  _refused("action='group_state'", 'collapsed=false', 'qualified reference'))
+            rows.extend(_retire_reads('serial_collapsed', ['', 'SerialA:1', 'SerialB:1'], [], after=True))
+            group_state(False)
+            rows.extend(_retire_reads('serial_pending', ['', 'SerialA:1', 'SerialB:1'], [], after=True))
+        write('sheet_create_refold', lambda c, owner=owner: {'unfold': owner + '/' + _ctx_get(c, 'serial_unfold', 'pending unfold')},
+              lambda p: p.get('created') is True and p.get('unfold') == _RECALL.get('serial_unfold')
+              and (p.get('faces_moved') or 0) > 0)
+        rows.append(('design_get', {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True, 'max_results': 2000},
+                     _serial_sheet_history(owner, 'RefoldFeature'), None))
+        geometry(owner, 'serial_folded_' + owner, True, True)
+        rows.append(('model_inspect', {'target': owner + ':1', 'include': ['default', 'mass'], 'per_body': True, 'units': 'mm', 'accuracy': 'very_high'},
+                     _retire_compare('serial_folded_material', _retire_material_state, True), None))
+        held(other)
+    write('doc_close', lambda c: {'name': _ctx_get(c, 'serial_doc', 'owned serial scene'), 'save_changes': False}, _closed_one)
+    rows += [('doc_activate', lambda c: {'name': _ctx_get(c, 'serial_home_handle', 'home')}, 'ok', None),
+             ('doc_get', {'max_results': 1000}, _retire_compare('serial_home', _home_snapshot, True), None),
+             ('design_get', {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True, 'max_results': 2000},
+              _retire_compare('serial_home_design', _retire_design_state, True), None),
+             ('model_inspect', {'include': ['default', 'mass'], 'per_body': True, 'units': 'mm', 'accuracy': 'very_high'},
+              _retire_compare('serial_home_material', _retire_material_state, True), None)]
+    return rows
+
+
+_SHEET_SELECTED += _sheet_serial_rows()
 
 
 def _position_variant(position):

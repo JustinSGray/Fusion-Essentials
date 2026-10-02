@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 693
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 691
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -37,7 +37,7 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
-- `design_get`  <- 56  (desc 12, note 44)
+- `design_get`  <- 57  (desc 12, note 45)
 - `find_geometry`  <- 55  (desc 14, note 41)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 6, note 30)
@@ -1502,6 +1502,14 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - deleteMe reported success but timelineGroups still holds
 - The group is gone; the items it held stay in the timeline, expanded. Delete an item itself with design_delete_feature.
 - Removing timeline group '
+- action='group_state' needs feature='<group name>' and collapsed=true/false. Read design_get(include=['timeline']) for its unfold group.
+- Timeline groups could not be listed completely. Nothing changed; read design_get(include=['timeline']).
+- . Nothing changed; read design_get(include=['timeline'], group='<group name>').
+- group validity/collapse state could not be confirmed
+- ' already reads collapsed=
+- ' collapse change or preserved membership is unconfirmed. Read design_get(include=['timeline'], group='<group name>') before retrying.
+- Group state re-read; original valid group and canonical member/owner identities retained. A null group identity verdict means its canonical key was unavailable.
+- . Read design_get(include=['timeline']).
 - The attribute is attached to the entity the timeline item wraps, not to the timeline item. Remove it with action='delete_attribute'.
 - 'attribute_value' takes a string; got
 - characters; this tool carries at most
@@ -1521,6 +1529,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' as absent is the attribute being gone.
 - but itemByName still returns it (value '
 - ') - it was not deleted.
+- '' collapse change or preserved membership is unconfirmed. Read design_get(include=['timeline'], group='<group name>') before retrying.
 - action='roll' without a 'feature' takes to='beginning'/'end'/'next'/'previous' (got '' - that one names a position relative to a 'feature').
 - Fusion cannot place an item after the last timeline row, so '' cannot go after ''. Nothing moved. To make '' last, run .
 - Fusion refused to move ''  '': , but the timeline re-reads changed or did not re-read. Read design_get(include=['timeline']).
@@ -2939,7 +2948,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - kind={k} at a raw coordinate needs DIRECT-modeling mode and this design is PARAMETRIC (setByPoint/setByLine are direct-only). Options: (1) sketch_create a sketch, add a sketch point there, and buil...
 - mode='': Fusion reported success but the  it created misses its operand point(s) by  . The datum '' was added and is still in the design - remove it with design_delete_feature.
 - 'handle' is this axis's entityToken - pass it (or the datum's name in this component) as 'axis' to model_pattern_circular, model_revolve, or model_move.
-- 'handle' is this plane's entityToken - pass it as 'plane' to model_mirror, view_section, or model_split; sketch_create takes this datum's NAME instead.
 - 'handle' is this point's entityToken - pass it (or the datum's name in this component) in model_construction's 'points' or 'to_object'.
 - A sketch on this plane takes its origin at the world origin's projection onto it, not at geometry.origin - sketch_create's frame.origin_mm reads it.
 - A null field above was NOT measured: an occurrence is active and the entity could not be read in its space, so the value is left unclaimed rather than reported in the component-local space the reso...
@@ -4034,12 +4042,18 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - stationary_face must belong to the active design; edit the source document first.
 - Every bend_face must belong to the stationary face's body.
 - stationary_face must belong to a sheet-metal body. Use sheet_convert first.
+- . Nothing unfolded. Read design_get(include=['timeline']) and inspect existing unfold/refold features before retrying.
+- Serial unfold policy: pending unfold(s)
+- . Nothing unfolded. Finish sheet_create_refold(unfold='
+- ') before another unfold; read design_get(include=['timeline']) for its group if hidden.
 - Body topology could not be read before unfolding; re-read its geometry.
 - Unfold returned no feature; inspect the body before retrying.
 - ' remains, but its changed geometry was not verified. Inspect it before retrying.
 - Bends unfolded. Add cuts, then pass this feature to sheet_create_refold.
 - ' bend faces could not be read; re-read its geometry.
 - ' has no bends to unfold.
+- Unfold preflight: . Nothing unfolded. Read design_get(include=['timeline']) and inspect existing unfold/refold features before retrying.
+- Serial unfold policy: pending unfold(s) . Nothing unfolded. Finish sheet_create_refold(unfold='') before another unfold; read design_get(include=['timeline']) for its group if hidden.
 
 ### `sheet_edit_rule`
 - No active design. Create or open a design first.
@@ -4740,7 +4754,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - occurrences, so only the first
 - had their visibility saved - restore will not reinstate the rest. Camera and visual style are complete.
 - Camera aimed. Call view_screenshot to capture.
-- ' WITHOUT zooming to it - fit=false keeps the current eye-to-target distance. Pass fit=true (the default) to frame it.
+- ' WITHOUT zooming to it - fit=false keeps the current eye-to-target distance. Pass fit=true to attempt framing when the focus has measurable size.
 - has a readable bounding box, so there is nothing to frame on. Re-run with fit=false to re-aim only.
 - Unknown orientation '
 - 'perspective_angle_deg' is a field-of-view angle Fusion accepts from 1 to just under 150 degrees (got
@@ -4829,7 +4843,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Could not read what the viewport currently shows, so the view could not be framed on '' and the camera was NOT moved. Re-run with fit=false to re-aim only.
 - Could not measure '' against the current view (a bounding box, the camera's axes, or its extents would not read), so the view is NOT framed on it. Re-run with fit=false to re-aim only.
 - Camera re-aimed at ''; the focus has no measurable size, so size-based framing is not established. Call view_screenshot to capture.
-- Camera re-aimed at '' WITHOUT zooming to it - fit=false keeps the current eye-to-target distance. Pass fit=true (the default) to frame it.
+- Camera re-aimed at '' WITHOUT zooming to it - fit=false keeps the current eye-to-target distance. Pass fit=true to attempt framing when the focus has measurable size.
 - standoff_fallback_cm=: the camera's eye-target distance did not read as a positive number, so  cm stood in as the standoff for this orient.
 - Set 'perspective_angle_deg'= but the camera's perspectiveAngle could not be read back - the field of view is unverified.
 - Set the camera extents to frame '' () but the viewport reads back  - the framing did not verify;  and projection reads '', so the camera remains partially changed.

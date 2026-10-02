@@ -21,7 +21,7 @@ import pytest
 
 from conftest import FakeTimeline as _SharedTimeline
 from conftest import FakeTimelineObject as _SharedTimelineObject
-from conftest import _NamedCollection, error_message, load_tool, make_design, payload
+from conftest import MakeComp, _NamedCollection, error_message, load_tool, make_design, payload
 
 et = load_tool("design_edit_timeline")
 
@@ -359,6 +359,106 @@ def wire(monkeypatch):
     return _wire
 
 
+@pytest.fixture
+def unfold_group(wire):
+    """Return the measured single-unfold group with readable canonical member and owner keys."""
+    owner = MakeComp('SheetA', entity_token='sheet-a')
+    source = types.SimpleNamespace(entityToken='unfold-a', objectType='adsk::fusion::UnfoldFeature', parentComponent=owner)
+    member = FakeTimelineObject('Unfold1', 0, entity=source)
+    group = FakeTimelineGroup('Group1', 0, members=[member], collapsed=True)
+    group.isValid = True
+    timeline = wire(FakeTimeline([group], groups=[group]))
+    return timeline, group, member
+
+
+def test_group_state_expands_and_collapses_with_unknown_group_key_and_retained_member(unfold_group):
+    timeline, group, member = unfold_group
+    for collapsed in (False, True):
+        out = payload(et.handler(action='group_state', feature='Group1', collapsed=collapsed))
+        assert group.isCollapsed is collapsed and out['is_collapsed'] is collapsed
+        assert out['member_count'] == 1 and out['group_canonical_identity_verified'] is None
+        assert group.item(0) is member and group.delete_calls == []
+
+
+def test_group_state_refuses_unread_or_unsupported_members_before_change(unfold_group, monkeypatch):
+    timeline, group, member = unfold_group
+    member.entity.parentComponent.entityToken = ''
+    result = et.handler(action='group_state', feature='Group1', collapsed=False)
+    assert result['isError'] is True and 'could not be read' in result['message']
+    assert group.isCollapsed is True
+    member.entity.parentComponent.entityToken = 'sheet-a'
+    group._members.extend([FakeTimelineObject('Cut1', 1), FakeTimelineObject('Refold1', 2)])
+    result = et.handler(action='group_state', feature='Group1', collapsed=False)
+    assert result['isError'] is True and 'supports only' in result['message']
+    assert group.isCollapsed is True
+
+
+def test_group_state_rejects_a_fresh_group_with_changed_member_keys(unfold_group, monkeypatch):
+    timeline, group, member = unfold_group
+    replacement = FakeTimelineGroup('Group1', 0, members=[FakeTimelineObject('Unfold1', 0,
+        entity=types.SimpleNamespace(entityToken='wrong-unfold', objectType='adsk::fusion::UnfoldFeature',
+                                     parentComponent=member.entity.parentComponent))], collapsed=False)
+    replacement.isValid = True
+    monkeypatch.setattr(et, '_groups', lambda _timeline, strict=False: [group] if group.isCollapsed else [replacement])
+    result = et.handler(action='group_state', feature='Group1', collapsed=False)
+    assert result['isError'] is True and 'unconfirmed' in result['message']
+
+
+def test_group_state_rejects_changed_member_key_on_the_same_valid_wrapper(unfold_group, monkeypatch):
+    timeline, group, member = unfold_group
+    original_setattr = FakeTimelineGroup.__setattr__
+    def change_member(self, name, value):
+        original_setattr(self, name, value)
+        if self is group and name == 'isCollapsed':
+            member.entity.entityToken = 'changed-unfold'
+    monkeypatch.setattr(FakeTimelineGroup, '__setattr__', change_member)
+    result = et.handler(action='group_state', feature='Group1', collapsed=False)
+    assert group.isValid is True and timeline.timelineGroups.item(0) is group
+    assert result['isError'] is True and 'unconfirmed' in result['message']
+
+
+def test_hidden_unfold_advice_expands_and_retries_original_qualified_action(unfold_group):
+    timeline, group, member = unfold_group
+    result = et.handler(action='suppress', feature='SheetA/Unfold1')
+    message = error_message(result)
+    assert "action='group_state', feature='Group1', collapsed=false" in message
+    assert "qualified reference 'SheetA/Unfold1'" in message
+    assert 'original action' in message and "action='ungroup'" not in message and 'sheet_create_refold' not in message
+    assert member.isSuppressed is False and group.isCollapsed is True
+
+
+def test_hidden_unfold_unread_type_owner_or_slot_never_recommends_ungroup(unfold_group):
+    timeline, group, member = unfold_group
+    for field in ('objectType', 'parentComponent'):
+        prior = getattr(member.entity, field)
+        setattr(member.entity, field, None)
+        message = error_message(et.handler(action='suppress', feature='Unfold1'))
+        assert 'could not be read completely' in message and 'design_get' in message
+        assert "action='ungroup'" not in message
+        setattr(member.entity, field, prior)
+    group._members.append(None)
+    message = error_message(et.handler(action='suppress', feature='Unfold1'))
+    assert 'could not be read completely' in message and "action='ungroup'" not in message
+
+
+def test_hidden_unfold_with_cut_does_not_offer_unsupported_group_state(unfold_group):
+    timeline, group, member = unfold_group
+    group._members.append(FakeTimelineObject('Cut1', 1, entity=types.SimpleNamespace(
+        entityToken='cut', objectType='adsk::fusion::ExtrudeFeature', parentComponent=member.entity.parentComponent)))
+    message = error_message(et.handler(action='suppress', feature='SheetA/Unfold1'))
+    assert 'outside' in message and 'expand it in Fusion' in message and 'design_get' in message
+    assert "action='group_state'" not in message and "action='ungroup'" not in message
+
+
+def test_readable_hidden_construction_plane_keeps_ordinary_owner_hint(unfold_group):
+    timeline, group, member = unfold_group
+    member.name = 'Plane1'
+    member.entity = types.SimpleNamespace(entityToken='plane', objectType='adsk::fusion::ConstructionPlane',
+                                         component=MakeComp('SheetA', entity_token='sheet-a'))
+    message = error_message(et.handler(action='suppress', feature='SheetA/Plane1'))
+    assert "action='ungroup'" in message and 'could not be read' not in message
+
+
 # ── roll: to a named item ────────────────────────────────────────────────────
 
 class TestRollToFeature:
@@ -407,7 +507,8 @@ class TestRollToFeature:
         assert "Target 'Base' itself" in msg and "ungroup" not in msg
 
     def test_a_suppress_of_a_collapsed_groups_member_names_the_ungroup_call(self, wire):
-        members = [FakeTimelineObject("Sketch1", 0), FakeTimelineObject("Extrude1", 1)]
+        members = [FakeTimelineObject("Sketch1", 0), FakeTimelineObject("Extrude1", 1,
+                   entity=types.SimpleNamespace(objectType='adsk::fusion::ExtrudeFeature'))]
         group = FakeTimelineGroup("CascadeG", 0, members=members, collapsed=True)
         wire(FakeTimeline([group, FakeTimelineObject("Fillet1", 1)], groups=[group]))
         msg = error_message(et.handler(action="suppress", feature="Extrude1", suppressed=True))
@@ -419,7 +520,8 @@ class TestRollToFeature:
         # index 0 is visible; a member literally named "0" sits in a collapsed group, absent from
         # the walk - the bare "0" must refuse naming both, and suppress nothing.
         seat = FakeTimelineObject("Extrude1", 0)
-        group = FakeTimelineGroup("Imports", 1, members=[FakeTimelineObject("0", 2)], collapsed=True)
+        group = FakeTimelineGroup("Imports", 1, members=[FakeTimelineObject("0", 2,
+                                  entity=types.SimpleNamespace(objectType='adsk::fusion::Sketch'))], collapsed=True)
         wire(FakeTimeline([seat, group], groups=[group]))
         msg = error_message(et.handler(action="suppress", feature="0", suppressed=True))
         assert "'0' matches Extrude1@0 and also names" in msg
@@ -427,7 +529,7 @@ class TestRollToFeature:
 
     def test_a_hidden_bare_name_twin_refuses_but_an_indexed_visible_address_rolls(self, wire):
         visible = FakeTimelineObject("Twin", 1)
-        hidden = FakeTimelineObject("Twin", 2)
+        hidden = FakeTimelineObject("Twin", 2, entity=types.SimpleNamespace(objectType='adsk::fusion::ExtrudeFeature'))
         group = FakeTimelineGroup("HiddenPair", 0, members=[hidden], collapsed=True)
         tl = wire(FakeTimeline([group, visible], groups=[group], marker=2))
         msg = error_message(et.handler(action="roll", feature="Twin"))

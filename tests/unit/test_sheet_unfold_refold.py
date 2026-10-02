@@ -2,7 +2,17 @@ from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import json
 import pytest
-from conftest import load_tool
+from conftest import MakeComp, _NamedCollection, load_tool, make_design
+
+
+def _unfold_design(factory):
+    """Return root and sheet components with complete unfold/refold collections."""
+    root, comp = MakeComp('Root', entity_token='root'), MakeComp('SheetA', entity_token='sheet')
+    root.features = NS(unfoldFeatures=_NamedCollection(), refoldFeatures=_NamedCollection())
+    comp.features = NS(unfoldFeatures=factory, refoldFeatures=_NamedCollection())
+    design = make_design(comp=root, all_components=[root, comp])
+    root.parentDesign = comp.parentDesign = design
+    return design, comp
 
 
 @pytest.fixture
@@ -10,8 +20,9 @@ def unfold(monkeypatch):
     mod = load_tool("sheet_create_unfold")
     body = NS(name="Sheet", faces=NS(count=14), isSheetMetal=True)
     feature = NS(name="Unfold1")
-    factory = NS(createInput=Mock(return_value=NS()), add=Mock(return_value=feature))
-    comp = NS(features=NS(unfoldFeatures=factory), parentDesign=NS(rootComponent=object()))
+    factory = _NamedCollection()
+    factory.createInput, factory.add = Mock(return_value=NS()), Mock(return_value=feature)
+    design, comp = _unfold_design(factory)
     body.parentComponent = comp
     monkeypatch.setattr(mod._FACE, "resolve", lambda x: (NS(body=body), None))
     monkeypatch.setattr(mod._BENDS, "resolve", lambda x: ([], None))
@@ -92,8 +103,9 @@ def test_unfold_all_bends_succeeds_through_the_real_wall_pairing(monkeypatch):
     body = NS(name="Sheet", faces=faces, isSheetMetal=True,
               getBendFaces=lambda: (_ for _ in ()).throw(AssertionError("getBendFaces must not be called before an unfold")))
     feature = NS(name="Unfold1")
-    factory = NS(createInput=Mock(return_value=NS()), add=Mock(return_value=feature))
-    comp = NS(features=NS(unfoldFeatures=factory), parentDesign=NS(rootComponent=object()))
+    factory = _NamedCollection()
+    factory.createInput, factory.add = Mock(return_value=NS()), Mock(return_value=feature)
+    design, comp = _unfold_design(factory)
     body.parentComponent = comp
     monkeypatch.setattr(mod._FACE, "resolve", lambda x: (NS(body=body), None))
     monkeypatch.setattr(mod._BENDS, "resolve", lambda x: ([], None))
@@ -151,6 +163,67 @@ def test_unfold_explicit_bend_faces_succeeds(unfold, monkeypatch):
     assert not hasattr(captured, "isUnfoldAllBends")
     payload = json.loads(result["content"][0]["text"])
     assert payload["all_bends"] is False and payload["bend_count_unfolded"] == 2
+
+
+@pytest.mark.parametrize('state', ['pending', 'unread_slot', 'missing_root', 'wrong_owner', 'broken_link', 'cross_owner_link', 'duplicate_owner', 'duplicate_unfold'])
+def test_unfold_design_preflight_refuses_before_input_for_pending_or_incomplete_associations(unfold, monkeypatch, state):
+    mod, factory = unfold
+    design = mod._common.design()
+    comp = design._all_components[1]
+    source = NS(name='Unfold1', parentComponent=comp, refoldFeature=None)
+    factory._items.append(source)
+    expected = 'SheetA/Unfold1'
+    if state == 'unread_slot':
+        factory._items[:] = [None]
+        expected = 'slot 0'
+    elif state == 'missing_root':
+        design._all_components[:] = [comp]
+        expected = 'root exactly once'
+    elif state == 'wrong_owner':
+        source.parentComponent = design.rootComponent
+        expected = 'owner/association'
+    elif state == 'broken_link':
+        source.refoldFeature = NS(parentComponent=comp, unfoldFeature=None)
+        expected = 'reciprocal'
+    elif state == 'cross_owner_link':
+        sibling = MakeComp('SheetB', entity_token='other')
+        sibling.features = NS(unfoldFeatures=_NamedCollection(), refoldFeatures=_NamedCollection())
+        design._all_components.append(sibling)
+        refold = NS(name='Refold1', parentComponent=sibling, unfoldFeature=source)
+        source.refoldFeature = refold
+        sibling.features.refoldFeatures._items.append(refold)
+        expected = 'reciprocal association'
+    elif state == 'duplicate_owner':
+        sibling = MakeComp('SheetA', entity_token='other')
+        sibling.features = NS(unfoldFeatures=_NamedCollection(), refoldFeatures=_NamedCollection())
+        design._all_components.append(sibling)
+        expected = 'ambiguous component name'
+    elif state == 'duplicate_unfold':
+        factory._items.append(NS(name='Unfold1', parentComponent=comp, refoldFeature=None))
+        expected = 'ambiguous unfold name'
+    result = mod.handler(stationary_face='face', all_bends=True)
+    assert result['isError'] is True and expected in result['message']
+    assert 'design_get' in result['message']
+    if state == 'pending':
+        assert "sheet_create_refold(unfold='SheetA/Unfold1')" in result['message']
+        assert 'policy' in result['message']
+    factory.createInput.assert_not_called()
+    factory.add.assert_not_called()
+
+
+def test_unfold_completed_reciprocal_census_allows_a_new_unfold(unfold, monkeypatch):
+    mod, factory = unfold
+    comp = mod._common.design()._all_components[1]
+    source = NS(name='Unfold1', parentComponent=comp)
+    refold = NS(name='Refold1', parentComponent=comp, unfoldFeature=source)
+    source.refoldFeature = refold
+    factory._items.append(source)
+    comp.features.refoldFeatures._items.append(refold)
+    monkeypatch.setattr(mod._geom, 'faces_moved', lambda faces, before: (7, 14))
+    result = mod.handler(stationary_face='face', all_bends=True)
+    assert result['isError'] is False, result
+    factory.createInput.assert_called_once()
+    factory.add.assert_called_once()
 
 
 def test_unfold_concatenated_composite_handles_refuse_before_native_input_and_arrays_keep_both(unfold, monkeypatch):
