@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 690
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 691
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -3130,9 +3130,11 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' has no closed profile to extrude. Draw a closed region (e.g. a rectangle or circle) first, or pass as_surface=true to extrude an open path into a surface.
 - taper_deg is not supported with extent=through_all (a through-all extent carries no taper).
 - Fusion rejected a symmetric extent=through_all (setTwoSidesExtent returned false).
-- extent=through_all (setOneSideExtent returned false).
 - taper_deg is not supported with extent=two_side (setTwoSidesDistanceExtent takes no taper).
 - Fusion rejected extent=two_side (setTwoSidesDistanceExtent returned false).
+- Negative extent=through_all needs the retired setAllExtent compatibility setter, unavailable here; nothing was extruded.
+- Fusion rejected negative extent=through_all (retired setAllExtent returned false); nothing was extruded.
+- extent=through_all (setOneSideExtent returned false).
 - Fusion refused a symmetric tapered extent (
 - deg), so nothing was extruded.
 - Fusion refused a one-sided tapered extent (
@@ -3140,13 +3142,13 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - profile_index '' is not an int, list, 'all', or '0,1,2'. To target a specific region, pass a profile handle from sketch_get instead.
 - profile_index list holds the profile handle : a list takes integer indices. Pass one handle alone, or the regions' indices from sketch_get.
 - Extrude built '' but its  reads back  , not the requested . '' REMAINS in the timeline - inspect it with design_get and remove it with design_delete_feature.
-- This extrude already goes BOTH ways from the sketch plane, so no 'distance' sign reaches a body it missed - the profile overlaps no participant body. Check where the profile sits, and 'target_bodie...
-- extent=through_all follows the sketch-plane normal; a sketch ON a body's face points AWAY from the material, so this direction hits only air. Pass a  'distance' to cut the other way into the body.
+- extent=through_all follows the sketch-plane normal. If an on-face sketch points AWAY from the material, try a  'distance' for the other side.
 - The extrude reached no body the way it went, and a sketch ON a body's face points its normal AWAY from the material. Pass a  'distance' to go the other way, or check the profile overlaps the body a...
 - symmetric=true is not supported with extent= and to_object. Use symmetric=false for a one-sided to-face extrude, or omit to_object and use extent='distance' with a non-zero distance for symmetry.
 - profile_index mixes the sketch text '' with other regions. A sketch text extrudes on its own - pass just '', and a separate call for the closed regions.
 - as_surface is not used with the sketch text '' - a text extrudes as a solid. Drop as_surface, or pass a closed profile / an open path.
 - Sketch '' has no closed profile to extrude. Draw a closed region (e.g. a rectangle or circle) first, or pass as_surface=true to extrude an open path into a surface.
+- Use model_measure_between to size a finite negative-distance cut, then use extent='distance' with that negative distance.
 - Extrude reported success but extent=through_all removed no material from . through_all follows the sketch-plane normal, which on an on-face sketch points away from the body - pass the opposite 'dis...
 - Scoping to 'target_bodies' () makes Fusion build this failed feature instead of refusing a profile that reaches none of them, so check the profile overlaps those bodies in the extrude direction (a ...
 - '' is LEFT in the timeline - nothing is rolled back while an effect is unruled-out. Inspect it with design_get and remove it with design_delete_feature if it is unwanted.

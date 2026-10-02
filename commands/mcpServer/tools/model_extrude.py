@@ -386,24 +386,22 @@ def _depth_mismatch(fname, what, got_cm, want_cm, raw, k, units) -> str:
 
 
 def _no_target_body_hint(ext_key, distance, symmetric=False) -> str:
-    """The remedy for an extrude Fusion answered with no body to reach: which way this one went and
-    the sign that reverses it - or, going both ways already, that no sign can reach one."""
+    """Return conditional direction guidance without diagnosing the native body-not-found refusal."""
     negative = None
     try:
         negative = float(distance) < 0
     except (TypeError, ValueError):
         pass
     flip_to = "POSITIVE" if negative else "NEGATIVE"
-    # Symmetric is read FIRST: a symmetric extent never reads the sign at all, so a direction remedy
-    # would send the caller after a knob that changed nothing.
+    inspect = " Read sketch_get for the profile and frame, and find_geometry for the target body geometry."
+    qualification = " The native body-not-found reply does not establish why the target was missed."
     if symmetric:
-        return (" This extrude already goes BOTH ways from the sketch plane, so no 'distance' sign "
-                "reaches a body it missed - the profile overlaps no participant body. Check where "
-                "the profile sits, and 'target_bodies' if it names any.")
+        return (qualification + " This extent is requested BOTH ways from the sketch plane; "
+                "changing the 'distance' sign cannot fix a symmetric extent." + inspect)
     if ext_key == "through_all":
-        return (" extent=through_all follows the sketch-plane normal; a sketch ON a body's face "
-                "points AWAY from the material, so this direction hits only air. Pass a "
-                f"{flip_to} 'distance' to cut the other way into the body.")
+        return (qualification + " extent=through_all follows the sketch-plane normal. If an on-face "
+                "sketch points AWAY from the material, try a "
+                f"{flip_to} 'distance' for the other side." + inspect)
     went = "" if negative is None else f" - 'distance' was {'negative' if negative else 'positive'}"
     return (f" The extrude reached no body the way it went{went}, and a sketch ON a body's face "
             f"points its normal AWAY from the material. Pass a {flip_to} 'distance' to go the "
@@ -602,15 +600,26 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
             if taper:
                 return error("taper_deg is not supported with extent=through_all (a through-all "
                              "extent carries no taper).")
-            # setAllExtent(SymmetricExtentDirection) answers true while cutting ONE direction only,
-            # so symmetric sets BOTH sides through ThroughAllExtentDefinition and a one-sided extent
-            # names its direction. Either can still fail AT add() with "body not found".
+            # The modern one-sided negative setter cuts the positive side in the scoped XY case;
+            # the retired negative setter cuts the requested side. Symmetry needs two modern sides.
             through_all_dir = _through_all_direction_key(symmetric, distance)
             all_extent = adsk.fusion.ThroughAllExtentDefinition
             if through_all_dir == "symmetric":
                 if not ext_input.setTwoSidesExtent(all_extent.create(), all_extent.create()):
                     return error("Fusion rejected a symmetric extent=through_all "
                                  "(setTwoSidesExtent returned false).")
+            elif through_all_dir == "negative":
+                setter = safe(lambda: ext_input.setAllExtent)
+                remedy = ("Use model_measure_between to size a finite negative-distance cut, "
+                          "then use extent='distance' with that negative distance.")
+                if not callable(setter):
+                    return error("Negative extent=through_all needs the retired setAllExtent "
+                                 "compatibility setter, unavailable here; nothing was extruded. "
+                                 + remedy)
+                if not setter(adsk.fusion.ExtentDirections.NegativeExtentDirection):
+                    return error("Fusion rejected negative extent=through_all "
+                                 "(retired setAllExtent returned false); nothing was extruded. "
+                                 + remedy)
             else:
                 ext_dirs = adsk.fusion.ExtentDirections
                 direction = {"positive": ext_dirs.PositiveExtentDirection,
@@ -877,6 +886,8 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
             note += " The landed depth was not read."
     elif ext_key == "through_all":
         extent_report, distance_report = "through_all", None
+        if through_all_dir == "negative":
+            note += " Negative through-all uses the retired setAllExtent compatibility setter."
     else:
         extent_report, distance_report = ext_key, _inputs.expression_report(distance)
 

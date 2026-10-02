@@ -661,3 +661,66 @@ def test_origin_consumers_owned_scene_retains_its_measured_witness_coordinates()
         assert args["activate"] is False and check(reply)
         with pytest.raises(AssertionError, match="not activated"):
             check(dict(reply, activated=True))
+
+
+def test_edge_and_signed_extent_scenes_keep_original_coordinates_in_complete_family():
+    compiled = verify_program.compile_program(verify_program._RAW_ACT_PROGRAM)["acts"]
+    for duplicate, tag in ((True, "distinct_edge"), (False, "signed_all")):
+        authored = verify_acts_model_solids._edge_extent_rows(duplicate)
+        context = {tag + "_" + key: value for key, value in
+                   (("home", "home"), ("doc", "scratch"), ("stock", "Body1"),
+                    ("witness", "Body2"), ("edge", "edge"), ("feature", "Feature"), ("wall", "wall"))}
+        rows = next(rows for _name, _pre, rows, _fallback in compiled
+                    if any(save and save[0] == tag + "_doc" for _tool, _args, _check, save in rows))
+        start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == tag + "_doc")
+        end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
+        def requests(selected):
+            return [(tool, args(context) if callable(args) else args)
+                    for tool, args, _check, _save in selected
+                    if tool in {"sketch_add_geometry", "find_geometry", "model_fillet", "model_extrude"}]
+        assert requests(rows[start:end]) == requests(authored), tag
+
+
+def test_signed_extent_oracle_rejects_wrong_side_even_with_correct_removed_volume():
+    rows = verify_acts_model_solids._edge_extent_rows(False)
+    checks = [check for tool, _args, check, _save in rows
+              if tool == "find_geometry" and callable(check) and check.__name__ == "side"]
+    def payload(x, z):
+        return {"units": "mm", "returned": 1, "match_count": 1, "matches": [
+            {"handle": "wall", "kind": "cylinder_face", "radius": .5, "area": 15.708,
+             "normal": [0, 1, 0], "position": [x, 4, z]}]}
+    assert len(checks) == 3
+    assert checks[1](payload(5, -2.5)) is True
+    with pytest.raises(AssertionError, match="requested side"):
+        checks[1](payload(5, 2.5))
+    assert checks[2](payload(8, 0)) is True
+    assert verify_acts_model_solids._edge_extent_geometry({"units": "mm", "returned": 0,
+        "match_count": 0, "matches": []}) is None
+
+
+@pytest.mark.parametrize("kind,missing", [("planar_face", "area"), ("cylinder_face", "radius"),
+                                         ("line_edge", "length")])
+def test_edge_extent_census_refuses_missing_measured_geometry(kind, missing):
+    row = {"handle": "geometry", "kind": kind, "position": [5, 4, -2.5],
+           "area": 15.708, "radius": .5, "length": 10, "normal": [1, 0, 0]}
+    payload = {"units": "mm", "returned": 1, "match_count": 1, "matches": [row]}
+    assert verify_acts_model_solids._edge_extent_geometry(payload) is not None
+    del row[missing]
+    assert verify_acts_model_solids._edge_extent_geometry(payload) is None
+
+
+def test_placed_extent_refusal_scene_keeps_recorded_pose_and_local_requests_in_full_family():
+    rows = [row for _name, _pre, narrative, _fallback in verify_program.ACTS for row in narrative]
+    authored = verify_acts_model_solids._placed_extent_refusal_rows()
+    context = {"placed_extent_doc": "scratch", "placed_extent_home": "home",
+               "placed_extent_bodies": {"stock": "placed-body", "witness": "root-body"}}
+    start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == "placed_extent_home")
+    end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
+    wanted = {"sketch_add_geometry", "model_create_component", "model_extrude", "find_geometry", "sketch_get"}
+    def requests(selected):
+        return [(tool, args(context) if callable(args) else args) for tool, args, _check, _save in selected if tool in wanted]
+    assert requests(rows[start:end]) == requests(authored)
+    cuts = [args for tool, args in requests(authored) if tool == "model_extrude" and args.get("operation") == "cut"]
+    assert [(r["distance"], r["symmetric"], "target_bodies" in r) for r in cuts] == [
+        (1, False, True), (-1, False, True), (1, True, True)]
+    assert all(r["component"] == "PlacedStock:1" for r in cuts)

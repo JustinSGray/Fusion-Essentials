@@ -18,11 +18,10 @@ from . import _geom
 from . import _inputs
 
 MAP_BLURB = (
-    "the edge-treatment substrate: EDGES/FACES/BODY/_EDGE_FILTER_DESC/_TANGENT_CHAIN_DESC - the "
-    "targeting inputs; _edges_of_faces - a face set as its edges, each once; _edge_convexity + "
-    "_collect_edges - the dihedral a filter picks by; _tangent_chain_read - the chain flag off the "
-    "feature; _cut_edges - its RESOLVED edge count, over rolled_to; _apply - the ONE "
-    "build-and-verify path, on volume OR area")
+    "EDGES/FACES/BODY/_EDGE_FILTER_DESC/_TANGENT_CHAIN_DESC - targeting; _edges_of_faces - face "
+    "edges; _distinct_placed_edges - constant-fillet handles per placement; _edge_convexity/"
+    "_collect_edges - dihedral filters; _tangent_chain_read - applied chain; _cut_edges - resolved "
+    "count via rolled_to; _apply - build and verify volume/area")
 
 # Edge-handle-list input (closes the 'fillet THESE specific edges' gap; takes precedence over edge_filter).
 _EDGES = _inputs.GeometryHandleList("edges", require="edge",
@@ -60,6 +59,27 @@ _VECTOR_DECIMALS = 12
 # The ways an edge comes back with no convex/concave answer, named so a refusal says which happened
 # rather than asserts a cause.
 _UNCLASSIFIED = ("unreadable", "disagreed", "knife")
+
+
+def _distinct_placed_edges(edges, root):
+    """Keep each readable native edge and placed path once, retaining unknown identities."""
+    out, seen = [], set()
+    unread = object()
+    for edge in edges:
+        native = _common.native_identity(edge)
+        context = safe(lambda: edge.assemblyContext, unread)
+        path = safe(lambda: context.fullPathName) if context is not None and context is not unread else None
+        if not isinstance(path, str) or not path:
+            path = None
+        if context is None and _common.same_component(
+                safe(lambda: edge.body.parentComponent), root) is True:
+            path = ""
+        key = (native, path) if native is not None and isinstance(path, str) else None
+        if key is None or key not in seen:
+            out.append(edge)
+            if key is not None:
+                seen.add(key)
+    return out
 
 
 def _size_hint(platform_text: str, size_key: str) -> str:
@@ -404,10 +424,13 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
                           "any fillet/chamfer feature is created, rather than silently rounding fewer "
                           "edges than asked.)" if requested_n else "")
             return error(herr + count_note)
+        if kind == "fillet" and variant is None:
+            ents = _distinct_placed_edges(ents, safe(lambda: design.rootComponent))
         edges = adsk.core.ObjectCollection.create()
         for e in ents:
             edges.add(e)
-        edge_src = f"{edges.count} handle(s)"
+        edge_src = (f"{edges.count} edge seed(s) from handles" if kind == "fillet" and variant is None
+                    else f"{edges.count} handle(s)")
         body_label = _qualified_body_name(safe(lambda: ents[0].body))
         verify_bodies = _geom.owning_bodies(ents)
     else:

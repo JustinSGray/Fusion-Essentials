@@ -26,7 +26,7 @@ from verify_acts_model_precision import (
 from verify_acts_model_sweep import (
     _LATER_OPERAND, _LOFT_ALIGNMENT, _LOFT_EDITOR, _LOFT_PARTICIPANTS, _SOLID_TOOL,
     _SWEEP_EDIT_MODES, _TANGENT_PATH, _retire_compare, _retire_material_state,
-    _retire_reads, _rolled_back_body)
+    _retire_reads, _retire_design_state, _rolled_back_body)
 
 
 def _pattern_single_row_history(p):
@@ -1366,3 +1366,289 @@ def _symmetric_target_rows():
 
 
 _SOLIDS += _symmetric_target_rows()
+
+
+def _edge_extent_geometry(p):
+    """Return a complete finite public face/edge census without transient handle text."""
+    rows = p.get("matches")
+    if (p.get("units") != "mm" or not isinstance(rows, list) or not rows
+            or p.get("match_count") != p.get("returned") or p.get("returned") != len(rows)):
+        return None
+    for row in rows:
+        position = row.get("position")
+        if (not row.get("handle") or not row.get("kind")
+                or not isinstance(position, list) or len(position) != 3
+                or not all(_num(v) and math.isfinite(v) for v in position)):
+            return None
+        required = ("area",) if row["kind"].endswith("face") else ("length",)
+        if row["kind"] in ("cylinder_face", "circular_edge", "arc_edge"):
+            required += ("radius",)
+        for key in required:
+            if not _num(row.get(key)) or not math.isfinite(row[key]) or row[key] <= 0:
+                return None
+        if row["kind"].endswith("face"):
+            normal = row.get("normal")
+            if (not isinstance(normal, list) or len(normal) != 3
+                    or not all(_num(v) and math.isfinite(v) for v in normal)):
+                return None
+    return sorted(({k: v for k, v in row.items() if k != "handle"} for row in rows),
+                  key=lambda r: (r["kind"], r["position"]))
+
+
+def _edge_extent_history(tag, feature_key, feature_type):
+    """Require exactly one healthy feature after the unchanged baseline history."""
+    def check(p):
+        now = _retire_design_state(p)
+        before = _RECALL.get(tag + "_design")
+        old = (before or {}).get("timeline", {})
+        tl = (now or {}).get("timeline", {})
+        rows = tl.get("timeline") or []
+        states = dict((old.get("summary") or {}).get("states") or {})
+        states["healthy"] = states.get("healthy", 0) + 1
+        valid = (now is not None and before is not None and len(rows) == len(old["timeline"]) + 1
+                 and rows[:-1] == old["timeline"] and rows[-1].get("name") == _RECALL.get(feature_key)
+                 and rows[-1].get("type") == feature_type and rows[-1].get("health", "healthy") == "healthy"
+                 and (tl.get("summary") or {}).get("states") == states
+                 and (tl.get("summary") or {}).get("exceptions") == (old.get("summary") or {}).get("exceptions"))
+        return _measured("one healthy feature with retained prior history", tl, valid)
+    return check
+
+
+def _edge_extent_rows(duplicate):
+    """Compare repeated-edge fillets or signed through-all cuts against independent public reads."""
+    tag = "distinct_edge" if duplicate else "signed_all"
+    rows = [("doc_get", {}, _home_document, (tag + "_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, tag + "_home", "story")},
+             _new_document, (tag + "_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(
+            c, tag + "_doc", args(c) if callable(args) else args), check, save))
+
+    dimensions = (10, 8, 6) if duplicate else (12, 8, 5)
+    for name, x, size in (("EdgeExtentStock", 0, dimensions), ("EdgeExtentWitness", 100, (20, 20, 20))):
+        write("sketch_create", {"name": name, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [
+            {"kind": "rectangle", "x1": x, "y1": 0, "x2": x + size[0], "y2": size[1]}]})
+        write("model_extrude", {"sketch_name": name, "distance": size[2],
+                               "symmetric": not duplicate and x == 0}, _extruded,
+              (tag + ("_stock" if x == 0 else "_witness"), lambda p: p["result_bodies"][0]))
+    if not duplicate:
+        for name, x in (("AllPositive", 2), ("AllNegative", 5), ("AllSymmetric", 8)):
+            write("sketch_create", {"name": name, "plane": "xy"})
+            write("sketch_add_geometry", {"sketch_name": name, "geometry": [
+                {"kind": "circle", "cx": x, "cy": 4, "radius": .5}]})
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+
+    def inspect(role):
+        return lambda c: {**_combine_inspect(_ctx_get(c, tag + "_" + role, role)), "per_body": True}
+
+    def geometry(role, kind=""):
+        return lambda c: {"target": _ctx_get(c, tag + "_" + role, role), **({"kind": kind} if kind else {}),
+                          "max_results": 100, "units": "mm"}
+
+    baseline_volume = 480 if duplicate else 960
+    rows += [("model_inspect", inspect("stock"),
+              _combine_body("source stock", (0, 0, 0 if duplicate else -5),
+                            (dimensions[0], 8, 6 if duplicate else 5), baseline_volume), None),
+             ("model_inspect", inspect("witness"),
+              _combine_body("independent witness", (100, 0, 0), (120, 20, 20), 8000), None)]
+    rows += _retire_reads(tag, [""], [])
+    for role in ("stock", "witness"):
+        rows += [("model_inspect", inspect(role), _retire_compare(
+                  tag + "_" + role + "_state", _symmetric_target_body_state, False), None),
+                 ("find_geometry", geometry(role), _retire_compare(
+                  tag + "_" + role + "_geometry", _edge_extent_geometry, False), None)]
+
+    def changed_material(expected):
+        def check(p):
+            now = _symmetric_target_body_state(p)
+            return _measured("independent landed material", now,
+                now is not None and _near(now["material"].get("volume"), expected, .001)
+                and now["bounds"] == _RECALL[tag + "_stock_state"]["bounds"])
+        return check
+
+    def acquire_edge(p):
+        state = _edge_extent_geometry(p)
+        matches = [r for r in p.get("matches") or [] if r.get("position") == [5, 8, 0]]
+        valid = state is not None and len(state) == 12 and len(matches) == 1
+        if valid:
+            _RECALL[tag + "_edge"] = matches[0]["handle"]
+        return _measured("one resolved physical edge at [5,8,0]", matches, valid)
+
+    def fillet_result(p):
+        valid = (p.get("filleted") is True and p.get("edges_requested") == p.get("edges_cut") == 1
+                 and p.get("faces_created") == 1 and p.get("tangent_chain") is False)
+        return _measured("one physical edge requested and resolved", p, valid)
+
+    cases = (("single", 1), ("repeated", 2)) if duplicate else (
+        ("AllPositive", 1), ("AllNegative", -1), ("AllSymmetric", 1))
+    for case, value in cases:
+        if duplicate:
+            rows.append(("find_geometry", geometry("stock", "line_edge"), acquire_edge,
+                         (tag + "_edge", lambda p: _RECALL[tag + "_edge"])))
+            write("model_fillet", lambda c, n=value: {"edges": [
+                _ctx_get(c, tag + "_edge", "physical edge")] * n, "radius": .5,
+                "tangent_chain": False}, fillet_result,
+                (tag + "_feature", _recall(tag + "_feature", lambda p: p["feature"])))
+            expected_volume = 479.4634954084937
+        else:
+            write("model_extrude", lambda c, case=case, value=value: {
+                "sketch_name": case, "operation": "cut", "extent": "through_all", "distance": value,
+                "symmetric": case == "AllSymmetric", "target_bodies": [_ctx_get(c, tag + "_stock", "stock")]},
+                _extruded, (tag + "_feature", _recall(tag + "_feature", lambda p: p["feature"])))
+            expected_volume = baseline_volume - math.pi * .5 ** 2 * (10 if case == "AllSymmetric" else 5)
+        rows += [("model_inspect", inspect("stock"), changed_material(expected_volume), None),
+                 ("model_inspect", inspect("witness"), _retire_compare(
+                     tag + "_witness_state", _symmetric_target_body_state, True), None),
+                 ("find_geometry", geometry("witness"), _retire_compare(
+                     tag + "_witness_geometry", _edge_extent_geometry, True), None),
+                 ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                                  "tree_handles": True, "max_depth": 10, "max_results": 2000},
+                  _edge_extent_history(tag, tag + "_feature", "FilletFeature" if duplicate else "ExtrudeFeature"), None)]
+        if duplicate:
+            rows.append(("find_geometry", geometry("stock"), _retire_compare(
+                tag + "_landed_geometry", _edge_extent_geometry, case == "repeated"), None))
+        else:
+            x, z = {"AllPositive": (2, 2.5), "AllNegative": (5, -2.5), "AllSymmetric": (8, 0)}[case]
+            def side(p, x=x, z=z):
+                state = _edge_extent_geometry(p)
+                matches = p.get("matches") or []
+                valid = (state is not None and len(matches) == 1 and matches[0].get("kind") == "cylinder_face"
+                         and _near(matches[0].get("radius"), .5, .000001)
+                         and all(_near(v, e, .000001) for v, e in zip(matches[0]["position"], (x, 4, z))))
+                return _measured("independent bore wall centroid on the requested side", matches, valid)
+            rows.append(("find_geometry", geometry("stock", "cylinder_face"), side, _fg(tag + "_wall")))
+            low, high = (-5 if z <= 0 else 0), (5 if z >= 0 else 0)
+            def wall_bounds(p, low=low, high=high):
+                bounds = [p.get(point) or {} for point in ("min_point", "max_point")]
+                valid = (p.get("units") == "mm" and p.get("frame") == "world axes (axis-aligned)"
+                         and all(_num(b.get(a)) and math.isfinite(b[a]) for b in bounds for a in "xyz")
+                         and _near(bounds[0].get("z"), low, .000001)
+                         and _near(bounds[1].get("z"), high, .000001))
+                return _measured("bore wall bounds reach exactly the requested stock side", bounds, valid)
+            rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, tag + "_wall", "bore wall"),
+                "include": ["default"], "units": "mm"}, wall_bounds, None))
+        write("design_delete_feature", lambda c: {"feature": _ctx_get(c, tag + "_feature", "created feature")})
+        rows += _retire_reads(tag, [""], [], True)
+        for role in ("stock", "witness"):
+            rows += [("model_inspect", inspect(role), _retire_compare(
+                      tag + "_" + role + "_state", _symmetric_target_body_state, True), None),
+                     ("find_geometry", geometry(role), _retire_compare(
+                      tag + "_" + role + "_geometry", _edge_extent_geometry, True), None)]
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, tag + "_home", "story"),
+               "expect_document": _ctx_get(c, tag + "_doc", "scratch")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, tag + "_doc", "scratch"), "save_changes": False,
+               "expect_document": _ctx_get(c, tag + "_home", "story")}, _document_closed, None)]
+    return rows
+
+
+_SOLIDS += _edge_extent_rows(True) + _edge_extent_rows(False)
+
+
+def _placed_extent_pose_state(p):
+    """Return the one measured placed stock's complete finite pose, or None when unread."""
+    rows = p.get("all_occurrences")
+    if (p.get("units") != "mm" or p.get("is_healthy") is not True
+            or not isinstance(rows, list) or len(rows) != p.get("all_occurrence_count") or len(rows) != 1
+            or p.get("occurrence_count") != 1 or len(p.get("occurrences") or []) != 1
+            or p.get("joint_count") != 0 or p.get("joints") != []
+            or any(p.get(k) is not False for k in ("all_occurrences_truncated", "occurrences_truncated", "joints_truncated"))):
+        return None
+    expected = {"origin": [30, 20, 40], "x_axis": [1, 0, 0], "y_axis": [0, 0, 1],
+                "z_axis": [0, -1, 0], "bbox_center": [36, 20, 44], "bbox_size": [12, 10, 8]}
+    for row in rows + p["occurrences"]:
+        if (row.get("full_path", row.get("name")) != "PlacedStock:1" or row.get("component") != "PlacedStock"
+                or row.get("body_count") != 1 or any(type(row.get(k)) is not bool for k in ("grounded", "ground_to_parent"))
+                or any(not isinstance(row.get(k), list) or len(row[k]) != 3
+                       or any(not _num(v) or not math.isfinite(v) or not _near(v, e, .000001)
+                              for v, e in zip(row[k], values)) for k, values in expected.items())):
+            return None
+    return {k: v for k, v in p.items() if k not in ("note", "active_document")}
+
+
+def _placed_extent_frame_state(p):
+    """Return the readable measured placed sketch frame and current profile count."""
+    frame = p.get("frame") or {}
+    expected = {"origin_mm": [30, 20, 40], "normal": [0, -1, 0],
+                "x_world": [1, 0, 0], "y_world": [0, 0, 1]}
+    if (p.get("units") != "mm" or p.get("component") != "PlacedStock" or p.get("profile_count") != 1
+            or frame.get("space") != "world" or p.get("profiles_stale") or p.get("timeline_marker_unrestored")
+            or any(not isinstance(frame.get(k), list) or len(frame[k]) != 3
+                   or any(not _num(v) or not math.isfinite(v) or not _near(v, e, .000001)
+                          for v, e in zip(frame[k], values)) for k, values in expected.items())):
+        return None
+    return {"frame": frame, "profile_count": p["profile_count"]}
+
+
+def _placed_extent_refusal_rows():
+    """Exercise the recorded rotated placed refusals without asserting their native cause."""
+    rows = [("doc_get", {}, _home_document, ("placed_extent_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "placed_extent_home", "story")},
+             _new_document, ("placed_extent_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, a=args: _combine_pin(c, "placed_extent_doc", a(c) if callable(a) else a), check, save))
+    write("sketch_create", {"name": "Witness", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "Witness", "units": "mm", "geometry": [
+        {"kind": "rectangle", "x1": 100, "y1": 0, "x2": 120, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "Witness", "distance": 20, "units": "mm"}, _extruded)
+    write("model_create_component", {"name": "PlacedStock", "x": 30, "y": 20, "z": 40,
+        "rotate_deg": 90, "rotate_axis": "x", "units": "mm", "activate": True}, _made_component)
+    write("sketch_create", {"name": "Stock", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "Stock", "units": "mm", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 12, "y2": 8}]})
+    write("model_extrude", {"sketch_name": "Stock", "distance": 5, "symmetric": True, "units": "mm"}, _extruded)
+    write("sketch_create", {"name": "Cut", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "Cut", "units": "mm", "geometry": [
+        {"kind": "circle", "cx": 5, "cy": 4, "radius": .5}]})
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+
+    def body_handles(p):
+        tree = (p.get("tree") or {})
+        children, root = tree.get("children") or [], tree.get("root_bodies") or []
+        bodies = (children[0].get("bodies") or []) if len(children) == 1 else []
+        valid = (_retire_design_state(p) is not None and len(children) == len(root) == len(bodies) == 1
+                 and children[0].get("full_path") == "PlacedStock:1" and children[0].get("body_count") == 1
+                 and all(b.get("is_solid") is True and b.get("visible") is True
+                         and isinstance(b.get("handle"), str) and b["handle"] for b in (root[0], bodies[0])))
+        if valid:
+            _RECALL["placed_extent_bodies"] = {"stock": bodies[0]["handle"], "witness": root[0]["handle"]}
+        return _measured("fresh exact placed target and root witness body handles", tree, valid)
+    rows.append(("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+        "max_depth": 10, "max_results": 2000}, body_handles,
+        ("placed_extent_bodies", lambda p: _RECALL["placed_extent_bodies"])))
+
+    def read_states(after):
+        for tool, args, check, save in _retire_reads("placed_extent", ["", "PlacedStock:1"], [], after):
+            rows.append((tool, lambda c, a=args: dict(a), check, save))
+        for role in ("stock", "witness"):
+            rows.append(("find_geometry", lambda c, role=role: {
+                "target": _ctx_get(c, "placed_extent_bodies", "exact fixture bodies")[role], "max_results": 100, "units": "mm"},
+                _retire_compare("placed_extent_" + role + "_geometry", _edge_extent_geometry, after), None))
+        rows.extend([
+            ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, "placed_extent_bodies", "exact fixture bodies")["witness"]),
+                "per_body": True}, _retire_compare("placed_extent_witness", _symmetric_target_body_state, after), None),
+            ("assembly_get", lambda c: {"include": ["all_occurrences", "poses"], "units": "mm",
+                "max_occurrences": 100, "max_all_occurrences": 100, "max_joints": 100},
+                _retire_compare("placed_extent_poses", _placed_extent_pose_state, after), None),
+            ("sketch_get", lambda c: {"component": "PlacedStock:1", "sketch_name": "Cut", "units": "mm"},
+                _retire_compare("placed_extent_frame", _placed_extent_frame_state, after), None)])
+    read_states(False)
+    for distance, symmetric, scoped in ((1, False, True), (-1, False, True), (1, True, True)):
+        write("model_extrude", lambda c, distance=distance, symmetric=symmetric, scoped=scoped: {
+            "sketch_name": "Cut", "component": "PlacedStock:1", "distance": distance, "extent": "through_all",
+            "symmetric": symmetric, "units": "mm", "operation": "cut",
+            **({"target_bodies": [_ctx_get(c, "placed_extent_bodies", "exact fixture bodies")["stock"]]} if scoped else {})},
+            _refused("body not found", "does not establish why", "sketch_get for the profile and frame", "find_geometry for the target body geometry",
+                     "sign cannot fix a symmetric extent" if symmetric else "If an on-face"))
+        read_states(True)
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "placed_extent_home", "story"),
+               "expect_document": _ctx_get(c, "placed_extent_doc", "scratch")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "placed_extent_doc", "scratch"), "save_changes": False,
+               "expect_document": _ctx_get(c, "placed_extent_home", "story")}, _document_closed, None)]
+    return rows
+
+
+_SOLIDS += _placed_extent_refusal_rows()

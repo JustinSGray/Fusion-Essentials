@@ -69,7 +69,7 @@ class FakeExtrudeInput:
         return self.next_result
 
     def setAllExtent(self, direction):
-        # The RETIRED through-all setter: modelled so a test can pin that it is never called.
+        # The retired setter carries the one-sided negative direction.
         self.all_extent = direction
         return self.next_result
 
@@ -1165,11 +1165,7 @@ class TestExtentGuards:
 
 
 # ── through_all extent (ThroughAllExtentDefinition) ──────────────────────────
-# 'distance' carries no magnitude for through_all - only its SIGN (direction hint); symmetric=true
-# goes both ways. The extent is built from ThroughAllExtentDefinition: one side plus a direction for
-# a one-sided cut, BOTH sides for a symmetric one. The retired setAllExtent(SymmetricExtentDirection)
-# answers true while cutting a single direction (measured live - half the expected material), so it
-# is never called. Pinned: the setter per direction, the no-taper guard, and the returned-false paths.
+# Negative one-sided through-all uses the retired setter; positive and symmetric use modern extents.
 
 class TestThroughAll:
     def test_default_direction_is_positive(self):
@@ -1184,15 +1180,18 @@ class TestThroughAll:
         assert out["extent"] == "through_all" and out["direction"] == "positive"
         assert out["distance"] is None
 
-    def test_negative_distance_picks_negative_direction(self):
+    def test_scoped_negative_cut_uses_retired_direction_setter_without_modern_fallback(self):
         import adsk.fusion
-        ef = _install([_sketch("S")])
-        out = _payload(ex.handler(sketch_name="S", extent="through_all", distance=-5))
-        extent, direction, _taper = ef.last_input.one_side
-        assert extent == ["through_all"]
-        assert direction == adsk.fusion.ExtentDirections.NegativeExtentDirection
-        assert ef.last_input.all_extent is None
+        body = BRepBody("Stock", volume=1.0)
+        ef = _install_geom(bodies={"Stock": body})
+        ef.on_add = lambda inp: setattr(body, "volume", .996073009183)
+        out = _payload(ex.handler(sketch_name="S", extent="through_all", distance=-1,
+                                  operation="cut", target_bodies=["Stock"]))
+        assert ef.last_input.all_extent == adsk.fusion.ExtentDirections.NegativeExtentDirection
+        assert ef.last_input.one_side is None and ef.last_input.two_sides_extent is None
+        assert ef.last_input.participantBodies == [body]
         assert out["direction"] == "negative"
+        assert "retired setAllExtent compatibility" in out["note"]
 
     def test_positive_distance_picks_positive_direction(self):
         import adsk.fusion
@@ -1230,11 +1229,23 @@ class TestThroughAll:
     def test_setOneSideExtent_false_is_reported(self):
         ef = _install([_sketch("S")])
         ef.next_result = False
-        res = ex.handler(sketch_name="S", extent="through_all", distance=-5)
+        res = ex.handler(sketch_name="S", extent="through_all", distance=5)
         assert res["isError"] is True
         assert "setOneSideExtent returned false" in res["message"]
-        assert "negative" in res["message"]        # names the direction that was refused
+        assert "positive" in res["message"]
         assert ef.added is False
+
+    @pytest.mark.parametrize("available", [True, False])
+    def test_negative_compatibility_refusal_never_adds_or_falls_back(self, monkeypatch, available):
+        ef = _install([_sketch("S")])
+        if available:
+            ef.next_result = False
+        else:
+            monkeypatch.setattr(FakeExtrudeInput, "setAllExtent", None)
+        res = ex.handler(sketch_name="S", extent="through_all", distance=-1)
+        assert res["isError"] is True and "setAllExtent" in res["message"]
+        assert "model_measure_between" in res["message"] and "extent='distance'" in res["message"]
+        assert ef.added is False and ef.last_input.one_side is None
 
     def test_setTwoSidesExtent_false_is_reported(self):
         ef = _install([_sketch("S")])
@@ -2167,7 +2178,6 @@ class TestNoTargetBodyDirectionTeaching:
         assert res["isError"] is True
         msg = res["message"]
         assert "POSITIVE" in msg and "'distance' was negative" in msg
-        # both remedies survive: the sign flip did not displace "does the profile overlap it at all"
         assert "AWAY from the material" in msg and "overlaps the body at all" in msg
 
     def test_an_intersect_that_reached_nothing_teaches_the_same_way(self):
@@ -2182,7 +2192,7 @@ class TestNoTargetBodyDirectionTeaching:
         assert "NEGATIVE" in res["message"] and "'distance' was positive" in res["message"]
 
     def test_a_symmetric_cut_is_not_told_to_flip_a_sign(self):
-        # It already went both ways from the sketch plane, so no sign reaches a body it missed.
+        # A symmetric extent's sign cannot reverse its two requested sides.
         ef = _install([_sketch("S")])
 
         def _raise(inp):
@@ -2191,7 +2201,7 @@ class TestNoTargetBodyDirectionTeaching:
         res = ex.handler(sketch_name="S", distance=5, operation="cut", symmetric=True)
         assert res["isError"] is True
         msg = res["message"]
-        assert "BOTH ways" in msg and "overlaps no participant body" in msg
+        assert "BOTH ways" in msg and "sign cannot fix a symmetric extent" in msg
         assert "NEGATIVE" not in msg and "POSITIVE" not in msg
 
     def test_a_symmetric_through_all_cut_is_not_told_to_flip_a_sign_either(self):
@@ -2212,6 +2222,20 @@ class TestNoTargetBodyDirectionTeaching:
     def test_an_unreadable_distance_sign_is_not_stated(self):
         # The 'distance' was <sign>' clause is dropped rather than guessed at.
         assert "'distance' was" not in ex._no_target_body_hint("distance", None)
+
+    @pytest.mark.parametrize("distance,symmetric", [(1, False), (-1, False), (1, True)])
+    def test_body_not_found_does_not_claim_air_or_nonoverlap_for_placed_refusals(self, distance, symmetric):
+        ef = _install([_sketch("S")])
+        def refuse(inp):
+            raise RuntimeError("3 : Could not complete Through All Extrude, body not found to extrude through.")
+        ef.add = refuse
+        response = ex.handler(sketch_name="S", operation="cut", extent="through_all",
+                              distance=distance, symmetric=symmetric)
+        message = response["message"]
+        assert response["isError"] is True and "does not establish why" in message
+        assert "hits only air" not in message and "overlaps no participant" not in message
+        assert "sketch_get for the profile and frame" in message and "find_geometry for the target body geometry" in message
+        assert ("sign cannot fix" if symmetric else "If an on-face") in message
 
 
 def _install_with_bodies(*body_names):

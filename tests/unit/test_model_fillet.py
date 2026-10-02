@@ -861,6 +861,42 @@ class TestTangentChainTargeting:
         assert res["isError"] is True and "PARTIALLY applied" in res["message"]
         assert "resolved to 1" in res["message"] and ff.result.deleted is True
 
+    def test_repeated_resolved_root_edge_is_one_request_at_both_partial_gates(self):
+        one, alias = _edge_ent(token="physical"), _edge_ent(token="physical")
+        ff, _ = _install_edge_handles({"E1": one, "Alias": alias},
+                                      timeline=make_timeline("Extrude1", "Fillet1", marker=2))
+        root = fl._inputs._common.design().rootComponent
+        for edge in (one, alias):
+            edge.assemblyContext = None
+            edge.body.parentComponent = root
+        ff.result = FakeCountingFeature("Fillet1", faces=1, tangent=False, cut_edges=1)
+        out = _payload(fl.handler(edges=["E1", "Alias", "E1"], radius=.5,
+                                  tangent_chain=False))
+        assert ff.last.edge_set[0].count == out["edges_requested"] == out["edges_cut"] == 1
+        assert out["edge_selection"] == "1 edge seed(s) from handles" and ff.result.deleted is False
+
+    def test_proxy_aliases_use_native_identity_with_the_same_actual_placement(self):
+        native = _edge_ent(token="physical")
+        one, alias = _edge_ent(token="proxy-one"), _edge_ent(token="proxy-two")
+        for edge in (one, alias):
+            edge.nativeObject = native
+            edge.assemblyContext = type("Context", (), {"fullPathName": "Placed:1"})()
+        ff, _ = _install_edge_handles({"E1": one, "Alias": alias})
+        out = _payload(fl.handler(edges=["E1", "Alias"], radius=.5, tangent_chain=False))
+        assert ff.last.edge_set[0].count == out["edges_requested"] == 1
+
+    @pytest.mark.parametrize("paths,tokens", [(("A:1", "A:2"), ("physical", "physical")),
+        (("A:1", None), ("physical", "physical")), ((None, None), ("physical", "physical")),
+        (("A:1", "A:1"), ("first", "second")), (("A:1", "A:1"), (None, None))])
+    def test_distinct_edges_placements_or_unread_identity_are_not_collapsed(self, paths, tokens):
+        one, two = (_edge_ent(token=token) for token in tokens)
+        ff, _ = _install_edge_handles({"E1": one, "E2": two})
+        for edge, path in zip((one, two), paths):
+            if path is not None:
+                edge.assemblyContext = type("Context", (), {"fullPathName": path})()
+        _payload(fl.handler(edges=["E1", "E2"], radius=.5, tangent_chain=False))
+        assert ff.last.edge_set[0].count == 2
+
 
 class TestVariableRadius:
 
