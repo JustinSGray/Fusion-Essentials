@@ -22,6 +22,7 @@ import math
 from types import SimpleNamespace
 
 import adsk.fusion
+import pytest
 
 from conftest import (FakeJoint, FakeMatrix3D, FakeModelParameter, FakeMotionLink, FakeTimeline,
                       FakeTimelineObject, MakeComp, PinSlotJointMotion, PlanarJointMotion,
@@ -106,6 +107,66 @@ def _install_as_built(monkeypatch, name="Slider_R"):
     joint.timelineObject = FakeTimelineObject(name=name)
     joint.jointMotion = SliderJointMotion()
     return install(jt, make_design(comp=_root(as_built=[joint]))), joint
+
+
+@pytest.fixture
+def as_built_preflight(monkeypatch):
+    design, joint = _install_as_built(monkeypatch, "AB")
+    monkeypatch.setattr(joint, "jointMotion", RevoluteJointMotion())
+    calls = []
+    monkeypatch.setattr(jt, "_apply_motion", lambda *a, **k: (calls.append(a) or True, None))
+    return joint, calls
+
+
+@pytest.fixture
+def retained_rotation_limits(monkeypatch):
+    design, joint = _install(["AB"])
+    limits = _MotionLimits(minimum=math.radians(-10), maximum=math.radians(10))
+    monkeypatch.setattr(joint.jointMotion, "rotationLimits", limits)
+    return joint, limits
+
+
+@pytest.mark.parametrize("field,value", [("offset", 5), ("angle", 30)])
+def test_as_built_unsupported_parameter_refuses_before_retype_or_roll(as_built_preflight, field, value):
+    joint, calls = as_built_preflight
+    res = jt.handler(joint_name="AB", joint_type="slider", **{field: value})
+    assert res["isError"] is True and f"{field}={value}" in res["message"]
+    assert "No edits applied" in res["message"] and "joint_create" in res["message"]
+    assert calls == [] and _rolls(joint) == []
+    assert isinstance(joint.jointMotion, RevoluteJointMotion)
+
+
+@pytest.mark.parametrize("field,value,opposite", [("max_deg", -20, "min_deg=-10"), ("min_deg", 20, "max_deg=10")])
+def test_single_rotation_bound_conflict_refuses_before_roll_and_preserves_legal_updates(retained_rotation_limits, field, value, opposite):
+    joint, limits = retained_rotation_limits
+    before = vars(limits).copy()
+    res = jt.handler(joint_name="AB", **{field: value})
+    assert res["isError"] is True and f"{field}={value}" in res["message"] and opposite in res["message"]
+    assert "No edits applied" in res["message"] and "assembly_get" in res["message"]
+    assert vars(limits) == before and _rolls(joint) == []
+    for key, new in (("min_deg", -15), ("max_deg", 15)):
+        out = _payload(jt.handler(joint_name="AB", **{key: new}))
+        assert out["changes"] == {key: new}
+    assert math.isclose(limits.minimumValue, math.radians(-15))
+    assert math.isclose(limits.maximumValue, math.radians(15))
+    assert limits.isRestValueEnabled is False and limits.restValue == 0
+
+
+@pytest.mark.parametrize("unread", ["isMinimumValueEnabled", "minimumValue"])
+def test_unread_retained_rotation_bound_is_not_a_conflict_decision(retained_rotation_limits, monkeypatch, unread):
+    joint, limits = retained_rotation_limits
+    monkeypatch.delattr(limits, unread)
+    res = jt.handler(joint_name="AB", max_deg=-20)
+    assert res["isError"] is True and "did not read" in res["message"] and "assembly_get" in res["message"]
+    assert _rolls(joint) == [] and limits.maximumValue == math.radians(10)
+
+
+def test_disabled_stored_opposite_is_not_an_enabled_rotation_bound(retained_rotation_limits, monkeypatch):
+    joint, limits = retained_rotation_limits
+    monkeypatch.setattr(limits, "isMinimumValueEnabled", False)
+    out = _payload(jt.handler(joint_name="AB", max_deg=-20))
+    assert out["changes"] == {"max_deg": -20}
+    assert limits.isMinimumValueEnabled is False
 
 
 # ── find / guards ────────────────────────────────────────────────────────────

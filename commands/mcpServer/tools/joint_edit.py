@@ -176,6 +176,30 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
                       "axis, world_axis, flip, offset (+units), angle, "
                       "min_deg/max_deg/rest_deg (rotation), min_mm/max_mm/rest_mm (linear).")
 
+    if (want_offset or want_angle) and _is_as_built_joint(joint):
+        key, value = ("offset", offset) if want_offset else ("angle", angle)
+        return error(
+            f"'{joint_name}' is an AS-BUILT joint with no offset/angle ModelParameter; "
+            f"{key}={value} cannot be set. No edits applied. Read assembly_get, then remove "
+            "the joint with design_delete_feature(feature=...) and recreate the pair with "
+            "joint_create for parameter-driven positioning.")
+
+    if not want_motion and _current_joint_type(joint) == "revolute" and (min_deg is None) != (max_deg is None):
+        key, value, opposite, flag, member = (
+            ("max_deg", max_deg, "min_deg", "isMinimumValueEnabled", "minimumValue")
+            if min_deg is None else
+            ("min_deg", min_deg, "max_deg", "isMaximumValueEnabled", "maximumValue"))
+        limits = safe(lambda: joint.jointMotion.rotationLimits)
+        enabled = _common.read_flag(lambda: getattr(limits, flag))
+        retained = _common.measured(lambda: getattr(limits, member), scale=_DEG_PER_RAD, places=9) if enabled else None
+        if enabled is None or enabled and retained is None:
+            return error(f"Cannot check {key}={value}: the retained {opposite} enable flag/value "
+                         "did not read. No edits applied. Read assembly_get before retrying.")
+        if enabled and (float(value) < retained if min_deg is None else float(value) > retained):
+            return error(f"Refused {key}={value}: it conflicts with retained enabled "
+                         f"{opposite}={retained} deg. No edits applied. Read assembly_get; "
+                         "choose a nonconflicting value or provide both rotation bounds.")
+
     # Validate motion type up front (before touching the timeline). With only a direction given,
     # the joint's CURRENT motion type is what gets re-applied at it.
     jtype = (joint_type or "").strip().lower()
@@ -317,17 +341,8 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
         if want_offset:
             op = safe(lambda: joint.offset)
             if op is None:
-                if _is_as_built_joint(joint):
-                    # An AsBuiltJoint carries no offset/angle ModelParameter of any kind, whatever
-                    # its motion - so no expression can position it and rest_mm only sets a motion
-                    # -study equilibrium (see the note below). The parametric path is a real Joint.
-                    return error(
-                        f"'{joint_name}' is an AS-BUILT joint, which exposes no offset parameter "
-                        "for ANY motion type - its position cannot be driven by a parameter or an "
-                        "expression. Delete it (design_delete_feature) and build the pair with "
-                        "joint_create instead: that joint's offset is a ModelParameter, moving "
-                        "along the joint frame's Z axis.")
-                return error("This joint has no offset parameter (rigid/inferred or already 0-DOF).")
+                return error("This joint has no offset parameter (rigid/inferred or already 0-DOF). "
+                             f"Edits already applied before the failure: {_applied_so_far(changed)}.")
             u = (units or "mm").strip().lower()
             u = "in" if u == "inch" else u
             # `u` passed the units guard above, so it is a key of the shared cm-to-unit table -
@@ -346,12 +361,8 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
         if want_angle:
             ap = safe(lambda: joint.angle)
             if ap is None:
-                if _is_as_built_joint(joint):
-                    return error(
-                        f"'{joint_name}' is an AS-BUILT joint, which exposes no offset/angle "
-                        "ModelParameter for ANY motion type - no expression can drive it. Delete "
-                        "it (design_delete_feature) and build the pair with joint_create instead.")
-                return error("This joint has no angle parameter.")
+                return error("This joint has no angle parameter. "
+                             f"Edits already applied before the failure: {_applied_so_far(changed)}.")
             published, aerr = _set_one_parameter(ap, "angle", float(angle),
                                                  f"{_fmt_num(angle)} deg", _DEG_PER_RAD)
             if aerr:

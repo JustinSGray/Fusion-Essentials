@@ -18,7 +18,153 @@ from verify_core import (
     _joints_listed, _limits_survived, _link_healthy, _made_component, _made_component_inactive, _measured, _mod360,
     _motion_linked, _moved_occurrence, _near, _new_document, _num, _recall, _refused, _revolved,
     _rigid_grouped, _watch)
-from verify_acts_model_sweep import _retire_compare, _retire_design_state, _retire_reads
+from verify_acts_model_sweep import _retire_compare, _retire_design_state, _retire_reads, _retire_material_state
+from verify_acts_model_solids import _edge_extent_geometry
+
+
+def _joint_preflight_assembly(motion, limits):
+    """Check the measured placed pair, motion and every publicly exposed enabled bound."""
+    def check(p):
+        poses, all_poses, joints = p.get("occurrences"), p.get("all_occurrences"), p.get("joints")
+        valid = (p.get("units") == "mm" and p.get("is_healthy") is True
+                 and p.get("broken_joints") == p.get("broken_relations") == p.get("unresolved_references") == []
+                 and p.get("occurrences_truncated") is False and p.get("all_occurrences_truncated") is False
+                 and p.get("joints_truncated") is False and p.get("relations_truncated") is False
+                 and p.get("occurrence_count") == p.get("all_occurrence_count") == 2
+                 and isinstance(poses, list) and isinstance(all_poses, list) and len(poses) == len(all_poses) == 2
+                 and p.get("joint_count") == 1 and isinstance(joints, list) and len(joints) == 1
+                 and p.get("relations") == {"rigid_groups": [], "motion_links": [], "constraints": []})
+        if valid:
+            for rows in (poses, all_poses):
+                valid = valid and [r.get("name") for r in rows] == ["A:1", "B:1"]
+                for i, r in enumerate(rows):
+                    valid = (valid and r.get("body_count") == 1 and r.get("grounded") is False
+                             and r.get("ground_to_parent") is (i == 0) and r.get("origin") == [i * 20, 0, 0]
+                             and r.get("bbox_center") == [i * 20 + 2, 2, 5] and r.get("bbox_size") == [4, 4, 10]
+                             and r.get("x_axis") == [1, 0, 0] and r.get("y_axis") == [0, 1, 0]
+                             and r.get("z_axis") == [0, 0, 1] and r.get("joints") == ["AB"])
+            joint = joints[0]
+            axis_key = "rotation_axis" if motion == "revolute" else "slide_direction"
+            valid = (valid and joint.get("name") == "AB" and joint.get("as_built") is True
+                     and joint.get("type") == motion and joint.get("dof") == 1 and joint.get("healthy") is True
+                     and joint.get("occurrence_one") == "A:1" and joint.get("occurrence_two") == "B:1"
+                     and joint.get("rotation_limits_deg") == limits
+                     and joint.get(axis_key) == [0, 0, 1]
+                     and joint.get("value_now") == ({"angle_deg": 0} if motion == "revolute" else {"slide_mm": 0})
+                     and joint.get("frame") == {"origin": [22, 2, 10], "z_axis": [0, 0, 1],
+                                                "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]})
+            before = _RECALL.get("joint_preflight_poses")
+            valid = valid and (before is None or before == [poses, all_poses])
+            if before is None and valid:
+                _RECALL["joint_preflight_poses"] = [poses, all_poses]
+        return _measured("joint preflight placed motion and exposed enabled limits", p, valid)
+    return check
+
+
+def _joint_preflight_material(p):
+    """Read the two independent 4x4x10 millimeter boxes' complete physical snapshot."""
+    state = _retire_material_state(p)
+    if (state is None or len(state["bodies"]) != 2 or not _near(state["shape"]["volume"], 320, .001)
+            or not _near(state["shape"]["area"], 384, .001)
+            or p.get("min_point") != {"x": 0, "y": 0, "z": 0}
+            or p.get("max_point") != {"x": 24, "y": 4, "z": 10}
+            or any(not _near(b.get("volume"), 160, .001)
+                   for b in state["bodies"])):
+        return None
+    return state
+
+
+def _joint_preflight_rows():
+    """Refuse measured joint preconditions before writes and preserve legal controls."""
+    rows = [("doc_get", {}, _home_document, ("joint_preflight_home", _home_address)),
+            ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True, "max_results": 2000},
+             _retire_compare("joint_preflight_home_design", _retire_design_state, False), None),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "joint_preflight_home", "home")}, _new_document,
+             ("joint_preflight_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    def write(tool, args, check="ok"):
+        rows.append((tool, lambda c: {**args, "expect_document": _ctx_get(c, "joint_preflight_doc", "owned joint scene")}, check, None))
+    for name, x in (("A", 0), ("B", 20)):
+        write("design_activate_component", {"occurrence": "root"})
+        write("model_create_component", {"name": name, "x": x, "units": "mm", "activate": True}, _made_component)
+        write("sketch_create", {"name": name + "Sketch", "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name + "Sketch", "units": "mm", "geometry": [
+            {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 4, "y2": 4}]})
+        write("model_extrude", {"sketch_name": name + "Sketch", "distance": 10, "units": "mm", "operation": "new"}, _extruded)
+    write("design_activate_component", {"occurrence": "root"})
+    write("assembly_ground", {"occurrence": "A:1", "ground_to_parent": True}, _grounded)
+    write("assembly_ground", {"occurrence": "B:1", "ground_to_parent": False}, lambda p: p.get("isGroundToParent") is False)
+    write("joint_create_as_built", {"occurrence_one": "A:1", "occurrence_two": "B:1", "geometry": "B:1:top",
+          "joint_type": "revolute", "name": "AB"}, _as_built)
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True, "focus": ["A:1", "B:1"]})
+    assembly = {"include": ["poses", "all_occurrences", "relations"], "units": "mm", "max_joints": 100,
+                "max_occurrences": 100, "max_all_occurrences": 100}
+    history = {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+               "timeline_params": True, "max_results": 2000}
+    def history_state(p):
+        state = _retire_design_state(p)
+        tl = (p.get("timeline") or {}).get("timeline")
+        if state is None or len(tl) != 7 or tl[-1].get("name") != "AB" or tl[-1].get("type") != "AsBuiltJoint":
+            return None
+        return state
+    def held(after):
+        rows.append(("model_inspect", lambda c: {"include": ["default", "mass"], "per_body": True,
+                     "units": "mm", "accuracy": "very_high"},
+                     _retire_compare("joint_preflight_material", _joint_preflight_material, after), None))
+        def geometry(p):
+            state = _edge_extent_geometry(p)
+            if (state is None or len(state) != 18 or sum(r["kind"] == "planar_face" for r in state) != 6
+                    or sum(r["kind"] == "line_edge" for r in state) != 12):
+                return None
+            return state
+        for target in ("A:1", "B:1"):
+            rows.append(("find_geometry", lambda c, target=target: {"target": target, "units": "mm", "max_results": 100},
+                         _retire_compare("joint_preflight_geometry_" + target, geometry, after), None))
+    rows += [("assembly_get", assembly, _joint_preflight_assembly("revolute", None), None),
+             ("design_get", history, _retire_compare("joint_preflight_asbuilt_history", history_state, False), None)]
+    held(False)
+    for field, value in (("offset", 5), ("angle", 30)):
+        write("joint_edit", {"joint_name": "AB", "joint_type": "slider", field: value, "units": "mm"},
+              _refused("AS-BUILT", field + "=" + str(value), "No edits applied", "joint_create"))
+        rows += [("assembly_get", assembly, _joint_preflight_assembly("revolute", None), None),
+                 ("design_get", history, _retire_compare("joint_preflight_asbuilt_history", history_state, True), None)]
+        held(True)
+    for motion in ("slider", "revolute"):
+        write("joint_edit", {"joint_name": "AB", "joint_type": motion, "axis": "z"},
+              lambda p, motion=motion: p.get("edited") is True and p.get("joint_type") == motion)
+        rows += [("assembly_get", assembly, _joint_preflight_assembly(motion, None), None),
+                 ("design_get", history, _retire_compare("joint_preflight_asbuilt_history", history_state, True), None)]
+        held(True)
+    write("joint_edit", {"joint_name": "AB", "min_deg": -10, "max_deg": 10},
+          lambda p: p.get("edited") is True and p.get("changes") == {"min_deg": -10, "max_deg": 10})
+    rows += [("assembly_get", assembly, _joint_preflight_assembly("revolute", {"min": -10, "max": 10}), None),
+             ("design_get", history, _retire_compare("joint_preflight_limit_history", history_state, False), None)]
+    held(True)
+    for field, value, opposite in (("max_deg", -20, "min_deg=-10"), ("min_deg", 20, "max_deg=10")):
+        write("joint_edit", {"joint_name": "AB", field: value},
+              _refused(field + "=" + str(value), opposite, "No edits applied", "assembly_get"))
+        rows += [("assembly_get", assembly, _joint_preflight_assembly("revolute", {"min": -10, "max": 10}), None),
+                 ("design_get", history, _retire_compare("joint_preflight_limit_history", history_state, True), None)]
+        held(True)
+    for field, value, limits in (("min_deg", -15, {"min": -15, "max": 10}), ("max_deg", 15, {"min": -15, "max": 15})):
+        write("joint_edit", {"joint_name": "AB", field: value},
+              lambda p, field=field, value=value: p.get("edited") is True and p.get("changes") == {field: value})
+        rows.append(("assembly_get", assembly, _joint_preflight_assembly("revolute", limits), None))
+        def legal_history(p):
+            state = history_state(p)
+            prior = _RECALL["joint_preflight_limit_history"]
+            return (state is not None and state["tree"] == prior["tree"]
+                    and state["timeline"]["timeline"][:-1] == prior["timeline"]["timeline"][:-1]
+                    and state["timeline"].get("summary") == prior["timeline"].get("summary"))
+        rows.append(("design_get", history, legal_history, None))
+        held(True)
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "joint_preflight_home", "home"),
+                                        "expect_document": _ctx_get(c, "joint_preflight_doc", "owned scene")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "joint_preflight_doc", "owned scene"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "joint_preflight_home", "home")}, _document_closed, None),
+             ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True, "max_results": 2000},
+              _retire_compare("joint_preflight_home_design", _retire_design_state, True), None)]
+    return rows
 
 
 def _failed_joint_assembly(name=None, failed=False, released=False):
@@ -1401,6 +1547,7 @@ _MOTION += _selected_owner_rows()
 _MOTION += _joint_failure_rows()
 _MOTION += _crossindex_rows()
 _MOTION += _origin_consumer_rows()
+_MOTION += _joint_preflight_rows()
 
 # ACT 7: THE VISE - the billet the bracket is cut from, and the machine vise that holds it.
 # Geometry contract (all mm; the Bracket occupies x[-60,60] y[-40,40] z[0,45] with its boss):

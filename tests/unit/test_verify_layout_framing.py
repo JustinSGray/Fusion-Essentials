@@ -851,3 +851,45 @@ def test_midpoint_preflight_scene_keeps_original_source_and_read_order_in_full_f
     constraints = [args["constraints"][0] for tool, args in requests(authored) if tool == "sketch_constrain"]
     assert [r["quantity"] for r in constraints] == [1, 3, 3]
     assert constraints[1]["suppressed"] == [True] and "suppressed" not in constraints[2]
+
+
+def test_joint_preflight_scene_keeps_measured_local_pair_and_typed_public_read_order():
+    rows = [row for _name, _pre, narrative, _fallback in verify_program.ACTS for row in narrative]
+    context = {"joint_preflight_home": "home", "joint_preflight_doc": "scratch"}
+    start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == "joint_preflight_home")
+    end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
+    wanted = {"model_create_component", "sketch_add_geometry", "joint_create_as_built", "joint_edit",
+              "assembly_get", "design_get", "find_geometry", "model_inspect", "view_set"}
+    def requests(selected):
+        return [(tool, args(context) if callable(args) else args) for tool, args, _check, _save in selected if tool in wanted]
+    authored = verify_acts_motion._joint_preflight_rows()
+    assert requests(rows[start:end + 2]) == requests(authored)
+    shapes = [a["geometry"] for t, a in requests(authored) if t == "sketch_add_geometry"]
+    assert shapes == [[{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 4, "y2": 4}]] * 2
+    edits = [a for t, a in requests(authored) if t == "joint_edit"]
+    assert [(a.get("joint_type"), a.get("offset"), a.get("angle")) for a in edits[:4]] == [
+        ("slider", 5, None), ("slider", None, 30), ("slider", None, None), ("revolute", None, None)]
+    assert edits[-2:] == [{"joint_name": "AB", "min_deg": -15, "expect_document": "scratch"},
+                         {"joint_name": "AB", "max_deg": 15, "expect_document": "scratch"}]
+    assert all(t != "sys_execute_script" for t, _a, _c, _s in authored)
+    assert all(authored[i + 1][0] == "assembly_get" and authored[i + 2][0] == "design_get"
+               for i, row in enumerate(authored) if row[0] == "joint_edit")
+
+
+def test_joint_preflight_material_accepts_recorded_body_rows_without_per_body_area():
+    payload = {
+        "target": "whole design", "units": "mm", "frame": "world axes (axis-aligned)",
+        "min_point": {"x": 0, "y": 0, "z": 0}, "max_point": {"x": 24, "y": 4, "z": 10},
+        "mass": {"volume": 320.0, "area": 384.0, "mass_kg": 0.002512,
+                 "per_body_count": 2, "per_body_truncated": False, "per_body": [
+                     {"body": "Body1", "occurrence": "A:1", "is_solid": True,
+                      "mass_kg": 0.001256, "volume": 160.0, "lump_count": 1},
+                     {"body": "Body1", "occurrence": "B:1", "is_solid": True,
+                      "mass_kg": 0.001256, "volume": 160.0, "lump_count": 1}]} }
+    state = verify_acts_motion._joint_preflight_material(payload)
+    assert state is not None and state["bodies"] == payload["mass"]["per_body"]
+    payload["mass"]["area"] = 383
+    assert verify_acts_motion._joint_preflight_material(payload) is None
+    payload["mass"]["area"] = 384
+    payload["mass"]["per_body"][1]["volume"] = 159
+    assert verify_acts_motion._joint_preflight_material(payload) is None
