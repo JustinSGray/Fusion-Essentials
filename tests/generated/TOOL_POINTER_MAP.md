@@ -1687,6 +1687,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Nothing to set - pass 'part_number', 'description', or both.
 - An empty 'part_number' is ignored by Fusion - the component keeps the number it already has. Pass the number to set.
 - No active design. Open a document first (see doc_open / doc_new).
+- must be a string. No metadata was changed.
 - Could not reach the component behind occurrence '
 - ' to set its metadata.
 - Could not set metadata on
@@ -3725,8 +3726,12 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - User parameter added; timeline verified (no new errors).
 - 'params' must be a list of {name, expression, ...} dicts.
 - user parameters added; timeline verified.
+- ] must be a dict with 'name' and 'expression'. No parameters added.
 - must be JSON true or false. No parameters added; omit favorite to keep the default false.
-- ] must be a dict with 'name' and 'expression'.
+- '. No parameters added.
+- is empty. No parameters added.
+- must be a string; received
+- . No parameters added.
 
 ### `param_delete`
 - Provide 'name' - the parameter to delete.

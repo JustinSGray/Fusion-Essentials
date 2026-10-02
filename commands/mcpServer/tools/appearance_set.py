@@ -181,6 +181,64 @@ def _reads_as(entity, appr_id, appr_name):
     return got_id == appr_id and got_name == appr_name
 
 
+def _appearance_state(entity, appearance=None):
+    """Read the occurrence's current appearance name and albedo color when both are available."""
+    if appearance is None:
+        appearance = safe(lambda: entity.appearance)
+    name = safe(lambda: appearance.name)
+    color = None
+    for prop in _common.iter_collection(safe(lambda: appearance.appearanceProperties)):
+        if safe(lambda: prop.id) in _ALBEDO_IDS:
+            color = _channel_rgb(safe(lambda: prop.value))
+            break
+    return {"name": name, "id": safe(lambda: appearance.id),
+            "color_rgb": list(color) if color is not None else None}
+
+
+def _occurrence_failure_observation(design, entity, prior_appearance, prior_opacity, prior_count,
+                                   asset_name, not_reached=()):
+    """Describe the occurrence and document state after its color reached no bodies."""
+    observed = _appearance_state(entity)
+    component = safe(lambda: entity.component)
+    opacity_now = safe(lambda: component.opacity)
+    asset_count_now = safe(lambda: design.appearances.count)
+    if opacity_now is None:
+        details = " Component opacity is UNCONFIRMED because it could not be read back."
+    elif prior_opacity is None:
+        details = f" Component opacity now reads {opacity_now!r}; its previous value was unreadable."
+    elif opacity_now != prior_opacity:
+        details = f" Component opacity now reads {opacity_now!r} (before this call: {prior_opacity!r})."
+    else:
+        details = f" Component opacity still reads {opacity_now!r}."
+    if observed["name"] is None or observed["color_rgb"] is None:
+        details += f" Occurrence appearance is UNCONFIRMED: {observed!r}."
+    elif observed != prior_appearance:
+        details += f" Occurrence appearance now reads {observed!r}."
+    else:
+        details += f" Occurrence appearance still reads {observed!r}."
+    catalog_entry = safe(lambda: design.appearances.itemByName(asset_name))
+    catalog_state = _appearance_state(entity, catalog_entry) if catalog_entry else None
+    if catalog_state and catalog_state["name"] is not None and catalog_state["color_rgb"] is not None:
+        details += f" Document appearance '{asset_name}' reads {catalog_state!r}."
+        if observed["name"] == catalog_state["name"] and observed["color_rgb"] == catalog_state["color_rgb"]:
+            details += " The occurrence and document entry read the same name and color."
+    else:
+        details += f" Document appearance '{asset_name}' is UNCONFIRMED."
+    if not_reached:
+        bodies = []
+        wanted = {row["body"] for row in not_reached}
+        for body in _common.iter_collection(safe(lambda: entity.bRepBodies)):
+            name = safe(lambda body=body: body.name)
+            if name in wanted and len(bodies) < 5:
+                bodies.append({"body": name, "appearance": _appearance_state(body)})
+        details += f" Bodies still carrying another appearance: {bodies!r}."
+    if asset_count_now is not None and prior_count is not None:
+        details += f" Document appearance count is {asset_count_now} (was {prior_count})."
+    else:
+        details += " Document appearance count could not be read back."
+    return details
+
+
 def _occurrence_fanout(occ, appr_id, appr_name):
     """(reached, not_reached, unverified) after an OCCURRENCE-level appearance write - each body is
     compared through _reads_as, and a comparison that cannot be made is 'unverified'."""
@@ -271,6 +329,12 @@ def handler(target: str = "", color: str = "", opacity=None, name: str = "") -> 
     desc = (f"{kind} '{safe(lambda: entity.fullPathName) or safe(lambda: entity.name)}'"
             if safe(lambda: entity.name) else kind)
 
+    prior_occurrence_appearance = _appearance_state(entity) if kind == "occurrence" else None
+    prior_component_opacity = (safe(lambda: entity.component.opacity)
+                               if kind == "occurrence" else None)
+    appearances = safe(lambda: design.appearances) if kind == "occurrence" else None
+    prior_asset_count = safe(lambda: appearances.count) if appearances is not None else None
+
     # Every precondition runs BEFORE the appearance is minted; minting first leaves an orphan
     # appearance asset in the design on each refusal.
     bodies = None
@@ -346,7 +410,10 @@ def handler(target: str = "", color: str = "", opacity=None, name: str = "") -> 
                 names = ", ".join(o["body"] for o in not_reached[:5])
                 return error(f"Assignment to {desc} reached NONE of its {len(not_reached)} "
                              f"body(ies) - each still reads a different appearance ({names}). "
-                             "Color the bodies directly (target = the body name).")
+                             "Color the bodies directly (target = the body name). "
+                             + _occurrence_failure_observation(design, entity,
+                                 prior_occurrence_appearance, prior_component_opacity,
+                                 prior_asset_count, appr_landed_name, not_reached[:5]))
 
     note = ("Appearance override applied. Set a new color anytime; to revert, the override is on "
             "the body/occurrence (.appearance). Pair with view_screenshot to see it.")

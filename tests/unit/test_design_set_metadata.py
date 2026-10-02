@@ -120,6 +120,15 @@ class TestSet:
 
 
 class TestGuards:
+    def test_non_string_metadata_is_refused_before_either_setter(self, wire):
+        comp = MakeComp(name="Bracket", entity_token="T:b", part_number="FE-1",
+                        description="Existing")
+        wire(comp)
+        response = sm.handler(target="Bracket", part_number="FE-2", description=123)
+        assert response["isError"] is True
+        assert "description" in response["message"] and "string" in response["message"]
+        assert (comp.partNumber, comp.description) == ("FE-1", "Existing")
+
     def test_neither_field_is_refused_naming_both(self, wire):
         wire()
         msg = error_message(sm.handler(target="Bracket"))

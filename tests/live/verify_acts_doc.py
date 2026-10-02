@@ -19,8 +19,10 @@ import urllib.request
 from verify_core import (
     BASE, EXPORT_DIR, NOTE_MAX, SERVER_NAME, SVG_PATH, _RECALL, _activated, _ctx_get,
     _document_closed, _document_read, _exported_bytes, _extruded, _fg, _home_address,
-    _home_document, _imported_curves, _imported_sketches, _made_component, _made_component_inactive, _measured,
-    _new_document, _num, _param_added, _param_deleted, _param_read, _param_set_to, _recall, _refused, _watch, facade)
+    _home_document, _imported_curves, _imported_sketches, _made_component, _made_component_inactive,
+    _component_metadata, _measured,
+    _metadata_set,
+    _new_document, _near, _num, _param_added, _param_deleted, _param_read, _param_set_to, _recall, _refused, _watch, facade)
 from verify_layout import _DRIFT_CHUNKS, drift_row
 from verify_acts_model_sweep import (
     _retire_compare, _retire_design_state, _retire_material_state, _sweep_mode_shape, _sweep_mode_box_equal)
@@ -37,6 +39,77 @@ def _kernel_rules_present(p, field="kernel"):
                 and r.get("prove")
                 and all(step.get("tool") and step.get("observe") for step in r["prove"])
                 for r in rules))
+
+
+_SMALL_EDIT_NATIVE = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    matches = [o for o in design.rootComponent.allOccurrences if o.fullPathName == 'EditTarget:1']
+    assert len(matches) == 1
+    occ = matches[0]
+    assert app.activeDocument.dataFile is None
+    body = occ.component.bRepBodies.item(0)
+    def color(a):
+        if a is None: return None
+        for p in a.appearanceProperties:
+            if type(p).__name__ == 'ColorProperty' and p.id == 'opaque_albedo':
+                c = p.value
+                return {'name': a.name, 'id': a.id, 'rgb': [int(c.red), int(c.green), int(c.blue)]}
+        return {'name': a.name, 'id': a.id, 'rgb': None}
+    print(json.dumps({'opacity': occ.component.opacity, 'occurrence': color(occ.appearance),
+        'body': color(body.appearance), 'proxy_body': color(occ.bRepBodies.item(0).appearance),
+        'document_asset': color(design.appearances.itemByName('ProbeGreen'))}))
+"""
+
+
+def _small_edit_native_after(p, before):
+    """Check native opacity and each appearance channel against the live entity and asset."""
+    keys = ("opacity", "occurrence", "body", "proxy_body", "document_asset")
+    got = {key: p.get(key) for key in keys}
+    expected = {"opacity": .35, "occurrence": {"name": "ProbeGreen", "rgb": [0, 255, 0]},
+                "body": {"name": "ProbeRed", "rgb": [255, 0, 0]},
+                "proxy_body": {"name": "ProbeRed", "rgb": [255, 0, 0]},
+                "document_asset": {"name": "ProbeGreen", "rgb": [0, 255, 0]}}
+    checks = all(got[key] and all(got[key].get(field) == value
+                  for field, value in expected[key].items()) for key in keys[1:])
+    checks = (checks and _near(got["opacity"], expected["opacity"], 1e-6)
+              and _near(before.get("opacity"), 1, 1e-6)
+              and before.get("occurrence") is None)
+    checks = checks and got["occurrence"].get("id") == got["document_asset"].get("id")
+    return _measured("native opacity, occurrence/body colors and retained document asset",
+                     {"before": before, "after": got}, checks)
+
+
+def _small_edit_parameter_absent(p):
+    rows = p.get("user_parameters") or []
+    return _measured("malformed batch added no prefix", {"names": [r.get("name") for r in rows]},
+                     isinstance(p.get("user_parameters"), list)
+                     and not p.get("walk_truncated") and not p.get("truncated")
+                     and p.get("user_parameter_count") == p.get("matched") == p.get("returned") == 0
+                     and len(rows) == 0
+                     and not any(r.get("name") == "ProbePrefix" for r in rows))
+
+
+def _small_edit_native_prefix(p):
+    rows = p.get("user_parameters") or []
+    values = {r.get("name"): r.get("expression") for r in rows}
+    expected = {"LegalBatchA": "3 mm", "LegalBatchB": "4 mm",
+                "NativeExisting": "2 mm", "NativePrefix": "1 mm"}
+    return _measured("duplicate-existing refusal kept the completed prefix", values,
+                     isinstance(p.get("user_parameters"), list)
+                     and not p.get("walk_truncated") and not p.get("truncated")
+                     and p.get("user_parameter_count") == p.get("matched") == p.get("returned") == 4
+                     and len(rows) == 4 and values == expected)
+
+
+def _small_edit_asset(p):
+    rows = ((p.get("appearances") or {}).get("document") or {}).get("entries") or []
+    row = next((r for r in rows if r.get("name") == "ProbeGreen"), None)
+    return _measured("ProbeGreen is present in the document appearance catalog", row,
+                     row is not None and row.get("scope") == "document" and row.get("is_used") is True
+                     and (p.get("appearances") or {}).get("document", {}).get("readable") is True
+                     and not (p.get("appearances") or {}).get("document", {}).get("truncated"))
 
 
 def _subject_visible(name, visible):
@@ -1208,6 +1281,85 @@ def _product_disclosure_rows():
                              "tree_handles": True, "max_results": 2000},
               _retire_compare("disclosure_home_design", _retire_design_state, True), None)]
     return rows
+
+
+# --- ACT 13: SMALL EDIT SAFETY -----------------------------------------------------------------
+_SMALL_EDITS = [
+    ("design_set_metadata", {"target": "EditTarget", "part_number": "PN-SMALL-1",
+                              "description": "small edit control"},
+     _metadata_set("EditTarget", "PN-SMALL-1", "small edit control"), None),
+    ("design_set_metadata", {"target": "EditTarget", "part_number": "PN-MUST-NOT-LAND",
+                              "description": 123},
+     _refused("'description'=123", "must be a string", "No metadata was changed"), None),
+    ("design_get", {"include": ["metadata"]},
+     _component_metadata("EditTarget", "PN-SMALL-1", "small edit control"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"}, "oops"]},
+     _refused("params[1] must be a dict", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "Bad", "expression": 2}]},
+     _refused("params[1].expression", "must be a string", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "Bad", "expression": "2", "unit": 5}]},
+     _refused("params[1].unit", "must be a string", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "Bad", "expression": "2", "comment": 5}]},
+     _refused("params[1].comment", "must be a string", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": 5, "expression": "2"}]},
+     _refused("params[1].name", "must be a string", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"expression": "2"}]},
+     _refused("params[1] is missing 'name'", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "Bad"}]},
+     _refused("params[1] is missing 'expression'", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "Bad", "expression": ""}]},
+     _refused("params[1].expression is empty", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "", "expression": "2"}]},
+     _refused("params[1].name is empty", "No parameters added"), None),
+    ("param_get", {"include_generated": True, "max_results": 100},
+     _small_edit_parameter_absent, None),
+    ("param_add", {"params": [{"name": "LegalBatchA", "expression": "3 mm"},
+                                {"name": "LegalBatchB", "expression": "4 mm"}]},
+     lambda p: p.get("added_count") == 2 and len(p.get("results") or []) == 2, None),
+    ("param_get", {"include_generated": True, "max_results": 100},
+     lambda p: _measured("legal batch values read back",
+         {r.get("name"): r.get("expression") for r in p.get("user_parameters") or []},
+         all(any(r.get("name") == name and r.get("expression") == expression
+                 for r in p.get("user_parameters") or [])
+             for name, expression in (("LegalBatchA", "3 mm"), ("LegalBatchB", "4 mm")))), None),
+    ("param_add", {"name": "NativeExisting", "expression": "2 mm"},
+     _param_added("NativeExisting", 2), None),
+    ("param_add", {"params": [{"name": "NativePrefix", "expression": "1 mm"},
+                                {"name": "NativeExisting", "expression": "3 mm"}]},
+     _refused("already exists", "1 added before this"), None),
+    ("param_get", {"include_generated": True, "max_results": 100}, _small_edit_native_prefix, None),
+    ("appearance_set", {"target": "EditTarget:1:Body1", "color": "#FF0000", "name": "ProbeRed"},
+     lambda p: p.get("kind") == "body" and p.get("appearance") == "ProbeRed"
+               and p.get("color_rgb") == [255, 0, 0] and p.get("applied_to") == ["Body1"], None),
+    ("sys_execute_script", {"script": _SMALL_EDIT_NATIVE, "read_only": True},
+     lambda p: _measured("pre-failure opacity and body color", p,
+                         p.get("opacity") != .35 and (p.get("body") or {}).get("name") == "ProbeRed"
+                         and (p.get("body") or {}).get("rgb") == [255, 0, 0]
+                         and (p.get("proxy_body") or {}).get("name") == "ProbeRed"
+                         and (p.get("proxy_body") or {}).get("rgb") == [255, 0, 0]
+                         and p.get("document_asset") is None
+                         and (p.get("occurrence") or {}).get("name") != "ProbeGreen"),
+     ("small_edit_native_before", _recall("small_edit_native_before", lambda p: p))),
+    ("appearance_set", {"target": "EditTarget:1", "color": "#00FF00",
+                         "opacity": 35, "name": "ProbeGreen"},
+     _refused("reached NONE", "ProbeRed", "Component opacity", "ProbeGreen"), None),
+    ("design_get", {"include": ["appearances"], "name_filter": "ProbeGreen"},
+     _small_edit_asset, None),
+    ("sys_execute_script", {"script": _SMALL_EDIT_NATIVE, "read_only": True},
+     lambda p: _small_edit_native_after(p, _RECALL["small_edit_native_before"]), None),
+    ("param_delete", {"name": "LegalBatchA"}, _param_deleted("LegalBatchA"), None),
+    ("param_delete", {"name": "LegalBatchB"}, _param_deleted("LegalBatchB"), None),
+    ("param_delete", {"name": "NativePrefix"}, _param_deleted("NativePrefix"), None),
+    ("param_delete", {"name": "NativeExisting"}, _param_deleted("NativeExisting"), None),
+]
 
 
 # --- ACT 0: OVERTURE - orient, then open the first family document -----------------------------

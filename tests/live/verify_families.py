@@ -11,6 +11,7 @@ from verify_acts_model_solids import (
 from verify_acts_motion import _MOTION, _STOCK_VISE, _VISE_SHOWCASE_POSE
 from verify_acts_sketch import BRACKET_PARAMETERS_PROFILES
 from verify_core import _DWELL
+from verify_core import _box
 from verify_layout import _placed
 
 
@@ -35,6 +36,7 @@ FAMILY_GROUPS = (
     ("sheet_selected", ("ACT 12e",)),
     ("sheet_positions", ("ACT 12f",)),
     ("sheet_flange", ("ACT 12g",)),
+    ("small_edits", ("ACT 13 -",)),
     ("finale", ("FINALE",)),
 )
 FAMILY_SLOTS = {}
@@ -195,6 +197,8 @@ def fixture_steps(family, before_act=None, entitled=True, raw=False, slots=None)
         return [("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
                 ("view_set", {"action": "display", "categories": ["sketches"],
                               "visible": False}, "ok", None)]
+    if family == "small_edits":
+        return _box("EditTarget")
     return []
 
 

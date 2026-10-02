@@ -73,6 +73,21 @@ def handler(name: str = "", expression: str = "", unit: str = "mm",
         if not isinstance(params, list):
             return error("'params' must be a list of {name, expression, ...} dicts.")
         for i, spec in enumerate(params):
+            if not isinstance(spec, dict):
+                return error(f"params[{i}] must be a dict with 'name' and 'expression'. "
+                             "No parameters added.")
+            for required in ("name", "expression"):
+                if required not in spec:
+                    return error(f"params[{i}] is missing '{required}'. No parameters added.")
+                if isinstance(spec[required], str) and not spec[required].strip():
+                    return error(f"params[{i}].{required} is empty. No parameters added.")
+            for field in ("name", "expression", "unit", "comment"):
+                if field in spec and not isinstance(spec[field], str):
+                    value = ascii(spec[field])
+                    value = value[:77] + "..." if len(value) > 80 else value
+                    return error(f"params[{i}].{field} must be a string; received "
+                                 f"{value}. No parameters added.")
+        for i, spec in enumerate(params):
             if isinstance(spec, dict) and "favorite" in spec and type(spec["favorite"]) is not bool:
                 value = ascii(spec["favorite"])
                 value = value[:77] + "..." if len(value) > 80 else value
@@ -80,8 +95,6 @@ def handler(name: str = "", expression: str = "", unit: str = "mm",
                              "No parameters added; omit favorite to keep the default false.")
         results = []
         for i, spec in enumerate(params):
-            if not isinstance(spec, dict):
-                return error(f"params[{i}] must be a dict with 'name' and 'expression'.")
             res, err = _add_one(design, spec.get("name", ""), spec.get("expression", ""),
                                 spec.get("unit", "mm"), spec.get("comment", ""),
                                 spec.get("favorite", False))

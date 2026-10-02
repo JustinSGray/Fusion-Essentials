@@ -668,6 +668,28 @@ class TestOccurrenceFanout:
         res = ap.handler(target="Wheel:1", color="#1E8E3E")
         assert res["isError"] is True
         assert "NONE" in res["message"] and "Kept" in res["message"]
+        assert "Document appearance count is" in res["message"]
+        assert "Occurrence appearance" in res["message"]
+
+    def test_occurrence_failure_after_opacity_discloses_retained_writes(self, monkeypatch):
+        comp = MakeComp("Wheel", bodies=[FakeBody("Kept", inherited_opacity=0.35)])
+        kept = FakeBody("Kept")
+        occ = FanoutOcc("Wheel:1", bodies=[kept], component=comp, keeps_override=["Kept"])
+        kept.appearance.appearanceProperties.itemByName("opaque_albedo").value = FakeColor(255, 0, 0)
+        design, apps = _install_mp(monkeypatch, _root(occurrences=[occ]))
+        monkeypatch.setattr(ap.adsk.core.Color, "create",
+                            staticmethod(lambda r, g, b, o: FakeColor(r, g, b, o)))
+        _resolve_to(occ, "occurrence")
+        result = ap.handler(target="Wheel:1", color="#1E8E3E", opacity=35)
+        assert result["isError"] is True and comp.opacity == 0.35
+        assert "Component opacity now reads 0.35" in result["message"]
+        assert "'name': 'AgentColor_1E8E3E'" in result["message"]
+        assert "'color_rgb': [30, 142, 62]" in result["message"]
+        assert "'id': 'asset:" in result["message"]
+        assert "'name': 'OwnColor_Kept'" in result["message"]
+        assert "'color_rgb': [255, 0, 0]" in result["message"]
+        assert "The occurrence and document entry read the same name and color" in result["message"]
+        assert f"Document appearance count is {apps.count}" in result["message"]
 
     def test_the_note_and_the_key_report_the_observation_not_an_unread_cause(self, monkeypatch):
         # The tool reads WHICH appearance each body carries; it never reads why

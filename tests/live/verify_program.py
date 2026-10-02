@@ -18,7 +18,7 @@ from verify_acts_cloud import (
 from verify_acts_census import (
     HUB_POCKET_SETUP, _CENSUS_EXT, _CENSUS_EXT_READ, _CENSUS_LONG, _CENSUS_LONG_READ, _CENSUS_MILL,
     _CENSUS_MILL_READ, _CENSUS_POCKET, _CENSUS_POCKET_READ, _CENSUS_TURN, _CENSUS_TURN_READ)
-from verify_acts_doc import _FINALE, _OVERTURE, _SHOWCASE
+from verify_acts_doc import _FINALE, _OVERTURE, _SHOWCASE, _SMALL_EDITS
 from verify_acts_dump import _HUB_CONTOUR, _HUB_DUMP, _MX_DUMP
 from verify_acts_hub import (
     HUB_MILL_SETUP, HUB_ROT_SETUP, HUB_TURN_SETUP, _HUB, _HUB_ADDITIVE, _HUB_JOB, _HUB_ROTARY,
@@ -201,6 +201,7 @@ _ACT_PROGRAM = [
     ("ACT 12e - SHEET METAL SELECTED BEND", None, _SHEET_SELECTED, []),
     ("ACT 12f - SHEET METAL FOLD POSITIONS", None, _SHEET_POSITIONS, []),
     ("ACT 12g - SHEET METAL FLANGE FAMILY", None, _SHEET_FLANGE, []),
+    ("ACT 13 - SMALL EDIT SAFETY", None, _SMALL_EDITS, None),
     ("FINALE", None, _FINALE, None),
 ]
 

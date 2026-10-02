@@ -34,6 +34,13 @@ def handler(target: str = "", part_number: str = None, description: str = None) 
         return error("An empty 'part_number' is ignored by Fusion - the component keeps the number "
                      "it already has. Pass the number to set.")
 
+    for field, value in (("part_number", part_number), ("description", description)):
+        if value is not None and not isinstance(value, str):
+            shown = ascii(value)
+            shown = shown[:77] + "..." if len(shown) > 80 else shown
+            return error(f"'{field}'={shown} must be a string. "
+                         "No metadata was changed.")
+
     design = _common.design()
     if not design:
         return error("No active design. Open a document first (see doc_open / doc_new).")

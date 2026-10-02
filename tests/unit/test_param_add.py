@@ -102,6 +102,21 @@ class TestAddHandler:
 
 
 class TestAddBatch:
+    @pytest.mark.parametrize("specs,fragment", [
+        ([{"name": "Prefix", "expression": "1 mm"}, "oops"], "params[1] must be a dict"),
+        ([{"name": "Prefix", "expression": "1 mm"},
+          {"name": "Bad", "expression": 123}], "params[1].expression must be a string"),
+        ([{"name": "Prefix", "expression": "1 mm"}, {"name": "Missing"}],
+         "params[1] is missing 'expression'"),
+    ])
+    def test_malformed_batch_is_preflighted_before_any_add(self, monkeypatch, specs, fragment):
+        up = FakeUserParameters([])
+        _stub_design(monkeypatch, _design(up, make_timeline("A")))
+        response = params.handler(params=specs)
+        assert response["isError"] is True and fragment in response["message"]
+        assert "No parameters added" in response["message"]
+        assert up._added == [] and up.count == 0
+
     # Adding N parameters is ONE batch call, not N separate calls.
     def test_batch_adds_all(self, monkeypatch):
         up = FakeUserParameters([])
@@ -121,14 +136,26 @@ class TestAddBatch:
         up = FakeUserParameters([])
         design = _design(up, make_timeline("A"))
         _stub_design(monkeypatch, design)
-        # 2nd entry is missing an expression -> that entry errors, the batch reports which index
+        # A blank required value is known before the batch starts, so no prefix is added.
         res = params.handler(params=[
             {"name": "Good", "expression": "1 mm"},
             {"name": "Bad", "expression": ""},
         ])
         assert res["isError"] is True
-        assert "Bad" in res["message"] and "[1]" in res["message"]
-        assert up.itemByName("Good") is not None        # the earlier good one is kept
+        assert "params[1].expression is empty" in res["message"]
+        assert "No parameters added" in res["message"]
+        assert up.itemByName("Good") is None
+
+    def test_native_duplicate_refusal_keeps_the_honest_completed_prefix_count(self, monkeypatch):
+        up = FakeUserParameters([FakeUserParameter(name="Existing", expression="2 mm")])
+        _stub_design(monkeypatch, _design(up, make_timeline("A")))
+        response = params.handler(params=[
+            {"name": "GoodPrefix", "expression": "1 mm"},
+            {"name": "Existing", "expression": "3 mm"},
+        ])
+        assert response["isError"] is True
+        assert "already exists" in response["message"] and "1 added before this" in response["message"]
+        assert up.itemByName("GoodPrefix") is not None
 
     def test_single_param_path_still_works(self, monkeypatch):
         up = FakeUserParameters([])
@@ -223,14 +250,13 @@ class TestTextParameter:
         assert "QUOTED" not in res["message"]
 
     def test_a_non_string_unit_in_a_batch_errors_instead_of_raising(self, monkeypatch):
-        # 'params' items are plain objects in the schema, so a unit reaches the add as any JSON
-        # value a caller sends. Whatever the add then does, building the failure message is the
-        # last step and may not itself raise - an exception out of the handler is not a payload.
+        # Batch units are checked as pure request data before any earlier parameter can land.
         up = UnitRefusingUserParameters([])
         _stub_design(monkeypatch, _design(up, make_timeline("A")))
         res = params.handler(params=[{"name": "Loose", "expression": "1", "unit": 5}])
         assert res["isError"] is True
-        assert "Loose" in res["message"]
+        assert "params[0].unit must be a string" in res["message"]
+        assert up._added == []
 
 
 class TestAddFavorite:
