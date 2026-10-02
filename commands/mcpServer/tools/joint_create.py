@@ -168,7 +168,7 @@ def handler(occurrence_one: str = "", occurrence_two: str = "", joint_type: str 
             f"Joint '{joint_name_final}' WAS CREATED but FAILED to compute (health state: "
             f"{state_label})" + (f": {detail}" if detail else " (it reports no message)")
             + f" - it does not position the parts. It REMAINS in the timeline: remove it with "
-              f"design_delete_feature(name='{joint_name_final}'), or fix its inputs with "
+              f"design_delete_feature(feature='{joint_name_final}'), or fix its inputs with "
               "joint_edit. A part locked by assembly_ground(ground_to_parent=true), itself or an "
               "ancestor, conflicts with a joint that would move it - read the state back with "
               "assembly_get.")

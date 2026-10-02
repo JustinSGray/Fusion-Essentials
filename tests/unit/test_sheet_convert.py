@@ -26,6 +26,7 @@ def coupon(monkeypatch):
     def convert(face, rule):
         body.isSheetMetal = True
         component.activeSheetMetalRule = active
+        design.designSheetMetalRules = _NamedCollection(items=[rule, active])
         return True
     body.convertToSheetMetal = convert
     face = SimpleNamespace(body=body)

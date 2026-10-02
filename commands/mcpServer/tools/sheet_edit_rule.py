@@ -127,16 +127,16 @@ def handler(action: str = "copy", rule: str = "", name: str = "", thickness: str
                "note": "Design-local rule read back. Assign or convert a component separately."})
 
 
-TOOL_DESCRIPTION = "Copy a scoped sheet-metal rule into this design, or edit a design-local rule."
+TOOL_DESCRIPTION = "Copy a sheet rule into this design, or edit a design rule."
 
 tool = (Tool.create_simple(name="sheet_edit_rule", description=TOOL_DESCRIPTION)
         .add_input_property(*_ACTION.as_property())
         .add_input_property(*_RULE.as_property())
         .add_required_input("rule")
-        .add_input_property("name", {"type": "string", "description": "New design rule name for copy."})
-        .add_input_property("thickness", {"type": "string", "description": "Explicit-unit length literal."})
-        .add_input_property("bend_radius", {"type": "string", "description": "Explicit-unit length literal."})
-        .add_input_property("gap", {"type": "string", "description": "Explicit-unit length literal."})
+        .add_input_property("name", {"type": "string"})
+        .add_input_property("thickness", {"type": "string", "description": "Length with units."})
+        .add_input_property("bend_radius", {"type": "string", "description": "Length with units."})
+        .add_input_property("gap", {"type": "string", "description": "Length with units."})
         .add_input_property("k_factor", {"type": "number", "minimum": 0, "maximum": 1})
         .strict_schema())
 item = Item.create_tool_item(

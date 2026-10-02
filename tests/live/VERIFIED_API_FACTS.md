@@ -15,8 +15,8 @@ lapsed entitlement and stands on its last entitled measurement, whose date and b
 cell names. `--check` fails when the stamp differs from the installed Fusion or any row is
 neither PASS nor CARRIED.
 
-Stamp: Fusion 2706.0.97 | verified 2026-10-01 | source fb1aed2dc8254bd6a1dbd947c1856cea02e9532f83f4e12bd9728c877309ac1a
-Loaded: implementation 08da63d5c9a9bc3eb12e4adba097b441d7ff472f1723300c7f665aa52592a523 | schema 59b81013a8e8f86be3f27ff8adead7b9f9c37eecdc6fe4a94165ffbbed7f88f0 | load 6aaa6d3eaacf43068b203974d7273620 | session 18d8ded6c82f4841a64a5c2b4cbff866
+Stamp: Fusion 2706.0.97 | verified 2026-10-01 | source b8fb3a78c2bc4dd59011d3921f86b5a39600d4ac28c99c5200f76a5108745955
+Loaded: implementation d95217e6b311c26b916f76ed1b645c61ff58863000ac346f8841438f19907f0e | schema 9ddcda164b73b1ded54151109dc62d75d893cca21e03f9ce6a12a5a43418df6e | load 2e1cf290aa1c4b6b807dcd13e6088a87 | session 1eb3cdb80b5949b0be44c0fa10855457
 
 | result | claim id | claim | encoded in |
 |---|---|---|---|

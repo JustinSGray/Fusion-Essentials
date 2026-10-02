@@ -683,7 +683,7 @@ class TestCreatedJointHealth:
         assert "FAILED to compute" in res["message"]
         assert "conflicts with assembly relationships" in res["message"]
         assert "Compute Failed" not in res["message"]     # the repeating blob is condensed
-        assert "design_delete_feature" in res["message"]  # the joint REMAINS - say how to remove it
+        assert "design_delete_feature(feature='Joint1')" in res["message"]
         assert "ground_to_parent" in res["message"]       # and name the measured cause
 
     def test_an_ERROR_health_state_is_refused_too(self, monkeypatch):

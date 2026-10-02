@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 689
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 690
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -148,11 +148,14 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Assembly constraint failed:
 - ] needs both 'snap_one' and 'snap_two'.
 - Provide 'relationships' or 'snap_one'/'snap_two' ('<occurrence>:<snap>') for autonomous geometry, OR select ONE entity on each occurrence in Fusion first then call again. (Got
+- selected; need exactly 2 in requested order.)
 - Could not read the two selected entities. Re-select and try again.
 - ' is not a valid '<occurrence>:<snap>' (snap = center/top/bottom/left/right/front/back/cylinder/origin).
 - ' is not a valid '<occurrence>:<snap>'.
+- 's placed owner cannot be confirmed for '
 - relationships[].snap_one '' is not a valid '<occurrence>:<snap>' (snap = center/top/bottom/left/right/front/back/cylinder/origin).
-- Provide 'relationships' or 'snap_one'/'snap_two' ('<occurrence>:<snap>') for autonomous geometry, OR select ONE entity on each occurrence in Fusion first then call again. (Got  selected; need 2.)
+- Provide 'relationships' or 'snap_one'/'snap_two' ('<occurrence>:<snap>') for autonomous geometry, OR select ONE entity on each occurrence in Fusion first then call again. (Got  selected; need exact...
+- Select one entity on occurrence_one first, then one on occurrence_two, or use 'relationships' with explicit '<occurrence>:<snap>' pairs.
 - Constraint '' was created but its healthState cannot be read, so whether it SOLVED is UNCONFIRMED - nothing here says the parts are located. Read it back with assembly_get(include=['relations']).
 - Constraint '' solved, but adding it left  existing timeline feature(s) unhealthy: .  Deleting it does not restore them automatically - check them with assembly_get afterwards.
 - Constraint '' was created but holds only  of the  relationship(s) submitted - the missing one(s) constrain nothing, so the parts are not located the way this call describes.  Then re-submit the rel...
@@ -2328,12 +2331,17 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Verify with assembly_get (is_healthy + positions).
 - Joint created AT the geometry.
 - Joint creation returned nothing.
+- WAS CREATED but FAILED TO COMPUTE (health state:
+- . It REMAINS in the timeline; remove it with
+- , or fix its inputs with joint_edit. Read assembly_get before relying on its positions; a part locked by assembly_ground(ground_to_parent=true) can conflict with a joint that moves it.
+- conflicts with assembly relationships
 - Could not create joint input from the two geometries:
 - Joint creation failed:
 - . (The two geometries may be incompatible, or one part may be over-constrained.)
 - Could not apply flip:
 - whether the joint actually COMPUTES (added != working); null only when neither the joint nor its timeline item answered a state
 - The motion axis is the joint geometry FRAME's  axis, NOT world  (they coincide only when that frame is world-aligned) - for a true world axis follow with joint_edit(world_axis=x/y/z).
+- Joint  WAS CREATED but FAILED TO COMPUTE (health state: ): . It REMAINS in the timeline; remove it with , or fix its inputs with joint_edit. Read assembly_get before relying on its positions; a par...
 - Neither this joint nor its timeline item answered a health state, so whether it computes is UNVERIFIED here - 'healthy' is null. Re-read it with assembly_get (is_healthy / broken_joints).
 - This joint's compute state answered a value this tool has no name for - it is not a compute failure, so 'healthy' is true and 'health_state' is null. Read what it positions with assembly_get.
 - '' moved  mm to align the picked keypoints (a planar face aligns at its CENTROID, an edge at its MIDPOINT) - so pairing differently sized features repositions the part. Expected joint behavior; res...
@@ -2347,7 +2355,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - createInput returned nothing for these inputs.
 - setter returned false
 - joints.add returned nothing.
-- - it does not position the parts. It REMAINS in the timeline: remove it with design_delete_feature(name='
+- - it does not position the parts. It REMAINS in the timeline: remove it with design_delete_feature(feature='
 - '), or fix its inputs with joint_edit. A part locked by assembly_ground(ground_to_parent=true), itself or an ancestor, conflicts with a joint that would move it - read the state back with assembly_...
 - ' WAS CREATED but FAILED to compute (health state:
 - (it reports no message)
@@ -2360,7 +2368,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ', ...) or remove the joint with design_delete_feature - do NOT re-create it.
 - - an input is likely not in assembly context. Pass Joint Origins by NAME (bare or '<occurrence>:<JO name>') so this tool proxies them into the assembly; for geometry, use a fresh find_geometry handle.  **[cause-guess]**
 - Joint '' WAS CREATED, but a limit failed:  Limits already applied before the failure: . Fix the limits with joint_edit(joint_name='', ...) or remove the joint with design_delete_feature - do NOT re...
-- Joint '' WAS CREATED but FAILED to compute (health state: ) - it does not position the parts. It REMAINS in the timeline: remove it with design_delete_feature(name=''), or fix its inputs with joint...
+- Joint '' WAS CREATED but FAILED to compute (health state: ) - it does not position the parts. It REMAINS in the timeline: remove it with design_delete_feature(feature=''), or fix its inputs with jo...
 - 'healthy' is null - the joint's compute state could not be read off either the joint or its timeline item, so whether it SOLVED is UNKNOWN here (it is not a 'yes'). Check it with assembly_get (is_h...
 
 ### `joint_create_as_built`

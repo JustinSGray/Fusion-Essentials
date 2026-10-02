@@ -476,13 +476,16 @@ class TestHandler:
     def test_reports_health_warning_when_joint_fails_to_compute(self, monkeypatch):
         # a joint can ADD fine yet report a WARNING state (over-constrained / Compute Failed) - the
         # handler must surface that as a health warning, not a false success.
-        _install_design(monkeypatch, {"a": _face(_ST.CylinderSurfaceType), "b": _face(_ST.CylinderSurfaceType)},
+        joints = _install_design(monkeypatch, {"a": _face(_ST.CylinderSurfaceType), "b": _face(_ST.CylinderSurfaceType)},
                         joint_health=_FHS.WarningFeatureHealthState,
                         joint_msg="Can't resolve positions.Compute FailedX")
-        out = _payload(jg.handler(handle_one="a", handle_two="b", motion="revolute"))
-        assert out["healthy"] is False
-        assert "FAILED TO COMPUTE" in out["health_warning"]
-        assert "Compute Failed" not in out["health_warning"]   # message trimmed
+        out = jg.handler(handle_one="a", handle_two="b", motion="rigid", name="LockedGeometry")
+        assert out["isError"] is True
+        assert "FAILED TO COMPUTE" in out["message"]
+        assert "REMAINS" in out["message"]
+        assert "design_delete_feature(feature='LockedGeometry')" in out["message"]
+        assert "Compute Failed" not in out["message"]
+        assert joints.count == 1 and joints.item(0).name == "LockedGeometry"
 
     def test_the_health_warning_is_one_whole_condensed_sentence(self, monkeypatch):
         # Fusion's errorOrWarningMessage carries embedded NEWLINES and REPEATS its sentence, joined
@@ -493,9 +496,10 @@ class TestHandler:
         _install_design(monkeypatch, {"a": _face(_ST.CylinderSurfaceType),
                                       "b": _face(_ST.CylinderSurfaceType)},
                         joint_health=_FHS.WarningFeatureHealthState, joint_msg=blob)
-        out = _payload(jg.handler(handle_one="a", handle_two="b", motion="revolute"))
-        warning = out["health_warning"]
-        assert warning.endswith("Can't resolve positions. Inspect relationships.")
+        out = jg.handler(handle_one="a", handle_two="b", motion="rigid")
+        assert out["isError"] is True
+        warning = out["message"]
+        assert "Can't resolve positions. Inspect relationships." in warning
         assert "Compute Failed" not in warning and "\n" not in warning
 
     def test_a_message_at_the_cap_is_whole_and_one_character_over_is_marked_cut(self, monkeypatch):
@@ -505,9 +509,10 @@ class TestHandler:
             _install_design(monkeypatch, {"a": _face(_ST.CylinderSurfaceType),
                                           "b": _face(_ST.CylinderSurfaceType)},
                             joint_health=_FHS.WarningFeatureHealthState, joint_msg="z" * length)
-            warning = _payload(jg.handler(handle_one="a", handle_two="b",
-                                          motion="revolute"))["health_warning"]
-            assert warning.endswith(" ...") is cut, length
+            result = jg.handler(handle_one="a", handle_two="b", motion="rigid")
+            assert result["isError"] is True
+            warning = result["message"]
+            assert ("z" * 200 + " ..." in warning) is cut, length
             # 'z' appears nowhere in the fixed lead-in, so this counts the MESSAGE's own characters
             assert warning.count("z") == (200 if cut else length), length
 
@@ -737,18 +742,20 @@ class TestHealthVerdict:
         assert "health_warning" not in out
 
     def test_an_error_state_is_the_failure_verdict(self, monkeypatch):
-        out = self._out(monkeypatch, joint_health=self._FHS.ErrorFeatureHealthState,
-                        joint_msg="Can't resolve positions.")
-        assert out["healthy"] is False and out["health_state"] == "error"
-        assert "FAILED TO COMPUTE" in out["health_warning"]
+        self._cyl_pair(monkeypatch, joint_health=self._FHS.ErrorFeatureHealthState,
+                       joint_msg="Can't resolve positions.")
+        out = jg.handler(handle_one="a", handle_two="b", motion="rigid")
+        assert out["isError"] is True and "health state: error" in out["message"]
+        assert "FAILED TO COMPUTE" in out["message"]
 
     def test_a_warning_state_is_also_a_failure_verdict(self, monkeypatch):
         # Fusion marks a WARNING-state feature 'Compute Failed' too, and assembly_get's
         # broken_joints classes the two alike - so this tool must not split them either.
-        out = self._out(monkeypatch, joint_health=self._FHS.WarningFeatureHealthState,
-                        joint_msg="Conflicting relationships.")
-        assert out["healthy"] is False and out["health_state"] == "warning"
-        assert "FAILED TO COMPUTE" in out["health_warning"]
+        self._cyl_pair(monkeypatch, joint_health=self._FHS.WarningFeatureHealthState,
+                       joint_msg="Conflicting relationships.")
+        out = jg.handler(handle_one="a", handle_two="b", motion="rigid")
+        assert out["isError"] is True and "health state: warning" in out["message"]
+        assert "FAILED TO COMPUTE" in out["message"]
 
     def test_a_suppressed_joint_is_not_published_as_a_failed_compute(self, monkeypatch):
         out = self._out(monkeypatch, joint_health=self._FHS.SuppressedFeatureHealthState)
@@ -780,9 +787,9 @@ class TestHealthVerdict:
                                   message="Conflicts with assembly relationships.")
         self._cyl_pair(monkeypatch, new_joint=self._joint(
             health=self._FHS.HealthyFeatureHealthState, timeline_object=item))
-        out = _payload(jg.handler(handle_one="a", handle_two="b", motion="revolute"))
-        assert out["healthy"] is False and out["health_state"] == "warning"
-        assert "Conflicts with assembly relationships." in out["health_warning"]
+        out = jg.handler(handle_one="a", handle_two="b", motion="rigid")
+        assert out["isError"] is True and "health state: warning" in out["message"]
+        assert "Conflicts with assembly relationships." in out["message"]
 
     def test_a_joint_answering_no_state_is_read_off_its_timeline_item(self, monkeypatch):
         # The joint itself answers nothing; its timeline item answers HEALTHY. Reading the joint

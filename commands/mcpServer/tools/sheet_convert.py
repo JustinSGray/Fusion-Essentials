@@ -114,7 +114,7 @@ def handler(body: str = "", base_face: str = "", rule: str = "") -> dict:
                "note": "Body isSheetMetal; applied_rule names the active rule. Use applied_rule_ref with sheet_edit_rule; if absent, re-read sheet_get(include=['rules'])."})
 
 
-TOOL_DESCRIPTION = ("Convert a uniform solid to sheet metal; design rule or rule='active' in a ruled component.")
+TOOL_DESCRIPTION = "Convert a uniform solid using a design rule or rule='active'."
 
 tool = (Tool.create_simple(name="sheet_convert", description=TOOL_DESCRIPTION)
         .add_input_property(*_BODY.as_property())

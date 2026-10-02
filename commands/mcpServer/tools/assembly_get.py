@@ -70,6 +70,8 @@ def _joint_record(design, j, inv_k):
                              if safe(lambda: j.occurrenceOne) else None)
     rec["occurrence_two"] = (safe(lambda: j.occurrenceTwo.name)
                              if safe(lambda: j.occurrenceTwo) else None)
+    rec["occurrence_one_path"] = safe(lambda: j.occurrenceOne.fullPathName)
+    rec["occurrence_two_path"] = safe(lambda: j.occurrenceTwo.fullPathName)
     # Suppression is DISCLOSED, not folded into healthy - a suppressed joint is inert, not broken.
     # BOTH flags OR'd: Joint.isSuppressed keeps reading False when the suppression was set on the
     # TIMELINE item. read_flag, so two unreadable flags stay unstated.
@@ -135,10 +137,10 @@ def handler(units: str = "mm", include=None, include_joints: bool = True,
     for j in _joints.all_joints(design):
         rec = _joint_record(design, j, inv_k)
         joints.append(rec)
-        for key in ("occurrence_one", "occurrence_two"):
-            nm = rec.get(key)
-            if nm:
-                occ_joints.setdefault(nm, []).append(rec["name"])
+        for key in ("occurrence_one_path", "occurrence_two_path"):
+            path = rec.get(key)
+            if path:
+                occ_joints.setdefault(path, []).append(rec["name"])
 
     # Cap the JOINTS array reported to the caller; occ_joints (the cross-index) was built from the
     # FULL walk above, and broken_joints/health below reads the FULL 'joints' list, so capping here
@@ -301,6 +303,9 @@ def handler(units: str = "mm", include=None, include_joints: bool = True,
         out["joint_origins"] = jo_rows
         out["joint_origin_count"] = jo_total
         out["joint_origins_truncated"] = jo_total > len(jo_rows)
+        if any(r["consumed_by"] is None for r in jo_rows):
+            out["note"] += (" consumed_by=null: an origin or joint-half identity could not be read; "
+                            "re-read assembly_get.")
         if out["joint_origins_truncated"]:
             out["note"] += (f" joint_origins was capped at {cap_jo} of {jo_total}; raise "
                             "max_joint_origins to see the rest.")
@@ -413,9 +418,9 @@ def handler(units: str = "mm", include=None, include_joints: bool = True,
 
 
 TOOL_DESCRIPTION = (
-    "Read the active assembly's kinematic state: per top-level occurrence, identity, ground flags, "
-    "body count and joints, plus the design's joint list. Check is_healthy first; the note names "
-    "the include= slices this call omitted."
+    "Read assembly occurrences, grounding, body counts, joints and health. "
+    "Check is_healthy first; the note lists omitted include= slices. "
+    "Joint occurrence_one_path/occurrence_two_path are placed full paths."
 )
 
 tool = (

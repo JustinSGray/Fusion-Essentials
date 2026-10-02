@@ -156,6 +156,93 @@ def _dup_gap_isolated(p):
                      and not _near((r1.get("gap") or {}).get("value_cm"), 0.06, 1e-6))
 
 
+def _collision_rule_state(p):
+    """Return complete design rule settings and the disclosed component census."""
+    listing, components = p.get("rules") or {}, p.get("components") or {}
+    rows = listing.get("rules")
+    fields = ("thickness", "bendRadius", "gap", "reliefWidth", "reliefDepth",
+              "reliefRemnant", "twoBendReliefSize", "threeBendReliefRadius")
+    if (listing.get("readable") is not True or listing.get("truncated") is not False
+            or not isinstance(rows, list) or listing.get("total") != len(rows)
+            or any(type(r.get("index")) is not int for r in rows)
+            or sorted(r.get("index", -1) for r in rows) != list(range(len(rows)))
+            or components.get("walk_complete") is not True or components.get("truncated") is not False
+            or not isinstance(components.get("components"), list)
+            or components.get("total") != len(components["components"])):
+        return None
+    for r in rows:
+        if (not r.get("name") or not r.get("ref") or r.get("scope") != "design"
+                or type(r.get("is_used")) is not bool
+                or type(r.get("k_factor")) not in (int, float) or not math.isfinite(r["k_factor"])
+                or any(not (r.get(k) or {}).get("expression")
+                       or type((r.get(k) or {}).get("value_cm")) not in (int, float)
+                       or not math.isfinite(r[k]["value_cm"]) for k in fields)):
+            return None
+    if any(not r.get("component") or type(r.get("has_flat_pattern")) is not bool
+           or not isinstance(r.get("bodies"), list)
+           or any(not b.get("name") or type(b.get("is_sheet_metal")) is not bool for b in r["bodies"])
+           for r in components["components"]):
+        return None
+    return {"rules": listing, "components": components}
+
+
+def _collision_refs(p):
+    """Require the two colliding refs to disclose their actual distinct collection indices."""
+    state = _collision_rule_state(p)
+    rows = state["rules"]["rules"] if state else []
+    dups = sorted([r for r in rows if r.get("name") == "Steel (mm)"], key=lambda r: r["index"])
+    literal = [r for r in rows if r.get("name") == "Steel (mm)#1"]
+    valid = (len(dups) == 2 and len(literal) == 1
+             and dups[0]["ref"] == {"scope": "design", "index": dups[0]["index"]}
+             and literal[0]["ref"] == {"scope": "design", "index": literal[0]["index"]}
+             and dups[1]["ref"] == "design:Steel (mm)#2")
+    _measured("literal/ordinal refs select distinct native rows", rows, valid)
+    _RECALL["sm_collision_targets"] = [r["ref"] for r in dups + literal]
+    _RECALL["sm_collision_indices"] = [r["index"] for r in dups + literal]
+    return True
+
+
+def _collision_edit_read(target, thickness_cm):
+    """Require a changed target thickness and exact preservation of every sibling rule setting."""
+    def check(p):
+        now, before = _collision_rule_state(p), _RECALL.get("sm_collision_rules")
+        index = _RECALL["sm_collision_indices"][target]
+        old_rows = {r["index"]: r for r in before["rules"]["rules"]} if before else {}
+        rows = {r["index"]: r for r in now["rules"]["rules"]} if now else {}
+        valid = (now is not None and before is not None and rows.keys() == old_rows.keys()
+                 and now["components"] == before["components"]
+                 and all(rows[i] == old_rows[i] for i in rows if i != index)
+                 and _near(rows[index]["thickness"]["value_cm"], thickness_cm, 1e-8)
+                 and not _near(old_rows[index]["thickness"]["value_cm"], thickness_cm, 1e-8))
+        _measured("one intended rule thickness changes; all siblings preserved", {"before": before, "now": now}, valid)
+        _RECALL["sm_collision_rules"] = now
+        return True
+    return check
+
+
+def _collision_rule_rows():
+    """Exercise ambiguous refusal and real edits through every disclosed collision/control ref."""
+    reads = {"include": ["rules", "components"], "max_results": 200}
+    rows = [("sheet_edit_rule", {"action": "copy", "rule": "design:Steel (mm)#2",
+                               "name": "Steel (mm)#1", "thickness": "3 mm"}, "ok", None),
+            ("sheet_get", reads, _collision_refs, None),
+            ("sheet_get", reads, _retire_compare("sm_collision_rules", _collision_rule_state, False), None)]
+    rows.extend(_retire_reads("sm_collision_refusal", [_PART + ":1"], []))
+    for ref in ("design:Steel (mm)#1", "design:Steel (mm)"):
+        rows.append(("sheet_edit_rule", {"action": "update", "rule": ref, "thickness": "4 mm"},
+                     _refused("sheet_get"), None))
+        rows.append(("sheet_get", reads, _retire_compare("sm_collision_rules", _collision_rule_state, True), None))
+        rows.extend(_retire_reads("sm_collision_refusal", [_PART + ":1"], [], after=True))
+    for target, (thickness, cm) in enumerate((("1.7 mm", .17), ("2.8 mm", .28), ("3.4 mm", .34))):
+        rows.append(("sheet_edit_rule", lambda c, target=target, thickness=thickness: {
+            "action": "update", "rule": _RECALL["sm_collision_targets"][target], "thickness": thickness}, "ok", None))
+        rows.append(("sheet_get", reads, _collision_edit_read(target, cm), None))
+        rows.append(("model_inspect", {"target": _PART + ":1", "include": ["default", "mass"],
+                                      "per_body": True, "accuracy": "very_high", "units": "mm"},
+                     _retire_compare("sm_collision_refusal_" + _PART + ":1", _retire_material_state, True), None))
+    return rows
+
+
 def _seed2_occurrence_deleted(p):
     """Require the tool's own verified-absence verdict for the recalled Second Seed occurrence."""
     expected = _RECALL.get("sm_seed2_occurrence")
@@ -876,6 +963,69 @@ def _selected_bend_handle(p):
     return rows[0]["handle"] if len(rows) == 1 else None
 
 
+def _bend_wall_state(p):
+    """Return complete finite cylinder-wall geometry without opaque handle text."""
+    rows = p.get("matches")
+    if (p.get("units") != "mm" or not isinstance(rows, list)
+            or p.get("returned") != len(rows) or p.get("match_count") != len(rows)):
+        return None
+    for r in rows:
+        if (r.get("kind") != "cylinder_face" or not r.get("handle") or not r.get("occurrence")
+                or any(type(r.get(k)) not in (int, float) or not math.isfinite(r[k]) or r[k] <= 0
+                       for k in ("area", "radius"))
+                or any(not isinstance(r.get(k), list) or len(r[k]) != 3
+                       or any(type(n) not in (int, float) or not math.isfinite(n) for n in r[k])
+                       for k in ("position", "normal", "axis"))):
+            return None
+    return sorted([{k: v for k, v in r.items() if k != "handle"} for r in rows],
+                  key=lambda r: (r["radius"], r["position"]))
+
+
+def _capture_bend_witnesses(p):
+    """Recall both independently acquired inner handles and the first bend's unchanged wall pair."""
+    walls = _bend_wall_state(p)
+    _measured("two-bend wall witness is complete", walls, walls is not None and len(walls) == 4)
+    _RECALL["sm_first_bend_walls"] = [r for r in walls if 20 < r["position"][0] < 40]
+    _RECALL["sm_array_bends"] = [r["handle"] for r in _bend_cylinders(p) if _near(r["radius"], 2, .05)]
+    return _selected_bend_handle(p)
+
+
+def _first_bend_preserved(p):
+    """Require the remaining bend's complete wall geometry to match its prior independent read."""
+    walls = _bend_wall_state(p)
+    before = _RECALL.get("sm_first_bend_walls")
+    return _measured("unselected physical bend preserved", {"before": before, "after": walls},
+                     walls is not None and before is not None and len(before) == 2 and walls == before)
+
+
+def _array_unfold_rows():
+    """Reject concatenated handles without effect, then flatten and refold both physical bends."""
+    cylinders = {"target": _PART, "kind": "cylinder_face", "max_results": 30, "units": "mm"}
+    rows = [("find_geometry", cylinders, _two_bends, ("sm_selected_bend", _capture_bend_witnesses)),
+            ("find_geometry", {"target": _PART, "kind": "planar_face", "max_results": 30},
+             _top_face(900), _top_handle(900)),
+            ("find_geometry", cylinders, _retire_compare("sm_comma_walls", _bend_wall_state, False), None)]
+    rows.extend(_retire_reads("sm_comma_refusal", [_PART + ":1"], []))
+    rows.append(("sheet_create_unfold", lambda c: {
+        "stationary_face": _ctx_get(c, "sm_top", "top face between bends"),
+        "bend_faces": ",".join(_RECALL["sm_array_bends"])}, _refused("JSON array", "comma-joined"), None))
+    rows.append(("find_geometry", cylinders, _retire_compare("sm_comma_walls", _bend_wall_state, True), None))
+    rows.extend(_retire_reads("sm_comma_refusal", [_PART + ":1"], [], after=True))
+    rows.extend([
+        ("sheet_create_unfold", lambda c: {
+            "stationary_face": _ctx_get(c, "sm_top", "top face between bends"),
+            "bend_faces": _RECALL["sm_array_bends"]},
+         lambda p: _selected_unfolded(p) and p.get("bend_count_unfolded") == 2,
+         ("sm_array_unfold", _recall("sm_array_unfold", lambda p: p["feature"]))),
+        ("find_geometry", cylinders, lambda p: _measured("both physical bend wall pairs flattened", p,
+            _bend_wall_state(p) == []), None),
+        ("sheet_create_refold", lambda c: {"unfold": _ctx_get(c, "sm_array_unfold", "array unfold feature")},
+         lambda p: _refolded(p, "sm_array_unfold"), None),
+        ("find_geometry", cylinders, _two_bends, None),
+    ])
+    return rows
+
+
 def _selected_unfolded(p):
     """Require selected-bend mode and changed geometry."""
     return _measured("selected bend unfolded", {"feature": p.get("feature"),
@@ -1052,6 +1202,7 @@ _SHEET = _SHEET_BUILD + [
     ("sheet_edit_rule", {"action": "update", "rule": "design:Steel (mm)#2",
                          "gap": "0.6 mm"}, _second_dup_gap_updated, None),
     ("sheet_get", {"include": ["rules"], "max_results": 200}, _dup_gap_isolated, None),
+] + _collision_rule_rows() + [
     ("design_delete_occurrence", lambda c: {"occurrence": _ctx_get(
         c, "sm_seed2_occurrence", "Second Seed occurrence name")},
      _seed2_occurrence_deleted, None),
@@ -1153,7 +1304,7 @@ _SHEET_SELECTED = _SHEET_BUILD + [
         "bend_line": _ctx_get(c, "sm_line2", "second bend line"),
         "component": _PART, "angle_deg": -60}, _second_folded, None),
     ("find_geometry", {"target": _PART, "kind": "cylinder_face", "max_results": 30},
-     _two_bends, ("sm_selected_bend", _selected_bend_handle)),
+     _two_bends, ("sm_selected_bend", _capture_bend_witnesses)),
     ("find_geometry", {"target": _PART, "kind": "planar_face", "max_results": 30},
      _top_face(900), _top_handle(900)),
     ("sheet_create_unfold", lambda c: {
@@ -1163,11 +1314,14 @@ _SHEET_SELECTED = _SHEET_BUILD + [
      ("sm_selected_unfold", _recall("sm_selected_unfold", lambda p: p["feature"]))),
     ("find_geometry", {"target": _PART, "kind": "cylinder_face", "max_results": 30},
      _one_bend, None),
+    ("find_geometry", {"target": _PART, "kind": "cylinder_face", "max_results": 30},
+     _first_bend_preserved, None),
     ("sheet_create_refold", lambda c: {
         "unfold": _ctx_get(c, "sm_selected_unfold", "selected unfold feature")},
      _selected_refolded, None),
     ("find_geometry", {"target": _PART, "kind": "cylinder_face", "max_results": 30},
      _two_bends, None),
+] + _array_unfold_rows() + [
     ("find_geometry", {"target": _PART, "kind": "planar_face", "max_results": 30},
      _top_face(900), _top_handle(900)),
     ("sheet_create_flat_pattern", lambda c: {

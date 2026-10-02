@@ -24,6 +24,92 @@ from verify_acts_model_sweep import (
     _retire_compare, _retire_design_state, _retire_material_state, _retire_reads, _retire_sketch_state)
 
 
+def _mesh_remedy_census(p):
+    """Return the complete readable target and witness mesh census."""
+    rows = p.get("meshes")
+    if (p.get("units") != "mm" or p.get("truncated") is not False or p.get("count") != 2
+            or not isinstance(rows, list) or len(rows) != 2
+            or {r.get("name") for r in rows} != {"CouponMesh", "WitnessMesh"}
+            or any(not isinstance(r.get("handle"), str) or not r["handle"]
+                   or any(type(r.get(k)) is not int or r[k] <= 0 for k in ("triangle_count", "node_count"))
+                   or r.get("polygon_count") != 0 or r.get("is_closed") is not True
+                   or r.get("is_oriented") is not True
+                   or any(not _num(r.get(k)) or not math.isfinite(r[k]) or r[k] <= 0
+                          for k in ("area", "volume")) for r in rows)):
+        return None
+    return {r["name"]: r for r in rows}
+
+
+def _mesh_remedy_brep(p):
+    """Return independently readable source BRep geometry and material."""
+    mass = p.get("mass") or {}
+    if (p.get("kind") != "body" or p.get("units") != "mm" or p.get("lump_count") != 1
+            or p.get("frame") != "world axes (axis-aligned)"
+            or any(not _num((p.get(k) or {}).get(a)) or not math.isfinite(p[k][a])
+                   for k in ("min_point", "max_point") for a in "xyz")
+            or any(not _num(mass.get(k)) or not math.isfinite(mass[k]) or mass[k] <= 0
+                   for k in ("volume", "area", "mass_kg"))):
+        return None
+    return {"bounds": [p["min_point"], p["max_point"]], "mass": mass, "lump_count": p["lump_count"]}
+
+
+def _mesh_remedy_reduced(p):
+    """Check target decimation from its advertised handle and exact witness preservation."""
+    now, before = _mesh_remedy_census(p), _RECALL.get("mesh_remedy_census")
+    valid = (now is not None and before is not None
+             and now["WitnessMesh"] == before["WitnessMesh"]
+             and before["CouponMesh"]["triangle_count"] == 76
+             and now["CouponMesh"]["triangle_count"] == 38
+             and now["CouponMesh"]["node_count"] == 42
+             and now["CouponMesh"]["volume"] < before["CouponMesh"]["volume"])
+    return _measured("only the advertised target mesh decimated; witness held", now, valid)
+
+
+def _mesh_remedy_rows():
+    """Exercise a plain miss, its mesh_get remedy and independently scoped decimation."""
+    rows = [("doc_get", {}, _home_document, ("mr_story", _home_address)),
+            ("doc_new", {}, _new_document, None),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("doc_get", {}, _home_document, ("mr_doc", _home_address))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, a=args: dict(a), check, save))
+    write("sketch_create", {"name": "MeshSeed", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "MeshSeed",
+                                "geometry": [{"kind": "circle", "cx": 0, "cy": 0, "radius": 5}]})
+    write("model_extrude", {"sketch_name": "MeshSeed", "distance": 10}, _extruded,
+          ("mr_body", lambda p: p["result_bodies"][0]))
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+    for name in ("CouponMesh", "WitnessMesh"):
+        rows.append(("save_as_mesh", lambda c, n=name: {"body": _ctx_get(c, "mr_body", "source BRep"),
+                                                        "name": n, "quality": "low"}, "ok", None))
+    census = {"units": "mm", "max_results": 100}
+    history = {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+               "max_depth": 10, "max_results": 2000}
+    def brep(after):
+        return ("model_inspect", lambda c: {"target": _ctx_get(c, "mr_body", "source BRep"),
+                                            "include": ["default", "mass"], "accuracy": "very_high", "units": "mm"},
+                _retire_compare("mesh_remedy_brep", _mesh_remedy_brep, after), None)
+    rows += [("mesh_get", census, _retire_compare("mesh_remedy_census", _mesh_remedy_census, False), None),
+             ("design_get", history, _retire_compare("mesh_remedy_design", _retire_design_state, False), None), brep(False)]
+    write("mesh_reduce", {"mesh": "MissingMesh", "target": "proportion", "value": 50},
+          _refused("MissingMesh", "mesh_get"))
+    rows += [("mesh_get", census, _retire_compare("mesh_remedy_census", _mesh_remedy_census, True), None),
+             ("design_get", history, _retire_compare("mesh_remedy_design", _retire_design_state, True), None), brep(True),
+             ("mesh_get", census, _retire_compare("mesh_remedy_census", _mesh_remedy_census, True),
+              ("mr_mesh", lambda p: _mesh_remedy_census(p)["CouponMesh"]["handle"])),
+             ("mesh_reduce", lambda c: {"mesh": _ctx_get(c, "mr_mesh", "mesh_get target handle"),
+                                         "target": "proportion", "value": 50},
+              lambda p: _measured("target mesh reduce reports the observed count change", p,
+                                  p.get("reduced") is True and (p.get("before") or {}).get("triangle_count") == 76
+                                  and (p.get("after") or {}).get("triangle_count") == 38), None),
+             ("mesh_get", census, _mesh_remedy_reduced, None), brep(True),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "mr_story", "story"),
+                                         "expect_document": _ctx_get(c, "mr_doc", "mesh scratch")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "mr_doc", "mesh scratch"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "mr_story", "story")}, _document_closed, None)]
+    return rows
+
+
 def _base_feature_state(p):
     """The complete mode and timeline values used around a base-feature scope."""
     mode = p.get("mode_detail") or {}
@@ -2325,3 +2411,5 @@ _MESH = [
                          and _num(p.get("triangle_count")) and p["triangle_count"] > 0), None),
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
 ]
+
+_MESH += _mesh_remedy_rows()

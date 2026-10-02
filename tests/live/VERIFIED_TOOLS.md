@@ -29,10 +29,10 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source 032b30521e1370db27087afba78c9e7312f802c531fa13a2b5d342ebe436245c | Fusion 2706.0.97 | verified 2026-10-01
-Loaded: implementation 08da63d5c9a9bc3eb12e4adba097b441d7ff472f1723300c7f665aa52592a523 | schema 59b81013a8e8f86be3f27ff8adead7b9f9c37eecdc6fe4a94165ffbbed7f88f0 | load 6aaa6d3eaacf43068b203974d7273620 | session 18d8ded6c82f4841a64a5c2b4cbff866
+Stamp: source afd5fbe0e6112953b8dc34df87d4efd9a63362c852abaac2de453bb8b0241342 | Fusion 2706.0.97 | verified 2026-10-01
+Loaded: implementation d95217e6b311c26b916f76ed1b645c61ff58863000ac346f8841438f19907f0e | schema 9ddcda164b73b1ded54151109dc62d75d893cca21e03f9ce6a12a5a43418df6e | load 2e1cf290aa1c4b6b807dcd13e6088a87 | session 1eb3cdb80b5949b0be44c0fa10855457
 
-203 covered / 1 called / 5 refusals-only / 4 skipped(reason) / 0 pending
+204 covered / 0 called / 5 refusals-only / 4 skipped(reason) / 0 pending
 
 | act | mode |
 |---|---|
@@ -292,7 +292,7 @@ Loaded: implementation 08da63d5c9a9bc3eb12e4adba097b441d7ff472f1723300c7f665aa52
 | surface_trim | covered | trim a sheet with a cylinder cutter while a COPLANAR decoy sheet the same cutter crosses stays visible - the decoy's cells named as another body's, left unselected, and its area re-read unchanged after the commit |
 | surface_untrim | covered | untrim the internal hole loop |
 | sys_capability_map | covered | survey the server's tool families at cold start |
-| sys_execute_script | called |  |
+| sys_execute_script | covered |  |
 | sys_find_tool | covered | search the surface for the revolve verb - a registry read, so it carries no 'active_document' stamp (design_get's final read is the other half) |
 | sys_get_api_doc | covered | read the RevolveFeatures API doc |
 | sys_get_guidance | covered | read the packaged design guidance as a tool-only client does - the section index, then the assemble section's rule records beside the content hash that versions them |

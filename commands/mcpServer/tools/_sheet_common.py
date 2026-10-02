@@ -7,7 +7,7 @@ import adsk.core
 from . import _assert, _geom
 from ._common import counted, iter_collection, measured, ptxyz, safe
 
-MAP_BLURB = ("rule_row/matching_rules/component_row/sheet_edge_faces/bend_face_count/bend_wall_groups/"
+MAP_BLURB = ("rule_row/scoped_rules/matching_rules/component_row/sheet_edge_faces/bend_face_count/bend_wall_groups/"
              "flat_pattern_row - scoped rules, component state, a rim edge's faces, cylinder-face "
              "count, bend walls paired per axis, flat health and optional geometry")
 
@@ -15,33 +15,54 @@ _RULE_VALUES = ("thickness", "bendRadius", "gap", "reliefWidth", "reliefDepth",
                 "reliefRemnant", "twoBendReliefSize", "threeBendReliefRadius")
 
 
-def matching_rules(design, scope, name):
-    """Return exact case-insensitive rule matches in the requested scope."""
+def scoped_rules(design, scope):
+    """Return rules in native collection order, or None for an incomplete read."""
     if scope not in ("design", "library"):
         return None
     collection = safe(lambda: (design.designSheetMetalRules if scope == "design"
                                else design.librarySheetMetalRules))
     if collection is None:
         return None
+    count = safe(lambda: collection.count)
+    if type(count) is not int or count < 0:
+        return None
+    rules = [safe(lambda i=i: collection.item(i)) for i in range(count)]
+    return rules if all(r is not None and isinstance(safe(lambda r=r: r.name), str)
+                        and safe(lambda r=r: r.name) for r in rules) else None
+
+
+def matching_rules(design, scope, name):
+    """Return exact case-insensitive rule matches in the requested scope."""
+    rules = scoped_rules(design, scope)
+    if rules is None:
+        return None
     want = name.strip().lower()
-    return [r for r in iter_collection(collection)
-            if (safe(lambda r=r: r.name) or "").lower() == want]
+    return [r for r in rules if (safe(lambda r=r: r.name) or "").lower() == want]
 
 
 def rule_ref_and_index(design, rule, scope):
-    """(ref, index): 'scope:name', suffixed '#n' (1-based, collection order) when the name repeats."""
+    """Return a scoped string or collision-safe scope/index ref and the collection index."""
     name = safe(lambda: rule.name)
     if not name or design is None:
         return (f"{scope}:{name}" if name else None), None
-    collection = safe(lambda: (design.designSheetMetalRules if scope == "design"
-                               else design.librarySheetMetalRules))
-    index = (next((i for i, r in enumerate(iter_collection(collection)) if r == rule), None)
-             if collection is not None else None)
+    rules = scoped_rules(design, scope)
+    if rules is None:
+        return None, None
+    index = next((i for i, r in enumerate(rules) if r == rule), None)
     same = matching_rules(design, scope, name)
     if not same or len(same) <= 1:
-        return f"{scope}:{name}", index
-    ordinal = next((i for i, r in enumerate(same) if r == rule), None)
-    return (f"{scope}:{name}#{ordinal + 1}" if ordinal is not None else f"{scope}:{name}"), index
+        ref = name
+    else:
+        ordinal = next((i for i, r in enumerate(same) if r == rule), None)
+        ref = f"{name}#{ordinal + 1}" if ordinal is not None else name
+    literal = matching_rules(design, scope, ref) or []
+    base, _, tail = ref.rpartition("#")
+    duplicates = matching_rules(design, scope, base) if base and tail.isdigit() and int(tail) >= 1 else []
+    ordinal_rule = (duplicates[int(tail) - 1] if duplicates and len(duplicates) >= 2
+                    and int(tail) <= len(duplicates) else None)
+    if literal and ordinal_rule is not None and any(r != ordinal_rule for r in literal):
+        return ({"scope": scope, "index": index} if index is not None else None), index
+    return f"{scope}:{ref}", index
 
 
 def rule_row(design, rule, scope):

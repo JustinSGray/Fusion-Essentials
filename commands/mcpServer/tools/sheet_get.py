@@ -23,11 +23,9 @@ def _normalize_include(include):
 
 def _rules(design, scope, limit):
     """Return readable scoped rule rows up to the response cap."""
-    collection = safe(lambda: (design.designSheetMetalRules if scope == "design"
-                               else design.librarySheetMetalRules))
-    if collection is None:
+    rules = _sheet_common.scoped_rules(design, scope)
+    if rules is None:
         return {"readable": False, "rules": None}
-    rules = list(iter_collection(collection))
     return {"readable": True, "rules": [_sheet_common.rule_row(design, r, scope) for r in rules[:limit]],
             "total": len(rules), "truncated": len(rules) > limit}
 
@@ -107,13 +105,12 @@ def handler(include=None, max_results: int = 50) -> dict:
     return ok(out)
 
 
-TOOL_DESCRIPTION = ("Read sheet rule counts; include rules, library_rules, components or "
-                    "features (flat geometry) for detail.")
+TOOL_DESCRIPTION = "Read sheet rule counts; include rules, library_rules, components or features for detail."
 
 tool = (Tool.create_simple(name="sheet_get", description=TOOL_DESCRIPTION)
         .add_input_property("include", {"type": "array", "items": {"type": "string",
                                           "enum": list(_SLICES) + ["default"]}})
-        .add_input_property("max_results", {"type": "integer", "description": "Response rows per slice, max 200."})
+        .add_input_property("max_results", {"type": "integer"})
         .strict_schema())
 item = Item.create_tool_item(tool=tool, write="read", handler=handler, run_on_main_thread=True)
 

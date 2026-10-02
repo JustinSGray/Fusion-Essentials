@@ -32,7 +32,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | `ProfileRef` | A reference to a sketch PROFILE - a stable 'handle' (entityToken, order-stable across rebuilds) |
 | `ProfileRefList` | An ORDERED list of profile references - for loft, where profile ORDER is load-bearing (the loft |
 | `SectionRef` | A reference to one SectionAnalysis by its generated name from view_section cut/list. |
-| `SheetMetalRuleRef` | A rule in an explicit design or library scope, selected by exact name. |
+| `SheetMetalRuleRef` | A rule selected by scoped name or a current scope/index ref. |
 | `SketchLineRef` | An exact sketch line from sketch_get, optionally scoped to a component. |
 | `SketchRefList` | A LIST of SKETCHES by name - the reference an operation taking WHOLE sketches needs (a CAM |
 | `SurfaceRef` | The FACE/PLANE a sketch entity is constrained or dimensioned to. Schema and resolution come |
@@ -212,7 +212,7 @@ Produces: passed. |
 | ✎ | `assembly_constrain` | Constrain occurrences' geometry: the relationship (flush / coincident / concentric / angle) is INFERRED, and a SET solves together. |
 | ⚠ | `assembly_edit_contacts` | Maintain the design's contact sets - the named groups of occurrences/bodies Fusion checks for contact. |
 | ⚠ | `assembly_edit_relations` | Edit or remove an existing assembly relation; create one with assembly_rigid_group / joint_motion_link / assembly_constrain. |
-| · | `assembly_get` | Read the active assembly's kinematic state: per top-level occurrence, identity, ground flags, body count and joints, plus the design's joint list |
+| · | `assembly_get` | Read assembly occurrences, grounding, body counts, joints and health |
 | ✎ | `assembly_ground` | Lock an occurrence to its parent (isGroundToParent): true re-locks it at its TIMELINE placement, DISCARDING any free move; false frees it to move or joint. |
 | · | `assembly_inspect_interference` | Check solid overlap or coincident contact; list pairs and readable volume (cm^3) |
 | ✎ | `assembly_move` | Move an occurrence by editing its transform - a free reposition, no joint |
@@ -370,7 +370,7 @@ Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/m
 
 | | Tool | Summary |
 |---|---|---|
-| ✎ | `sheet_convert` | Convert a uniform solid to sheet metal; design rule or rule='active' in a ruled component. |
+| ✎ | `sheet_convert` | Convert a uniform solid using a design rule or rule='active'. |
 | ✎ | `sheet_create_flange` | Add a native flange to a sheet body: an edge flange along rim edges, or a base flange from a closed profile |
 | ✎ | `sheet_create_flat_pattern` | Create a native flat pattern; inspect sheet_get features before export |
 | ✎ | `sheet_create_fold` | Fold a sheet body along one sketch line |
@@ -378,9 +378,9 @@ Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/m
 | ✎ | `sheet_create_join_by_bend` | Join two sheet bodies with a bend between two rim edges (the preview API merges them into one body) |
 | ✎ | `sheet_create_refold` | Refold one explicit unfold feature after adding flat-state edits |
 | ✎ | `sheet_create_rip` | Rip a sheet body by a face (takes no gap), along an edge or between two vertices (gap from the rule unless given) |
-| ✎ | `sheet_create_unfold` | Unfold a sheet body's bends for cross-bend machining features, then sheet_create_refold |
-| ✎ | `sheet_edit_rule` | Copy a scoped sheet-metal rule into this design, or edit a design-local rule. |
-| · | `sheet_get` | Read sheet rule counts; include rules, library_rules, components or features (flat geometry) for detail. |
+| ✎ | `sheet_create_unfold` | Unfold sheet-metal bends; cut, then sheet_create_refold. |
+| ✎ | `sheet_edit_rule` | Copy a sheet rule into this design, or edit a design rule. |
+| · | `sheet_get` | Read sheet rule counts; include rules, library_rules, components or features for detail. |
 
 ### sys
 

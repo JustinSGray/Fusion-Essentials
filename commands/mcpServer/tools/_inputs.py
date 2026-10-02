@@ -170,14 +170,24 @@ class GeometryHandleList(GeometryHandle):
     json_type = "array"
     MAP_HINT = "several faces/edges by handles (fillet/drill THESE)"
 
+    def __init__(self, name, require="any", *, json_array=False, **kw):
+        super().__init__(name, require=require, **kw)
+        self.json_array = json_array
+
     def schema(self, brief=False) -> dict:
         return {"type": "array", "items": {"type": "string"}, **self._desc(brief)}
 
     def contract_note(self) -> str:
         label, _ = _GEOMETRY_REQUIREMENTS[self.require]
-        return f"find_geometry 'handle's at {label}."
+        prefix = "JSON array of " if self.json_array else ""
+        return f"{prefix}find_geometry 'handle's at {label}."
 
     def resolve(self, raw):
+        if self.json_array and raw is not None and not isinstance(raw, list):
+            return None, (f"'{self.name}' got {raw!a}; pass a JSON array with one find_geometry "
+                          "handle per element, not a comma-joined string.")
+        if self.json_array and isinstance(raw, list) and any(not isinstance(h, str) for h in raw):
+            return None, f"'{self.name}' got {raw!a}; each JSON array element must be a geometry handle string."
         if raw is None or raw == "" or raw == []:
             if self.required:
                 return None, (f"'{self.name}' needs a list of geometry handles from find_geometry "
@@ -1357,7 +1367,7 @@ def _scoped_body(label, des, s, scope):
                   + (f" - it holds {held}." if held else " - it holds no bodies."))
 
 
-def _resolve_any_body(name, raw, source=None, scope=None, scope_input=None):
+def _resolve_any_body(name, raw, source=None, scope=None, scope_input=None, miss_remedy=None):
     """(body, error) for `raw` as a live BRepBody OR MeshBody, handle-first then name and
     KIND-AGNOSTIC, so the caller's wrong-kind error can name the required kind. `source` collects
     the vocabulary that answered ('handle' / 'name'); `scope` is a resolved ``_body_scope`` record
@@ -1426,10 +1436,11 @@ def _resolve_any_body(name, raw, source=None, scope=None, scope_input=None):
             return None, (f"'{name}': '{s}' is a component holding {len(bodies)} bodies ({cands}) - "
                           "name one of them, or pass a find_geometry handle.")
         return None, f"'{name}': component '{s}' holds no bodies to act on."
-    return None, (f"'{name}': {BODY_MISS} '{s}'. Pass a face/edge handle from "
-                  "find_geometry on that body, a body name (bare, or '<occurrence-or-component>:<body>'), or a "
-                  "single-body component/occurrence name "
-                  "(see design_get(include=['tree']) / model_extrude output)."
+    return None, (f"'{name}': {BODY_MISS} '{s}'. "
+                  + (miss_remedy or "Pass a face/edge handle from find_geometry on that body, "
+                     "a body name (bare, or '<occurrence-or-component>:<body>'), or a "
+                     "single-body component/occurrence name "
+                     "(see design_get(include=['tree']) / model_extrude output).")
                   + handle_suffix)
 
 
@@ -1479,8 +1490,10 @@ class BodyRef(InputKind):
                 return None, f"'{self.name}' is required (a body handle or name)."
             return self.default, None
         source = []
+        miss_remedy = ("Read mesh_get for a mesh 'handle' or name, then retry with that value."
+                       if self.kind == "mesh" else None)
         body, err = _resolve_any_body(self.name, s, source=source, scope=scope,
-                                      scope_input=self.scope_input)
+                                      scope_input=self.scope_input, miss_remedy=miss_remedy)
         if err:
             return None, err
         return self._check_kind(body, s, source[0])
@@ -2698,15 +2711,34 @@ class Choice(InputKind):
 
 
 class SheetMetalRuleRef(InputKind):
-    """A rule in an explicit design or library scope, selected by exact name."""
+    """A rule selected by scoped name or a current scope/index ref."""
 
-    MAP_HINT = "a sheet-metal rule as 'design:<name>' or 'library:<name>'; refuses scope ambiguity"
+    MAP_HINT = "a scoped sheet-metal rule name or current {scope,index} ref; refuses ambiguous names"
+
+    def schema(self, brief=False) -> dict:
+        return {"type": ["string", "object"], "properties": {
+            "scope": {"enum": ["design", "library"]},
+            "index": {"type": "integer", "minimum": 0}},
+            "required": ["scope", "index"], "additionalProperties": False, **self._desc(brief)}
 
     def contract_note(self) -> str:
-        return "A scoped rule from sheet_get(include=['rules'] or ['library_rules'])."
+        return "Fresh sheet_get ref."
 
     def resolve(self, raw):
-        from ._sheet_common import matching_rules
+        from ._sheet_common import matching_rules, scoped_rules
+        if isinstance(raw, dict):
+            scope, index = raw.get("scope"), raw.get("index")
+            if (set(raw) != {"scope", "index"} or scope not in ("design", "library")
+                    or type(index) is not int or index < 0):
+                return None, f"'{self.name}' got {raw!a}; pass an exact rule ref from sheet_get."
+            design = _common.design()
+            rules = scoped_rules(design, scope)
+            if rules is None:
+                return None, f"'{self.name}': {scope} sheet-metal rules could not be read."
+            if index >= len(rules):
+                return None, (f"'{self.name}': index {index} is out of range for {len(rules)} {scope} rules. "
+                              "Re-read sheet_get for a current rule ref.")
+            return (rules[index], scope), None
         value = (raw or "").strip() if isinstance(raw, str) else ""
         if ":" not in value:
             return None, (f"'{self.name}' needs 'design:<name>' or 'library:<name>' from "
@@ -2718,13 +2750,11 @@ class SheetMetalRuleRef(InputKind):
         design = _common.design()
         if design is None:
             return None, "No active design to resolve a sheet-metal rule against."
-        # The LITERAL text is looked up first - a unique rule named e.g. 'Gauge #16' stays unsuffixed
-        # (rule_ref_and_index), so its own name must win before '#<n>' is read as an ordinal.
         name, ordinal = rest, None
         hits = matching_rules(design, scope, rest)
         if hits is None:
             return None, f"'{self.name}': {scope} sheet-metal rules could not be read."
-        if not hits and "#" in rest:
+        if "#" in rest:
             base, _, tail = rest.rpartition("#")
             if base and tail.isdigit() and int(tail) >= 1:
                 base_hits = matching_rules(design, scope, base)
@@ -2733,7 +2763,12 @@ class SheetMetalRuleRef(InputKind):
                 # Only a name shared by two or more rules is a duplicate set an ordinal selects from -
                 # a lone rule's '#<n>' tail is either a literal miss or an out-of-range ordinal, judged below.
                 if len(base_hits) >= 2:
-                    name, ordinal, hits = base, int(tail), base_hits
+                    if hits and int(tail) <= len(base_hits) and any(r != base_hits[int(tail) - 1] for r in hits):
+                        return None, (f"'{self.name}': '{value}' is ambiguous between a literal name and "
+                                      "a duplicate-name ordinal. Pass the exact ref object from "
+                                      "sheet_get(include=['rules','library_rules']).")
+                    if not hits:
+                        name, ordinal, hits = base, int(tail), base_hits
         if not hits:
             return None, (f"'{self.name}': no {scope} sheet-metal rule named '{name}'. "
                           "Read sheet_get(include=['rules','library_rules']).")
@@ -2742,9 +2777,10 @@ class SheetMetalRuleRef(InputKind):
                 return None, f"'{self.name}': '{rest}' is out of range; {scope}:{name} has {len(hits)} rule(s)."
             return (hits[ordinal - 1], scope), None
         if len(hits) != 1:
-            refs = ", ".join(f"{scope}:{name}#{i + 1}" for i in range(len(hits)))
+            from ._sheet_common import rule_ref_and_index
+            refs = [rule_ref_and_index(design, r, scope)[0] for r in hits]
             return None, (f"'{self.name}': {len(hits)} {scope} rules named '{name}'; "
-                          f"select a unique name ({refs}).")
+                          f"pass a current sheet_get ref ({refs!a}).")
         return (hits[0], scope), None
 
 

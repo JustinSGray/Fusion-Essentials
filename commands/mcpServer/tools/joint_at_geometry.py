@@ -277,8 +277,13 @@ def handler(handle_one: str = "", handle_two: str = "", motion: str = "revolute"
         # _assert's condensation: Fusion's errorOrWarningMessage repeats its sentence joined by
         # 'Compute Failed' plus the joint's name, and a raw slice of that blob lands mid-word.
         msg = _assert.compute_failure_message(failure_message, 200)
-        out["health_warning"] = ("This joint FAILED TO COMPUTE (likely over-constrained): "
-                                 + (msg or "conflicts with assembly relationships"))
+        removal = (f"design_delete_feature(feature={joint_name_final!r})" if joint_name_final else
+                   "design_delete_feature(feature=...) after assembly_get names it")
+        return error(f"Joint {joint_name_final!r} WAS CREATED but FAILED TO COMPUTE "
+                     f"(health state: {health_state}): {msg or 'conflicts with assembly relationships'}. "
+                     f"It REMAINS in the timeline; remove it with {removal}, or fix its inputs with "
+                     "joint_edit. Read assembly_get before relying on its positions; a part locked "
+                     "by assembly_ground(ground_to_parent=true) can conflict with a joint that moves it.")
     elif healthy is None:
         # NEITHER the joint nor its timeline item answered a state - not a failure and not a clean
         # compute; claiming either would be a verdict this read never took.

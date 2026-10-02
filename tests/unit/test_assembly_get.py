@@ -417,6 +417,30 @@ class TestProbe:
         assert by["Crank:1"]["joints"] == ["CrankMain"]
         assert by["Block:1"]["joints"] == ["CrankMain"]
 
+    def test_reused_parent_child_membership_uses_the_native_half_path(self, kin_design):
+        first = _occ("Leaf:1", "Leaf", full_path="ReusedParent:1+Leaf:1")
+        second = make_occurrence(path="ReusedParent:2+Leaf:1", component=first.component,
+                                 bodies=[BRepBody("Body1")])
+        anchor = _occ("Anchor:1", "Anchor", body_count=0)
+        parents = [_occ("ReusedParent:1", "ReusedParent", body_count=0),
+                   _occ("ReusedParent:2", "ReusedParent", body_count=0)]
+        walk = [first, parents[0], second, parents[1], anchor]
+        kin_design(occs=parents + [anchor], all_occs=walk)
+        assert all(r["joints"] == [] for r in _payload(ap.handler(include=["all_occurrences"]))["all_occurrences"])
+        joint = FakeAsBuiltJoint("OnlyFirst", _RIGID, first, anchor)
+        kin_design(occs=parents + [anchor], all_occs=walk, asbuilt=[joint])
+        out = _payload(ap.handler(include=["all_occurrences"]))
+        rows = {r["full_path"]: r for r in out["all_occurrences"]}
+        assert rows[first.fullPathName]["joints"] == ["OnlyFirst"]
+        assert rows[second.fullPathName]["joints"] == []
+        assert rows[anchor.fullPathName]["joints"] == ["OnlyFirst"]
+        assert out["joints"][0]["occurrence_one"] == "Leaf:1"
+        assert out["joints"][0]["occurrence_one_path"] == first.fullPathName
+        assert out["joints"][0]["occurrence_two_path"] == anchor.fullPathName
+        quiet = _payload(ap.handler(include=["all_occurrences"], include_joints=False))
+        assert quiet["joint_count"] == 1 and quiet["joints"] is None
+        assert all("joints" not in r for r in quiet["all_occurrences"])
+
     def test_include_joints_false_skips(self, kin_design):
         kin_design(occs=[_occ("A:1", "A")], joints=[_joint("J", _REVOLUTE, "A:1", None)])
         out = _payload(ap.handler(include_joints=False))
@@ -919,13 +943,61 @@ class TestJointOriginsSlice:
         stock = _SliceJO("Stock_Center", token="S")
         vise = _SliceJO("Vise_Center", token="V")
         grip = _slice_joint("Stock_Gripped_By_Vise", origin_one=stock, origin_two=vise)
-        jo_design(_slice_design(_slice_root(jos=[stock, vise], joints=[grip])))
+        root = _slice_root(jos=[stock, vise], joints=[grip])
+        stock.parentComponent = vise.parentComponent = root
+        jo_design(_slice_design(root))
         rows = {r["name"]: r for r in _payload(ap.handler(include=["joint_origins"]))["joint_origins"]}
         assert rows["Stock_Center"]["consumed_by"] == ["Stock_Gripped_By_Vise"]
         assert rows["Vise_Center"]["consumed_by"] == ["Stock_Gripped_By_Vise"]
 
+    def test_same_named_distinct_origins_use_canonical_identity_and_readable_joint_half(self, jo_design):
+        a, b = _slice_comp("OriginA"), _slice_comp("OriginB")
+        oa, ob = _slice_occ("OriginA:1", a), _slice_occ("OriginB:1", b)
+        first = _SliceJO("Datum", token="JO:A", comp=a)
+        other = _SliceJO("Datum", token="JO:B", comp=b)
+        a.jointOrigins, b.jointOrigins = _NamedCollection([first]), _NamedCollection([other])
+        anchor = _SliceJO("RootAnchor", token="JO:ROOT")
+        stored = _SliceJO("Datum", token="JO:A", comp=a)
+        joint = _slice_joint("AOnly", stored, anchor)
+        joint.occurrenceOne, joint.occurrenceTwo = oa, None
+        root = _slice_root(jos=[anchor], joints=[joint], occ_by_comp={"OriginA": [oa], "OriginB": [ob]})
+        anchor.parentComponent = root
+        jo_design(_slice_design(root, subs=[a, b]))
+        def consumers():
+            return {r["qualified_name"]: r["consumed_by"] for r in
+                    _payload(ap.handler(include=["joint_origins"], include_joints=False))["joint_origins"]}
+        assert stored.assemblyContext is None
+        assert consumers() == {"RootAnchor": ["AOnly"], "OriginA:1:Datum": ["AOnly"], "OriginB:1:Datum": []}
+        joint.occurrenceOne = ob
+        assert consumers()["OriginA:1:Datum"] is None
+        joint.occurrenceOne = oa
+        stored.entityToken = None
+        assert all(value is None for value in consumers().values())
+        stored.entityToken = "JO:A"
+        first.entityToken = None
+        assert consumers()["OriginA:1:Datum"] is None
+        first.entityToken = "JO:A"
+        a.entityToken = None
+        assert consumers()["OriginA:1:Datum"] is None
+        a.entityToken = "COMP:OriginA"
+        class UnreadRootHalf(FakeJoint):
+            @property
+            def occurrenceTwo(self):
+                raise RuntimeError("unread half")
+            @occurrenceTwo.setter
+            def occurrenceTwo(self, value):
+                pass
+        root.joints = _NamedCollection([UnreadRootHalf(name="Unread", geometry_one=stored,
+                                                     geometry_two=anchor, occurrence_one=oa)])
+        assert consumers()["RootAnchor"] is None
+        root.joints = _NamedCollection([])
+        assert all(value == [] for value in consumers().values())
+
     def test_unconsumed_jo_has_empty_consumed_by(self, jo_design):
-        jo_design(_slice_design(_slice_root(jos=[_SliceJO("Lonely", token="L")])))
+        jo = _SliceJO("Lonely", token="L")
+        root = _slice_root(jos=[jo])
+        jo.parentComponent = root
+        jo_design(_slice_design(root))
         r = _payload(ap.handler(include=["joint_origins"]))["joint_origins"][0]
         assert r["consumed_by"] == []
 

@@ -153,6 +153,33 @@ def test_unfold_explicit_bend_faces_succeeds(unfold, monkeypatch):
     assert payload["all_bends"] is False and payload["bend_count_unfolded"] == 2
 
 
+def test_unfold_concatenated_composite_handles_refuse_before_native_input_and_arrays_keep_both(unfold, monkeypatch):
+    mod, factory = unfold
+    body = mod._FACE.resolve("face")[0].body
+    body.faces.count = 22
+    handles = ["first|@cylinder_face:2.576880,2.000000,0.222676;rv=revision",
+               "second|@cylinder_face:5.459357,2.000000,-0.034601;rv=revision"]
+    bends = [NS(body=body), NS(body=body)]
+    resolve = Mock(side_effect=lambda _self, h: (bends[handles.index(h)], None))
+    monkeypatch.setattr(mod._inputs.GeometryHandle, "resolve", resolve)
+    monkeypatch.setattr(mod._BENDS, "resolve",
+                        mod._inputs.GeometryHandleList.resolve.__get__(mod._BENDS))
+    result = mod.handler(stationary_face="face", bend_faces=",".join(handles))
+    assert result["isError"] is True
+    assert "JSON array" in result["message"] and "comma-joined" in result["message"]
+    resolve.assert_not_called()
+    factory.createInput.assert_not_called()
+    factory.add.assert_not_called()
+    for count in (1, 2):
+        monkeypatch.setattr(mod._geom, "faces_moved", lambda faces, before, count=count: (7 * count, 22))
+        captured = NS()
+        factory.createInput = Mock(return_value=captured)
+        result = mod.handler(stationary_face="face", bend_faces=handles[:count])
+        assert result["isError"] is False, result
+        assert captured.bendFaces == bends[:count]
+        assert json.loads(result["content"][0]["text"])["bend_count_unfolded"] == count
+
+
 @pytest.fixture
 def refold(monkeypatch):
     mod = load_tool("sheet_create_refold")

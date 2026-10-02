@@ -10,7 +10,7 @@ from . import _common, _inputs, _assert, _geom, _sheet_common
 from ._common import error, ok, safe
 
 _FACE = _inputs.GeometryHandle("stationary_face", require="planar_face", required=True)
-_BENDS = _inputs.GeometryHandleList("bend_faces", require="face")
+_BENDS = _inputs.GeometryHandleList("bend_faces", require="face", json_array=True)
 
 
 def handler(stationary_face="", bend_faces=None, all_bends=False):
@@ -78,7 +78,7 @@ def handler(stationary_face="", bend_faces=None, all_bends=False):
                "note": "Bends unfolded. Add cuts, then pass this feature to sheet_create_refold."})
 
 
-TOOL_DESCRIPTION = "Unfold a sheet body's bends for cross-bend machining features, then sheet_create_refold. Preview API."
+TOOL_DESCRIPTION = "Unfold sheet-metal bends; cut, then sheet_create_refold."
 tool = (Tool.create_simple(name="sheet_create_unfold", description=TOOL_DESCRIPTION)
         .add_input_property(*_FACE.as_property()).add_required_input("stationary_face")
         .add_input_property(*_BENDS.as_property())

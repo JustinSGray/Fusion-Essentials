@@ -42,7 +42,7 @@ def _occ_record(occ, inv_k, occ_joints, include_joints, full_path=False, with_po
     if with_pose:
         rec.update(_geom.occ_world_frame(occ, inv_k))
     if include_joints:
-        rec["joints"] = occ_joints.get(name, [])
+        rec["joints"] = occ_joints.get(safe(lambda: occ.fullPathName), [])
     return rec
 
 
@@ -246,21 +246,38 @@ def _joint_frame(design, j, inv_k):
 _MEMBER_CAP = 12
 
 
+def _jo_consumer_key(design, jo, occurrence):
+    """Return a readable native-origin identity plus its proven placed path, else None."""
+    identity = _common.native_identity(jo)
+    owner = safe(lambda: jo.parentComponent)
+    if identity is None or _common.native_identity(owner) is None:
+        return None
+    if occurrence is None:
+        return (identity, None) if _common.same_component(owner, safe(lambda: design.rootComponent)) is True else None
+    path = safe(lambda: occurrence.fullPathName)
+    if (not isinstance(path, str) or not path
+            or _common.same_component(owner, safe(lambda: occurrence.component)) is not True):
+        return None
+    return identity, path
+
+
 def _jo_consumers(design):
-    """{JointOrigin name: [joint names]} - which joints CONSUME each JO as an input, matched by
-    name over the shared joint walk. Best-effort: never raises."""
-    out = {}
+    """Return placed origin consumers and canonical keys whose stored half could not be resolved."""
+    out, unresolved = {}, []
     for j in _joints.all_joints(design):
         jname = safe(lambda j=j: j.name)
         if not jname:
             continue
-        for attr in ("geometryOrOriginOne", "geometryOrOriginTwo"):
+        for attr, half in (("geometryOrOriginOne", "occurrenceOne"),
+                           ("geometryOrOriginTwo", "occurrenceTwo")):
             ref = safe(lambda j=j, a=attr: getattr(j, a))
             if ref is not None and _joints.is_joint_origin(ref):
-                rn = safe(lambda ref=ref: ref.name)
-                if rn:
-                    out.setdefault(rn, []).append(jname)
-    return out
+                key = _jo_consumer_key(design, ref, safe(lambda j=j, a=half: getattr(j, a), object()))
+                if key is None:
+                    unresolved.append(_common.native_identity(ref))
+                elif jname not in out.get(key, []):
+                    out.setdefault(key, []).append(jname)
+    return out, unresolved
 
 
 def _jo_instances(design, jo, comp):
@@ -341,7 +358,10 @@ def _jo_row(design, jo, ref, comp, inv_k, consumers):
         row["world_position"] = wp
     if z or x or y:
         row["frame"] = {"z_axis": z, "x_axis": x, "y_axis": y}
-    row["consumed_by"] = consumers.get(nm, [])
+    key = _jo_consumer_key(design, jo, safe(lambda: jo.assemblyContext, object()))
+    known, unresolved = consumers
+    row["consumed_by"] = (None if key is None or any(i is None or i == key[0] for i in unresolved)
+                          else known.get(key, []))
     tok = safe(lambda: jo.entityToken)
     if tok:
         row["handle"] = tok

@@ -9,7 +9,8 @@ repositioned.
 import pytest
 
 import live_api_facts as _api_facts
-from conftest import (FakeMatrix3D, FakeTimeline, FakeTimelineObject, MakeComp, _NamedCollection,
+from conftest import (BRepFace, FakeMatrix3D, FakeSelection, FakeSelections, FakeTimeline, FakeTimelineObject,
+                      FakeUserInterface, MakeComp, _NamedCollection,
                       install, load_tool, make_design, make_placed_occurrence, payload)
 
 ja = load_tool("assembly_constrain")
@@ -159,6 +160,50 @@ class TestAssemblyConstraint:
         res = ja.handler(occurrence_one="A:1", occurrence_two="B:1")
         assert res["isError"] is True
         assert "geometry" in res["message"].lower() or "select" in res["message"].lower()
+
+
+def test_selected_geometry_cannot_constrain_unrequested_owners(constrain, monkeypatch):
+    design, ac = constrain(occ_specs=(("ClaimA:1", (0, 0, 0)), ("ClaimB:1", (1, 0, 0)),
+                                     ("SelectedC:1", (2, 0, 0)), ("SelectedD:1", (4, 0, 0))))
+    occurrences = list(design.rootComponent.occurrences)
+    for occ in occurrences:
+        occ.entityToken = "occ-" + occ.fullPathName
+    faces = [BRepFace(None, assembly_context=o) for o in occurrences[2:]]
+    monkeypatch.setattr(ja.app, "userInterface",
+                        FakeUserInterface(FakeSelections([FakeSelection(f) for f in faces])), raising=False)
+    result = ja.handler(occurrence_one="ClaimA:1", occurrence_two="ClaimB:1", flipped=True)
+    assert result["isError"] is True
+    assert "Selected entity 1 belongs to 'SelectedC:1', not requested 'ClaimA:1'" in result["message"]
+    assert "occurrence_one first" in result["message"] and "'relationships'" in result["message"]
+    assert ac.last_input is None and ac.added == 0
+    result = payload(ja.handler(occurrence_one="SelectedC:1", occurrence_two="SelectedD:1", flipped=True))
+    assert result["created"] is True and result["occurrences"] == ["SelectedC:1", "SelectedD:1"]
+    assert ac.added == 1 and ac.last_input.geometricRelationships.added[0][:3] == (*faces, True)
+
+
+@pytest.mark.parametrize("defect", ["path", "identity", "unread", "extra", "order"])
+def test_selection_owner_match_requires_complete_placed_identity(constrain, monkeypatch, defect):
+    design, ac = constrain()
+    a, b = list(design.rootComponent.occurrences)
+    a.entityToken, b.entityToken = "occ-a", "occ-b"
+    owner = _part("A:1", _ORIGIN)
+    owner.entityToken = a.entityToken
+    if defect == "path":
+        owner._path = "Other:1+A:1"
+    elif defect == "identity":
+        owner.entityToken = "other-occ"
+    elif defect == "unread":
+        owner = None
+    faces = [BRepFace(None, assembly_context=o) for o in (owner, b)]
+    if defect == "extra":
+        faces.append(faces[0])
+    elif defect == "order":
+        faces.reverse()
+    monkeypatch.setattr(ja.app, "userInterface",
+                        FakeUserInterface(FakeSelections([FakeSelection(f) for f in faces])), raising=False)
+    result = ja.handler(occurrence_one="A:1", occurrence_two="B:1")
+    assert result["isError"] is True and "select" in result["message"].lower()
+    assert ac.last_input is None and ac.added == 0
 
 
 class TestAssemblyConstraintSnaps:

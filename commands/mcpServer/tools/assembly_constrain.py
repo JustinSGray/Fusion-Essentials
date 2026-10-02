@@ -68,8 +68,6 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
         return error(f"Unknown units '{units}'. Valid: mm, cm, in.")
 
     try:
-        cin = design.rootComponent.assemblyConstraints.createInput()
-        rels = cin.geometricRelationships
         names = set()
         # label -> occurrence for the parts this constraint locates. A label whose occurrence could
         # not be re-resolved maps to None and is reported as unmeasured, never as "did not move".
@@ -77,6 +75,8 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
         targets, labels = {}, {}
 
         if specs:
+            cin = design.rootComponent.assemblyConstraints.createInput()
+            rels = cin.geometricRelationships
             # Autonomous snap path - resolve every pair and add it to the SAME constraint input.
             for i, sp in enumerate(specs):
                 occ1, sn1 = _parse_snap(sp["snap_one"])
@@ -120,15 +120,32 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
                 return error(e1 if not o1 else e2)
             sel = safe(lambda: app.userInterface.activeSelections)
             sel_count = safe(lambda: sel.count, 0) if sel else 0
-            if sel_count < 2:
+            if sel_count != 2:
                 return error("Provide 'relationships' or 'snap_one'/'snap_two' ('<occurrence>:"
                               "<snap>') for autonomous geometry, OR select ONE entity on each "
                               "occurrence in Fusion first then call again. "
-                              f"(Got {sel_count} selected; need 2.)")
+                              f"(Got {sel_count} selected; need exactly 2 in requested order.)")
             e1 = safe(lambda: sel.item(0).entity)
             e2 = safe(lambda: sel.item(1).entity)
             if not e1 or not e2:
                 return error("Could not read the two selected entities. Re-select and try again.")
+            for i, (entity, requested, value) in enumerate(
+                    ((e1, o1, occurrence_one), (e2, o2, occurrence_two)), 1):
+                owner = safe(lambda entity=entity: entity.assemblyContext)
+                owner_path = safe(lambda: owner.fullPathName)
+                requested_path = safe(lambda: requested.fullPathName)
+                owner_key = _common.native_identity(owner)
+                requested_key = _common.native_identity(requested)
+                remedy = ("Select one entity on occurrence_one first, then one on occurrence_two, "
+                          "or use 'relationships' with explicit '<occurrence>:<snap>' pairs.")
+                if not owner_path or not requested_path or owner_key is None or requested_key is None:
+                    return error(f"Selected entity {i}'s placed owner cannot be confirmed for "
+                                 f"'{_common.short_ref(value)}'. {remedy}")
+                if owner_path != requested_path or owner_key != requested_key:
+                    return error(f"Selected entity {i} belongs to '{_common.short_ref(owner_path)}', "
+                                 f"not requested '{_common.short_ref(value)}'. {remedy}")
+            cin = design.rootComponent.assemblyConstraints.createInput()
+            rels = cin.geometricRelationships
             val = (adsk.core.ValueInput.createByString(f"{float(angle_deg)} deg") if angle_deg
                    else adsk.core.ValueInput.createByReal(float(offset or 0.0) * k))
             rels.add(e1, e2, bool(flipped), val)

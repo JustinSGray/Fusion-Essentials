@@ -8,14 +8,686 @@ with the grip proven by measurement rather than by the joint calls returning ok;
 that gives every other joint motion and assembly verb a rig of its own.
 """
 
+import math
+
 from verify_core import (
     _RECALL, _as_built, _axis_kept, _axis_landed, _box, _captured, _constrained, _ctx_get,
     _datum_plane, _document_closed, _driven_angle, _driven_slide, _dwell, _extruded, _fg,
     _grounded, _home_address, _home_document, _interference_measured, _joint_axis_vs,
     _joint_bench, _joint_heading, _joint_is, _joint_limits, _jointed, _jointed_at_geometry,
-    _joints_listed, _limits_survived, _link_healthy, _made_component, _measured, _mod360,
+    _joints_listed, _limits_survived, _link_healthy, _made_component, _made_component_inactive, _measured, _mod360,
     _motion_linked, _moved_occurrence, _near, _new_document, _num, _recall, _refused, _revolved,
     _rigid_grouped, _watch)
+from verify_acts_model_sweep import _retire_compare, _retire_design_state, _retire_reads
+
+
+def _failed_joint_assembly(name=None, failed=False, released=False):
+    """Check the measured two-pin poses, grounding and retained or healthy rigid joint."""
+    def check(p):
+        poses, all_poses, joints = p.get("occurrences") or [], p.get("all_occurrences") or [], p.get("joints") or []
+        expected_names = ["JointA:1", "JointB:1"]
+        valid = (p.get("units") == "mm" and p.get("occurrence_count") == 2
+                 and p.get("all_occurrence_count") == 2 and len(poses) == len(all_poses) == 2
+                 and p.get("occurrences_truncated") is False
+                 and p.get("all_occurrences_truncated") is False and p.get("joints_truncated") is False
+                 and p.get("joint_count") == len(joints) == (1 if name else 0)
+                 and p.get("is_healthy") is (not failed)
+                 and p.get("broken_joints") == ([name] if failed else [])
+                 and p.get("broken_relations") == [] and p.get("unresolved_references") == [])
+        for rows in (poses, all_poses):
+            valid = valid and [r.get("name") for r in rows] == expected_names
+            for i, row in enumerate(rows):
+                x = 0 if i == 0 or name == "FreeGeometry" else 20
+                valid = (valid and row.get("body_count") == 1 and row.get("grounded") is False
+                         and row.get("ground_to_parent") is (i == 0 or not released)
+                         and row.get("origin") == [x, 0, 0] and row.get("bbox_center") == [x, 0, 5]
+                         and row.get("bbox_size") == [4, 4, 10]
+                         and row.get("x_axis") == [1, 0, 0] and row.get("y_axis") == [0, 1, 0]
+                         and row.get("z_axis") == [0, 0, 1] and row.get("joints") == ([name] if name else []))
+        valid = valid and [r.get("full_path") for r in all_poses] == expected_names
+        if name and len(joints) == 1:
+            joint = joints[0]
+            valid = (valid and joint.get("name") == name and joint.get("type") == "rigid"
+                     and joint.get("dof") == 0 and joint.get("healthy") is (not failed)
+                     and joint.get("occurrence_one") == expected_names[0]
+                     and joint.get("occurrence_two") == expected_names[1])
+        return _measured("two-pin joint health, wiring and independent placed geometry", p, valid)
+    return check
+
+
+def _failed_joint_history(name, failed=False):
+    """Check a retained failed joint or healthy control after the complete original history."""
+    def check(p):
+        state, before = _retire_design_state(p), _RECALL.get("joint_failure_design")
+        tl = state["timeline"] if state else {}
+        old = before["timeline"] if before else {}
+        rows, prior = tl.get("timeline") or [], old.get("timeline") or []
+        summary = tl.get("summary") or {}
+        exceptions = summary.get("exceptions")
+        valid = (state is not None and before is not None and len(rows) == len(prior) + 1
+                 and rows[:-1] == prior and rows[-1].get("name") == name
+                 and rows[-1].get("type") == "Joint"
+                 and rows[-1].get("health", "healthy") == ("warning" if failed else "healthy")
+                 and summary.get("states") == ({"healthy": len(prior), "warning": 1}
+                                               if failed else {"healthy": len(rows)})
+                 and isinstance(exceptions, list) and len(exceptions) == (1 if failed else 0))
+        if failed and exceptions:
+            valid = (valid and exceptions[0].get("name") == name
+                     and exceptions[0].get("health") == "warning" and exceptions[0].get("index") == len(prior))
+        return _measured("retained joint history and prior features", tl, valid)
+    return check
+
+
+def _joint_failure_rows():
+    """Exercise retained compute failure, the advertised cleanup and a released-part rigid control."""
+    rows = [("doc_get", {}, _home_document, ("jf_story", _home_address)),
+            ("doc_new", {}, _new_document, None),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("doc_get", {}, _home_document, ("jf_doc", _home_address))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, a=args: dict(a), check, save))
+    for name, x in (("JointA", 0), ("JointB", 20)):
+        write("design_activate_component", {"occurrence": "root"})
+        write("model_create_component", {"name": name, "activate": True, "x": x}, _made_component)
+        write("sketch_create", {"name": "Pin" + name[-1], "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": "Pin" + name[-1],
+                                    "geometry": [{"kind": "circle", "cx": 0, "cy": 0, "radius": 2}]})
+        write("model_extrude", {"sketch_name": "Pin" + name[-1], "distance": 10}, _extruded)
+    write("design_activate_component", {"occurrence": "root"})
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True,
+                       "focus": ["JointA:1", "JointB:1"]})
+    for name in ("JointA:1", "JointB:1"):
+        write("assembly_ground", {"occurrence": name, "ground_to_parent": True}, _grounded)
+    assembly = {"include": ["poses", "all_occurrences"], "units": "mm", "max_joints": 100,
+                "max_occurrences": 100, "max_all_occurrences": 100}
+    history = {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+               "max_depth": 10, "max_results": 2000}
+    rows += [("assembly_get", assembly, _failed_joint_assembly(), None),
+             ("design_get", history, _retire_compare("joint_failure_design", _retire_design_state, False), None)]
+    for tool, name in (("joint_at_geometry", "LockedGeometry"), ("joint_create", "LockedRegular")):
+        if tool == "joint_at_geometry":
+            for owner, key in (("JointA:1", "jf_a"), ("JointB:1", "jf_b")):
+                rows.append(("find_geometry", lambda c, o=owner: {"target": o, "kind": "cylinder_face",
+                                                                  "max_results": 5}, "ok", _fg(key)))
+            rows.append((tool, lambda c: {"handle_one": _ctx_get(c, "jf_a", "pin A"),
+                                         "handle_two": _ctx_get(c, "jf_b", "pin B"),
+                                         "motion": "rigid", "name": "LockedGeometry"},
+                         _refused("LockedGeometry", "FAILED TO COMPUTE", "REMAINS",
+                                  "design_delete_feature(feature='LockedGeometry')"), None))
+        else:
+            write(tool, {"occurrence_one": "JointA:1:origin", "occurrence_two": "JointB:1:origin",
+                         "joint_type": "rigid", "name": name},
+                  _refused(name, "FAILED to compute", "design_delete_feature(feature='LockedRegular')"))
+        rows += [("assembly_get", assembly, _failed_joint_assembly(name, True), None),
+                 ("design_get", history, _failed_joint_history(name, True), None)]
+        write("design_delete_feature", {"feature": name})
+        rows += [("assembly_get", assembly, _failed_joint_assembly(), None),
+                 ("design_get", history, _retire_compare("joint_failure_design", _retire_design_state, True), None)]
+    write("assembly_ground", {"occurrence": "JointB:1", "ground_to_parent": False},
+          lambda p: _measured("pin B released", p, p.get("isGroundToParent") is False))
+    rows.append(("assembly_get", assembly, _failed_joint_assembly(released=True), None))
+    for owner, key in (("JointA:1", "jf_a"), ("JointB:1", "jf_b")):
+        rows.append(("find_geometry", lambda c, o=owner: {"target": o, "kind": "cylinder_face", "max_results": 5},
+                     "ok", _fg(key)))
+    rows.append(("joint_at_geometry", lambda c: {"handle_one": _ctx_get(c, "jf_a", "pin A"),
+                                                "handle_two": _ctx_get(c, "jf_b", "pin B"),
+                                                "motion": "rigid", "name": "FreeGeometry"},
+                 lambda p: _measured("released rigid joint computed", p, p.get("jointed") is True
+                                     and p.get("healthy") is True and p.get("health_state") == "healthy"), None))
+    rows += [("assembly_get", assembly, _failed_joint_assembly("FreeGeometry", released=True), None),
+             ("design_get", history, _failed_joint_history("FreeGeometry"), None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "jf_story", "story"),
+                                         "expect_document": _ctx_get(c, "jf_doc", "joint scratch")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "jf_doc", "joint scratch"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "jf_story", "story")}, _document_closed, None)]
+    return rows
+
+
+_CROSSINDEX_SETUP = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    root = adsk.fusion.Design.cast(app.activeProduct).rootComponent
+    first = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    first.component.name = 'ReusedParent'
+    child = first.component.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    child.component.name = 'Leaf'
+    sketch = child.component.sketches.add(child.component.xYConstructionPlane)
+    sketch.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0,0,0), adsk.core.Point3D.create(.4,.4,0))
+    inp = child.component.features.extrudeFeatures.createInput(sketch.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    inp.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByString('4 mm')), adsk.fusion.ExtentDirections.PositiveExtentDirection)
+    feature = child.component.features.extrudeFeatures.add(inp)
+    assert feature.bodies.count == 1
+    matrix = adsk.core.Matrix3D.create()
+    matrix.translation = adsk.core.Vector3D.create(4,0,0)
+    second = root.occurrences.addExistingComponent(first.component, matrix)
+    matrix = adsk.core.Matrix3D.create()
+    matrix.translation = adsk.core.Vector3D.create(8,0,0)
+    anchor = root.occurrences.addNewComponent(matrix)
+    anchor.component.name = 'Anchor'
+    children = [o for o in root.allOccurrences if o.component.name == 'Leaf']
+    assert len(children) == 2
+    print(json.dumps({'child_paths':[o.fullPathName for o in children], 'child_names':[o.name for o in children],
+                      'parent_paths':[first.fullPathName,second.fullPathName], 'anchor_path':anchor.fullPathName}))
+"""
+
+
+_CROSSINDEX_NATIVE = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    root = design.rootComponent
+    def point(p): return [p.x*10,p.y*10,p.z*10]
+    def body(b): return {'name':b.name, 'volume_cm3':b.volume, 'faces':b.faces.count,
+                         'bbox_mm':[point(b.boundingBox.minPoint),point(b.boundingBox.maxPoint)],
+                         'vertices_mm':sorted(point(v.geometry) for v in b.vertices)}
+    print(json.dumps({'bodies':[body(b) for b in root.bRepBodies],
+                      'placements':[{'path':o.fullPathName, 'name':o.name, 'matrix':o.transform2.asArray(),
+                                     'component_body_count':o.component.bRepBodies.count,
+                                     'component_bodies':[body(b) for b in o.component.bRepBodies]} for o in root.allOccurrences],
+                      'joints':[{'name':j.name, 'paths':[j.occurrenceOne.fullPathName,j.occurrenceTwo.fullPathName],
+                                 'health':int(j.timelineObject.healthState)} for j in root.asBuiltJoints],
+                      'timeline':[{'name':t.name, 'health':int(t.healthState), 'type':t.entity.objectType} for t in design.timeline],
+                      'marker':design.timeline.markerPosition}))
+"""
+
+
+def _crossindex_native_state(p):
+    """Return the complete readable native geometry, placements, endpoints and history."""
+    placements, bodies, joints, history = (p.get(k) for k in ("placements", "bodies", "joints", "timeline"))
+    paths = {"ReusedParent:1", "ReusedParent:2", "ReusedParent:1+Leaf:1", "ReusedParent:2+Leaf:1", "Anchor:1"}
+    def finite(values, count):
+        return isinstance(values, list) and len(values) == count and all(_num(v) and math.isfinite(v) for v in values)
+    def cube(row):
+        bounds, vertices = row.get("bbox_mm"), row.get("vertices_mm")
+        return (bool(row.get("name")) and _num(row.get("volume_cm3")) and math.isfinite(row["volume_cm3"])
+                and row["volume_cm3"] > 0 and row.get("faces") == 6
+                and isinstance(bounds, list) and len(bounds) == 2 and all(finite(v, 3) for v in bounds)
+                and isinstance(vertices, list) and len(vertices) == 8 and all(finite(v, 3) for v in vertices))
+    if (not isinstance(placements, list) or len(placements) != 5 or {r.get("path") for r in placements} != paths
+            or not isinstance(bodies, list) or len(bodies) != 1 or not all(cube(b) for b in bodies)
+            or not isinstance(joints, list) or len(joints) > 1 or not isinstance(history, list)
+            or p.get("marker") != len(history) or len(history) not in (8, 9)
+            or any(not r.get("name") or not r.get("type") or r.get("health") != 0 for r in history)):
+        return None
+    for row in placements:
+        local = row.get("component_bodies")
+        count = 1 if "+Leaf:1" in row["path"] else 0
+        if (not finite(row.get("matrix"), 16) or not isinstance(local, list)
+                or row.get("component_body_count") != len(local) or len(local) != count
+                or not all(cube(b) for b in local)):
+            return None
+    if any(j.get("name") != "OnlyFirst" or j.get("health") != 0
+           or j.get("paths") != ["ReusedParent:1+Leaf:1", "Anchor:1"] for j in joints):
+        return None
+    return {k: p[k] for k in ("bodies", "placements", "joints", "timeline", "marker")}
+
+
+def _crossindex_native_read(stage):
+    """Check native read nonmutation and exact restoration after typed joint retirement."""
+    def check(p):
+        now = _crossindex_native_state(p)
+        before, joint = _RECALL.get("crossindex_before"), _RECALL.get("crossindex_joint")
+        valid = now is not None
+        if stage == "before":
+            valid = valid and now["joints"] == [] and len(now["timeline"]) == 8
+        elif stage == "joint":
+            valid = (valid and before is not None and len(now["joints"]) == 1
+                     and now["bodies"] == before["bodies"] and now["placements"] == before["placements"]
+                     and now["timeline"][:-1] == before["timeline"]
+                     and now["timeline"][-1]["name"] == "OnlyFirst"
+                     and now["timeline"][-1]["type"] == "adsk::fusion::AsBuiltJoint")
+        else:
+            valid = valid and now == (before if stage == "restored" else joint)
+        if valid and stage in ("before", "joint"):
+            _RECALL["crossindex_" + stage] = now
+        return _measured("native placed membership and unchanged geometry/history " + stage, now, valid)
+    return check
+
+
+def _crossindex_disclosure(joined=False, quiet=False, repeat=False):
+    """Check exact placed membership against native endpoints while preserving all public poses."""
+    def check(p):
+        rows, top, joints = p.get("all_occurrences") or [], p.get("occurrences") or [], p.get("joints")
+        native = _RECALL.get("crossindex_joint" if joined else "crossindex_before")
+        paths = [r["path"] for r in native["placements"]] if native else []
+        endpoints = native["joints"][0]["paths"] if joined and native and native["joints"] else []
+        valid = (native is not None and p.get("units") == "mm" and p.get("is_healthy") is True
+                 and p.get("all_occurrence_count") == len(rows) == 5 and p.get("occurrence_count") == len(top) == 3
+                 and p.get("all_occurrences_truncated") is False and p.get("occurrences_truncated") is False
+                 and p.get("joints_truncated") is False and p.get("joint_count") == int(joined)
+                 and [r.get("full_path") for r in rows] == paths and p.get("root_bodies") == ["Body1"])
+        for group in (rows, top):
+            for row in group:
+                path = row.get("full_path", row.get("name"))
+                valid = (valid and type(row.get("grounded")) is bool and type(row.get("ground_to_parent")) is bool
+                         and type(row.get("body_count")) is int
+                         and all(isinstance(row.get(k), list) and len(row[k]) == 3
+                                 and all(_num(v) and math.isfinite(v) for v in row[k])
+                                 for k in ("origin", "x_axis", "y_axis", "z_axis")))
+                if path != "Anchor:1":
+                    valid = (valid and all(isinstance(row.get(k), list) and len(row[k]) == 3
+                                           and all(_num(v) and math.isfinite(v) for v in row[k])
+                                           for k in ("bbox_center", "bbox_size")))
+                valid = valid and (("joints" not in row) if quiet else
+                                  row.get("joints") == (["OnlyFirst"] if path in endpoints else []))
+        if quiet:
+            valid = valid and joints is None
+        elif joined:
+            valid = (valid and isinstance(joints, list) and len(joints) == 1
+                     and joints[0].get("name") == "OnlyFirst" and joints[0].get("healthy") is True
+                     and joints[0].get("as_built") is True and joints[0].get("occurrence_one") == "Leaf:1"
+                     and joints[0].get("occurrence_one_path") == endpoints[0]
+                     and joints[0].get("occurrence_two_path") == endpoints[1])
+        else:
+            valid = valid and joints == []
+        poses = [[{k: v for k, v in r.items() if k != "joints"} for r in group] for group in (rows, top)]
+        prior = _RECALL.get("crossindex_poses")
+        if valid and prior is None:
+            _RECALL["crossindex_poses"] = poses
+        else:
+            valid = valid and prior is not None and poses == prior
+        if repeat:
+            valid = valid and p == _RECALL.get("crossindex_public")
+        elif joined and not quiet and valid:
+            _RECALL["crossindex_public"] = p
+        return _measured("public cross-index agrees with native placed endpoints; all poses held", p, valid)
+    return check
+
+
+def _crossindex_rows():
+    """Exercise the measured reused-parent cross-index with independent native state controls."""
+    rows = [("doc_get", {}, _home_document, ("ci_story", _home_address)),
+            ("doc_new", {}, _new_document, None),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("doc_get", {}, _home_document, ("ci_doc", _home_address))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, a=args: dict(a), check, save))
+    write("sketch_create", {"name": "Witness", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "Witness", "units": "mm", "geometry": [
+        {"kind": "rectangle", "x1": 100, "y1": 0, "x2": 120, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "Witness", "distance": 20, "units": "mm"}, _extruded)
+    write("sys_execute_script", {"script": _CROSSINDEX_SETUP, "read_only": False},
+          lambda p: _measured("controlled reused-parent fixture paths", p,
+                              p.get("child_paths") == ["ReusedParent:1+Leaf:1", "ReusedParent:2+Leaf:1"]
+                              and p.get("child_names") == ["Leaf:1", "Leaf:1"] and p.get("anchor_path") == "Anchor:1"),
+          ("ci_setup", lambda p: p))
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True,
+                       "focus": ["ReusedParent:1", "ReusedParent:2", "Anchor:1"]})
+    def native(stage):
+        write("sys_execute_script", {"script": _CROSSINDEX_NATIVE, "read_only": True}, _crossindex_native_read(stage))
+    assembly = {"include": ["all_occurrences", "poses"], "units": "mm", "max_joints": 100,
+                "max_occurrences": 100, "max_all_occurrences": 100}
+    native("before")
+    rows.append(("assembly_get", assembly, _crossindex_disclosure(), None))
+    rows.append(("joint_create_as_built", lambda c: {
+        "occurrence_one": _ctx_get(c, "ci_setup", "native fixture paths")["child_paths"][0],
+        "occurrence_two": _ctx_get(c, "ci_setup", "native fixture paths")["anchor_path"],
+        "joint_type": "rigid", "name": "OnlyFirst"}, _as_built, ("ci_joint", lambda p: p["joint"])))
+    native("joint")
+    rows += [("assembly_get", assembly, _crossindex_disclosure(True), None),
+             ("assembly_get", assembly, _crossindex_disclosure(True, repeat=True), None),
+             ("assembly_get", dict(assembly, include_joints=False), _crossindex_disclosure(True, quiet=True), None)]
+    native("repeat")
+    rows.append(("design_delete_feature", lambda c: {"feature": _ctx_get(c, "ci_joint", "as-built joint name")}, "ok", None))
+    native("restored")
+    rows += [("assembly_get", assembly, _crossindex_disclosure(), None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "ci_story", "story"),
+                                         "expect_document": _ctx_get(c, "ci_doc", "cross-index scratch")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "ci_doc", "cross-index scratch"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "ci_story", "story")}, _document_closed, None)]
+    return rows
+
+
+_ORIGIN_CONSUMER_NATIVE = """import adsk.core, adsk.fusion, json, sys
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    root = design.rootComponent
+    modules = [m for m in sys.modules.values() if str(getattr(m, '__file__', '')).replace('\\\\', '/').endswith('/commands/mcpServer/tools/_common.py')]
+    assert len(modules) == 1
+    common = modules[0]
+    def point(p): return [p.x*10,p.y*10,p.z*10]
+    def origin(jo, path, proxy=None):
+        return {'name':jo.name, 'component':jo.parentComponent.name, 'path':path,
+                'identity':common.native_identity(jo), 'owner_identity':common.native_identity(jo.parentComponent),
+                'owner_is_root':common.same_component(jo.parentComponent,root),
+                'context':jo.assemblyContext.fullPathName if jo.assemblyContext else None,
+                'proxy_identity':common.native_identity(proxy) if proxy else None}
+    origins = [origin(jo,None) for jo in root.jointOrigins]
+    origins += [origin(jo,o.fullPathName,jo.createForAssemblyContext(o)) for o in root.occurrences for jo in o.component.jointOrigins]
+    print(json.dumps({'bodies':[{'name':b.name, 'volume_cm3':b.volume, 'faces':b.faces.count,
+                               'bbox_mm':[point(b.boundingBox.minPoint),point(b.boundingBox.maxPoint)],
+                               'vertices_mm':sorted(point(v.geometry) for v in b.vertices)} for b in root.bRepBodies],
+                      'origins':origins,
+                      'placements':[{'path':o.fullPathName, 'matrix':o.transform2.asArray()} for o in root.allOccurrences],
+                      'joints':[{'name':j.name, 'health':int(j.healthState),
+                                 'inputs':[origin(j.geometryOrOriginOne,j.occurrenceOne.fullPathName if j.occurrenceOne else None),
+                                           origin(j.geometryOrOriginTwo,j.occurrenceTwo.fullPathName if j.occurrenceTwo else None)]} for j in root.joints],
+                      'timeline':[{'name':t.name, 'type':t.entity.objectType, 'health':int(t.healthState)} for t in design.timeline],
+                      'marker':design.timeline.markerPosition}))
+"""
+
+
+def _origin_consumer_native_state(p):
+    """Return the measured complete distinct-origin scene or None for an unread discriminator."""
+    bodies, origins, placements, joints, history = (p.get(k) for k in
+                                                   ("bodies", "origins", "placements", "joints", "timeline"))
+    def finite(values, count):
+        return isinstance(values, list) and len(values) == count and all(_num(v) and math.isfinite(v) for v in values)
+    def identity(value):
+        return isinstance(value, list) and len(value) == 2 and isinstance(value[0], str) and bool(value[0])
+    if (not isinstance(bodies, list) or len(bodies) != 1
+            or not isinstance(origins, list) or len(origins) != 3
+            or not isinstance(placements, list) or len(placements) != 2
+            or {r.get("path") for r in placements} != {"OriginA:1", "OriginB:1"}
+            or any(not finite(r.get("matrix"), 16) for r in placements)
+            or not isinstance(joints, list) or len(joints) > 1
+            or not isinstance(history, list) or len(history) not in (7, 8)
+            or p.get("marker") != len(history)
+            or any(not r.get("name") or not r.get("type") or r.get("health") != 0 for r in history)):
+        return None
+    body = bodies[0]
+    if (body.get("name") != "Body1" or not _near(body.get("volume_cm3"), 8, 1e-8) or body.get("faces") != 6
+            or body.get("bbox_mm") != [[100, 0, 0], [120, 20, 20]]
+            or not isinstance(body.get("vertices_mm"), list) or len(body["vertices_mm"]) != 8
+            or any(not finite(v, 3) for v in body["vertices_mm"])):
+        return None
+    if ({(r.get("path"), r.get("name")) for r in origins}
+            != {(None, "RootAnchor"), ("OriginA:1", "Datum"), ("OriginB:1", "Datum")}
+            or any(not identity(r.get("identity")) or not identity(r.get("owner_identity"))
+                   or r.get("context") is not None or type(r.get("owner_is_root")) is not bool
+                   or r["owner_is_root"] != (r["path"] is None)
+                   or (r["path"] is not None and r.get("proxy_identity") != r["identity"])
+                   for r in origins)
+            or len({tuple(r["identity"]) for r in origins}) != 3
+            or len({tuple(r["owner_identity"]) for r in origins}) != 3):
+        return None
+    by_path = {r["path"]: r for r in origins}
+    for joint in joints:
+        inputs = joint.get("inputs")
+        if (joint.get("name") != "AOnly" or joint.get("health") != 0
+                or not isinstance(inputs, list) or len(inputs) != 2):
+            return None
+        for row, path in zip(inputs, ("OriginA:1", None)):
+            expected = by_path[path]
+            if any(row.get(k) != expected[k] for k in
+                   ("name", "component", "path", "identity", "owner_identity", "owner_is_root", "context")):
+                return None
+    return {k: p[k] for k in ("bodies", "origins", "placements", "joints", "timeline", "marker")}
+
+
+def _origin_consumer_native_read(stage):
+    """Check native identity/effect controls, read nonmutation and exact typed retirement."""
+    def check(p):
+        now = _origin_consumer_native_state(p)
+        before, joined = _RECALL.get("origin_consumers_before"), _RECALL.get("origin_consumers_joint")
+        valid = now is not None
+        if stage == "before":
+            valid = valid and now["joints"] == [] and len(now["timeline"]) == 7
+        elif stage == "joint":
+            valid = (valid and before is not None and len(now["joints"]) == 1
+                     and all(now[k] == before[k] for k in ("bodies", "origins", "placements"))
+                     and now["timeline"][:-1] == before["timeline"]
+                     and now["timeline"][-1] == {"name": "AOnly", "type": "adsk::fusion::Joint", "health": 0})
+        else:
+            valid = valid and now == (before if stage == "restored" else joined)
+        if valid and stage in ("before", "joint"):
+            _RECALL["origin_consumers_" + stage] = now
+        return _measured("native origin identities and unchanged geometry/history " + stage, now, valid)
+    return check
+
+
+def _origin_consumer_disclosure(joined=False, repeat=False, quiet=False):
+    """Check public consumers against actual native origin and joint-half identities."""
+    def check(p):
+        native = _RECALL.get("origin_consumers_joint" if joined else "origin_consumers_before")
+        origins, occurrences = p.get("joint_origins"), p.get("occurrences")
+        valid = (native is not None and p.get("units") == "mm" and p.get("is_healthy") is True
+                 and p.get("joint_count") == int(joined) and p.get("joint_origin_count") == 3
+                 and p.get("joint_origins_truncated") is False and p.get("occurrences_truncated") is False
+                 and p.get("joints_truncated") is False and p.get("occurrence_count") == 2
+                 and isinstance(origins, list) and len(origins) == 3
+                 and isinstance(occurrences, list) and len(occurrences) == 2)
+        expected = {}
+        if native:
+            inputs = native["joints"][0]["inputs"] if joined and native["joints"] else []
+            for row in native["origins"]:
+                name = (row["path"] + ":" if row["path"] else "") + row["name"]
+                expected[name] = ["AOnly"] if any(row["identity"] == r["identity"] and row["path"] == r["path"] for r in inputs) else []
+        valid = valid and {r.get("qualified_name"): r.get("consumed_by") for r in origins or []} == expected
+        for row in origins or []:
+            valid = (valid and isinstance(row.get("handle"), str) and bool(row["handle"])
+                     and isinstance(row.get("world_position"), list) and len(row["world_position"]) == 3
+                     and all(_num(v) and math.isfinite(v) for v in row["world_position"])
+                     and all(isinstance((row.get("frame") or {}).get(k), list)
+                             and len(row["frame"][k]) == 3 and all(_num(v) and math.isfinite(v) for v in row["frame"][k])
+                             for k in ("x_axis", "y_axis", "z_axis")))
+        poses = [{k: r.get(k) for k in ("name", "origin", "x_axis", "y_axis", "z_axis", "body_count")} for r in occurrences or []]
+        valid = valid and {r["name"] for r in poses} == {"OriginA:1", "OriginB:1"}
+        for row in poses:
+            valid = (valid and row["body_count"] == 0 and all(isinstance(row[k], list) and len(row[k]) == 3
+                     and all(_num(v) and math.isfinite(v) for v in row[k]) for k in ("origin", "x_axis", "y_axis", "z_axis")))
+        prior = _RECALL.get("origin_consumers_poses")
+        if valid and prior is None:
+            _RECALL["origin_consumers_poses"] = poses
+        else:
+            valid = valid and prior is not None and poses == prior
+        if quiet:
+            valid = valid and p.get("joints") is None and all("joints" not in r for r in occurrences or [])
+        else:
+            joints = p.get("joints")
+            valid = valid and isinstance(joints, list) and len(joints) == int(joined)
+            if joined:
+                valid = (valid and joints[0].get("healthy") is True and joints[0].get("name") == "AOnly"
+                         and joints[0].get("occurrence_one_path") == "OriginA:1" and joints[0].get("occurrence_two_path") is None)
+        if repeat:
+            valid = valid and p == _RECALL.get("origin_consumers_public")
+        elif joined and not quiet and valid:
+            _RECALL["origin_consumers_public"] = p
+        return _measured("public distinct-origin consumers match native identities; poses held", p, valid)
+    return check
+
+
+def _origin_consumer_rows():
+    """Reproduce the measured same-name distinct-definition origins and proven root half."""
+    rows = [("doc_get", {}, _home_document, ("oc_story", _home_address)),
+            ("doc_new", {}, _new_document, None),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("doc_get", {}, _home_document, ("oc_doc", _home_address))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, a=args: dict(a), check, save))
+    write("sketch_create", {"name": "Witness", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "Witness", "units": "mm", "geometry": [
+        {"kind": "rectangle", "x1": 100, "y1": 0, "x2": 120, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "Witness", "distance": 20, "units": "mm", "operation": "new"}, _extruded)
+    for name, x in (("OriginA", 0), ("OriginB", 40)):
+        write("model_create_component", {"name": name, "x": x, "units": "mm", "activate": False}, _made_component_inactive)
+        write("joint_create_origin", {"anchor": "coordinates", "target": "origin", "component": name + ":1",
+                                      "name": "Datum", "units": "mm"})
+    write("joint_create_origin", {"anchor": "coordinates", "target": "origin", "name": "RootAnchor", "units": "mm"})
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True, "focus": ["Witness"]})
+    def native(stage):
+        write("sys_execute_script", {"script": _ORIGIN_CONSUMER_NATIVE, "read_only": True}, _origin_consumer_native_read(stage))
+    assembly = {"include": ["joint_origins", "poses"], "units": "mm"}
+    native("before")
+    rows.append(("assembly_get", assembly, _origin_consumer_disclosure(), None))
+    write("joint_create", {"occurrence_one": "OriginA:1:Datum", "occurrence_two": "RootAnchor",
+                           "joint_type": "rigid", "name": "AOnly", "units": "mm"}, _jointed("AOnly"),
+          ("oc_joint", lambda p: p["joint_name"]))
+    native("joint")
+    rows += [("assembly_get", assembly, _origin_consumer_disclosure(True), None),
+             ("assembly_get", assembly, _origin_consumer_disclosure(True, repeat=True), None),
+             ("assembly_get", dict(assembly, include_joints=False), _origin_consumer_disclosure(True, quiet=True), None)]
+    native("repeat")
+    rows.append(("design_delete_feature", lambda c: {"feature": _ctx_get(c, "oc_joint", "regular joint name")}, "ok", None))
+    native("restored")
+    rows += [("assembly_get", assembly, _origin_consumer_disclosure(), None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "oc_story", "story"),
+                                         "expect_document": _ctx_get(c, "oc_doc", "origin scratch")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "oc_doc", "origin scratch"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "oc_story", "story")}, _document_closed, None)]
+    return rows
+
+
+def _selected_owner_state(p):
+    """Return the complete four-part pose and relationship witness, or None when unread."""
+    rows, relations = p.get("all_occurrences"), p.get("relations") or {}
+    names = {"ClaimA:1", "ClaimB:1", "SelectedC:1", "SelectedD:1"}
+    if (p.get("units") != "mm" or p.get("is_healthy") is not True
+            or p.get("all_occurrence_count") != 4 or not isinstance(rows, list) or len(rows) != 4
+            or {r.get("full_path") for r in rows} != names
+            or p.get("occurrence_count") != 4 or len(p.get("occurrences") or []) != 4
+            or any(p.get(k) is not False for k in ("all_occurrences_truncated", "occurrences_truncated",
+                                                   "joints_truncated", "relations_truncated"))):
+        return None
+    for row in rows:
+        if (row.get("body_count") != 1 or any(type(row.get(k)) is not bool
+                                             for k in ("grounded", "ground_to_parent"))
+                or any(not isinstance(row.get(k), list) or len(row[k]) != 3
+                       or any(not _num(v) or not math.isfinite(v) for v in row[k])
+                       for k in ("origin", "x_axis", "y_axis", "z_axis", "bbox_center", "bbox_size"))):
+            return None
+    for kind in ("rigid_groups", "motion_links", "constraints"):
+        entries = relations.get(kind)
+        if (not isinstance(entries, list) or (p.get("relation_counts") or {}).get(kind) != len(entries)
+                or any(not r.get("name") or r.get("healthy") is not True
+                       or type(r.get("suppressed")) is not bool for r in entries)):
+            return None
+    return {k: v for k, v in p.items() if k not in ("note", "active_document")}
+
+
+def _selected_owner_landed(p):
+    """Require the matched face constraint to move only D into the measured complementary seat."""
+    now, before = _selected_owner_state(p), _RECALL.get("selected_owner_assembly")
+    valid = now is not None and before is not None
+    if valid:
+        old = {r["full_path"]: r for r in before["all_occurrences"]}
+        current = {r["full_path"]: r for r in now["all_occurrences"]}
+        d = current["SelectedD:1"]
+        constraints = now["relations"]["constraints"]
+        valid = (len(constraints) == 1 and constraints[0].get("relationship_count") == 1
+                 and constraints[0].get("suppressed") is False
+                 and before["relations"]["constraints"] == []
+                 and now["relations"]["rigid_groups"] == before["relations"]["rigid_groups"]
+                 and now["relations"]["motion_links"] == before["relations"]["motion_links"]
+                 and all(current[n] == old[n] for n in old if n != "SelectedD:1")
+                 and old["SelectedD:1"]["origin"] == [40, 0, 0]
+                 and d["origin"] == [20, 0, -10] and d["bbox_center"] == [22, 2, -5]
+                 and {k: v for k, v in d.items() if k not in ("origin", "bbox_center")}
+                 == {k: v for k, v in old["SelectedD:1"].items() if k not in ("origin", "bbox_center")})
+    return _measured("matched C/D owners: D seated, A/B/C and all axes preserved", now, valid)
+
+
+def _selected_owner_history(p):
+    """Require one healthy constraint after the exact previous history prefix."""
+    now, before = _retire_design_state(p), _RECALL.get("selected_owner_design")
+    tl, old = (now or {}).get("timeline", {}), (before or {}).get("timeline", {})
+    rows, prefix = tl.get("timeline") or [], old.get("timeline") or []
+    return _measured("one healthy constraint after the preserved history", tl,
+                     now is not None and before is not None and len(rows) == len(prefix) + 1
+                     and rows[:-1] == prefix and rows[-1].get("type") == "AssemblyConstraint"
+                     and rows[-1].get("health", "healthy") == "healthy"
+                     and (tl.get("summary") or {}).get("states") == {"healthy": len(rows)}
+                     and (tl.get("summary") or {}).get("exceptions") == [])
+
+
+def _selected_owner_face(p, occurrence, normal):
+    """Acquire the unique measured top or bottom face from a complete six-face box census."""
+    matches = p.get("matches") or []
+    chosen = [r for r in matches if r.get("normal") == [0, 0, normal]
+              and r.get("occurrence") == occurrence and r.get("handle")]
+    if p.get("match_count") != 6 or p.get("returned") != 6 or len(matches) != 6 or len(chosen) != 1:
+        raise ValueError("the selected-owner box face census is incomplete or ambiguous")
+    return chosen[0]["handle"]
+
+
+def _selected_owner_script(handle=None, occurrence=None):
+    """Return the measured owned-scratch selection setup, never a geometry mutation."""
+    setup = "sel.clear()" if handle is None else (
+        "d = adsk.fusion.Design.cast(app.activeProduct)\n"
+        f"    face = adsk.fusion.BRepFace.cast(d.findEntityByToken({handle.split('|@', 1)[0]!r})[0])\n"
+        f"    occ = d.rootComponent.occurrences.itemByName({occurrence!r})\n"
+        "    if face.assemblyContext is None:\n"
+        "        face = face.createForAssemblyContext(occ)\n"
+        f"    assert face.assemblyContext.fullPathName == {occurrence!r}\n"
+        "    assert sel.add(face) is True")
+    return ("import adsk.core, adsk.fusion\nimport json\ndef run(context):\n"
+            "    app = adsk.core.Application.get()\n"
+            "    assert app.activeDocument.dataFile is None, 'owned unsaved scratch only'\n"
+            "    sel = app.userInterface.activeSelections\n    " + setup + "\n"
+            "    print(json.dumps({'count': sel.count, 'owners': "
+            "[sel.item(i).entity.assemblyContext.fullPathName for i in range(sel.count)]}))\n")
+
+
+def _selected_owner_rows():
+    """Build the script-enabled selected-owner refusal and independent matched-control scene."""
+    rows = [
+        ("doc_get", {"max_results": 1000}, _home_document,
+         ("selected_owner_story", _recall("selected_owner_story", _home_address))),
+        ("doc_new", lambda c: {"expect_document": _ctx_get(c, "selected_owner_story", "story document")},
+         _new_document, ("selected_owner_doc", lambda p: p["document_handle"])),
+        ("design_activate_component", {"occurrence": "root"}, "ok", None),
+    ]
+    for name, x in (("ClaimA", 0), ("ClaimB", 10), ("SelectedC", 20), ("SelectedD", 40)):
+        rows += [
+            ("model_create_component", lambda c, n=name, x=x: {"name": n, "x": x, "units": "mm", "activate": True},
+             _made_component, None),
+            ("sketch_create", lambda c, n=name: {"name": n + "Sketch", "plane": "xy"}, "ok", None),
+            ("sketch_add_geometry", lambda c, n=name: {"sketch_name": n + "Sketch", "units": "mm",
+             "geometry": [{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 4, "y2": 4}]}, "ok", None),
+            ("model_extrude", lambda c, n=name: {"sketch_name": n + "Sketch", "distance": 10,
+                                               "units": "mm", "operation": "new"}, _extruded, None),
+        ]
+    rows += [
+        ("design_activate_component", {"occurrence": "root"}, "ok", None),
+        ("assembly_ground", {"occurrence": "SelectedC:1", "ground_to_parent": True}, _grounded, None),
+        ("assembly_ground", {"occurrence": "SelectedD:1", "ground_to_parent": False},
+         lambda p: p.get("isGroundToParent") is False and p.get("occurrence") == "SelectedD:1", None),
+        ("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True,
+                      "focus": ["ClaimA:1", "ClaimB:1", "SelectedC:1", "SelectedD:1"]}, "ok", None),
+        ("sys_execute_script", {"script": _selected_owner_script()}, lambda p: p.get("count") == 0, None),
+    ]
+    def select_pair(top):
+        result = []
+        for i, occurrence in enumerate(("SelectedC:1", "SelectedD:1"), 1):
+            normal = (1 if top else -1) * (1 if i == 1 else -1)
+            key = "selected_owner_face_" + str(i)
+            result += [
+                ("find_geometry", lambda c, o=occurrence: {"target": o, "kind": "planar_face", "units": "mm", "max_results": 20},
+                 "ok", (key, lambda p, o=occurrence, z=normal: _selected_owner_face(p, o, z))),
+                ("sys_execute_script", lambda c, k=key, o=occurrence: {"script": _selected_owner_script(_ctx_get(c, k, "selected face"), o)},
+                 lambda p, n=i: p.get("count") == n and p.get("owners") == ["SelectedC:1", "SelectedD:1"][:n], None),
+            ]
+        return result
+    parts = ["ClaimA:1", "ClaimB:1", "SelectedC:1", "SelectedD:1"]
+    assembly = {"include": ["poses", "all_occurrences", "relations"], "units": "mm",
+                "max_occurrences": 100, "max_all_occurrences": 100, "max_relations": 100, "max_joints": 100}
+    rows += select_pair(True) + _retire_reads("selected_owner", parts, []) + [
+        ("assembly_get", assembly, _retire_compare("selected_owner_assembly", _selected_owner_state, False), None),
+        ("assembly_constrain", {"occurrence_one": "ClaimA:1", "occurrence_two": "ClaimB:1", "flipped": True},
+         _refused("Selected entity 1", "SelectedC:1", "ClaimA:1", "occurrence_one first"), None),
+    ] + _retire_reads("selected_owner", parts, [], after=True) + [
+        ("assembly_get", assembly, _retire_compare("selected_owner_assembly", _selected_owner_state, True), None),
+        ("sys_execute_script", {"script": _selected_owner_script()}, lambda p: p.get("count") == 0, None),
+    ] + select_pair(False) + [
+        ("assembly_constrain", {"occurrence_one": "SelectedC:1", "occurrence_two": "SelectedD:1", "flipped": True},
+         lambda p: _constrained(p) and p.get("occurrences") == ["SelectedC:1", "SelectedD:1"]
+         and p.get("relationship_count") == 1 and len(p.get("moved") or []) == 1
+         and p["moved"][0].get("occurrence") == "SelectedD:1" and _near(p["moved"][0].get("distance_mm"), 22.361, .001), None),
+        ("assembly_get", assembly, _selected_owner_landed, None),
+        ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                        "max_depth": 10, "max_results": 2000}, _selected_owner_history, None),
+        ("sys_execute_script", {"script": _selected_owner_script()}, lambda p: p.get("count") == 0, None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, "selected_owner_story", "story document"),
+                                    "expect_document": _ctx_get(c, "selected_owner_doc", "selection scratch")}, "ok", None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "selected_owner_doc", "selection scratch"),
+                                 "save_changes": False, "expect_document": _ctx_get(c, "selected_owner_story", "story document")},
+         _document_closed, None),
+    ]
+    return rows
 
 
 def _turned_over(occurrence):
@@ -723,6 +1395,12 @@ _MOTION += [
                              "expect_document": _ctx_get(c, "capture_story", "the story document")},
      _document_closed, None),
 ]
+
+_MOTION += _selected_owner_rows()
+
+_MOTION += _joint_failure_rows()
+_MOTION += _crossindex_rows()
+_MOTION += _origin_consumer_rows()
 
 # ACT 7: THE VISE - the billet the bracket is cut from, and the machine vise that holds it.
 # Geometry contract (all mm; the Bracket occupies x[-60,60] y[-40,40] z[0,45] with its boss):

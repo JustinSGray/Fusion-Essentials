@@ -22,6 +22,7 @@ import verify_layout  # noqa: E402
 import verify_program  # noqa: E402
 import verify_acts_model_solids  # noqa: E402
 from verify_families import fixture_steps  # noqa: E402
+import verify_acts_motion  # noqa: E402
 
 
 @pytest.fixture
@@ -489,3 +490,174 @@ def test_acquired_target_face_feeds_both_symmetric_extent_requests(monkeypatch):
     requests = [args(context) for tool, args, _check, _save in rows if tool == "model_extrude"]
     targets = [r for r in requests if r.get("symmetric") and "to_object" in r]
     assert len(targets) == 2 and all(r["to_object"] == "face-0" for r in targets)
+
+
+def test_sheet_single_bend_control_requires_the_other_bends_full_geometry(monkeypatch):
+    import copy
+    import verify_acts_sheet as sheet
+    rows = [{"handle": str(i), "kind": "cylinder_face", "position": position, "radius": radius,
+             "area": area, "normal": normal, "axis": [0.0, 1.0, -0.0], "occurrence": "BendCoupon:1"}
+            for i, (position, radius, area, normal) in enumerate([
+                ([54.593573, 20.0, -.346013], 2.0, 83.776, [-.5, 0.0, -.866]),
+                ([25.768796, 20.0, 2.22676], 2.0, 125.664, [.7071, 0.0, .7071]),
+                ([55.30977, 20.0, .894477], 3.5, 146.608, [.5, 0.0, .866]),
+                ([24.813866, 20.0, 1.271831], 3.5, 219.911, [-.7071, 0.0, -.7071])])]
+    before = {"units": "mm", "match_count": 4, "returned": 4, "matches": rows}
+    monkeypatch.setitem(sheet._RECALL, "sm_first_bend_walls", None)
+    monkeypatch.setitem(sheet._RECALL, "sm_array_bends", None)
+    assert sheet._capture_bend_witnesses(before) == "0"
+    remaining = {"units": "mm", "match_count": 2, "returned": 2, "matches": copy.deepcopy([rows[1], rows[3]])}
+    assert sheet._first_bend_preserved(remaining) is True
+    remaining["matches"][0]["position"][1] += 1
+    with pytest.raises(AssertionError, match="unselected physical bend"):
+        sheet._first_bend_preserved(remaining)
+    assert sheet._bend_wall_state({"units": "mm", "match_count": 0, "returned": 0, "matches": []}) == []
+    assert sheet._bend_wall_state({"units": "mm", "match_count": 0}) is None
+    del before["matches"][0]["axis"]
+    assert sheet._bend_wall_state(before) is None
+
+
+def test_sheet_rule_control_rejects_sibling_setting_change_and_unread_census(monkeypatch):
+    import copy
+    import verify_acts_sheet as sheet
+    fields = ("thickness", "bendRadius", "gap", "reliefWidth", "reliefDepth",
+              "reliefRemnant", "twoBendReliefSize", "threeBendReliefRadius")
+    rows = [{"name": name, "index": i, "scope": "design", "ref": ref, "k_factor": .44,
+             "is_used": i < 2, **{field: {
+                 "expression": expr if field == "thickness" else "Thickness" + suffix,
+                 "value_cm": cm * factor}
+                 for field, (suffix, factor) in zip(fields, [
+                     ("", 1), ("", 1), ("", 1), ("", 1), (" * 0.5", .5),
+                     (" * 2.0", 2), (" * 4.0", 4), ("", 1)])}}
+            for i, (name, ref, expr, cm) in enumerate([
+                ("Steel (mm)", {"scope": "design", "index": 0}, "1.2 mm", .12),
+                ("Steel (mm)", "design:Steel (mm)#2", "2.50 mm", .25),
+                ("Steel (mm)#1", {"scope": "design", "index": 2}, "3 mm", .3)])]
+    before = {"rules": {"readable": True, "truncated": False, "total": 3, "rules": rows},
+              "components": {"walk_complete": True, "truncated": False, "total": 1,
+                             "components": [{"component": "RuleSeed", "active_rule": "Steel (mm)",
+                                             "bodies": [], "has_flat_pattern": False}]}}
+    monkeypatch.setitem(sheet._RECALL, "sm_collision_indices", [0, 1, 2])
+    monkeypatch.setitem(sheet._RECALL, "sm_collision_rules", sheet._collision_rule_state(before))
+    after = copy.deepcopy(before)
+    after["rules"]["rules"][0]["thickness"] = {"expression": "1.7 mm", "value_cm": .17}
+    assert sheet._collision_edit_read(0, .17)(after) is True
+    broken = copy.deepcopy(after)
+    broken["rules"]["rules"][1]["gap"]["value_cm"] = .7
+    broken["rules"]["rules"][2]["thickness"] = {"expression": "3.4 mm", "value_cm": .34}
+    with pytest.raises(AssertionError, match="all siblings preserved"):
+        sheet._collision_edit_read(2, .34)(broken)
+    del broken["rules"]["rules"][1]["gap"]["value_cm"]
+    assert sheet._collision_rule_state(broken) is None
+
+
+def test_selected_owner_oracle_requires_complete_poses_and_only_the_measured_d_seat(monkeypatch):
+    import copy
+    parts = []
+    for name, x in (("ClaimA", 0), ("ClaimB", 10), ("SelectedC", 20), ("SelectedD", 40)):
+        parts.append({"name": name + ":1", "component": name, "full_path": name + ":1",
+                      "body_count": 1, "grounded": False, "ground_to_parent": name in ("ClaimA", "SelectedC"),
+                      "origin": [x, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0], "z_axis": [0, 0, 1],
+                      "bbox_center": [x + 2, 2, 5], "bbox_size": [4, 4, 10], "joints": []})
+    before = {"units": "mm", "is_healthy": True, "occurrence_count": 4, "all_occurrence_count": 4,
+              "all_occurrences": parts, "occurrences": [{k: v for k, v in r.items() if k != "full_path"} for r in parts],
+              "all_occurrences_truncated": False, "occurrences_truncated": False,
+              "joints_truncated": False, "relations_truncated": False,
+              "relations": {"rigid_groups": [], "motion_links": [], "constraints": []},
+              "relation_counts": {"rigid_groups": 0, "motion_links": 0, "constraints": 0}}
+    assert verify_acts_motion._selected_owner_state(before) == before
+    monkeypatch.setitem(verify_acts_motion._RECALL, "selected_owner_assembly", before)
+    after = copy.deepcopy(before)
+    after["all_occurrences"][-1].update(origin=[20, 0, -10], bbox_center=[22, 2, -5])
+    after["relations"]["constraints"] = [{"name": "Constraint 1", "relationship_count": 1,
+                                            "healthy": True, "suppressed": False}]
+    after["relation_counts"]["constraints"] = 1
+    assert verify_acts_motion._selected_owner_landed(after)
+    for defect in ("unread", "truncated", "sibling", "axes", "wrong_seat", "unhealthy"):
+        broken = copy.deepcopy(after)
+        if defect == "unread":
+            broken["all_occurrences"][0]["origin"][0] = None
+        elif defect == "truncated":
+            del broken["relations_truncated"]
+        elif defect == "sibling":
+            broken["all_occurrences"][1]["origin"][0] = 11
+        elif defect == "axes":
+            broken["all_occurrences"][-1]["x_axis"] = [-1, 0, 0]
+        elif defect == "wrong_seat":
+            broken["all_occurrences"][-1]["origin"] = [20, 0, 10]
+        else:
+            broken["relations"]["constraints"][0]["healthy"] = False
+        with pytest.raises(AssertionError, match="matched C/D owners"):
+            verify_acts_motion._selected_owner_landed(broken)
+
+
+def test_selected_owner_scene_keeps_measured_coordinates_after_full_motion_family():
+    authored = verify_acts_motion._selected_owner_rows()
+    compiled = verify_program.compile_program(verify_program._RAW_ACT_PROGRAM)["acts"]
+    rows = next(rows for _name, _pre, rows, _fallback in compiled
+                if any(save and save[0] == "selected_owner_doc" for _tool, _args, _check, save in rows))
+    start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == "selected_owner_doc")
+    end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
+    tools = {"model_create_component", "sketch_add_geometry", "find_geometry"}
+    def requests(selected):
+        return [(tool, args({}) if callable(args) else args)
+                for tool, args, _check, _save in selected if tool in tools]
+    assert requests(rows[start:end]) == requests(authored)
+
+
+def test_joint_and_mesh_remedy_scenes_keep_native_coordinates_after_prior_rows():
+    acts = verify_program.compile_program(verify_program._RAW_ACT_PROGRAM)["acts"]
+    rows = [row for _name, _pre, narrative, _fallback in acts for row in narrative]
+    wanted = {"PinA": 2, "PinB": 2, "MeshSeed": 5}
+    found, positions, active = {}, [], False
+    for tool, args, _check, save in rows:
+        if save and isinstance(save, tuple) and save[0] in ("jf_story", "mr_story"):
+            active = True
+        if active and tool in ("sketch_add_geometry", "model_create_component"):
+            args = args({}) if callable(args) else args
+            if tool == "sketch_add_geometry" and args.get("sketch_name") in wanted:
+                found[args["sketch_name"]] = args["geometry"]
+            if tool == "model_create_component" and args.get("name") in ("JointA", "JointB"):
+                positions.append(args["x"])
+        if tool == "doc_close":
+            active = False
+    assert found == {name: [{"kind": "circle", "cx": 0, "cy": 0, "radius": radius}]
+                     for name, radius in wanted.items()}
+    assert positions == [0, 20]
+
+
+def test_crossindex_owned_scene_retains_its_measured_witness_coordinates():
+    rows = [row for _name, _pre, narrative, _fallback in verify_program.ACTS for row in narrative]
+    active, found = False, []
+    for tool, args, _check, save in rows:
+        if save and isinstance(save, tuple) and save[0] == "ci_story":
+            active = True
+        if active and tool == "sketch_add_geometry":
+            args = args({}) if callable(args) else args
+            found.append(args)
+        if tool == "doc_close":
+            active = False
+    assert len(found) == 1 and found[0]["sketch_name"] == "Witness"
+    assert found[0]["geometry"] == [{"kind": "rectangle", "x1": 100, "y1": 0, "x2": 120, "y2": 20}]
+
+
+def test_origin_consumers_owned_scene_retains_its_measured_witness_coordinates():
+    rows = [row for _name, _pre, narrative, _fallback in verify_program.ACTS for row in narrative]
+    active, found = False, []
+    for tool, args, _check, save in rows:
+        if save and isinstance(save, tuple) and save[0] == "oc_story":
+            active = True
+        if active and tool == "sketch_add_geometry":
+            found.append(args({}) if callable(args) else args)
+        if tool == "doc_close":
+            active = False
+    assert len(found) == 1 and found[0]["sketch_name"] == "Witness"
+    assert found[0]["geometry"] == [{"kind": "rectangle", "x1": 100, "y1": 0, "x2": 120, "y2": 20}]
+    creations = [(args({}), check) for tool, args, check, _save
+                 in verify_acts_motion._origin_consumer_rows() if tool == "model_create_component"]
+    assert len(creations) == 2
+    for args, check in creations:
+        reply = {"occurrence": args["name"] + ":1", "full_path": args["name"] + ":1", "activated": False}
+        assert args["activate"] is False and check(reply)
+        with pytest.raises(AssertionError, match="not activated"):
+            check(dict(reply, activated=True))

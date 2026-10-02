@@ -1362,10 +1362,10 @@ STORY = {
 # the policy-excluded bucket; PENDING (below) is the separate "not scripted yet" bucket - the ledger
 # keeps that distinction honest.
 EXCLUDED = {
-    "sys_execute_script": ("gated off by design; the sweep proves the typed surface suffices - and "
-                           "with it the beat for its DRAWING-document error tail (a raise inside a "
+    "sys_execute_script": ("excluded as a general tool capability; controlled native fixtures may "
+                           "use it when enabled. Its DRAWING-document error tail is not covered (a raise inside a "
                            "drawing ends with 'Re-read the sheets before assuming this call changed "
-                           "nothing.', a design one does not), which would need this tool driven "
+                           "nothing.', a design one does not); that needs this tool driven "
                            "against two document kinds"),
     "sys_reload_addin": ("restarts the server, so no STEP can follow it - the run drives it as a "
                          "post-run beat instead (reload_smoke), and this row is what stands when "
