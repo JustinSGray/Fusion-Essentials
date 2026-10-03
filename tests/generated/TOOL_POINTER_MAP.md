@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 693
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 694
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -3301,7 +3301,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Measured in the joint-origin frame; x/y/z are the part-space extents. Feed these to param_set to drive stock size. The frame is the Joint Origin its owning COMPONENT carries - the same one for ever...
 - Oriented bounding-box measurement failed:
 - . (The X/Y axes of the frame must be perpendicular, and the target must be B-Rep geometry.)
-- Mass is driven by each body's PHYSICAL MATERIAL (density), not its appearance - if a mass looks wrong, check 'density'. Inertia_world is about the WORLD origin; principal_moments are about the cent...
+- Physical-property freshness is unverified. Linked feature edits may leave stale values. Call design_recompute and read again; it may reset uncaptured driven joint poses. Recompute does not verify f...
 - '. Use mm, cm, or in.
 - '. Use: low, medium, high, very_high.
 - Could not compute physical properties for

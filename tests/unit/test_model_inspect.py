@@ -982,6 +982,44 @@ class TestPhysicalProperties:
         assert out["accuracy_used"] == "high"
         assert "per_occurrence" not in out                  # opt-in via per_body
 
+    @pytest.mark.parametrize("reported_accuracy", [None, 99])
+    def test_unread_or_unmapped_actual_accuracy_stays_unknown(self, reported_accuracy):
+        pp = _make_pp()
+        if reported_accuracy is None:
+            del pp.accuracy
+        else:
+            pp.accuracy = reported_accuracy
+        e = SimpleNamespace(getPhysicalProperties=lambda acc: pp)
+        out = _payload(mi._physical_properties(None, e, "body 'Plate'", "mm", "medium", False))
+        assert out["accuracy"] == "medium" and out["accuracy_used"] is None
+
+    def test_mass_note_discloses_unverified_freshness_and_explicit_remedy(self):
+        pp = _make_pp(accuracy=mi._ACCURACY["high"])
+        e = SimpleNamespace(getPhysicalProperties=lambda acc: pp)
+        out = _payload(mi._physical_properties(None, e, "body 'Plate'", "mm", "medium", False))
+        note = out["note"].lower()
+        assert out["freshness_verified"] is False
+        assert "physical-property freshness is unverified" in note
+        assert "linked feature edits may leave stale values" in note
+        assert "design_recompute and read again" in note
+        assert "uncaptured driven joint poses" in note
+        assert "recompute does not verify freshness" in note
+
+    def test_handler_mass_read_does_not_recompute_and_preserves_properties(self, monkeypatch):
+        pp = _make_pp(accuracy=mi._ACCURACY["very_high"])
+        entity = SimpleNamespace(name="Plate", getPhysicalProperties=lambda acc: pp)
+        compute_calls = []
+        design = SimpleNamespace(computeAll=lambda: compute_calls.append(True))
+        monkeypatch.setattr(mi._common, "design", lambda: design)
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((entity, "body"), None))
+        out = _payload(mi.handler(target="Plate", include=["mass"]))
+        mass = out["mass"]
+        assert compute_calls == []
+        assert mass["freshness_verified"] is False
+        assert mass["mass_kg"] == 2.0 and mass["volume"] == 4000.0 and mass["area"] == 600.0
+        assert mass["center_of_mass"] == [10.0, 20.0, 30.0]
+        assert mass["inertia_world"]["Ixx"] == 100.0
+
     def test_per_body_breakdown_skips_unmeasurable_occurrences(self):
         opp = SimpleNamespace(mass=1.25, centerOfMass=FakePoint(0.1, 0.0, 0.0))
         o1 = _occ_row("A:1", pp=opp)

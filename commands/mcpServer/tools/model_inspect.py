@@ -379,9 +379,9 @@ def _physical_properties(design, entity, desc, units, accuracy, per_body):
         return error(f"Could not compute physical properties for {desc} (no measurable solid? an empty "
                      "or surface-only target has no mass).")
 
-    result = {"target": desc, "units": units, "accuracy": acc_key}
+    result = {"target": desc, "units": units, "accuracy": acc_key, "freshness_verified": False}
     result.update(_full_props(pp, k))
-    result["accuracy_used"] = _ACCURACY_NAME.get(safe(lambda: pp.accuracy), acc_key)
+    result["accuracy_used"] = _ACCURACY_NAME.get(safe(lambda: pp.accuracy))
 
     truncated = False
     if per_body:
@@ -421,9 +421,10 @@ def _physical_properties(design, entity, desc, units, accuracy, per_body):
         result["per_body_count"] = len(body_rows)
         result["per_body_truncated"] = body_cut
 
-    note = ("Mass is driven by each body's PHYSICAL MATERIAL (density), not its appearance - "
-            "if a mass looks wrong, check 'density'. Inertia_world is about the WORLD origin; "
-            "principal_moments are about the center of mass.")
+    note = ("Physical-property freshness is unverified. Linked feature edits may leave stale values. "
+            "Call design_recompute and read again; it may reset uncaptured driven joint poses. "
+            "Recompute does not verify freshness. Mass follows physical material density, not "
+            "appearance. Inertia_world is about the world origin; principal_moments are about CoM.")
     if per_body:
         note += (" per_occurrence carries one row per occurrence in the target's subtree, NESTED ones "
                  "included, keyed by full path; a row marked aggregates_children:true already covers "

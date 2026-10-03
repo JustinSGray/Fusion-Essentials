@@ -104,6 +104,75 @@ def _extrude_edit_roof(p):
                                   for v, want in zip(row, wanted)))
 
 
+def _extrude_edit_roof_signature(p):
+    """Capture the independent roof face areas and centroids around a mass read."""
+    return sorted([[row.get("area"), *(row.get("position") or [])]
+                   for row in p.get("matches") or []])
+
+
+def _extrude_edit_roof_unchanged(key):
+    """Compare the roof's direct face geometry before and after the mass read."""
+    def check(p):
+        before, after = _RECALL.get(key), _extrude_edit_roof_signature(p)
+        return _measured("unaffected roof face geometry around mass read",
+                         {"before": before, "after": after},
+                         isinstance(before, list) and len(before) == len(after) == 6
+                         and before == after and _extrude_edit_roof(p) is True)
+    return check
+
+
+def _extrude_mass_freshness(label, volume=None, area=None, center=None, disclose=False):
+    """Check the witnessed roof mass state and the public freshness remedy disclosure."""
+    def check(p):
+        mass = p.get("mass") or {}
+        got_center = mass.get("center_of_mass") or []
+        note = mass.get("note") or ""
+        good = (p.get("kind") == "body" and mass.get("units") == "mm"
+                and mass.get("accuracy") == "very_high"
+                and mass.get("accuracy_used") == "very_high"
+                and mass.get("freshness_verified") is False
+                and _num(mass.get("volume")) and _num(mass.get("area"))
+                and len(got_center) == 3
+                and all(_num(value) for value in got_center))
+        if volume is not None:
+            good = good and _near(mass.get("volume"), volume, 0.001)
+        if area is not None:
+            good = good and _near(mass.get("area"), area, 0.001)
+        if center is not None:
+            expected_xy = _ee_shift(center[0], center[1])
+            good = (good and _near(got_center[0], expected_xy[0], 0.0001)
+                    and _near(got_center[1], expected_xy[1], 0.0001)
+                    and _near(got_center[2], center[2], 0.0001))
+        if disclose:
+            note = note.lower()
+            good = (good and "physical-property freshness is unverified" in note
+                    and "linked feature edits may leave stale values" in note
+                    and "design_recompute and read again" in note
+                    and "uncaptured driven joint poses" in note
+                    and "recompute does not verify freshness" in note)
+        return _measured(label, {"volume": mass.get("volume"), "area": mass.get("area"),
+                                 "center": got_center, "accuracy_used": mass.get("accuracy_used"),
+                                 "note": note}, good)
+    return check
+
+
+def _extrude_mass_bundle(p):
+    """Keep the complete mass-property bundle needed to compare consecutive reads."""
+    return p.get("mass") or {}
+
+
+def _extrude_mass_bundle_unchanged(key):
+    """Require a repeated mass read to preserve the actual property bundle."""
+    def check(p):
+        before, after = _RECALL.get(key), _extrude_mass_bundle(p)
+        disclosed = (_extrude_mass_freshness(
+            "second mass read carries the freshness disclosure", disclose=True)(p) is True)
+        return _measured("second mass read preserves the post-edit property bundle",
+                         {"before": before, "after": after},
+                         isinstance(before, dict) and before == after and disclosed)
+    return check
+
+
 def _extrude_edit_history(p):
     """The complete timeline row identities and marker stay where the earlier read placed them."""
     timeline = p.get("timeline") or {}
@@ -365,6 +434,12 @@ def _extrude_edit_rows():
     edit("ee_scope", {"action": "profile", "profile": {"sketch": "EditPocketB", "profile_index": 0}})
     inspect("EditScope:Body1", _extrude_edit_mass(1982, "x", (10000 - 18 * 7.5) / 1982))
     inspect("EditScope:Body2", _extrude_edit_mass(2000))
+    rows.append(("model_inspect", _combine_inspect("EditProfile:Body1"),
+                 _extrude_mass_freshness("roof mass before through-all replay", 4000, 2200,
+                                         (15, 5, 32.5), disclose=True), None))
+    rows.append(("find_geometry", {"target": "EditProfile:Body1", "kind": "planar_face",
+                                   "units": "mm", "max_results": 6}, _extrude_edit_roof,
+                 ("ee_mass_roof_faces", _recall("ee_mass_roof_faces", _extrude_edit_roof_signature))))
     write("model_edit_extrude", lambda c: {
         "feature": _ctx_get(c, "ee_scope", "Extrude"),
         "action": "extent", "extent": "through_all", "direction": "positive"},
@@ -372,6 +447,23 @@ def _extrude_edit_rows():
                             p.get("linked_component_aliases"),
                             _extrude_edit_landed(p) is True
                             and p.get("linked_component_aliases") == ["EditProfile"]))
+    rows.append(("model_inspect", _combine_inspect("EditProfile:Body1"),
+                 _extrude_mass_freshness("post-edit roof mass state is reported",
+                                         disclose=True),
+                 ("ee_roof_replay_mass",
+                  _recall("ee_roof_replay_mass", _extrude_mass_bundle))))
+    rows.append(("find_geometry", {"target": "EditProfile:Body1", "kind": "planar_face",
+                                   "units": "mm", "max_results": 6},
+                 _extrude_edit_roof_unchanged("ee_mass_roof_faces"), None))
+    rows.append(("model_inspect", _combine_inspect("EditProfile:Body1"),
+                 _extrude_mass_bundle_unchanged("ee_roof_replay_mass"), None))
+    write("design_recompute", {},
+          lambda p: _measured("explicit recompute reports healthy timeline", p,
+                              p.get("recomputed") is True and p.get("error_count") == 0
+                              and p.get("errors") == []))
+    rows.append(("model_inspect", _combine_inspect("EditProfile:Body1"),
+                 _extrude_mass_freshness("roof mass after explicit recompute", 4000, 2200,
+                                         (15, 5, 32.5), disclose=True), None))
     inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", -450 / 1910))
     definition("ee_scope", "through_all")
     inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", -450 / 1910))
