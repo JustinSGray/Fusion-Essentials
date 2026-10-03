@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 692
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 693
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -4093,7 +4093,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - . Use rules, library_rules, components, features, or default.
 - ' must be an integer from 1 to 200.
 - No active design. Create or open a design first.
-- Component names may repeat; use a face/edge handle from find_geometry on the body for sheet_convert.
+- Use active_rule_ref with sheet_edit_rule; unknown means identity is unconfirmed. Component names may repeat; use a face/edge handle from find_geometry on the body for sheet_convert.
 
 ### `sketch_add_3d_line`
 - Line drawn in 3D. The end point's non-zero z places it off the sketch's x-y plane. View it from an iso angle with view_screenshot (a top view hides the out-of-plane component).

@@ -3,6 +3,7 @@
 from types import SimpleNamespace as NS
 
 from conftest import _NamedCollection, load_tool
+from tests.fakes.scaffold import SheetRuleIdentity
 
 sc = load_tool("_sheet_common")
 
@@ -98,6 +99,39 @@ def test_rule_ref_and_index_reads_a_library_rule_via_the_passed_design_not_paren
     design.librarySheetMetalRules = _NamedCollection(items=[lib])
     ref, index = sc.rule_ref_and_index(design, lib, "library")
     assert ref == "library:Aluminum (mm)" and index == 0
+
+
+def test_component_row_resolves_same_name_assignment_by_native_equality():
+    first = SheetRuleIdentity("Steel (mm)", "first")
+    second = SheetRuleIdentity("Steel (mm)", "second")
+    assigned_wrapper = SheetRuleIdentity("Steel (mm)", "first")
+    assert assigned_wrapper is not first and assigned_wrapper == first
+    component = NS(name="RuleIdentityA", activeSheetMetalRule=assigned_wrapper,
+                   bRepBodies=_NamedCollection(), flatPattern=None)
+
+    row = sc.component_row(component, [first, second])
+
+    assert row["active_rule"] == "Steel (mm)"
+    assert row["active_rule_ref"] == {"scope": "design", "index": 0}
+    assert row["active_rule_ref_state"] == "matched"
+
+
+def test_component_rule_ref_separates_no_rule_from_unread_or_ambiguous():
+    rule = SheetRuleIdentity("Steel (mm)", "steel")
+    no_rule = NS(name="Plain", activeSheetMetalRule=None, bRepBodies=_NamedCollection(), flatPattern=None)
+    unread = NS(name="Unread", bRepBodies=_NamedCollection(), flatPattern=None)
+    ambiguous = SheetRuleIdentity("Steel (mm)", "steel")
+    comparison_error = SheetRuleIdentity("Steel (mm)", "broken", comparison_error=True)
+
+    assert sc.component_row(no_rule, [rule])["active_rule_ref_state"] == "none"
+    unread_row = sc.component_row(unread, [rule])
+    assert unread_row["active_rule_ref"] is None and unread_row["active_rule_ref_state"] == "unknown"
+    duplicate = sc.component_rule_ref(ambiguous, [rule, SheetRuleIdentity("Steel (mm)", "steel")])
+    assert duplicate == (None, "unknown")
+    unread_comparison = sc.component_rule_ref(rule, [rule, comparison_error])
+    assert unread_comparison == (None, "unknown")
+    assert sc.component_rule_ref(rule, None) == (None, "unknown")
+    assert sc.component_rule_ref(SheetRuleIdentity("Other", "missing"), [rule]) == (None, "unknown")
 
 
 def test_sheet_edge_faces_orders_the_broad_sheet_face_first(monkeypatch):

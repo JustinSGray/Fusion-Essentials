@@ -380,7 +380,7 @@ Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/m
 | ✎ | `sheet_create_rip` | Rip a sheet body by a face (takes no gap), along an edge or between two vertices (gap from the rule unless given) |
 | ✎ | `sheet_create_unfold` | Unfold sheet-metal bends; cut, then sheet_create_refold. |
 | ✎ | `sheet_edit_rule` | Copy a sheet rule into this design, or edit a design rule. |
-| · | `sheet_get` | Read sheet rule counts; include rules, library_rules, components or features for detail. |
+| · | `sheet_get` | Read sheet rules and assignments; include rules, library_rules, components or features. |
 
 ### sys
 

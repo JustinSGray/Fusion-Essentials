@@ -136,6 +136,19 @@ class _NamedCollection:
         return iter(self._items)
 
 
+@fusion_fake(scenario_double="equality wrappers for the sheet rule census; no Fusion API surface")
+class SheetRuleIdentity:
+    def __init__(self, name, identity, comparison_error=False):
+        self.name = name
+        self.identity = identity
+        self.comparison_error = comparison_error
+
+    def __eq__(self, other):
+        if self.comparison_error:
+            raise RuntimeError("native equality unread")
+        return isinstance(other, SheetRuleIdentity) and self.identity == other.identity
+
+
 def _absent_member(name):
     """A class attribute standing for one the live type does NOT have: hasattr answers False and a
     reach for it raises AttributeError, which is what an absent member does - not a method that

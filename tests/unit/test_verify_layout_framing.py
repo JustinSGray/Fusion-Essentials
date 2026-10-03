@@ -624,6 +624,39 @@ def test_sheet_rule_control_rejects_sibling_setting_change_and_unread_census(mon
     assert sheet._collision_rule_state(broken) is None
 
 
+def test_sheet_component_rule_ref_is_forwarded_and_checked_against_native_assignment(monkeypatch):
+    import json
+    import verify_acts_sheet as sheet
+    ref = {"scope": "design", "index": 1}
+    assignment = {"component": "RuleIdentityA", "index": 1, "ref": ref}
+    other = {"component": "Component2", "index": 2,
+             "ref": {"scope": "design", "index": 2}}
+    monkeypatch.setitem(sheet._RECALL, "sm_component_rule_target", assignment)
+    monkeypatch.setitem(sheet._RECALL, "sm_component_rule_assignments", [assignment, other])
+
+    assert sheet._collision_component_rule_edit_args(None)["rule"] is ref
+    assert sheet._collision_assignment_read("assignments " + json.dumps({"RuleIdentityA": [1], "Component2": [2]})) is True
+    with pytest.raises(AssertionError, match="independently read native assignments"):
+        sheet._collision_assignment_read("assignments " + json.dumps({"RuleIdentityA": [0, 1], "Component2": [2]}))
+
+
+def test_sheet_component_rule_unknown_probe_requires_unknown_and_no_active_states():
+    import json
+    import verify_acts_sheet as sheet
+    native = [["Sheet", True, [0]], ["Plain", False, []]]
+    rows = [{"component": "Sheet", "active_rule_ref": None, "active_rule_ref_state": "unknown"},
+            {"component": "Plain", "active_rule_ref": None, "active_rule_ref_state": "none"}]
+    assert sheet._collision_unknown_probe("probe " + json.dumps({
+        "before": native, "after": native, "rows": rows})) is True
+    with pytest.raises(AssertionError, match="distinguishes unknown from no active rule"):
+        sheet._collision_unknown_probe("probe " + json.dumps({
+            "before": native, "after": native,
+            "rows": [{"component": "Sheet", "active_rule_ref": None,
+                     "active_rule_ref_state": "unknown"},
+                    {"component": "Wrong", "active_rule_ref": None,
+                     "active_rule_ref_state": "none"}]}))
+
+
 def test_selected_owner_oracle_requires_complete_poses_and_only_the_measured_d_seat(monkeypatch):
     import copy
     parts = []

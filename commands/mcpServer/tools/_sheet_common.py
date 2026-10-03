@@ -143,9 +143,31 @@ def rule_row(design, rule, scope):
     return out
 
 
-def component_row(component):
+def component_rule_ref(rule, rules):
+    """Return a component rule reference and whether its assignment was resolved."""
+    if rule is None:
+        return None, "none"
+    if rule is _UNREAD or rules is None:
+        return None, "unknown"
+    matches = []
+    for i, candidate in enumerate(rules):
+        equal = safe(lambda candidate=candidate: candidate == rule, _UNREAD)
+        if type(equal) is not bool:
+            return None, "unknown"
+        if equal:
+            matches.append(i)
+    if len(matches) != 1:
+        return None, "unknown"
+    return {"scope": "design", "index": matches[0]}, "matched"
+
+
+_UNREAD = object()
+
+
+def component_row(component, design_rules=None):
     """Return the component's active rule, native sheet bodies and flat presence."""
-    rule = safe(lambda: component.activeSheetMetalRule)
+    rule = safe(lambda: component.activeSheetMetalRule, _UNREAD)
+    rule_ref, rule_ref_state = component_rule_ref(rule, design_rules)
     bodies = safe(lambda: component.bRepBodies)
     rows = ([{"name": safe(lambda b=b: b.name),
               "is_sheet_metal": safe(lambda b=b: b.isSheetMetal)}
@@ -153,7 +175,8 @@ def component_row(component):
     marker = object()
     flat = safe(lambda: component.flatPattern, marker)
     return {"component": safe(lambda: component.name),
-            "active_rule": safe(lambda: rule.name) if rule is not None else None,
+            "active_rule": safe(lambda: rule.name) if rule is not None and rule is not _UNREAD else None,
+            "active_rule_ref": rule_ref, "active_rule_ref_state": rule_ref_state,
             "bodies": rows, "has_flat_pattern": (None if flat is marker else flat is not None)}
 
 

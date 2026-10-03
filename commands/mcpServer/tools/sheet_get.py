@@ -36,10 +36,11 @@ def _components(design, limit):
     expected = safe(lambda: collection.count) if collection is not None else None
     comps = _common.all_components(design)
     complete = expected is not None and len(comps) == expected
-    return {"components": [_sheet_common.component_row(c) for c in comps[:limit]],
+    rules = _sheet_common.scoped_rules(design, "design")
+    return {"components": [_sheet_common.component_row(c, rules) for c in comps[:limit]],
             "total": len(comps) if complete else None,
             "walk_complete": complete, "truncated": len(comps) > limit,
-            "note": "Component names may repeat; use a face/edge handle from find_geometry on the body for sheet_convert."}
+            "note": "Use active_rule_ref with sheet_edit_rule; unknown means identity is unconfirmed. Component names may repeat; use a face/edge handle from find_geometry on the body for sheet_convert."}
 
 
 def _hem_kind(hem):
@@ -105,7 +106,7 @@ def handler(include=None, max_results: int = 50) -> dict:
     return ok(out)
 
 
-TOOL_DESCRIPTION = "Read sheet rule counts; include rules, library_rules, components or features for detail."
+TOOL_DESCRIPTION = "Read sheet rules and assignments; include rules, library_rules, components or features."
 
 tool = (Tool.create_simple(name="sheet_get", description=TOOL_DESCRIPTION)
         .add_input_property("include", {"type": "array", "items": {"type": "string",

@@ -4,6 +4,7 @@
 """The sheet-metal coupon act in the existing live sweep."""
 
 from pathlib import Path
+import json
 import math
 import time
 import re
@@ -198,14 +199,131 @@ def _collision_refs(p):
              and dups[0]["ref"] == {"scope": "design", "index": dups[0]["index"]}
              and literal[0]["ref"] == {"scope": "design", "index": literal[0]["index"]}
              and dups[1]["ref"] == "design:Steel (mm)#2")
+    steel_indices = {r["index"] for r in dups}
+    components = state["components"]["components"] if state else []
+    assigned = [r for r in components
+                if r.get("active_rule") == "Steel (mm)"
+                and r.get("active_rule_ref_state") == "matched"
+                and isinstance(r.get("active_rule_ref"), dict)
+                and r["active_rule_ref"].get("scope") == "design"
+                and r["active_rule_ref"].get("index") in steel_indices]
+    assigned_indices = {r["active_rule_ref"]["index"] for r in assigned}
+    valid = (valid and len(assigned) >= 2 and len(assigned_indices) >= 2
+             and len({r["component"] for r in assigned}) == len(assigned))
     _measured("literal/ordinal refs select distinct native rows", rows, valid)
     _RECALL["sm_collision_targets"] = [r["ref"] for r in dups + literal]
     _RECALL["sm_collision_indices"] = [r["index"] for r in dups + literal]
+    assignments = [
+        {"component": r["component"], "index": r["active_rule_ref"]["index"],
+         "ref": r["active_rule_ref"]}
+        for r in assigned]
+    _RECALL["sm_component_rule_assignments"] = assignments
+    _RECALL["sm_component_rule_target"] = assignments[0]
     return True
 
 
-def _collision_edit_read(target, thickness_cm):
-    """Require a changed target thickness and exact preservation of every sibling rule setting."""
+def _collision_assignment_read_args(_ctx):
+    """Build a read-only native assignment census for the colliding components."""
+    components = _RECALL.get("sm_component_rule_assignments") or []
+    wanted = json.dumps([row["component"] for row in components])
+    script = f'''import adsk.core, adsk.fusion, json
+
+def run(context):
+    app = adsk.core.Application.get()
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    wanted = {wanted}
+    rules = design.designSheetMetalRules
+    result = {{}}
+    for component in design.allComponents:
+        if component.name in wanted:
+            rule = component.activeSheetMetalRule
+            result[component.name] = [i for i in range(rules.count) if rules.item(i) == rule]
+    print("assignments " + json.dumps(result, sort_keys=True))
+'''
+    return {"script": script, "read_only": True}
+
+
+def _collision_assignment_read(p):
+    """Require the component refs to match a separate native equality census."""
+    line = next((line[len("assignments "):]
+                 for line in (p.splitlines() if isinstance(p, str) else [])
+                 if line.startswith("assignments ")), None)
+    try:
+        actual = json.loads(line) if line is not None else None
+    except (TypeError, ValueError):
+        actual = None
+    expected = _RECALL.get("sm_component_rule_assignments") or []
+    valid = (isinstance(actual, dict) and len(expected) >= 2
+             and all(actual.get(row["component"]) == [row["index"]] for row in expected))
+    _measured("component refs equal the independently read native assignments",
+              {"expected": expected, "native": actual}, valid)
+    return True
+
+
+_COLLISION_UNKNOWN_PROBE = '''import adsk.core, adsk.fusion, json, sys
+
+def _assignments(design):
+    rules = design.designSheetMetalRules
+    rows = []
+    for component in design.allComponents:
+        rule = component.activeSheetMetalRule
+        indices = [] if rule is None else [i for i in range(rules.count) if rules.item(i) == rule]
+        rows.append([component.name, rule is not None, indices])
+    return rows
+
+def run(context):
+    app = adsk.core.Application.get()
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    modules = [m for n, m in sys.modules.items() if n.endswith(".mcpServer.tools.sheet_get")]
+    assert len(modules) == 1
+    sheet_get = modules[0]
+    common = sheet_get._sheet_common
+    original = common.scoped_rules
+    before = _assignments(design)
+    try:
+        common.scoped_rules = lambda design, scope: None if scope == "design" else original(design, scope)
+        result = sheet_get.handler(include=["components"], max_results=200)
+    finally:
+        common.scoped_rules = original
+    after = _assignments(design)
+    payload = json.loads(result["content"][0]["text"])
+    rows = payload["components"]["components"]
+    print("probe " + json.dumps({"before": before, "after": after, "rows": rows}, sort_keys=True))
+'''
+
+
+def _collision_unknown_probe(p):
+    """Require injected census failure to disclose unknown while preserving no-rule state."""
+    line = next((line[len("probe "):]
+                 for line in (p.splitlines() if isinstance(p, str) else [])
+                 if line.startswith("probe ")), None)
+    try:
+        result = json.loads(line) if line is not None else None
+    except (TypeError, ValueError):
+        result = None
+    before = result.get("before") if isinstance(result, dict) else None
+    after = result.get("after") if isinstance(result, dict) else None
+    rows = result.get("rows") if isinstance(result, dict) else None
+    valid = (isinstance(before, list) and before == after and isinstance(rows, list)
+             and len(rows) == len(before) and len(rows) > 0
+             and any(source[1] for source in before) and any(not source[1] for source in before)
+             and all(row.get("component") == source[0]
+                     and row.get("active_rule_ref") is None
+                     and row.get("active_rule_ref_state") == ("unknown" if source[1] else "none")
+                     for row, source in zip(rows, before)))
+    _measured("injected unread rule census distinguishes unknown from no active rule",
+              {"native_before": before, "native_after": after, "components": rows}, valid)
+    return True
+
+
+def _collision_component_rule_edit_args(_ctx):
+    """Pass the component's disclosed reference to the existing rule editor."""
+    target = _RECALL["sm_component_rule_target"]
+    return {"action": "update", "rule": target["ref"], "gap": "0.7 mm"}
+
+
+def _collision_edit_read(target, value_cm, field="thickness"):
+    """Require one changed target setting and exact preservation of every sibling rule setting."""
     def check(p):
         now, before = _collision_rule_state(p), _RECALL.get("sm_collision_rules")
         index = _RECALL["sm_collision_indices"][target]
@@ -214,9 +332,9 @@ def _collision_edit_read(target, thickness_cm):
         valid = (now is not None and before is not None and rows.keys() == old_rows.keys()
                  and now["components"] == before["components"]
                  and all(rows[i] == old_rows[i] for i in rows if i != index)
-                 and _near(rows[index]["thickness"]["value_cm"], thickness_cm, 1e-8)
-                 and not _near(old_rows[index]["thickness"]["value_cm"], thickness_cm, 1e-8))
-        _measured("one intended rule thickness changes; all siblings preserved", {"before": before, "now": now}, valid)
+                 and _near(rows[index][field]["value_cm"], value_cm, 1e-8)
+                 and not _near(old_rows[index][field]["value_cm"], value_cm, 1e-8))
+        _measured("one intended rule setting changes; all siblings preserved", {"before": before, "now": now}, valid)
         _RECALL["sm_collision_rules"] = now
         return True
     return check
@@ -228,7 +346,15 @@ def _collision_rule_rows():
     rows = [("sheet_edit_rule", {"action": "copy", "rule": "design:Steel (mm)#2",
                                "name": "Steel (mm)#1", "thickness": "3 mm"}, "ok", None),
             ("sheet_get", reads, _collision_refs, None),
-            ("sheet_get", reads, _retire_compare("sm_collision_rules", _collision_rule_state, False), None)]
+            ("sheet_get", reads, _retire_compare("sm_collision_rules", _collision_rule_state, False), None),
+            ("sys_execute_script", _collision_assignment_read_args, _collision_assignment_read, None),
+            ("sys_execute_script", {"script": _COLLISION_UNKNOWN_PROBE, "read_only": True},
+             _collision_unknown_probe, None),
+            ("sheet_edit_rule", _collision_component_rule_edit_args, "ok", None),
+            ("sheet_get", reads, lambda p: _collision_edit_read(
+                _RECALL["sm_collision_indices"].index(_RECALL["sm_component_rule_target"]["index"]),
+                .07, "gap")(p), None),
+            ("sys_execute_script", _collision_assignment_read_args, _collision_assignment_read, None)]
     rows.extend(_retire_reads("sm_collision_refusal", [_PART + ":1"], []))
     for ref in ("design:Steel (mm)#1", "design:Steel (mm)"):
         rows.append(("sheet_edit_rule", {"action": "update", "rule": ref, "thickness": "4 mm"},
