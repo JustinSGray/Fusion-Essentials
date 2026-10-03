@@ -1631,7 +1631,7 @@ class TestHealthReadOffTheTimelineItem:
         assert out["note"].startswith("No compute errors")
 
 
-# ── entitlement / capability block (LICENSE-CTX-1) ───────────────────────────────────────────────
+# ── generation capability block ────────────────────────────────────────────────────────────────
 #
 # The block probes a SMALL sentinel set of strategy names document-independently through
 # adsk.cam.OperationStrategy.createFromString(name).isGenerationAllowed and reports the OBSERVED
@@ -1655,8 +1655,7 @@ class TestCapabilityBlock:
         assert og == {name: True for name in wo._cam_common.CAPABILITY_SENTINELS}
 
     def test_blocked_strategies_read_false_not_null(self, monkeypatch):
-        # false is an OBSERVED answer (the base license declines it), distinct from an unread probe's
-        # null - so a blocked strategy must publish False, never fold into the unknown case.
+        # false is an observed generation-permission answer, distinct from an unread probe's null.
         des = self._small_design()
         _install(active_product=des, doc=_doc(design=des))
         monkeypatch.setattr(wo._cam_common, "_create_strategy", strategy_factory(self._all(False)))
@@ -1698,19 +1697,17 @@ class TestCapabilityBlock:
         assert set(og) == set(wo._cam_common.CAPABILITY_SENTINELS)
         assert len(og) == 4                         # compact - a few keys, not the 54-row dump
 
-    def test_the_note_cites_the_flag_and_asserts_no_license_tier(self, monkeypatch):
+    def test_the_note_calls_the_flags_generation_permission_not_license_verification(self, monkeypatch):
         des = self._small_design()
         _install(active_product=des, doc=_doc(design=des))
         monkeypatch.setattr(wo._cam_common, "_create_strategy", strategy_factory(self._all(True)))
         note = _payload(wo.handler())["machining_capabilities"]["note"]
         assert "isGenerationAllowed" in note                       # cited to the read that backs it
         assert "cam_get(include=['strategies'])" in note           # pointer kept: empty test registry
-        assert "No license tier or SKU is asserted" in note        # the honesty line
+        assert "generation permission" in note                    # the field's meaning
+        assert "not subscription or license verification" in note
         assert "you have" not in note.lower()                      # never claims a named license/tier
-        # the flag is an ENTITLEMENT read, not a generation promise - the note must not say a
-        # true-reading strategy 'generates' (tool/geometry/machine can still fail it).
-        assert "true = it generates" not in note
-        assert "INSTALLATION, not the open document" in note
+        assert "entitlement reads absent" not in note
 
     def test_the_cam_get_pointer_is_dropped_when_the_cam_family_is_gated_off(self, monkeypatch):
         # cam is a gateable family: on a server with cam_get unregistered the note must not name a
@@ -1758,10 +1755,9 @@ class TestCapabilityBlock:
         og = _payload(wo.handler())["machining_capabilities"]["observed_generation"]
         assert og["swarf"] is True and og["probe_geometry"] is False
 
-    def test_the_entitlement_verdict_keeps_an_unread_flag_apart_from_a_blocked_one(self):
+    def test_the_aggregate_keeps_an_unread_flag_apart_from_a_false_permission(self):
         # sys_capability_map points a cold agent here for this ONE verdict. A bare all() over the
-        # flags would fold an unread None into False - a confident 'not entitled' for a probe that
-        # never answered, which is the opposite of what null means on the wire.
+        # flags would fold an unread None into False, hiding that one probe did not answer.
         assert wo._cam_common.entitled_over([True, True, True, True]) is True
         assert wo._cam_common.entitled_over([True, False, True, True]) is False
         assert wo._cam_common.entitled_over([True, None, True, True]) is None

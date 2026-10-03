@@ -4763,6 +4763,13 @@ class TestQualifiedAndIndexAddressing:
         assert obj is target and err is None
         assert inp._match_timeline_objects([target, other], "X/Y/Target@4") == [target]
 
+    def test_a_qualified_miss_preserves_the_full_address(self):
+        target = _tl_obj("Target", 4, comp="X/Y")
+        obj, err = inp.resolve_timeline_object([target], "X/Y/NoSuchFeature", "'feature'")
+        assert obj is None
+        assert "no timeline feature matches 'X/Y/NoSuchFeature'" in err
+        assert "design_get(include=['timeline'])" in err
+
     def test_a_qualified_key_and_a_literal_slash_name_refuse_both_meanings(self):
         literal, qualified = _tl_obj("A/B", 4, comp="Literal"), _tl_obj("B", 6, comp="A")
         obj, err = inp.resolve_timeline_object([literal, qualified], "A/B", "'feature'")
@@ -4873,7 +4880,7 @@ class TestQualifiedAndIndexAddressing:
         assert obj is None and "collapsed timeline group 'Imports'" in err
         assert asked == ["Root/0@1", "Root/0"]
         obj, err = inp.resolve_timeline_object([bracket], "Root/Ghost@9", "'feature'", miss_hint=hint)
-        assert obj is None and "no feature named 'Ghost' in component 'Root'" in err
+        assert obj is None and "no timeline feature matches 'Root/Ghost@9'" in err
 
     def test_a_bare_number_with_no_visible_hit_takes_the_group_miss_not_the_twin_refusal(self):
         obj, err = inp.resolve_timeline_object(
@@ -4900,7 +4907,7 @@ class TestQualifiedAndIndexAddressing:
     def test_a_qualified_miss_names_the_component_and_the_feature(self):
         objs = [_tl_obj("Pipe4", 3, comp="FRAME")]
         obj, err = inp.resolve_timeline_object(objs, "FRAME/Pipe9", "'feature'")
-        assert obj is None and "no feature named 'Pipe9' in component 'FRAME'" in err
+        assert obj is None and "no timeline feature matches 'FRAME/Pipe9'" in err
 
     def test_a_bare_name_miss_lists_components_holding_a_near_name(self):
         objs = [_tl_obj("Pipe4 (Fillet)", 3, comp="COOLING - cockpit"), _tl_obj("Extrude1", 0)]

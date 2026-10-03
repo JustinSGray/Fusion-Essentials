@@ -167,7 +167,9 @@ class TestDrivenJointsReset:
         out = _payload(params.handler(name="PartX", expression="20 mm"))
         assert out["driven_joints_reset"] == [
             {"name": "Elbow", "before": {"angle_deg": 30.0}, "after": {"angle_deg": 0.0}}]
-        assert "1 driven joint(s) reset" in out["note"]
+        assert "Observed value changes in 1 driven joint(s)" in out["note"]
+        assert "their cause is not identified" in out["note"]
+        assert "If the pose is uncaptured" in out["note"]
 
     def test_a_joint_holding_its_value_is_not_reported(self, monkeypatch):
         joint = make_joint(name="Elbow", kind="revolute", rotation=math.radians(30))

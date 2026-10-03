@@ -52,6 +52,9 @@ class TestOnFaceSupportIsNamed:
         assert out["on_face"]["handle"].startswith("face-tok")
         assert "planar_face:" in out["on_face"]["handle"]
         assert "sits on a FACE" in out["note"]
+        assert "outward face normal" in out["note"]
+        assert "supporting plane normal" in out["note"]
+        assert "returned new-sketch frame" in out["note"]
 
     def test_a_plane_sketch_publishes_no_on_face(self, monkeypatch):
         s = FakeSketch(); _install_draw(monkeypatch, s)

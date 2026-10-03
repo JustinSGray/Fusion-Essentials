@@ -317,7 +317,7 @@ Produces: document_modified. |
 | ✎ | `param_add` | Add ONE user parameter (name + expression), or MANY with 'params' |
 | ⚠ | `param_delete` | Delete a USER parameter |
 | · | `param_get` | Read the active design's parameters - name, expression, value, unit, comment |
-| ✎ | `param_set` | Set a design parameter's expression, returning before/after and driven_joints_reset |
+| ✎ | `param_set` | Set a parameter expression |
 | ✎ | `param_set_favorite` | Toggle a user parameter's 'favorite' flag (whether it appears in the favorites list). |
 
 ### pmi

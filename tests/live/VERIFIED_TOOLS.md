@@ -29,10 +29,10 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source f70e1a65d13bc8033b2605154535b42e89d424846b760e795f134c3a9ee6d60f | Fusion 2706.0.116 | verified 2026-10-02
-Loaded: implementation 0cc18d2a1b05bf50345ad532818bba537d8347c27235b36f11b2da56887b8060 | schema bcfcc5f294f48462bf59ecde1af66c2b95d6662df7ecdb4d2601222dccdab84f | load 12f17e1f924c471b9b8b9cc31f3d52c9 | session de17e4d056164082a8f43c006a614f58
+Stamp: source 0855349e88d371b2fff7444d70f0e7de28145b4928142854d24599ba81bd4bd3 | Fusion 2706.0.116 | verified 2026-10-03
+Loaded: implementation 18870bcbab40dcb07069006b54715bffc54118c5f7c6fde1b9dc9b656c24413c | schema 89435e91ae6ea62bc8bee446c482e61ac13a014acbf77e0eabf22c8559ede1cc | load 9d2c5587cb924543b25705ba24913f4d | session 38d6366c3a1d48928496a71b07e7c175
 
-205 covered / 0 called / 5 refusals-only / 3 skipped(reason) / 0 pending
+209 covered / 0 called / 1 refusals-only / 3 skipped(reason) / 0 pending
 
 | act | mode |
 |---|---|
@@ -50,7 +50,7 @@ Loaded: implementation 0cc18d2a1b05bf50345ad532818bba537d8347c27235b36f11b2da568
 | ACT 9 - THE SHOWCASE | narrative |
 | ACT 8 - SWARF CAMEO | narrative |
 | ACT 10b2 - CAM: COMPONENT SCOPE | narrative |
-| ACT 10c - CAM: EXTENSION STRATEGIES | skipped(machining_extension not entitled) |
+| ACT 10c - CAM: EXTENSION STRATEGIES | narrative |
 | ACT 10c6b - CAM: THE 5-AXIS DUMP | narrative |
 | ACT 8b - THE HUB | narrative |
 | ACT 10c4 - CAM: THE HUB JOB | narrative |
@@ -65,11 +65,11 @@ Loaded: implementation 0cc18d2a1b05bf50345ad532818bba537d8347c27235b36f11b2da568
 | ACT 10c8e - CAM: POCKET CLEARING READ | narrative |
 | ACT 10c9 - CAM: THE TURNING CENSUS | narrative |
 | ACT 10c10 - CAM: THE TURNING CENSUS READ | narrative |
-| ACT 10c11 - CAM: THE EXTENSION FAMILIES | skipped(machining_extension not entitled) |
-| ACT 10c12 - CAM: THE EXTENSION FAMILIES READ | skipped(machining_extension not entitled) |
-| ACT 10c13 - CAM: THE ROTARY FAMILIES | skipped(machining_extension not entitled) |
-| ACT 10c14 - CAM: THE ROTARY FAMILIES READ | skipped(machining_extension not entitled) |
-| ACT 10c15 - CAM: THE ADDITIVE BUILD | skipped(machining_extension not entitled) |
+| ACT 10c11 - CAM: THE EXTENSION FAMILIES | narrative |
+| ACT 10c12 - CAM: THE EXTENSION FAMILIES READ | narrative |
+| ACT 10c13 - CAM: THE ROTARY FAMILIES | narrative |
+| ACT 10c14 - CAM: THE ROTARY FAMILIES READ | narrative |
+| ACT 10c15 - CAM: THE ADDITIVE BUILD | narrative |
 | ACT 10a - CAM: JOB + GENERATE | narrative |
 | ACT 10b - CAM: DELIVERABLES | narrative |
 | ACT 10b1 - CAM: TEMPLATE MODES | narrative |
@@ -121,7 +121,7 @@ Loaded: implementation 0cc18d2a1b05bf50345ad532818bba537d8347c27235b36f11b2da568
 | cam_edit_operation | covered | edit the face operation's feed; then park the drill operation and restore it - the suppression WRITE, with hasToolpath read back on both sides of the set so the discarded toolpath is reported, not implied. Then on the swarf operation: the PRESET arm, with the name read back off Operation.toolPreset beside the preset it ran before and a miss refused listing the tool's own; the cutting side written and read back off its parameter; and the isEditable pre-guard refusing a cutting-TOOL dimension by name before anything is applied. Then the deburr's multi-pass in ONE call, the stepover row named FIRST though it is settable only once the flag above it is true - written last, its own flag re-read, and marked unlocked_here in the row it reads back; and the TOOL arm on EVERY operation the shipped template landed with none - a spot drill, a drill and a mill that fits the counterbore, each with Operation.tool read back beside a null was_tool. The rail operation parked for the 3-axis program is restored at the end, so the tree the run leaves holds nothing suppressed. And on the hub's lathe job, the stock-to-leave switch and its two allowance rows in ONE call on the roughing cycle, and doLeadOut off on the finishing cycle it feeds - what the no-warning read of that setup stands on. The counterbore cycle is then re-pointed at the 6 mm ball and put straight back on the mill that fits it - a REASSIGNMENT onto an operation already carrying a tool, each one read back on the dimensions Operation.tool answers |
 | cam_edit_setup | covered | real stock + vise fixture bodies; WCS bound to the stock-center JO (bound read back); Haas VF-2 assigned - then the same three on the FLIP setup, whose WCS binds a Joint Origin of its own rather than sharing the first setup's, which would be the same fixture twice. Then the hub's three setups: the lathe's mill-turn machine assigned through the simulation strip, its frame flipped onto world -Z so the flange sits in the chuck, its zero taken from the MODEL's front face; the milling setup's stock switched to the lathe's rest with the mode read back beside the one it held; and the rotary setup's WCS bound to that computed Joint Origin |
 | cam_edit_tools | covered | stock the document library with the shop set this part is cut with - a 50 mm face mill, a 10 mm flat mill (10, not 12, because it has to fit inside the 12 mm bore it finishes), a 6 mm ball, a 6 mm drill and a chamfer mill, with the flat mill's SHOULDER read back at the size its diameter override asked for (a 12 mm sample asked for 10 mm), each given its own tool number because two sample clones that share one make the post refuse - then the turning and center-drill pair the from_type census stands on; preset add/remove round-trip with unit, refusal, and rollback gates; the summary census and the same census narrowed by tool type, one tool's full parameter list, and the LOCAL scope answering with libraries instead of tools; a fifth tool added and removed with the count read back; and once the job is generated, where_used naming the operations that cut with the mill and reporting NONE for the turning tool nothing selected. The document library refuses to host a new library and where_used refuses a shared scope - a shared library has no operations, so an empty list there would read as 'none'. Then the two tools the extension acts cut with - a 12 mm flat mill carrying its own preset and a 6 mm ball, added at the index the library's own count named - and the flute LENGTHENED on the mill with the expression read back off the tool, which is where a cutting-tool dimension is edited (the operation refuses that write). And the PROBE the probing cycle needs, cloned by from_type from the shipped 'Probes' library at the index the document library's own count named. Then the HUB's own shop set - ten cutters in ONE add, milling and turning, read back off the library in the order they were handed in, since that ORDER is the contract every hub create row picks its cutter by |
-| cam_find_holes | refusals-only: every step is a guard refusal - no effect was produced or read back this run | read the bracket's drilled pattern the way a machine does - the recognizer's own groups, the counterbored pattern's segment shapes, and each hole's handles per segment; then the same read through a diameter window that drops the bore group and keeps the counterbores. Those handles drive a drill of their own in the CAM act, selected without a radius query and deleted again so the job the post reads is unchanged |
+| cam_find_holes | covered | read the bracket's drilled pattern the way a machine does - the recognizer's own groups, the counterbored pattern's segment shapes, and each hole's handles per segment; then the same read through a diameter window that drops the bore group and keeps the counterbores. Those handles drive a drill of their own in the CAM act, selected without a radius query and deleted again so the job the post reads is unchanged |
 | cam_find_pockets | covered | read the bracket's milled pocket the way a machine does - straight down the 3-axis attack, one closed flat-floored pocket 16 mm under the low top, its single boundary loop and a handle for every wall, fillet and floor face; then the same read with include_bosses, which adds the boss as a pocket carrying an island and no boundary. Then the floor handle drives a pocket operation of its own in the CAM act, selected and deleted again |
 | cam_generate | covered | generate the toolpaths against the real part in the real fixture. The tool takes no 'pump_seconds': CAM-7 confirms the kernel refuses to be pumped while a generation runs, so completion is certified by the bounded cam_get_status poll after this act, never by a sleep inside the call. Then one launch per cameo setup - each act's launches taken back to back behind its writes, and certified one setup at a time by the boundary poll, with the resolved node's KIND read back beside the name asked for. The last CAM act relaunches every setup the job's later edits left stale, taking either answer the tool gives that scope - a launch, or the skipped one naming what needed none. On the hub, one launch per setup behind that act's own writes: the lathe job, the milling census, the two LONG families in an act whose poll budget is sized to their measured 105 s and 71 s, and the rotary wrap |
 | cam_generate_setup_sheet | covered | write the machinist setup sheet with the file-landed gate |
@@ -252,9 +252,9 @@ Loaded: implementation 0cc18d2a1b05bf50345ad532818bba537d8347c27235b36f11b2da568
 | param_get | covered | read the parameter table; then the pocket radius and the edge break the fillet and chamfer features are built at, and a fresh driver read sizes the CAM stock |
 | param_set | covered | bump PartLen +33%, measure the part grew with it, then restore it; drive a sketch dimension, then a user parameter feeding two sketches, each reply naming the moved point and the line end it sits at, checked on sketch_get's positions |
 | param_set_favorite | covered | mark PartLen the favorite driving dimension |
-| pmi_create | refusals-only: every step is a guard refusal - no effect was produced or read back this run | author a flatness note on the pocket floor and a hole note on a mounting bore, each read back by name and markup |
-| pmi_delete | refusals-only: every step is a guard refusal - no effect was produced or read back this run | delete the note and read the remaining PMI count |
-| pmi_edit | refusals-only: every step is a guard refusal - no effect was produced or read back this run | rewrite the flatness note to a perpendicularity callout and read the markup back; the blank-name guard refuses |
+| pmi_create | covered | author a flatness note on the pocket floor and a hole note on a mounting bore, each read back by name and markup |
+| pmi_delete | covered | delete the note and read the remaining PMI count |
+| pmi_edit | covered | rewrite the flatness note to a perpendicularity callout and read the markup back; the blank-name guard refuses |
 | pmi_get | covered | read the PMI back with segments and detail, and again with an over-cap max_results - pmi_get's own contract CLAMPS it rather than refusing, since every record it returns crosses the wire whole. SKIPPED(rig): the imported-row beats (no 'text' key on an imported annotation, no 'is_hole' when isHoleAnnotation will not read) need a PMI-BEARING import; the STEP this sweep round-trips carries none |
 | save_as_mesh | covered | mesh a scratch solid (one per destructive op); then the same solid reached through the qualified '<occurrence>:<body>' address, with the bare 'Body1' refused as ambiguous and the refusal offering that very spelling |
 | sheet_convert | covered | convert the 1.5 mm blank and check body state plus applied rule thickness |

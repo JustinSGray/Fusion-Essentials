@@ -5,7 +5,7 @@ from these values, so the mocks carry measured data, not hand-typed claims. Each
 owned by the measurement row of the same name in tests/live/VERIFIED_API_FACTS.md."""
 
 FUSION_VERSION = "2706.0.116"
-VERIFIED_ON = "2026-10-02"
+VERIFIED_ON = "2026-10-03"
 
 # '<adsk namespace>.<Class>' -> {member: int} - seeded onto the mock adsk modules.
 ENUMS = {
@@ -762,9 +762,6 @@ BEHAVIOR = {
 
 # Live public attribute membership per adsk type (dir() of a real object) - the
 # fake-shape lint requires every SHARED fake attribute to exist here.
-# CARRIED shape-dump-pmi-world: needs the Design/Manufacturing Extension; measured 2026-09-15 on 2705.1.15 - owns PMIAnnotations, PMILeaderLineNotes, PMILeaderLineNoteInput, PMILeaderLineNote, PMIHoleThreadNotes, PMIHoleThreadNoteInput, PMIHoleThreadNote, PMISegmentVector, PMITextSegment, PMISymbolSegment, PMILineBreakSegment, PMIGeometricValue, PMIGeometricValueTolerance, PMIDisplaySettings
-# CARRIED cam-advanced-swarf-surface-set-editable: needs the Design/Manufacturing Extension; measured 2026-09-15 on 2705.1.15 - owns (none)
-# CARRIED cam-curves-parameter-carriers: needs the Design/Manufacturing Extension; measured 2026-09-15 on 2705.1.15 - owns (none)
 SHAPES = {
     "Appearance": [
         "appearanceProperties", "cast", "classType", "color", "colorTexture", "copyTo",
@@ -1375,14 +1372,14 @@ SHAPES = {
         "isOutOfDate", "isParametric", "isPerpendicularLine", "isShowImportedGeometry", "isSuppressed", "isValid",
         "isVisible", "leaderLineExtension", "markUpToDate", "name", "nativeObject", "objectType",
         "parentComponent", "plainText", "plane", "referencedEntities", "segments", "setAnnotationPlane",
-        "setAnnotationTargetPoint", "supportedAnnotationPlaneTypes", "this", "thisown", "timelineObject", "type",
-        "verticalAlignment",
+        "setAnnotationTargetPoint", "setGeometries", "supportedAnnotationPlaneTypes", "this", "thisown", "timelineObject",
+        "type", "verticalAlignment",
     ],
     "PMILeaderLineNoteInput": [
         "adjacentPlanarFaces", "annotationPlaneReferencedFace", "annotationPlaneType", "annotationTargetPoint", "annotationTextPoint", "cast",
-        "classType", "geometry", "horizontalAlignment", "isPerpendicularLine", "isShowImportedGeometry", "isValid",
-        "leaderLineExtension", "objectType", "plane", "segments", "setAnnotationPlane", "supportedAnnotationPlaneTypes",
-        "this", "thisown", "verticalAlignment",
+        "classType", "geometries", "geometry", "horizontalAlignment", "isPerpendicularLine", "isShowImportedGeometry",
+        "isValid", "leaderLineExtension", "objectType", "plane", "segments", "setAnnotationPlane",
+        "supportedAnnotationPlaneTypes", "this", "thisown", "verticalAlignment",
     ],
     "PMILeaderLineNotes": [
         "add", "cast", "classType", "count", "createInput", "isValid",

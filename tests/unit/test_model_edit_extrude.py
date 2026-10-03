@@ -494,8 +494,22 @@ class _RaisingRow(FakeTimelineObject):
 def test_an_unreadable_profile_sketch_row_is_refused_before_roll(scene, monkeypatch):
     monkeypatch.setattr(scene.profiles[1].parentSketch, "timelineObject", _RaisingRow())
     result = edit()
-    assert error_message(result) == ("The profile's sketch timeline row does not read. Nothing "
+    assert error_message(result) == ("The profile sketch 'Replacement' has an unreadable timeline row. Read "
+                                     "design_get(include=['timeline']) before retrying; nothing "
                                      "was edited.")
+    assert scene.feature.assignments == 0
+    assert scene.timeline._moves == []
+
+
+def test_an_unreadable_collapsed_member_names_the_ungroup_remedy(scene, monkeypatch):
+    monkeypatch.setattr(scene.profiles[1].parentSketch, "timelineObject", _RaisingRow())
+    monkeypatch.setattr(mod._design_common, "collapsed_group_hint",
+                        lambda _timeline, _name: "'Replacement' is inside collapsed group 'Profiles'. "
+                        "Run design_edit_timeline(action='ungroup', feature='Profiles') and retry.")
+    result = edit()
+    message = error_message(result)
+    assert "action='ungroup'" in message and "feature='Profiles'" in message
+    assert "The profile sketch timeline row does not read" in message
     assert scene.feature.assignments == 0
     assert scene.timeline._moves == []
 

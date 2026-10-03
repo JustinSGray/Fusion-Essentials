@@ -52,6 +52,16 @@ class TestRemeshControlHistory:
             verify_acts_mesh._remesh_control_history(remesh_history_control)
 
 
+class TestOrganicSourceReadback:
+    def test_sweep_requires_an_independent_closed_mesh_read_after_refusal(self):
+        assert verify_acts_mesh._organic_source_retained({
+            "truncated": False,
+            "meshes": [{"name": "MA", "is_closed": True, "triangle_count": 12}],
+        }) is True
+        with pytest.raises(AssertionError, match="organic source mesh remains readable"):
+            verify_acts_mesh._organic_source_retained({"truncated": False, "meshes": []})
+
+
 @pytest.fixture
 def selector_tool_read():
     """Return a complete cutter and exact-query parameter payload for the selector oracle."""

@@ -189,14 +189,37 @@ class TestMeshToBrep:
         assert out["brep_bodies"][0]["face_count"] == 6
         assert "SURFACE" not in out["note"]
 
-    def test_organic_without_extension_is_honest_error(self):
-        # API-not-available op surfaces an HONEST error, NOT a fake success or a silent fallback
-        src, feats = self._setup(is_closed=True, organic=False)
+    @pytest.mark.parametrize("api_shape", ["member_absent", "family_unreadable"])
+    def test_unreadable_organic_api_refuses_without_claiming_extension_state(
+            self, api_shape, monkeypatch):
+        src, feats = self._setup(is_closed=True, organic=api_shape != "member_absent")
+        if api_shape == "family_unreadable":
+            monkeypatch.setattr(adsk.fusion, "MeshConvertMethodTypes", None)
         res = mo.handler(mesh="H", method="organic")
         assert res["isError"] is True
-        assert "Product Design Extension" in res["message"]
-        assert "silently" in res["message"].lower() or "not silently" in res["message"].lower()
+        assert "OrganicMeshConvertMethodType is absent or unreadable" in res["message"]
+        assert "Product Design Extension" not in res["message"]
         assert feats.last_input is None      # refused before any mutation
+
+    def test_organic_extension_refusal_text_is_preserved_after_api_member_read(self):
+        _src, feats = self._setup(is_closed=True)
+
+        class RefusingInput:
+            @property
+            def meshConvertMethodType(self):
+                return None
+
+            @meshConvertMethodType.setter
+            def meshConvertMethodType(self, _value):
+                raise RuntimeError(
+                    "3 : For organic mesh conversion design extension must be available.")
+
+        feats._input_factory = RefusingInput
+        res = mo.handler(mesh="H", method="organic", accuracy="low")
+        assert res["isError"] is True
+        assert ("Could not configure the mesh-convert input: 3 : For organic mesh conversion "
+                "design extension must be available.") in res["message"]
+        assert "Product Design Extension" not in res["message"]
 
     def test_conversion_add_failure_surfaces(self):
         self._setup(is_closed=True, raise_on_add=True)

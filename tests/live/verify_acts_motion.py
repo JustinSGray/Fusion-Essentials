@@ -1396,7 +1396,7 @@ _MOTION += _box("ConA", ox=360, tint="#E5533C") + _box("ConB", ox=360, tint="#1E
      "ok", None),
 ]
 
-# FSAE-0922-MULTI-DRIVE-1: a design_recompute silently reverts an UNCAPTURED driven joint's pose,
+# FSAE-0922-MULTI-DRIVE-1: a design_recompute can change an UNCAPTURED driven joint's pose,
 # proven on its own scratch document - a bare recompute run against the bench above would also
 # reset JRev and JSld, rippling into every later beat that reads them.
 _MOTION += [
@@ -1404,10 +1404,15 @@ _MOTION += [
     ("doc_new", lambda c: {"expect_document": _ctx_get(c, "reset_story", "the story document")},
      _new_document,
      ("reset_scratch", _recall("reset_scratch", lambda p: p["document_handle"]))),
+    ("param_add", {"name": "RstHeight", "expression": "10 mm", "unit": "mm"},
+     lambda p: p.get("added") is True
+     and (p.get("parameter") or {}).get("name") == "RstHeight", None),
 ] + [
     # the draw rows take CALLABLE args so the layout pass does not hoist these sketches into the
     # story document's sketch phase - this rig lives on the scratch document doc_new just opened
-    (t, (lambda a: (lambda c: a))(args) if t == "sketch_add_geometry" else args, e, s)
+    (t, ((lambda a: (lambda c: a))(args) if t == "sketch_add_geometry" else
+         (lambda c, a=args: {**a, "distance": "RstHeight"})
+         if t == "model_extrude" and args.get("sketch_name") == "RstArmS" else args), e, s)
     for t, args, e, s in _box("RstBase") + _box("RstArm", ox=60)
 ] + [
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
@@ -1419,7 +1424,23 @@ _MOTION += [
     ("design_recompute", {},
      lambda p: p.get("driven_joints_reset") == [
          {"name": "RstRev", "before": {"angle_deg": 30.0}, "after": {"angle_deg": 0.0}}]
-     and "RstRev" in (p.get("note") or ""), None),
+     and "RstRev" in (p.get("note") or "")
+     and "Observed value changes" in (p.get("note") or "")
+     and "If the pose is uncaptured" in (p.get("note") or "")
+     and "cause is not identified" in (p.get("note") or ""), None),
+    # This measured parameter-driven extrusion edit changes the same joint value independently.
+    ("joint_drive", {"joint_name": "RstRev", "angle_deg": 30}, _driven_angle(30), None),
+    ("assembly_get", {}, lambda p: p.get("is_healthy") is True
+     and _joints_listed(1, {"RstRev": 30})(p), None),
+    ("param_set", {"name": "RstHeight", "expression": "12 mm"},
+     lambda p: p.get("set") is True
+     and p.get("driven_joints_reset") == [
+         {"name": "RstRev", "before": {"angle_deg": 30.0}, "after": {"angle_deg": 0.0}}]
+     and "Observed value changes" in (p.get("note") or "")
+     and "If the pose is uncaptured" in (p.get("note") or "")
+     and "cause is not identified" in (p.get("note") or ""), None),
+    ("assembly_get", {}, lambda p: p.get("is_healthy") is True
+     and _joints_listed(1, {"RstRev": 0})(p), None),
     ("joint_drive", {"joint_name": "RstRev", "angle_deg": 30}, _driven_angle(30), None),
     ("assembly_capture_position", {"action": "capture"}, _captured, None),
     # CAPTURED: the same recompute now leaves the pose alone, and the design's own joint walk

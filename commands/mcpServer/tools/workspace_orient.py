@@ -488,11 +488,9 @@ def _cam_pointer(cam):
 # 50, and these four sit in the 17 the extension adds. The probe needs no document, CAM product or
 # setup (64 probes measured at 0.7ms), so it rides every orient.
 _CAPABILITY_NOTE = (
-    "observed_generation[strategy] is that strategy's isGenerationAllowed flag, probed with no "
-    "document or setup - it describes the INSTALLATION, not the open document. false = the "
-    "entitlement reads absent (measured: creation succeeds, then generation silently declines); "
-    "null = the probe could not read it. entitled: their one verdict. No license tier or SKU is "
-    "asserted (Fusion exposes no license API).")
+    "observed_generation[strategy] is isGenerationAllowed: true/false reports that strategy's "
+    "generation permission; null = unread. entitled is their aggregate generation permission, not "
+    "subscription or license verification.")
 
 # Appended only where cam_get is registered: cam is a gateable family, and a tool named mid-note
 # bypasses _drop_unregistered_pointers, which only sees the 'pointers' dict.
@@ -517,8 +515,7 @@ def _sentinel_flags():
 
 
 def _capability_block():
-    """One observed_generation entry per sentinel (_cam_common.CAPABILITY_SENTINELS), the single
-    entitled verdict over them, plus the note - the flags probed ONCE for both."""
+    """One observed_generation entry per sentinel and their aggregate generation permission."""
     flags = _sentinel_flags()
     return {"observed_generation": flags,
             "entitled": _cam_common.entitled_over(flags.values()),

@@ -288,6 +288,54 @@ class _HoleParamValue:
         self.value = []          # set to [faces] by the handler
 
 
+class _ProbeTypeResetOnSelection(_HoleParamValue):
+    """Selecting a probe face resets probingType to the type inferred from that face."""
+    def __init__(self, probing_type_param, inferred):
+        self._value = []
+        self._probing_type_param = probing_type_param
+        self._inferred = inferred
+
+    @property
+    def value(self):
+        return list(self._value)
+
+    @value.setter
+    def value(self, faces):
+        self._value = list(faces)
+        self._probing_type_param.expression = self._inferred
+
+
+class _ProbeTypeRejectAfterSelection(FakeCAMParameter):
+    """Reject a requested type write only after the face selection has landed."""
+    def __init__(self, name, expression, choices):
+        self.selection_landed = False
+        super().__init__(name, expression=expression, choices=choices)
+
+    @FakeCAMParameter.expression.setter
+    def expression(self, value):
+        if self.selection_landed and value == "'probing-z'":
+            raise RuntimeError("type setter refused")
+        FakeCAMParameter.expression.fset(self, value)
+
+
+class _InferringProbeValue(_HoleParamValue):
+    """Infer a face type and mark that the selection precedes the next type write."""
+    def __init__(self, probing_type_param, inferred):
+        self._value = []
+        self._probing_type_param = probing_type_param
+        self._inferred = inferred
+
+    @property
+    def value(self):
+        return list(self._value)
+
+    @value.setter
+    def value(self, faces):
+        self._value = list(faces)
+        self._probing_type_param.selection_landed = True
+        self._probing_type_param.expression = self._inferred
+
+
 class _Param(FakeCAMParameter):
     """A CAM parameter whose .value IS the parameter-value object the appliers drive (a
     CadObjectParameterValue), rather than the second-hop payload a plain read takes. It carries no
@@ -1654,10 +1702,12 @@ class TestProbingType:
     path - MEASURED: left 'probing-unknown', a launch landed the op errored 'No valid probe
     operations found.'."""
 
-    _CHOICES = ("probing-unknown", "probing-z", "probing-x")
+    _CHOICES = ("probing-unknown", "probing-z", "probing-x",
+                "probing-xy-rectangular-boss")
 
     def test_probe_without_a_type_on_an_unknown_op_refuses_naming_probing_type(self, monkeypatch):
-        op = _probe_op(probing_type="'probing-unknown'", probing_type_choices=self._CHOICES)
+        op = _probe_op(probing_type="'probing-unknown'", probing_type_choices=self._CHOICES,
+                       strategy="probe")
         cam = _CAM([_Setup([op])])
         _install(monkeypatch, cam, [_Face()])
         res = cg.handler(operation="Probe WCS1", selection="probe", handles=["f"], generate=True)
@@ -1687,6 +1737,78 @@ class TestProbingType:
         assert out["probing_type"] == "probing-z"
         assert out["launched"] is True
 
+    def test_explicit_probe_type_is_applied_after_face_selection_resets_it(self, monkeypatch):
+        op = _probe_op(name="Probe Geometry1", probing_type="'probing-unknown'",
+                       probing_type_choices=self._CHOICES,
+                       strategy="probe_geometry")
+        probe_type = op.parameters.itemByName("probingType")
+        probe_value = _ProbeTypeResetOnSelection(probe_type, "'probing-xy-rectangular-boss'")
+        mode = op.parameters.itemByName("probe_mode")
+        op.parameters.swap("probe_selection", _ModeGatedParam(probe_value, mode, "selection-model"))
+        cam = _CAM([_Setup([op])])
+        _install(monkeypatch, cam, [_Face()])
+
+        out = _payload(cg.handler(operation="Probe Geometry1", selection="probe", handles=["f"],
+                                  probing_type="probing-z", generate=False))
+
+        assert out["selections"] == 1 and out["probing_type"] == "probing-z"
+        assert probe_type.expression == "'probing-z'"
+
+    def test_probe_geometry_without_explicit_type_reports_inferred_face_type(self, monkeypatch):
+        op = _probe_op(name="Probe Geometry1", probing_type="'probing-unknown'",
+                       probing_type_choices=self._CHOICES,
+                       strategy="probe_geometry")
+        probe_type = op.parameters.itemByName("probingType")
+        probe_value = _ProbeTypeResetOnSelection(probe_type, "'probing-xy-rectangular-boss'")
+        mode = op.parameters.itemByName("probe_mode")
+        op.parameters.swap("probe_selection", _ModeGatedParam(probe_value, mode, "selection-model"))
+        cam = _CAM([_Setup([op])])
+        _install(monkeypatch, cam, [_Face()])
+
+        out = _payload(cg.handler(operation="Probe Geometry1", selection="probe", handles=["f"],
+                                  generate=False))
+
+        assert out["selections"] == 1
+        assert out["probing_type"] == "probing-xy-rectangular-boss"
+
+    def test_probe_geometry_refuses_when_face_leaves_type_unknown(self, monkeypatch):
+        op = _probe_op(name="Probe Geometry1", probing_type="'probing-unknown'",
+                       probing_type_choices=self._CHOICES,
+                       strategy="probe_geometry")
+        cam = _CAM([_Setup([op])])
+        face = _Face()
+        _install(monkeypatch, cam, [face])
+
+        res = cg.handler(operation="Probe Geometry1", selection="probe", handles=["f"],
+                         generate=False)
+
+        assert res["isError"] is True and "still reads 'probing-unknown'" in res["message"]
+        assert "remain selected on 'probe_selection'" in res["message"]
+        assert op.parameters.itemByName("probe_selection").value.value == [face]
+
+    def test_failed_explicit_type_write_discloses_the_retained_face_selection(self, monkeypatch):
+        op = _probe_op(name="Probe Geometry1", probing_type="'probing-unknown'",
+                       probing_type_choices=self._CHOICES,
+                       strategy="probe_geometry")
+        probing_type = _ProbeTypeRejectAfterSelection(
+            "probingType", "'probing-unknown'", self._CHOICES)
+        op.parameters.swap("probingType", probing_type)
+        probe_value = _InferringProbeValue(probing_type, "'probing-xy-rectangular-boss'")
+        mode = op.parameters.itemByName("probe_mode")
+        op.parameters.swap("probe_selection", _ModeGatedParam(probe_value, mode, "selection-model"))
+        cam = _CAM([_Setup([op])])
+        face = _Face()
+        _install(monkeypatch, cam, [face])
+
+        res = cg.handler(operation="Probe Geometry1", selection="probe", handles=["f"],
+                         probing_type="probing-z", generate=False)
+
+        assert res["isError"] is True and "Could not set probingType='probing-z'" in res["message"]
+        assert "remain selected on 'probe_selection'" in res["message"]
+        assert "probe_mode remains 'selection-model'" in res["message"]
+        assert op.parameters.itemByName("probe_selection").value.value == [face]
+        assert probing_type.expression == "'probing-xy-rectangular-boss'"
+
     def test_a_probing_type_matching_no_choice_is_refused_naming_the_choices(self, monkeypatch):
         op = _probe_op(probing_type="'probing-unknown'", probing_type_choices=self._CHOICES)
         cam = _CAM([_Setup([op])])
@@ -1696,6 +1818,7 @@ class TestProbingType:
         assert res["isError"] is True
         assert "probing-z" in res["message"] and "probing-x" in res["message"]
         assert op.parameters.itemByName("probingType").expression == "'probing-unknown'"
+        assert op.parameters.itemByName("probe_selection").value.value == []
 
 
 def _orientation_op(name="3+2 Roughing1", mode=None, editable=True, **kw):

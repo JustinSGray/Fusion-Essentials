@@ -89,8 +89,7 @@ def _before(design):
 
 
 def _with_reset(out, before, design):
-    """`out`, plus driven_joints_reset and the timeline errors/warnings the write's own recompute
-    newly raised, each with a note - the read-after every param_set return path applies."""
+    """`out`, plus observed driven-joint value changes and newly raised timeline health."""
     joints_before, (errors_before, warnings_before, _total) = before
     reset = _driven_joints_reset(joints_before, _driven_joint_snapshot(design))
     notes = []
@@ -169,7 +168,7 @@ def handler(name: str = "", expression: str = "", create: bool = False,
 
 
 TOOL_DESCRIPTION = (
-"Set a design parameter's expression, returning before/after and driven_joints_reset. "
+"Set a parameter expression. driven_joints_reset lists value changes, not causes. "
 "Discover names with param_get."
 )
 

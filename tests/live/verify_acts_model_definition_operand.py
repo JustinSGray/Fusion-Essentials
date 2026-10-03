@@ -435,15 +435,19 @@ def _definition_rows():
                  "thread_visibility", _thread_visibility))
             for tool, args, key, extract in controls:
                 rows.append((tool, args, "ok", (key, _recall(key, extract))))
-            rows.append(("model_thread", lambda c: _combine_pin(c, "def_doc", {
-                "faces": [_ctx_get(c, "def_post", "post cylinder")], "designation": "M6x1.0",
-                "thread_type": "ISO Metric profile", "thread_class": "6g"}),
-                _refused("M6x1.0", "not fit recommendations",
-                         "'M6x1' in 'ISO Metric profile' (classes: 6g)"), None))
-            for tool, args, key, extract in controls:
-                rows.append((tool, args, lambda p, key=key, extract=extract: _measured(
-                    "unknown thread preserves " + key, extract(p), bool(_RECALL.get(key))
-                    and extract(p) == _RECALL[key]), None))
+            for standard, fit, choice in (
+                    ("ISO Metric profile", "6g", "'M6x1' in 'ISO Metric profile' (classes: 6g)"),
+                    ("unknown standard", "6g", "'M6x1' in 'ISO Metric profile' (classes: 4g6g, 6g)"),
+                    ("ISO Metric profile", "6H", "'M6x1' in 'ISO Metric profile' (classes: 4g6g, 6g)")):
+                rows.append(("model_thread", lambda c, standard=standard, fit=fit: _combine_pin(c, "def_doc", {
+                    "faces": [_ctx_get(c, "def_post", "post cylinder")], "designation": "M6x1.0",
+                    "thread_type": standard, "thread_class": fit}),
+                    _refused("M6x1.0", "Nearby library spellings (not fit recommendations)",
+                             choice, "Choose a listed designation, type and class"), None))
+                for tool, args, key, extract in controls:
+                    rows.append((tool, args, lambda p, key=key, extract=extract: _measured(
+                        "unknown thread preserves " + key, extract(p), bool(_RECALL.get(key))
+                        and extract(p) == _RECALL[key]), None))
         if not full:
             write("sketch_create", {"plane": "xy", "name": "DefinitionPartialS"})
             write("sketch_add_geometry", {"sketch_name": "DefinitionPartialS", "geometry": [
@@ -959,3 +963,199 @@ def _datum_operand_rows():
 
 
 _DATUM_OPERANDS = _datum_operand_rows()
+
+
+
+def _nested_datum_rows():
+    """Rediscover a nested plane and consume its handle in the explicitly selected owner."""
+    rows = [("doc_get", {}, _home_document, ("nd_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "nd_home", "home")},
+             _new_document, ("nd_doc", lambda p: p["document_handle"]))]
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(
+            c, "nd_doc", args(c) if callable(args) else args), check, save))
+
+    write("sketch_create", {"name": "NestedWitness", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "NestedWitness", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 20, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "NestedWitness", "distance": 20})
+    rows.append(("find_geometry", {"target": "Body1", "max_results": 100},
+                 lambda p: bool(_tapped_geometry(p)),
+                 ("nd_witness", _recall("nd_witness", _tapped_geometry))))
+    write("model_create_component", {"name": "Outer", "x": 30, "rotate_deg": 90,
+                                     "rotate_axis": "z", "activate": True})
+    write("model_create_component", {"name": "Leaf", "parent": "Outer:1", "x": 5,
+                                     "z": 3, "activate": True})
+    write("model_construction", {"kind": "plane", "mode": "offset", "plane": "xy",
+                                "offset": 7, "name": "NestedPlane"})
+    write("design_activate_component", {"occurrence": "root"})
+    rows.append(("design_get", {"include": ["datums"], "component": "Outer:1+Leaf:1"},
+                 _nested_datum_inventory, None))
+    rows.append(("find_geometry", {"target": "Outer:1+Leaf:1", "kind": "construction_plane",
+                 "name": "NestedPlane", "max_results": 10},
+                 lambda p: _matched(1, "construction_plane")(p)
+                 and p["matches"][0].get("occurrence") == "Outer:1+Leaf:1"
+                 and _operand_at(p["matches"][0].get("position"), [30, 5, 10])
+                 and _operand_at(p["matches"][0].get("normal"), [0, 0, 1]), _fg("nd_plane")))
+    write("design_activate_component", {"occurrence": "Outer:1+Leaf:1"})
+    write("sketch_create", lambda c: {"name": "DatumPick", "plane": _ctx_get(c, "nd_plane", "plane")},
+          lambda p: _measured("nested sketch owner and independent world frame", p.get("frame"),
+              p.get("component") == "Leaf" and p.get("plane") == "NestedPlane"
+              and (p.get("frame") or {}).get("space") == "world"
+              and all(_operand_at((p.get("frame") or {}).get(key), want) for key, want in (
+                  ("origin_mm", [30, 5, 10]), ("x_world", [0, 1, 0]),
+                  ("y_world", [-1, 0, 0]), ("normal", [0, 0, 1])))))
+    write("sketch_add_geometry", {"sketch_name": "DatumPick", "geometry": [
+        {"kind": "circle", "cx": 2, "cy": 3, "radius": 1}]})
+    rows.append(("find_geometry", {"target": "Outer:1+Leaf:1", "kind": "sketch_circle"},
+                 lambda p: _measured("nested circle lands at analytic world position", p.get("matches"),
+                     _matched(1, "sketch_circle")(p)
+                     and _operand_at(p["matches"][0].get("center"), [27, 7, 10])
+                     and _near(p["matches"][0].get("radius"), 1, 0.000001)), None))
+    write("design_activate_component", {"occurrence": "root"})
+    rows.append(("find_geometry", {"target": "Body1", "max_results": 100},
+                 lambda p: _measured("nested datum leaves root witness unchanged", p.get("match_count"),
+                     _tapped_geometry(p) == _RECALL.get("nd_witness")), None))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 lambda p: _measured("nested datum timeline healthy", p.get("timeline"),
+                     (p.get("timeline") or {}).get("count") == 6
+                     and (p.get("timeline") or {}).get("returned") == 6
+                     and ((p.get("timeline") or {}).get("summary") or {}).get("states") == {"healthy": 6}
+                     and ((p.get("timeline") or {}).get("summary") or {}).get("exceptions") == []), None))
+    write("doc_activate", lambda c: {"name": _ctx_get(c, "nd_home", "home")})
+    rows.append(("doc_close", lambda c: {"name": _ctx_get(c, "nd_doc", "scratch"),
+                 "save_changes": False, "expect_document": _ctx_get(c, "nd_home", "home")},
+                 _document_closed, None))
+    return rows
+
+
+def _nested_datum_inventory(p):
+    """Require the definition inventory to retain the exact nested owner and placement."""
+    result = p.get("datums") or {}
+    rows = result.get("datums") or []
+    row = rows[0] if len(rows) == 1 else {}
+    return _measured("nested plane inventory", result,
+                     result.get("match_count") == result.get("returned") == 1
+                     and result.get("truncated") is False
+                     and row.get("name") == "NestedPlane" and row.get("component") == "Leaf"
+                     and row.get("kind") == "construction_plane"
+                     and row.get("occurrences") == ["Outer:1+Leaf:1"]
+                     and isinstance(row.get("timeline_index"), int))
+
+
+_DATUM_OPERANDS += _nested_datum_rows()
+
+
+
+def _tap_variant_definition(modeled, extent, partial):
+    """Check native omitted-diameter tap metadata without treating the nominal size as its bore."""
+    def check(p):
+        d = p.get("definition") or {}
+        thread, info = d.get("thread") or {}, d.get("tapped_hole_info") or {}
+        return _measured("omitted-diameter tap native flags and extent", d,
+                         d.get("extent") == extent and d.get("tapped") is True
+                         and d.get("diameter_parameter_applicable") is False
+                         and d.get("diameter_parameter") is None
+                         and (d.get("depth") is None if extent == "through" else _near(d.get("depth"), 8, .00001))
+                         and info.get("designation") == "M6x1" and info.get("thread_class") == "6H"
+                         and info.get("internal") is True and thread.get("thread_info") == info
+                         and thread.get("modeled") is modeled and thread.get("full_length") is (not partial)
+                         and (all(_near(thread.get(k), v, .00001) for k, v in (("length", 4), ("offset", 1)))
+                              if partial else thread.get("length") is None and thread.get("offset") is None))
+    return check
+
+
+def _tap_variant_material(key, volume):
+    """Require measured bore removal, with modeled material distinct from the cosmetic control."""
+    def check(p):
+        got = (p.get("mass") or {}).get("volume")
+        if key == "modeled":
+            before = _RECALL.get("tv_cosmetic_volume")
+            valid = (isinstance(before, (int, float)) and isinstance(got, (int, float))
+                     and 0 < got < before - 20)
+        else:
+            valid = _near(got, volume, .002)
+        return _measured("tap actual material volume independent of nominal diameter", {"volume_mm3": got}, valid)
+    return check
+
+
+def _thread_variant_rows():
+    """Exercise omitted-diameter taps and external cosmetic resizing on owned analytic coupons."""
+    rows = [("doc_get", {}, _home_document, ("tv_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "tv_home", "home")},
+             _new_document, ("tv_doc", lambda p: p["document_handle"]))]
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(
+            c, "tv_doc", args(c) if callable(args) else args), check, save))
+
+    write("sketch_create", {"name": "TapStock", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "TapStock", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 20, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "TapStock", "distance": 20})
+    rows.append(("find_geometry", {"target": "Body1", "max_results": 100},
+                 lambda p: bool(_tapped_geometry(p)),
+                 ("tv_stock", _recall("tv_stock", _tapped_geometry))))
+    for key, modeled, extent, partial, volume in (
+            ("cosmetic", False, "blind", False, 7830.674085324574),
+            ("modeled", True, "blind", False, None),
+            ("through", False, "through", False, 8000 - math.pi * 2.5175 ** 2 * 20),
+            ("partial", False, "blind", True, 7830.674085324574)):
+        rows.append(("find_geometry", {"target": "Body1", "kind": "planar_face",
+                     "nearest_to": [10, 10, 20], "max_results": 1}, _face_up_at(10, 10, 20, .000001), _fg("tv_top")))
+        write("model_hole", lambda c, modeled=modeled, extent=extent, partial=partial: {
+            "face": _ctx_get(c, "tv_top", "stock top"), "points_space": "world", "points": [[10, 10, 20]],
+            "target_bodies": ["Body1"], "tap": "M6x1", "thread_type": "ISO Metric profile",
+            "thread_class": "6H", "modeled": modeled, "extent": extent, "depth": 8,
+            "thread_extent": "partial" if partial else "full",
+            **({"thread_length": 4, "thread_offset": 1} if partial else {})},
+            lambda p: _drilled(1)(p) and "tap definition governs bore size" in p.get("note", ""),
+            ("tv_hole", lambda p: {"feature": p["feature"], "placement": p["placement_sketch"]}))
+        rows.append(("design_get", lambda c: {"include": ["definition"],
+                     "feature": _ctx_get(c, "tv_hole", "hole")["feature"]},
+                     _tap_variant_definition(modeled, extent, partial), None))
+        rows.append(("find_geometry", {"target": "Body1", "kind": "cylinder_face", "radius": 2.5175},
+                     lambda p: _matched(1, "cylinder_face")(p)
+                     and _near(p["matches"][0].get("radius"), 2.5175, .00001), None))
+        rows.append(("model_inspect", {"target": "Body1", "include": ["default", "mass"],
+                     "units": "mm", "accuracy": "very_high"}, _tap_variant_material(key, volume),
+                     ("tv_cosmetic_volume", _recall("tv_cosmetic_volume", lambda p: p["mass"]["volume"]))
+                     if key == "cosmetic" else None))
+        write("design_delete_feature", lambda c: {"feature": _ctx_get(c, "tv_hole", "hole")["feature"]})
+        write("design_delete_feature", lambda c: {"feature": _ctx_get(c, "tv_hole", "hole")["placement"]})
+        rows.append(("find_geometry", {"target": "Body1", "max_results": 100},
+                     lambda p: _measured("tap retirement restores coupon geometry", p.get("match_count"),
+                         _tapped_geometry(p) == _RECALL.get("tv_stock")), None))
+    write("sketch_create", {"name": "CosmeticShaft", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "CosmeticShaft", "geometry": [
+        {"kind": "circle", "cx": 50, "cy": 0, "radius": 10}]})
+    write("model_extrude", {"sketch_name": "CosmeticShaft", "distance": 30})
+    for designation, radius in (("M30x3.5", 14.86725), ("M20x2.5", 9.89525)):
+        rows.append(("find_geometry", {"target": "Body2", "kind": "cylinder_face", "radius": 10},
+                     _matched(1, "cylinder_face"), _fg("tv_wall")))
+        write("model_thread", lambda c, designation=designation: {
+            "faces": [_ctx_get(c, "tv_wall", "shaft wall")], "designation": designation,
+            "thread_type": "ISO Metric profile", "thread_class": "4g6g", "modeled": False},
+            lambda p: p.get("modeled") is False and "may resize" in p.get("note", "")
+            and "find_geometry" in p.get("note", ""), ("tv_thread", lambda p: p["feature"]))
+        rows.append(("find_geometry", {"target": "Body2", "kind": "cylinder_face"},
+                     lambda p, radius=radius: _measured("cosmetic actual radius, not nominal size", p.get("matches"),
+                         _matched(1, "cylinder_face")(p) and _near(p["matches"][0].get("radius"), radius, .00001)), None))
+        rows.append(("design_get", lambda c: {"include": ["definition"], "feature": _ctx_get(c, "tv_thread", "thread")},
+                     lambda p, designation=designation: _measured("cosmetic native designation and flags", p.get("definition"),
+                         (p.get("definition") or {}).get("modeled") is False
+                         and (p.get("definition") or {}).get("full_length") is True
+                         and ((p.get("definition") or {}).get("thread_info") or {}).get("designation") == designation
+                         and ((p.get("definition") or {}).get("thread_info") or {}).get("internal") is False), None))
+        write("design_delete_feature", lambda c: {"feature": _ctx_get(c, "tv_thread", "thread")})
+    rows.append(("find_geometry", {"target": "Body1", "max_results": 100},
+                 lambda p: _measured("thread operations preserve stock witness", p.get("match_count"),
+                     _tapped_geometry(p) == _RECALL.get("tv_stock")), None))
+    write("doc_activate", lambda c: {"name": _ctx_get(c, "tv_home", "home")})
+    rows.append(("doc_close", lambda c: {"name": _ctx_get(c, "tv_doc", "scratch"),
+                 "save_changes": False, "expect_document": _ctx_get(c, "tv_home", "home")}, _document_closed, None))
+    return rows
+
+
+_DEFINITION_READS += _thread_variant_rows()

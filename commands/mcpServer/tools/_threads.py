@@ -27,22 +27,39 @@ def thread_types_for(tdq, designation, candidates=None):
 
 
 def _nearby_choices(tdq, candidates, designation, internal, thread_type, thread_class):
-    """Return bounded actual library spellings compatible with the supplied standard and class."""
-    ranked = sorted(dict.fromkeys((t, d) for t, d in candidates
-                    if not thread_type or t.lower() == thread_type.lower()),
-                    key=lambda row: SequenceMatcher(None, designation, row[1]).ratio(), reverse=True)
-    choices = []
+    """Return bounded actual nearby spellings, preferring the supplied type and class."""
+    ranked = sorted(dict.fromkeys(candidates),
+                    key=lambda row: (SequenceMatcher(None, designation, row[1]).ratio(), row[1]),
+                    reverse=True)
+    matching, alternatives, class_cache = [], [], {}
+    def classes_for(ttype, desig):
+        key = (ttype, desig)
+        if key not in class_cache and len(class_cache) < 20:
+            class_cache[key] = safe(lambda: list(tdq.allClasses(internal, ttype, desig)), []) or []
+        return class_cache.get(key, [])
+    compatible_ranked = ([row for row in ranked if row[0].lower() == thread_type.lower()]
+                         if thread_type else ranked)
+    for ttype, desig in compatible_ranked[:10]:
+        if SequenceMatcher(None, designation, desig).ratio() < 0.6:
+            continue
+        classes = classes_for(ttype, desig)
+        compatible_classes = ([c for c in classes if c.lower() == thread_class.lower()]
+                              if thread_class else classes)
+        if compatible_classes:
+            matching.append(f"'{desig}' in '{ttype}' (classes: {', '.join(compatible_classes[:3])})")
+            if len(matching) == 5:
+                break
+    if matching:
+        return "; ".join(matching)
     for ttype, desig in ranked[:10]:
         if SequenceMatcher(None, designation, desig).ratio() < 0.6:
             continue
-        classes = safe(lambda: list(tdq.allClasses(internal, ttype, desig)), []) or []
-        if thread_class:
-            classes = [c for c in classes if c.lower() == thread_class.lower()]
+        classes = classes_for(ttype, desig)
         if classes:
-            choices.append(f"'{desig}' in '{ttype}' (classes: {', '.join(classes[:3])})")
-        if len(choices) == 5:
-            break
-    return "; ".join(choices)
+            alternatives.append(f"'{desig}' in '{ttype}' (classes: {', '.join(classes[:3])})")
+            if len(alternatives) == 5:
+                break
+    return "; ".join(alternatives)
 
 
 def resolve_thread_info(comp, designation, internal=True, thread_type="", thread_class=""):
@@ -63,8 +80,9 @@ def resolve_thread_info(comp, designation, internal=True, thread_type="", thread
         choices = _nearby_choices(tdq, candidates, designation, internal,
                                   (thread_type or "").strip(), (thread_class or "").strip())
         remedy = (f"Nearby library spellings (not fit recommendations): {choices}. "
-                  "Retry with an exact designation, thread_type and thread_class." if choices else
-                  "No compatible choice among the checked nearby spellings. "
+                  "Choose a listed designation, type and class, then retry; no selector was changed."
+                  if choices else
+                  "No nearby alternative with readable classes was found. "
                   "Check the designation, thread_type and thread_class in Fusion's Thread dialog.")
         return None, [], f"No thread designation '{designation}' found in the thread library. {remedy}"
     want = (thread_type or "").strip()

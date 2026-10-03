@@ -33,6 +33,24 @@ class TestShortRef:
         assert common.short_ref(None) == ""
 
 
+class TestMeasuredExtensionRefusal:
+    @pytest.mark.parametrize("message", [
+        "3 : Manufacturing or Design Extension is required.",
+        "3 : Requires the Manufacturing Extension to be active.",
+    ])
+    def test_measured_refusal_names_the_action_requirement_and_alternative(self, message):
+        clause = common.entitlement_clause(RuntimeError(message), "Manufacturing Extension",
+                                           "select the faces manually")
+        assert "This operation requires the Manufacturing Extension" in clause
+        assert "select the faces manually" in clause
+        assert "this install" not in clause.lower()
+        assert "machining_capabilities" not in clause
+
+    def test_unmeasured_extension_error_does_not_get_an_entitlement_classification(self):
+        assert common.entitlement_clause(RuntimeError("Extension setup failed"),
+                                         "Manufacturing Extension", "try again") == ""
+
+
 class TestResponseBuilders:
     def test_ok_wraps_payload_as_json_text(self):
         res = common.ok({"a": 1, "b": "x"})

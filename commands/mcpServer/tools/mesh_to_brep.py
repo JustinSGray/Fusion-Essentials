@@ -30,11 +30,10 @@ _CONVERT_OP = _inputs.Choice("operation", ["parametric", "base_feature"], defaul
 
 
 def _organic_available():
-    """True only if the Product Design Extension method is actually present. We don't pretend: if we
-    can't confirm OrganicMeshConvertMethodType exists, organic is treated as unavailable."""
+    """Whether this session's Fusion API exposes OrganicMeshConvertMethodType."""
     mct = safe(lambda: adsk.fusion.MeshConvertMethodTypes)
     if mct is None:
-        return True
+        return False
     return safe(lambda: mct.OrganicMeshConvertMethodType) is not None
 
 
@@ -67,13 +66,11 @@ def handler(mesh: str = "", method: str = "prismatic", resolution: str = "by_acc
     "convert to a solid. Close the holes with mesh_repair(repair_type='close_holes') and retry, or "
     "convert it as a surface with method='faceted'.")
 
-    # ORGANIC is gated behind the Product Design Extension - be honest, do NOT silently fall back.
+    # The enum establishes API availability only; it does not establish extension access.
     if meth == "organic" and not _organic_available():
         return error(
-    "method='organic' requires the Product Design Extension to be active - it is not available "
-    "in this session. Use method='prismatic' (best for machined/scanned parts) or 'faceted' "
-    "(exact, one BRep face per triangle, heavy), or enable the extension. Not silently falling "
-    "back to a different method.")
+    "OrganicMeshConvertMethodType is absent or unreadable in this Fusion API session. Check API "
+    "availability, or use method='prismatic' or 'faceted'.")
 
     comp = _common.census_host(mb, _target_component(design))
     feats = safe(lambda: comp.features.meshConvertFeatures)

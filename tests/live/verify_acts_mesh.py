@@ -67,6 +67,17 @@ def _mesh_remedy_reduced(p):
     return _measured("only the advertised target mesh decimated; witness held", now, valid)
 
 
+def _organic_source_retained(p):
+    """Read the closed source mesh after the organic API outcome."""
+    rows = [m for m in p.get("meshes") or [] if m.get("name") == "MA"]
+    row = rows[0] if len(rows) == 1 else {}
+    return _measured("organic source mesh remains readable",
+                     {"count": len(rows), "is_closed": row.get("is_closed"),
+                      "triangle_count": row.get("triangle_count")},
+                     p.get("truncated") is False and row.get("is_closed") is True
+                     and _num(row.get("triangle_count")) and row["triangle_count"] > 0)
+
+
 def _mesh_remedy_rows():
     """Exercise a plain miss, its mesh_get remedy and independently scoped decimation."""
     rows = [("doc_get", {}, _home_document, ("mr_story", _home_address)),
@@ -2365,11 +2376,19 @@ _MESH = [
     ("mesh_generate_face_groups", {"mesh": "MA", "method": "fast"},
      lambda p: (p["generated"] is True and p["changed"] is True
                 and p["face_group_count"] > p["face_group_count_before"]), None),
+    # The enum is API availability only; method presence does not establish extension access.
+    # Read the source back before the faceted control.
+    ("mesh_to_brep", {"mesh": "MA", "method": "organic", "accuracy": "low",
+                       "operation": "base_feature"},
+     _refused("Could not configure the mesh-convert input: 3 : For organic mesh conversion "
+              "design extension must be available."), None),
+    ("mesh_get", {"target": "Msh"}, _organic_source_retained, None),
     # the converted bodies are the component's BRep census differenced across the add; a row with no
     # handle is a body the next tool cannot address, and 'design_mode' is read before the scope opens.
+    # This faceted follow-up recovers the measured organic refusal on installations without access.
     ("mesh_to_brep", {"mesh": "MA", "method": "faceted", "operation": "base_feature"},
      lambda p: (bool(p["brep_bodies"]) and all(b["handle"] for b in p["brep_bodies"])
-                and p["design_mode"] == "parametric"), None),
+                and p["method"] == "faceted" and p["design_mode"] == "parametric"), None),
     # THE OPEN HALF: 'none' leaves the cut face unfilled, so the trimmed mesh is not watertight.
     ("mesh_plane_cut", {"mesh": "MOPEN", "plane": "MshMid", "cut_type": "trim", "fill": "none"},
      lambda p: p.get("fill") == "none" and p.get("triangles_before") and p.get("triangles_after")

@@ -51,6 +51,18 @@ def _pattern_single_row_material(p):
                      and all(_near(p.get(axis), size, .001) for axis, size in zip("xyz", (50, 20, 10))))
 
 
+def _face_sketch_disclosure(p):
+    """Check the face-handle read, its normal meanings, and the returned sketch frame."""
+    frame, note = p.get("frame"), p.get("note", "")
+    return _measured("face sketch separates its normals and returns its placement frame",
+                     {"frame": frame, "note": note, "on_face": p.get("on_face")},
+                     _sits_on_a_face(p) and isinstance(frame, dict)
+                     and frame.get("space") == "world"
+                     and "outward face normal" in note
+                     and "supporting plane normal" in note
+                     and "returned new-sketch frame" in note)
+
+
 def _pattern_count_rows():
     """Exercise second-count refusal and the legal single row on an owned document."""
     rows = [("doc_get", {}, _home_document, ("count_home", _home_address)),
@@ -86,6 +98,83 @@ def _pattern_count_rows():
              "save_changes": False, "expect_document": _ctx_get(c, "count_home", "story")},
          _document_closed, None),
     ])
+    return rows
+
+
+def _loft_curve_refusal_rows():
+    """Refuse line handles with the exact sketch-curve form, then loft and retire that form."""
+    rows = [("doc_get", {}, _home_document, ("lcr_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "lcr_home", "home")},
+             _new_document, ("lcr_doc", lambda p: p["document_handle"]))]
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(
+            c, "lcr_doc", args(c) if callable(args) else args), check, save))
+
+    write("model_create_component", {"name": "LoftCurveRefs", "activate": True}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "CurveA"})
+    write("sketch_add_geometry", {"sketch_name": "CurveA", "geometry": [
+        {"kind": "line", "x1": 40, "y1": 0, "x2": 60, "y2": 0}]})
+    write("model_construction", {"kind": "plane", "mode": "offset", "plane": "xy",
+                                 "offset": 10, "name": "CurvePlane"}, _datum_plane("xy"))
+    write("sketch_create", {"plane": "CurvePlane", "name": "CurveB"})
+    write("sketch_add_geometry", {"sketch_name": "CurveB", "geometry": [
+        {"kind": "line", "x1": 40, "y1": 0, "x2": 60, "y2": 0}]})
+    for name, z in (("CurveA", 0), ("CurveB", 10)):
+        rows.append(("find_geometry", {"target": "LoftCurveRefs", "kind": "sketch_line",
+                     "nearest_to": [50, 0, z], "max_results": 1}, _matched(1, "sketch_line"),
+                     _fg("lcr_" + name.lower())))
+        rows.append(("sketch_get", {"sketch_name": name, "component": "LoftCurveRefs",
+                     "include_entities": True},
+                     lambda p, name=name: p.get("sketch") == name
+                     and p.get("component") == "LoftCurveRefs"
+                     and (p.get("counts") or {}).get("lines") == 1,
+                     ("lcr_sketch_" + name, _recall("lcr_sketch_" + name, lambda p: p))))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100}, "ok",
+                 ("lcr_rows", _recall("lcr_rows", lambda p: p["timeline"])) ))
+    write("model_loft", lambda c: {"component": "LoftCurveRefs", "as_surface": True, "profiles": [
+        _ctx_get(c, "lcr_curvea", "CurveA line handle"),
+        _ctx_get(c, "lcr_curveb", "CurveB line handle")]},
+        _refused("SketchLine handle, not a loft profile", "CurveA/line:0",
+                 "sketch-curve section reference"))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 lambda p: _measured("line-handle refusal preserves timeline", p.get("timeline"),
+                     p.get("timeline") == _RECALL.get("lcr_rows")), None))
+    for name in ("CurveA", "CurveB"):
+        rows.append(("sketch_get", {"sketch_name": name, "component": "LoftCurveRefs", "include_entities": True},
+                     lambda p, name=name: _measured("line-handle refusal preserves " + name,
+                         p, p == _RECALL.get("lcr_sketch_" + name)), None))
+    write("model_loft", {"component": "LoftCurveRefs", "as_surface": True,
+                         "profiles": ["CurveA/line:0", "CurveB/line:0"]}, _lofted,
+          ("lcr_feature", lambda p: {"feature": "LoftCurveRefs/" + p["feature"],
+                                    "body": "LoftCurveRefs:" + p["result_bodies"][0]}))
+    rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "lcr_feature", "open loft")["body"],
+                                      "units": "cm"},
+          lambda p: _measured("corrected curve refs build the measured surface bounds", {
+              "kind": p.get("kind"), "units": p.get("units"), "x": p.get("x"), "y": p.get("y"),
+              "z": p.get("z"), "min_point": p.get("min_point"), "max_point": p.get("max_point")},
+              p.get("kind") == "body" and p.get("units") == "cm"
+              and _near(p.get("x"), 2, .0001) and _near(p.get("y"), 0, .0001)
+              and _near(p.get("z"), 1, .0001)
+              and p.get("min_point") == {"x": 4.0, "y": 0.0, "z": 0.0}
+              and p.get("max_point") == {"x": 6.0, "y": 0.0, "z": 1.0}), None))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, "lcr_feature", "open loft")["body"],
+                 "kind": "planar_face", "units": "cm", "max_results": 2},
+                 lambda p: _measured("corrected loft has its measured surface face", p.get("matches"),
+                     p.get("match_count") == p.get("returned") == 1
+                     and _near((p.get("matches") or [{}])[0].get("area"), 2, .0001)), None))
+    write("design_delete_feature", lambda c: {"feature": _ctx_get(c, "lcr_feature", "open loft")["feature"]})
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 lambda p: _measured("loft retirement restores the prior timeline", p.get("timeline"),
+                     p.get("timeline") == _RECALL.get("lcr_rows")), None))
+    for name in ("CurveA", "CurveB"):
+        rows.append(("sketch_get", {"sketch_name": name, "component": "LoftCurveRefs", "include_entities": True},
+                     lambda p, name=name: _measured("loft retirement restores public sketch " + name,
+                         p, p == _RECALL.get("lcr_sketch_" + name)), None))
+    rows.extend([("doc_activate", lambda c: {"name": _ctx_get(c, "lcr_home", "home")}, "ok", None),
+                 ("doc_close", lambda c: {"name": _ctx_get(c, "lcr_doc", "scratch"),
+                    "save_changes": False, "expect_document": _ctx_get(c, "lcr_home", "home")},
+                  _document_closed, None)])
     return rows
 
 _SOLIDS = [
@@ -491,13 +580,15 @@ _SOLIDS = [
     ("pmi_create", lambda c: {"kind": "note", "geometry": [_ctx_get(c, "pmi_floor", "the pocket floor")], "text": "{flatness}0.05", "name": "PmiFlat"},
      _needs(MACHINING_EXTENSION, lambda p: p.get("annotation") == "PmiFlat" and p.get("markup") == "{flatness}0.05" and p.get("kind") == "note"), None),
     ("pmi_create", lambda c: {"kind": "note", "geometry": [_ctx_get(c, "pmi_floor", "the pocket floor")], "text": "{flatness}0.05", "name": "PmiFlat"},
-     _unless(MACHINING_EXTENSION, _refused("Extension is required", "pmi_get")), None),
+     _unless(MACHINING_EXTENSION,
+             _refused("Extension is required", "This operation requires", "pmi_get")), None),
     ("find_geometry", {"target": "Bracket", "kind": "cylinder_face", "radius": 3, "max_results": 1},
      _matched(1, "cylinder_face"), _fg("mount_bore")),
     ("pmi_create", lambda c: {"kind": "hole_note", "geometry": [_ctx_get(c, "mount_bore", "a mounting bore")]},
      _needs(MACHINING_EXTENSION, lambda p: p.get("kind") == "hole_note" and bool(p.get("annotation")) and "<HDIA>" in str(p.get("markup"))), None),
     ("pmi_create", lambda c: {"kind": "hole_note", "geometry": [_ctx_get(c, "mount_bore", "a mounting bore")]},
-     _unless(MACHINING_EXTENSION, _refused("Extension is required", "pmi_get")), None),
+     _unless(MACHINING_EXTENSION,
+             _refused("Extension is required", "This operation requires", "pmi_get")), None),
     ("pmi_get", {"include": ["segments", "detail"]}, "ok", None),
     # an over-cap 'max_results' is CLAMPED, not refused - pmi_get's own contract, since every record
     # it returns crosses the wire whole. The answer still comes back with its census keys.
@@ -823,7 +914,7 @@ _SOLIDS = [
     ("find_geometry", {"target": "PivotCameo", "kind": "planar_face", "nearest_to": [310, 30, 30],
                        "max_results": 1}, "ok", _fg("pv_lid")),
     ("sketch_create", lambda c: {"on_face": _ctx_get(c, "pv_lid", "the L-prism lid"),
-                                 "name": "PvOnFace"}, _sits_on_a_face, None),
+                                 "name": "PvOnFace"}, _face_sketch_disclosure, None),
     ("sketch_get", {"sketch_name": "PvOnFace"},
      lambda p: _sits_on_a_face(p) and "timeline_marker_unrestored" not in p,
      ("pv_face_handle", lambda p: p["on_face"]["handle"])),
@@ -1254,6 +1345,8 @@ _SOLIDS = [
     *_TANGENT_PATH,
     *_pattern_count_rows(),
 ]
+
+_SOLIDS += _loft_curve_refusal_rows()
 
 
 def _component_block(steps, component, last_tool, last_key=None, last_value=None):

@@ -12,7 +12,7 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from . import _assert, _common, _geom, _inputs
+from . import _assert, _common, _design_common, _geom, _inputs
 from ._common import counted, error, ok, outcome_clause, safe
 from ._edit_feature_common import (at_address, failed, health as _health,
                                    identical_geometry_reply, later_operand_refusal, matched,
@@ -543,7 +543,12 @@ def handler(feature: str = "", action: str = "", profile=None, operation: str = 
         if refusal:
             return error(refusal)
         if counted(lambda: sketch.timelineObject.index) is None:
-            return error("The profile's sketch timeline row does not read. Nothing was edited.")
+            hint = _design_common.collapsed_group_hint(timeline, safe(lambda: sketch.name))
+            if hint:
+                return error(f"{hint} The profile sketch timeline row does not read; nothing was edited.")
+            sketch_name = safe(lambda: sketch.name) or "?"
+            return error(f"The profile sketch '{sketch_name}' has an unreadable timeline row. Read "
+                         "design_get(include=['timeline']) before retrying; nothing was edited.")
         operands.append(profile_entity)
     if values["to_object"] is not None:
         operands.append(values["to_object"])

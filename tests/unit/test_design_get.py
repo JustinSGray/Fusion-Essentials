@@ -234,9 +234,11 @@ def test_extrude_definition_preserves_sign_units_and_unknown_participants(extrud
     s = extrude_definition_scene
     result = _payload(dg.handler(include=["definition"], feature="Hole4", units=units))["definition"]
     assert result["distance"] == expected and result["distance_applicable"] is True
+    assert result["extent_side_count"] is None and result["direction"] is None
     assert result["distance2"] is None and result["distance2_applicable"] is False
     assert result["distance_parameter"] == "d1" and result["distance_expression"] == "-15 mm"
-    assert result["participants"] is None and "participants" in result["unavailable"]
+    assert (result["participants"] is None and result["participants_truncated"] is None
+            and "participants" in result["unavailable"])
     assert result["profile"] == {"type": "Profile", "profile_handle": "section-profile",
         "source_sketch": "Section", "source_component": "Cradle", "profile_index": 0, "curve_ref": None}
     assert s.timeline._moves == [] and s.row._rolls == [] and s.timeline.markerPosition == 0
@@ -250,7 +252,8 @@ def test_two_side_definition_reads_second_parameter_independently(extrude_defini
     s.hole.extentTwo = SimpleNamespace(objectType="adsk::fusion::DistanceExtentDefinition",
         distance=FakeModelParameter(name="d2", expression="4 mm", value=0.4))
     result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
-    assert result["extent"] == "two_side" and result["distance"] == 10
+    assert (result["extent"] == "two_side" and result["extent_side_count"] is None
+            and result["distance"] == 10)
     assert result["distance2"] == 4 and result["distance2_applicable"] is True
     assert result["distance2_parameter"] == "d2" and result["distance2_expression"] == "4 mm"
 
@@ -271,9 +274,22 @@ def test_through_definition_has_no_distance_or_inferred_world_side(extrude_defin
     s.hole.extentOne.objectType = "adsk::fusion::ThroughAllExtentDefinition"
     s.hole.extentOne.isPositiveDirection = True
     result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
-    assert result["extent"] == "through_all" and result["distance_applicable"] is False
+    assert (result["extent"] == "through_all" and result["distance_applicable"] is False
+            and result["extent_side_count"] == 1 and result["direction"] is None)
     assert result["distance"] is None and result["distance_expression"] is None
-    assert "side" not in result and "direction" not in result
+
+
+def test_unread_extent_side_count_is_unknown_with_its_getter_error(extrude_definition_scene, monkeypatch):
+    s = extrude_definition_scene
+    s.hole.extentOne.objectType = "adsk::fusion::ThroughAllExtentDefinition"
+    def unread(_feature):
+        raise RuntimeError("side count unread")
+    monkeypatch.setattr(FakeFeature, "hasTwoExtents", property(unread), raising=False)
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["extent"] is None
+    assert result["extent_side_count"] is None
+    assert result["direction"] is None
+    assert result["unavailable"]["extent_side_count"] == "side count unread"
 
 
 def test_sweep_definition_preserves_partial_reads_and_edit_context_values(extrude_definition_scene, monkeypatch):
@@ -297,8 +313,10 @@ def test_sweep_definition_preserves_partial_reads_and_edit_context_values(extrud
     monkeypatch.setattr(FakeFeature, "path", property(path), raising=False)
     result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
     assert result["operation"] == "new" and result["is_solid"] is True
+    assert result["orientation_name"] == "perpendicular"
     assert result["profile"]["source_sketch"] == "Section"
     assert result["path"] is None and result["path_count"] is None
+    assert result["path_truncated"] is None
     assert set(result["unavailable"]) == {"path", "participants"}
     feature.read_path = feature.read_participants = True
     feature.participants = [SimpleNamespace(name="Body1")]
@@ -306,6 +324,9 @@ def test_sweep_definition_preserves_partial_reads_and_edit_context_values(extrud
     assert result["path_count"] == 1 and len(result["path"]) == 1
     assert result["path"][0]["curve_ref"] == "Path/line:0"
     assert result["participants"] == ["Body1"] and result["unavailable"] == {}
+    feature.orientation = adsk.fusion.SweepOrientationTypes.ParallelOrientationType
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["orientation_name"] == "parallel"
     assert s.timeline._moves == [] and s.row._rolls == []
 
 

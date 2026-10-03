@@ -334,11 +334,13 @@ class TestLibraryChoices:
         assert "does not check" not in out["note"]
 
     @pytest.mark.parametrize("standard,cls", [("unknown standard", "6g"), ("ISO Metric profile", "6H")])
-    def test_choices_do_not_cross_requested_standard_or_external_class(self, library, standard, cls):
+    def test_nearby_choices_survive_incompatible_selectors(self, library, standard, cls):
         message = error_message(mt.handler(faces=["h"], designation="M6x1.0",
                                            thread_type=standard, thread_class=cls))
-        assert "No compatible choice among the checked nearby spellings" in message
-        assert "Thread dialog" in message and "'M6x1'" not in message
+        assert "Nearby library spellings (not fit recommendations)" in message
+        assert "'M6x1' in 'ANSI Metric M Profile' (classes: 4g6g, 6g)" in message
+        assert "Choose a listed designation, type and class" in message
+        assert "Thread dialog" not in message
         assert library.created_info == [] and library.added == 0
 
     def test_unreadable_classes_are_not_guessed(self, library, monkeypatch):
@@ -346,7 +348,7 @@ class TestLibraryChoices:
             raise RuntimeError("unreadable classes")
         monkeypatch.setattr(library.threadDataQuery, "allClasses", fail)
         message = error_message(mt.handler(faces=["h"], designation="M6x1.0"))
-        assert "No compatible choice among the checked nearby spellings" in message
+        assert "No nearby alternative with readable classes was found" in message
         assert library.created_info == [] and library.added == 0
 
     def test_query_and_reply_choices_are_bounded(self, library, monkeypatch):
@@ -369,6 +371,26 @@ class TestLibraryChoices:
             thread_type="ISO Metric profile", thread_class="6g"))
         assert len(queried) <= 10
         assert message.count("(classes:") <= 5 and "(classes: 4g6g)" not in message
+        assert library.created_info == [] and library.added == 0
+
+    def test_fallback_reads_other_types_after_compatible_probe_budget(self, library, monkeypatch):
+        query = library.threadDataQuery
+        monkeypatch.setattr(query, "allSizes", lambda _t: ("6.0",))
+        close = tuple(f"M6x1.00{letter}" for letter in "abcde")
+        remaining = tuple(f"M6x1.0{i}" for i in range(5))
+        monkeypatch.setattr(FakeThreadDataQuery, "allThreadTypes",
+                            property(lambda _self: ("ISO Metric profile", "ANSI Metric M Profile")))
+        monkeypatch.setattr(query, "allDesignations", lambda t, _s:
+                            close + remaining if t == "ISO Metric profile" else close)
+        queried = []
+        def classes(internal, standard, designation):
+            queried.append((standard, designation))
+            return ("4g6g",) if standard == "ISO Metric profile" else ("6g",)
+        monkeypatch.setattr(query, "allClasses", classes)
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.00?",
+                                           thread_type="ISO Metric profile", thread_class="6g"))
+        assert "'M6x1.00e' in 'ANSI Metric M Profile' (classes: 6g)" in message
+        assert len(queried) <= 20 and message.count("(classes:") <= 5
         assert library.created_info == [] and library.added == 0
 
 

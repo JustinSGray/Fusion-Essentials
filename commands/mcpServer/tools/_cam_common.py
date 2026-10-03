@@ -1231,7 +1231,7 @@ def ready_verdict(measure: str, warned: int, warning_sample, blocked=None) -> st
             f"{_warning_phrase(warning_sample)}")
 
 
-# ── strategy entitlement: whether this INSTALLATION will generate a strategy at all ──────────────
+# ── strategy generation permission ─────────────────────────────────────────────────────────────
 
 
 def _create_strategy(name):
@@ -1251,14 +1251,12 @@ def strategy_generation_allowed(name):
     return read_flag(lambda: strat.isGenerationAllowed)
 
 
-# The strategies whose isGenerationAllowed verdicts this install's Manufacturing Extension
-# entitlement - needs no document or setup.
+# Sentinel strategies sample generation permission without a document or setup.
 CAPABILITY_SENTINELS = ("steep_and_shallow", "multiaxis_finishing", "swarf", "probe_geometry")
 
 
 def entitled_over(flags) -> object:
-    """True/False/None over an iterable of isGenerationAllowed flags - True only where every one
-    reads true, None where any did not read, so an unread flag never folds into a confident False."""
+    """Fold generation permission flags, preserving None when any flag did not read."""
     values = list(flags)
     if any(v is None for v in values):
         return None
@@ -1266,15 +1264,12 @@ def entitled_over(flags) -> object:
 
 
 def capability_entitled():
-    """This install's Manufacturing Extension verdict - entitled_over the CAPABILITY_SENTINELS'
-    own isGenerationAllowed flags, probed fresh."""
+    """Aggregate generation permission across the sentinel strategies, probed fresh."""
     return entitled_over(strategy_generation_allowed(name) for name in CAPABILITY_SENTINELS)
 
 
 def entitlement_flags(ops) -> list:
-    """One True / False / None per operation - its own strategy's isGenerationAllowed - probed ONCE
-    per distinct strategy name. False is what a generation-blocked operation reads; None is a flag
-    that did not read, which is no entitlement verdict at all."""
+    """One True / False / None per operation from its strategy's isGenerationAllowed flag."""
     seen, out = {}, []
     for op in ops or []:
         name = safe(lambda op=op: op.strategy)

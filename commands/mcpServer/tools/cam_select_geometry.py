@@ -13,7 +13,7 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import CM_TO_UNIT, named_with_remainder, ok, error, safe, scale, set_verified
 from ._cam_common import (MACHINE_MODE_MEMBERS, PARAM_READ, SWARF_CONTOURS_PARAM, avoid_groups,
-                          choice_quoting, enumeration_remedy, expression_error, get_cam,
+                          choice_expressions, choice_quoting, enumeration_remedy, expression_error, get_cam,
                           group_record, machine_mode_value, matched_quoting, offset_mm_per_unit,
                           owning_setup, refresh_flat_setup_models, resolve_cam_node, register_future,
                           strategy_generation_allowed, sync_validity, unquote_expression)
@@ -1020,17 +1020,30 @@ def _apply_probe_stock(op, names, extra, setup=None):
     return (None, _mode_retained(_PROBE_STOCK_PARAM, err, held)) if err else (count, None)
 
 
-def _apply_probing_type(op, probing_type, extra):
-    """The error for writing probingType, or None - it decides the probe STRATEGY variant and gates
-    whether generation can produce a path at all, so it lands WITH the selection, not after."""
+def _probing_type_request(op, probing_type):
+    """(parameter, expression, quoted, error) for a probingType request validated against its choices."""
     p = safe(lambda: op.parameters.itemByName(_PROBING_TYPE_PARAM))
     if p is None:
-        return (f"Operation '{safe(lambda: op.name)}' has no '{_PROBING_TYPE_PARAM}' parameter, so "
-                "'probing_type' cannot be set on it. Drop 'probing_type'.")
-    before = safe(lambda: p.expression)
-    written, quoted, cerr = choice_quoting(p, before, probing_type)
+        return None, None, False, (
+            f"Operation '{safe(lambda: op.name)}' has no '{_PROBING_TYPE_PARAM}' parameter, so "
+            "'probing_type' cannot be set on it. Drop 'probing_type'.")
+    if not choice_expressions(p):
+        operation = safe(lambda: op.name) or "<operation>"
+        return None, None, False, (
+            f"Could not read this parameter's {_PROBING_TYPE_PARAM} choices before changing the "
+            f"operation. Inspect them with cam_get(include=['parameters'], operation='{operation}', "
+            f"parameter_names=['{_PROBING_TYPE_PARAM}']).")
+    written, quoted, cerr = choice_quoting(p, safe(lambda: p.expression), probing_type)
     if cerr:
-        return f"probing_type='{probing_type}' {cerr}"
+        return None, None, False, f"probing_type='{probing_type}' {cerr}"
+    return p, written, quoted, None
+
+
+def _apply_probing_type(op, probing_type, extra):
+    """Write a requested probingType and verify the expression it holds."""
+    p, written, quoted, cerr = _probing_type_request(op, probing_type)
+    if cerr:
+        return cerr
     try:
         p.expression = written             # MUTATION
     except Exception as e:
@@ -1039,11 +1052,27 @@ def _apply_probing_type(op, probing_type, extra):
     after = safe(lambda: p.expression)
     if after is None or unquote_expression(after) != unquote_expression(str(probing_type)):
         shown = "UNCONFIRMED" if after is None else f"reads back '{after}'"
-        return f"Setting {_PROBING_TYPE_PARAM}='{probing_type}' did not take - it {shown}."
+        operation = safe(lambda: op.name) or "<operation>"
+        return (f"Setting {_PROBING_TYPE_PARAM}='{probing_type}' did not take - it {shown}. Read "
+                f"its values with cam_get(include=['parameters'], operation='{operation}', "
+                f"parameter_names=['{_PROBING_TYPE_PARAM}']).")
     extra["probing_type"] = unquote_expression(after)
     if quoted:
         extra.setdefault("quoted", []).append(_PROBING_TYPE_PARAM)
     return None
+
+
+def _probe_selection_remains(extra, count):
+    """Name the probe faces and mode retained when a later probingType read or write fails."""
+    param = extra.get("selection_param")
+    text = f" The {count} probe face(s) remain selected"
+    if param:
+        text += f" on '{param}'"
+    text += "."
+    mode = extra.get("probe_mode")
+    if mode:
+        text += f" probe_mode remains '{mode}'."
+    return text
 
 
 def _surface_params(op):
@@ -1493,13 +1522,18 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
         if not faces:
             return error("No cylinder faces left after the diameter filter. " + diam_note)
 
-    # A probe op whose probingType still reads its 'probing-unknown' default cannot generate a
-    # path ('No valid probe operations found.') - refused here, before ANYTHING lands, rather than
-    # letting the selection through for a launch that cannot succeed.
+    # Validate an explicit type before any operation parameter is changed.
+    if selection == _PROBE and probing_type is not None:
+        _p, _written, _quoted, perr = _probing_type_request(op, probing_type)
+        if perr:
+            return error(perr)
+
+    # A normal probe left at probing-unknown cannot produce a path. Probe geometry can infer a
+    # type from the selected face, so its final parameter is checked after that selection lands.
     if selection == _PROBE and probing_type is None:
         p = safe(lambda: op.parameters.itemByName(_PROBING_TYPE_PARAM))
         current = unquote_expression(safe(lambda: p.expression) or "") if p is not None else None
-        if current == _PROBING_TYPE_UNKNOWN:
+        if current == _PROBING_TYPE_UNKNOWN and safe(lambda: op.strategy) != "probe_geometry":
             return error(
                 f"Operation '{safe(lambda: op.name)}' still reads {_PROBING_TYPE_PARAM}="
                 f"'{_PROBING_TYPE_UNKNOWN}' and no 'probing_type' was given - generation would "
@@ -1548,10 +1582,6 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
     # 'quoted' names every parameter this call WRAPPED to match what it already stored - the mode
     # engage below appends to the same list. Absent means each request was written as it was sent.
     extra = {"quoted": wrapped} if wrapped else {}
-    if selection == _PROBE and probing_type is not None:
-        perr = _apply_probing_type(op, probing_type, extra)
-        if perr:
-            return error(_retained(applied, perr) + refresh_effect)
     if selection == _SURFACE_GROUP:
         offsets = {k: knobs.get(k) for k in _OFFSET_KNOBS_KEYS}
         count, aerr = _apply_surface_group(op, entities, machine_over_holes,
@@ -1579,6 +1609,36 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
                      "floor face for pocket, bodies for silhouette/pocket_recognition, whole sketches "
                      "for sketch, cylinder faces for holes, the surface set's faces for surfaces).")
                      + refresh_effect)
+    if selection == _PROBE and (probing_type is not None
+                                or safe(lambda: op.strategy) == "probe_geometry"):
+        if probing_type is not None:
+            perr = _apply_probing_type(op, probing_type, extra)
+            if perr:
+                return error(_retained(applied, perr)
+                             + _probe_selection_remains(extra, record["selections"])
+                             + refresh_effect)
+        else:
+            p = safe(lambda: op.parameters.itemByName(_PROBING_TYPE_PARAM))
+            expression = safe(lambda: p.expression) if p is not None else None
+            if expression is None:
+                return error(_retained(applied,
+                             f"The probe face selection landed, but {_PROBING_TYPE_PARAM} did not "
+                             f"read back; inspect it with cam_get(include=['parameters'], "
+                             f"operation='{result['operation'] or operation}', "
+                             f"parameter_names=['{_PROBING_TYPE_PARAM}']).")
+                             + _probe_selection_remains(extra, record["selections"])
+                             + refresh_effect)
+            actual_type = unquote_expression(expression)
+            if not actual_type or actual_type == _PROBING_TYPE_UNKNOWN:
+                return error(_retained(applied,
+                             f"The probe face selection landed, but {_PROBING_TYPE_PARAM} still "
+                             f"reads '{actual_type or _PROBING_TYPE_UNKNOWN}'. Pass 'probing_type' "
+                             f"from its choices; inspect them with cam_get(include=['parameters'], "
+                             f"operation='{result['operation'] or operation}', "
+                             f"parameter_names=['{_PROBING_TYPE_PARAM}']).")
+                             + _probe_selection_remains(extra, record["selections"])
+                             + refresh_effect)
+            extra["probing_type"] = actual_type
     result.update(record)
     result.update(extra)
     # Bounded through the shared capped-list renderer: this list is as long as the selection, and a

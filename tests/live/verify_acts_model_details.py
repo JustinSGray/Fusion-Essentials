@@ -49,6 +49,41 @@ def _bodyref_surface_state(p):
     return {"tree": tree, "timeline": timeline}
 
 
+def _absolute_datum_position(kind, distance, name):
+    """Check a datum's independently acquired geometry along either orientation of the seed edge."""
+    def check(p):
+        row = (p.get("matches") or [{}])[0]
+        point, normal = row.get("position"), row.get("normal")
+        valid = (p.get("match_count") == p.get("returned") == 1
+                 and row.get("kind") == kind and row.get("name") == name
+                 and isinstance(point, list) and len(point) == 3
+                 and any(_near(point[0], _px("ShellCap", x), 0.001)
+                         for x in (400 + distance, 430 - distance))
+                 and _near(point[1], _py("ShellCap", 0), 0.001)
+                 and _near(point[2], 0, 0.001))
+        if kind == "construction_plane":
+            valid = (valid and isinstance(normal, list) and len(normal) == 3
+                     and _near(abs(normal[0]), 1, 0.000001)
+                     and _near(normal[1], 0, 0.000001) and _near(normal[2], 0, 0.000001))
+        return _measured("absolute datum identity, position and plane normal", row, valid)
+    return check
+
+
+def _absolute_datum_health(p):
+    """Require every named absolute datum to be present with no timeline exception."""
+    timeline = p.get("timeline") or {}
+    names = {"AbsInsidePlane", "BeforeStartPlane", "PastEndPoint", "AtEndPlane"}
+    present = {r.get("name") for r in timeline.get("timeline") or []}
+    exceptions = (timeline.get("summary") or {}).get("exceptions")
+    return _measured("absolute datum features remain healthy", timeline,
+                     timeline.get("returned") == timeline.get("count")
+                     and names <= present and isinstance(exceptions, list)
+                     and set((timeline.get("summary") or {}).get("states") or {}) == {"healthy"}
+                     and all(row.get("health", "healthy") == "healthy" for row in timeline.get("timeline") or []
+                             if row.get("name") in names)
+                     and not any(r.get("name") in names for r in exceptions))
+
+
 _DETAILS = [
     *_DEFINITION_READS,
     *_DATUM_OPERANDS,
@@ -63,7 +98,8 @@ _DETAILS = [
      _needs(MACHINING_EXTENSION, _holes_recognized(2, 4, 12.0)),
      _recognized_cbore_walls("recognized_cbore_walls", count_key="holes_group_count")),
     ("cam_find_holes", {"bodies": ["Bracket:1"]},
-     _unless(MACHINING_EXTENSION, _refused("Manufacturing Extension", "find_geometry")), None),
+     _unless(MACHINING_EXTENSION,
+             _refused("Manufacturing Extension", "This operation requires", "find_geometry")), None),
     # The window, on the same part: at 11 mm every BoreDia group falls out (the step bore and the
     # longer boss bore are separate groups - the recognizer groups by identical length) and the
     # 10.8 mm counterbores stay; kept plus dropped is the unwindowed total, so nothing is lost.
@@ -244,6 +280,14 @@ _DETAILS = [
                                       "name": "AtEndPlane"},
      lambda p: p.get("beyond_path") is False
      and abs(p.get("along_path", -1) - p.get("path_length", 0)) < 1e-6, None),
+    *[("find_geometry", {"target": "ShellCap", "kind": kind, "name": name, "max_results": 10},
+       _absolute_datum_position(kind, distance, name), None)
+      for kind, name, distance in (("construction_plane", "AbsInsidePlane", 12),
+                                   ("construction_plane", "BeforeStartPlane", -5),
+                                   ("construction_point", "PastEndPoint", 500),
+                                   ("construction_plane", "AtEndPlane", 30))],
+    ("design_get", {"include": ["timeline"], "max_results": 1000},
+     _absolute_datum_health, None),
     # an EXPRESSION placement is measured exactly as a literal one - the expression is what the
     # datum's own model parameter carries, and that parameter's name is what param_set retargets.
     ("model_construction", lambda c: {"kind": "point", "mode": "on_path",

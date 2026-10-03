@@ -35,7 +35,8 @@ def _definition_participants(feature, unavailable, limit=None):
         return [body.name for body in (islice(bodies, limit + 1) if limit is not None else bodies)]
     result = _definition_value(names, "participants", unavailable)
     return (result[:limit] if result is not None and limit is not None else result,
-            len(result) > limit if result is not None and limit is not None else False)
+            len(result) > limit if result is not None and limit is not None else
+            False if result is not None else None)
 
 
 def extrude_extent_kind(feature):
@@ -66,11 +67,19 @@ def read_extrude_definition(feature, limit=None):
              if kind in ("distance", "symmetric", "two_side") else None)
     param2 = get("distance2", lambda: feature.extentTwo.distance) if kind == "two_side" else None
     participants, truncated = _definition_participants(feature, unavailable, limit)
+    extent_one_type = safe(lambda: feature.extentOne.objectType)
+    has_two_extents = (get("extent_side_count", lambda: feature.hasTwoExtents)
+                       if kind == "through_all" or
+                       extent_one_type == "adsk::fusion::ThroughAllExtentDefinition" else None)
     return {"profile": get("profile", lambda: feature.profile),
             "operation": next((name for name, enum in _common.OPERATIONS.items()
                                if safe(lambda: feature.operation) ==
                                getattr(adsk.fusion.FeatureOperations, enum)), None),
             "extent": kind,
+            "extent_side_count": (2 if has_two_extents is True else
+                                  1 if has_two_extents is False else None)
+            if kind == "through_all" else None,
+            "direction": None,
             "distance_cm": _common.landed_extent_cm(feature) if param is not None else None,
             "distance2_cm": _common.landed_extent2_cm(feature) if kind == "two_side" else None,
             "distance_parameter": safe(lambda: param.name),
@@ -83,12 +92,25 @@ def read_extrude_definition(feature, limit=None):
             "unavailable": unavailable}
 
 
+def _sweep_orientation_name(value):
+    """The measured name for a SweepOrientationTypes value, or None when it is unknown."""
+    if value is None:
+        return None
+    for name, member in (("perpendicular", "PerpendicularOrientationType"),
+                         ("parallel", "ParallelOrientationType")):
+        native = safe(lambda member=member: getattr(adsk.fusion.SweepOrientationTypes, member))
+        if native is not None and native == value:
+            return name
+    return None
+
+
 def read_sweep_definition(feature):
     """Read each Sweep operand/control independently at the caller's current marker."""
     unavailable = {}
     read = {key: _definition_value(lambda name=name: getattr(feature, name), key, unavailable)
             for key, name in (("profile", "profile"), ("path", "path"), ("operation", "operation"),
                               ("orientation", "orientation"), ("is_solid", "isSolid"))}
+    read["orientation_name"] = _sweep_orientation_name(read["orientation"])
     return {**read, "unavailable": unavailable}
 
 
@@ -120,7 +142,8 @@ def feature_definition(feature, factor):
         kind = read["extent"]
         applicable = None if kind is None else kind in ("distance", "two_side", "symmetric")
         out = {key: read[key] for key in ("operation", "extent", "distance_parameter", "distance_expression",
-            "distance2_parameter", "distance2_expression", "symmetric_full_length", "participants",
+            "extent_side_count", "direction", "distance2_parameter", "distance2_expression",
+            "symmetric_full_length", "participants",
             "participants_truncated", "unavailable")}
         out.update(distance=_common.measured(lambda: read["distance_cm"], factor),
                    distance2=_common.measured(lambda: read["distance2_cm"], factor),
@@ -134,10 +157,12 @@ def feature_definition(feature, factor):
         count = counted(lambda: path.count)
         out = {"operation": next((name for name, enum in _common.OPERATIONS.items()
                                   if read["operation"] == getattr(adsk.fusion.FeatureOperations, enum)), None),
-               "orientation": read["orientation"], "is_solid": read["is_solid"],
+               "orientation": read["orientation"], "orientation_name": read["orientation_name"],
+               "is_solid": read["is_solid"],
                "path": ([_definition_profile(safe(lambda i=i: path.item(i).entity))
                          for i in range(min(count, 64))] if count is not None else None),
-               "path_count": count, "path_truncated": count is not None and count > 64,
+               "path_count": count,
+               "path_truncated": None if count is None else count > 64,
                "participants": participants, "participants_truncated": truncated,
                "unavailable": unavailable}
     out["profile"] = _definition_profile(read["profile"])

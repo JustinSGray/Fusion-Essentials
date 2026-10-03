@@ -135,7 +135,7 @@ class TestSetText:
         rig.monkeypatch.setattr(pe._pmi, "find_annotation",
                                 lambda d, n, c="": (ann, rig.comp, None))
         msg = error_message(pe.handler(action="set_text", annotation="Note1", text="X"))
-        assert "Extension is required" in msg and "entitlement" in msg and "pmi_get" in msg
+        assert "Extension is required" in msg and "This operation requires" in msg and "pmi_get" in msg
 
     def test_a_segments_write_that_raises_is_an_error(self, rig):
         ann = _RefusingSet(raises=("segments",))

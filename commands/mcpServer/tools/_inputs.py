@@ -1582,8 +1582,7 @@ def _timeline_objects(timeline):
 
 
 def _split_qualified(want):
-    """(component, feature) for a '<component>/<feature>' address (split on the FIRST '/'), or
-    (None, None) when `want` carries no '/' or either half is blank."""
+    """(component, feature) for the collapsed-member hint's '<component>/<feature>' spelling."""
     if "/" not in want:
         return None, None
     comp, _sep, feat = want.partition("/")
@@ -1740,10 +1739,9 @@ def resolve_timeline_object(objs, want, label, miss_hint=None, hidden_hint=None)
             hinted = miss_hint(asked) if miss_hint is not None else None
             if hinted:
                 return None, f"{label}: {hinted}"
-        comp, feat = _split_qualified(want if base is None else base)
-        if comp is not None:
-            return None, (f"{label}: no feature named '{feat}' in component '{comp}'. Use "
-                          "design_get(include=['timeline']) for the full list.")
+        if "/" in (want if base is None else base):
+            return None, (f"{label}: no timeline feature matches '{want}'. Use "
+                          "design_get(include=['timeline']) for the current addresses.")
         near = _near_name_components(objs, want)
         if near:
             return None, (f"{label}: no timeline feature named '{want}'. Components holding a "
@@ -3967,6 +3965,14 @@ class LoftSectionList(ProfileRefList):
             if owned_count != 1 or owned_closed is not False:
                 return None, "the owning component did not build a one-curve open edge Path."
             return (owned_path, "open_edge", ent), None
+        if type(ent).__name__ == "SketchLine":
+            from . import _sketch_detail
+            sketch = _common.safe(lambda: ent.parentSketch)
+            name = _common.safe(lambda: sketch.name) if sketch is not None else None
+            curve = _sketch_detail.curve_id(sketch, ent) if sketch is not None else None
+            ref = f"{name}/{curve}" if name and curve else "'<sketch>/line:<index>'"
+            return None, (f"'{s}' is a SketchLine handle, not a loft profile; pass {ref} as the "
+                          "sketch-curve section reference.")
         prof, err = _resolve_one_profile(self.name, item, False, scope, self.scope_input)
         return (None, err) if err else ((prof, "profile", prof), None)
 

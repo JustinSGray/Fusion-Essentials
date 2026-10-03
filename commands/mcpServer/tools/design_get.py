@@ -1115,8 +1115,10 @@ def _slice_definition(feature, units):
                           if child is not _DEFINITION_UNREAD and child is not None else None)}
     out["units"] = (units or "mm").strip().lower()
     out["note"] = ("Read at the current marker without rolling. Null is unknown unless applicable=false; "
-                   "unavailable gives getter failures. Use profile_handle as a profile input. Distances "
-                   "are signed; symmetric_full_length=false means distance is per side."
+                   "unavailable gives getter failures. Through-all extent_side_count is its native "
+                   "one/two-side flag; extrude direction is unknown here. Sweep orientation_name gives the readable "
+                   "enum. Use profile_handle as a profile input. Distances are signed; "
+                   "symmetric_full_length=false means distance is per side."
                    if kind in ("adsk::fusion::ExtrudeFeature", "adsk::fusion::SweepFeature") else
                    "Loft sections are in order; null fields are unreadable. Use profile_handle "
                    "with model_edit_loft; model_inspect reads material."

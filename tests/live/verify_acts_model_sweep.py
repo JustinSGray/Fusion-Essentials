@@ -1169,15 +1169,26 @@ def _later_operand_rows():
                          and names[11:] == ["PathLater", "ProfLater", "BoxLater", "S1Later"]),
          ("lo_rows", _recall("lo_rows", _timeline_names)))
     volume("sweep volume along the 100 mm path", 7.853982)
+    write("model_edit_extrude", {"feature": "X/Y/NoSuchFeature", "action": "extent",
+                                "extent": "distance", "distance": 1},
+          _refused("no timeline feature matches 'X/Y/NoSuchFeature'",
+                   "design_get(include=['timeline'])"))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("unresolved slash address preserves all current timeline rows",
+                         lambda names: names == _RECALL.get("lo_rows")))
+    volume("unresolved slash address preserves sweep material", 7.853982)
     read("design_get", {"include": ["definition"], "feature": "Sweep1"},
          lambda p: _measured("Sweep definition keeps readable fields when path needs edit context", p.get("definition"),
              (p.get("definition") or {}).get("type") == "SweepFeature"
              and (p.get("definition") or {}).get("operation") == "new"
              and (p.get("definition") or {}).get("is_solid") is True
              and (p.get("definition") or {}).get("orientation") is not None
+             and (p.get("definition") or {}).get("orientation_name") == "perpendicular"
              and (p.get("definition") or {}).get("path") is None
              and (p.get("definition") or {}).get("path_count") is None
+             and (p.get("definition") or {}).get("path_truncated") is None
              and (p.get("definition") or {}).get("participants") is None
+             and (p.get("definition") or {}).get("participants_truncated") is None
              and bool(((p.get("definition") or {}).get("unavailable") or {}).get("path"))
              and bool(((p.get("definition") or {}).get("unavailable") or {}).get("participants"))
              and ((p.get("definition") or {}).get("profile") or {}).get("source_sketch") == "Prof"
@@ -1285,6 +1296,53 @@ def _later_operand_rows():
                          lambda names: names[-2:] == ["Dep", "ProfLater"]
                          and names == [n for n in _RECALL.get("lo_before_end") or []
                                        if n != "ProfLater"] + ["ProfLater"]))
+    # A collapsed group can make a member sketch's timeline row unreadable to the profile editor.
+    sketch("TimelineFirst", "xy", {"kind": "rectangle", "x1": 900, "y1": 0,
+                                     "x2": 910, "y2": 10})
+    sketch("TimelineSecond", "xy", {"kind": "rectangle", "x1": 900, "y1": 0,
+                                      "x2": 912, "y2": 12})
+    write("model_extrude", {"sketch_name": "TimelineFirst", "profile_index": 0, "distance": 5},
+          _extruded, ("lo_timeline_extrude", _recall("lo_timeline_extrude", lambda p: p)))
+    read("model_inspect", lambda c: {"target": _ctx_get(c, "lo_timeline_extrude", "profile extrusion")["result_bodies"][0],
+                                     "include": ["mass"], "units": "cm"},
+         lambda p: _measured("timeline-profile control material", (p.get("mass") or {}).get("volume"),
+                             _near((p.get("mass") or {}).get("volume"), .5, .0002)),
+         ("lo_grouped_profile_before", _recall("lo_grouped_profile_before", lambda p: p["mass"]["volume"])))
+    write("design_edit_timeline", {"action": "group", "name": "TimelineProfiles",
+                                   "feature": "TimelineFirst", "end_feature": "TimelineSecond"},
+          lambda p: _measured("profile edit fixture group", p, p.get("grouped") is True
+                              and p.get("group") == "TimelineProfiles"))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         lambda p: _measured("profile edit fixture grouped", p.get("timeline"),
+             (p.get("timeline") or {}).get("groups") == {"TimelineProfiles": 2}
+             and (p.get("timeline") or {}).get("returned") == (p.get("timeline") or {}).get("count")
+             and ((p.get("timeline") or {}).get("summary") or {}).get("exceptions") == []),
+         ("lo_grouped_profile_rows", _recall("lo_grouped_profile_rows", lambda p: p["timeline"])))
+    write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "lo_timeline_extrude", "profile extrusion")["feature"],
+                                           "action": "profile",
+                                           "profile": {"sketch": "TimelineSecond", "profile_index": 0}},
+          _refused("TimelineProfiles", "ungroup", "timeline row does not read", "nothing was edited"))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         lambda p: _measured("refused grouped profile edit preserves timeline", p.get("timeline"),
+                             p.get("timeline") == _RECALL.get("lo_grouped_profile_rows")))
+    read("model_inspect", lambda c: {"target": _ctx_get(c, "lo_timeline_extrude", "profile extrusion")["result_bodies"][0],
+                                     "include": ["mass"], "units": "cm"},
+         lambda p: _measured("refused grouped profile edit preserves material",
+                             (p.get("mass") or {}).get("volume"),
+                             _near((p.get("mass") or {}).get("volume"),
+                                   _RECALL.get("lo_grouped_profile_before"), .00001)))
+    write("design_edit_timeline", {"action": "ungroup", "feature": "TimelineProfiles"},
+          lambda p: _measured("explicit profile ungroup", p, p.get("ungrouped") is True))
+    write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "lo_timeline_extrude", "profile extrusion")["feature"],
+                                           "action": "profile",
+                                           "profile": {"sketch": "TimelineSecond", "profile_index": 0}},
+          lambda p: _measured("profile edit succeeds after explicit ungroup", p,
+                              p.get("edited") is True))
+    read("model_inspect", lambda c: {"target": _ctx_get(c, "lo_timeline_extrude", "profile extrusion")["result_bodies"][0],
+                                     "include": ["mass"], "units": "cm"},
+         lambda p: _measured("ungrouped profile independent material read",
+                             (p.get("mass") or {}).get("volume"),
+                             _near((p.get("mass") or {}).get("volume"), 0.72, .0002)))
     rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "lo_story", "story"),
                                          "expect_document": _ctx_get(c, "lo_doc", "later operand")},
               "ok", None),
@@ -1825,3 +1883,81 @@ def _loft_endpoint_rows():
 
 
 _LATER_OPERAND += _loft_endpoint_rows()
+
+
+
+def _partial_path_shape(length):
+    """Check an independently read unit-radius solid against the selected path length."""
+    def check(p):
+        lo, hi, mass = p.get("min_point") or {}, p.get("max_point") or {}, p.get("mass") or {}
+        valid = (p.get("kind") == "body" and p.get("units") == "mm"
+                 and _near(mass.get("volume"), math.pi * length, 0.001)
+                 and all(_near((lo if side == "min" else hi).get(axis), value, 0.001)
+                         for side, axis, value in (("min", "x", 0), ("max", "x", length),
+                             ("min", "y", -1), ("max", "y", 1), ("min", "z", -1), ("max", "z", 1))))
+        return _measured("partial path independent material and bounds", {"min": lo, "max": hi, "mass": mass}, valid)
+    return check
+
+
+def _partial_path_definition(name, indices, orientation):
+    """Read the selected native Path's exact sketch-curve identities at the explicit marker."""
+    def check(p):
+        d = p.get("definition") or {}
+        refs = [r.get("curve_ref") for r in d.get("path") or []]
+        return _measured("selected Path identities exclude omitted and construction curves", d,
+                         d.get("path_count") == len(indices) and d.get("path_truncated") is False
+                         and d.get("orientation_name") == orientation
+                         and refs == [f"{name}/line:{i}" for i in indices])
+    return check
+
+
+def _partial_path_rows():
+    """Compare partial warnings, a separate first run and a genuinely shared-point chain."""
+    rows = [("doc_get", {}, _home_document, ("pp_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "pp_home", "home")},
+             _new_document, ("pp_doc", lambda p: p["document_handle"]))]
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(
+            c, "pp_doc", args(c) if callable(args) else args), check, save))
+
+    write("sketch_create", {"name": "PartialProfile", "plane": "yz"})
+    write("sketch_add_geometry", {"sketch_name": "PartialProfile", "geometry": [
+        {"kind": "circle", "cx": 0, "cy": 0, "radius": 1}]})
+    def line(a, b, construction=False):
+        return {"kind": "line", "x1": a, "y1": 0, "x2": b, "y2": 0, "is_construction": construction}
+    fixtures = [
+        ("Disconnected", [line(0, 10), line(20, 30)], [0], 2, 10, "perpendicular"),
+        ("SeparateRun", [line(0, 10)], [0], 1, 10, "perpendicular"),
+        ("ParallelRun", [line(0, 10)], [0], 1, 10, "parallel"),
+        ("OutOfOrder", [line(0, 10), line(20, 30), line(10, 20)], [0, 2], 3, 20, "perpendicular"),
+        ("ConstructionBridge", [line(0, 10), line(20, 30), line(10, 20, True)], [0], 2, 10, "perpendicular"),
+        ("SharedPointRun", [{"kind": "polyline", "points": [[0, 0], [10, 0], [20, 0], [30, 0]]}], [0, 1, 2], 3, 30, "perpendicular"),
+    ]
+    for name, geometry, indices, count, length, orientation in fixtures:
+        write("sketch_create", {"name": name, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": geometry})
+        write("model_sweep", {"profile": {"sketch": "PartialProfile", "profile_index": 0},
+                              "path": "sketch:" + name, "operation": "new", "orientation": orientation},
+              lambda p, n=len(indices), count=count: _measured("partial path warning and usable remedy", p,
+                  p.get("swept") is True and p.get("path_curves") == n
+                  and p.get("path_sketch_curves") == count and len(p.get("result_bodies") or []) == 1
+                  and (("WARNING" in p.get("note", "") and "separate path sketch" in p["note"])
+                       if n < count else "WARNING" not in p.get("note", ""))),
+              ("pp_result", lambda p: {"feature": p["feature"], "body": p["result_bodies"][0]}))
+        rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "pp_result", "sweep")["body"],
+                     "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                     _partial_path_shape(length), None))
+        write("design_edit_timeline", lambda c: {"action": "roll", "to": "before",
+                                                  "feature": _ctx_get(c, "pp_result", "sweep")["feature"]})
+        rows.append(("design_get", lambda c: {"include": ["definition"],
+                     "feature": _ctx_get(c, "pp_result", "sweep")["feature"]},
+                     _partial_path_definition(name, indices, orientation), None))
+        write("design_edit_timeline", {"action": "roll", "to": "end"})
+    write("doc_activate", lambda c: {"name": _ctx_get(c, "pp_home", "home")})
+    rows.append(("doc_close", lambda c: {"name": _ctx_get(c, "pp_doc", "scratch"),
+                 "save_changes": False, "expect_document": _ctx_get(c, "pp_home", "home")}, _document_closed, None))
+    return rows
+
+
+_TANGENT_PATH += _partial_path_rows()

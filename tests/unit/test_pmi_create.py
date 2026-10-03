@@ -80,7 +80,7 @@ class TestEntitlement:
         rig.stub_geometry([_face(rig.comp)])
         rig.notes.add = self._refuse
         msg = error_message(pc.handler(kind="note", geometry=["a"], text="X"))
-        assert "Extension is required" in msg and "entitlement" in msg and "pmi_get" in msg
+        assert "Extension is required" in msg and "This operation requires" in msg and "pmi_get" in msg
 
     def test_another_raise_carries_no_entitlement_clause(self, rig):
         rig.stub_geometry([_face(rig.comp)])

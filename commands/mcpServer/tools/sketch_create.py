@@ -74,7 +74,9 @@ def handler(plane: str = "xy", name: str = "", on_face: str = "") -> dict:
 
     face_note = ""
     if support is not None:
-        face_note = " 'plane' is null because this sketch sits on a FACE."
+        face_note = (" 'plane' is null because this sketch sits on a FACE. find_geometry.normal is "
+                     "the outward face normal; its frame.normal is the supporting plane normal. "
+                     "Place geometry using the returned new-sketch frame.")
         face_note += (f" 'on_face' names body '{support['body']}'." if support["body"]
                       else " The body it sits on did not read back.")
         face_note += (" 'on_face' carries that face's handle." if support["handle"]

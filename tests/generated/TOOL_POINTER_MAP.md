@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 694
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 695
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -37,7 +37,7 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
-- `design_get`  <- 57  (desc 12, note 45)
+- `design_get`  <- 58  (desc 12, note 46)
 - `find_geometry`  <- 55  (desc 14, note 41)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 6, note 30)
@@ -972,6 +972,10 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' has no readable owning setup; selection and generation were not attempted.
 - Setup model refresh failed:
 - Selection and generation were not attempted.
+- The probe face selection landed, but
+- did not read back; inspect it with cam_get(include=['parameters'], operation='
+- ', parameter_names=['
+- '. Pass 'probing_type' from its choices; inspect them with cam_get(include=['parameters'], operation='
 - 'handles' cannot be checked for one chain - an edge's vertices did not read. Pass chain_groups, one list per contour. No heights or selections were changed.
 - chains that share no vertex (
 - ) - a flat list is taken as ONE connected chain. Pass chain_groups, one list per contour, to group them yourself. No heights or selections were changed.
@@ -992,6 +996,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Operation '' carries '' but it did not read isEditable true after probe_mode was engaged, so stock_faces is not offered on it. Select the stock faces in the Fusion UI instead.
 - Operation '' sits in setup '', whose  reads '' - that stock carries no analytic faces, so stock_faces read back empty. Nothing was changed. Give the setup a box, cylinder or tube stock (cam_edit_se...
 - Operation '' has no '' parameter, so it cannot probe the stock. Nothing was changed - drop stock_faces and pass model face handles instead.
+- Could not read this parameter's  choices before changing the operation. Inspect them with cam_get(include=['parameters'], operation='', parameter_names=['']).
+- Setting ='' did not take - it . Read its values with cam_get(include=['parameters'], operation='', parameter_names=['']).
 - Operation '' carries no SETTABLE surface set -  did not read isEditable true, so this call will not assign faces there. Select this strategy's surfaces in the Fusion UI, or use an operation whose s...
 - Operation '' carries none of the surface sets () - the 'surfaces' selection is for a surface-driven strategy (geodesic, multi-axis finishing/roughing, ...).
 - 'surface_target' is needed here: operation '' has no '' parameter to default to. It carries  - pass whichever of those these faces are.
@@ -1005,6 +1011,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - stock_faces names the STOCK's own analytic faces, so it takes no model geometry -  was passed beside it. Pass stock_faces alone, or drop it and select model faces with 'handles'.
 - 'handles' holds  chains that share no vertex () - a flat list is taken as ONE connected chain. Pass chain_groups, one list per contour, to group them yourself. No heights or selections were changed.
 - Operation '' still reads ='' and no 'probing_type' was given - generation would land 'No valid probe operations found.'. Pass 'probing_type' (this operation's own  choices - cam_get(include=['opera...
+- The probe face selection landed, but  did not read back; inspect it with cam_get(include=['parameters'], operation='', parameter_names=['']).
+- The probe face selection landed, but  still reads ''. Pass 'probing_type' from its choices; inspect them with cam_get(include=['parameters'], operation='', parameter_names=['']).
 - Selection applied but generation failed to launch: . The selection is saved - fix the cause, then run cam_generate(target='').
 - Selection applied; generation is launched - check cam_get_status(target='') until completed=true. has_toolpath False on completion means no path was produced, and the warning channel can be silent ...
 
@@ -1614,7 +1622,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Could not read the timeline:
 - The active design is not a Configured Design (it has no configuration table) - e.g. a design with Variant A/Variant B style options.
 - include=['attributes'] needs 'attribute_group' - the group to read (the same group design_edit_timeline(action='set_attribute') wrote with). Leave 'attribute_key' empty to get every key in that group.
-- Read at the current marker without rolling. Null is unknown unless applicable=false; unavailable gives getter failures. Use profile_handle as a profile input. Distances are signed; symmetric_full_l...
+- Read at the current marker without rolling. Null is unknown unless applicable=false; unavailable gives getter failures. Through-all extent_side_count is its native one/two-side flag; extrude direct...
 - Loft sections are in order; null fields are unreadable. Use profile_handle with model_edit_loft; model_inspect reads material.
 - tapped=false or thread_present=false means absent; applicable=false means inapplicable. Other null fields are unknown. Measure tapped bore geometry with find_geometry/model_inspect; full-length thr...
 - adsk::fusion::ExtrudeFeature
@@ -2830,7 +2838,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - No active design. Open or create a document first (see doc_new).
 - This mesh is NOT watertight (is_closed=false), so method='
 - ' has no closed volume to convert to a solid. Close the holes with mesh_repair(repair_type='close_holes') and retry, or convert it as a surface with method='faceted'.
-- method='organic' requires the Product Design Extension to be active - it is not available in this session. Use method='prismatic' (best for machined/scanned parts) or 'faceted' (exact, one BRep fac...
+- OrganicMeshConvertMethodType is absent or unreadable in this Fusion API session. Check API availability, or use method='prismatic' or 'faceted'.
 - This design has no meshConvertFeatures collection (mesh->BRep unavailable here).
 - Mesh->BRep conversion did not produce a BRep body. The mesh may be non-watertight or too dense to convert.
 - meshConvertFeatures.createInput returned nothing.
@@ -3068,10 +3076,12 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 's evaluated-health census is unreadable; nothing was edited.
 - ' already uses profile '
 - '; nothing was edited.
-- The profile's sketch timeline row does not read. Nothing was edited.
+- ' has an unreadable timeline row. Read design_get(include=['timeline']) before retrying; nothing was edited.
 - An operand does not belong to '
 - ' is not native to its owning component.
+- The profile sketch timeline row does not read; nothing was edited.
 - Two-sided through_all with cut/intersect participant assignment is unsupported. Use separate one-sided features or the Fusion UI.
+- The profile sketch '' has an unreadable timeline row. Read design_get(include=['timeline']) before retrying; nothing was edited.
 
 ### `model_edit_loft`
 - Loft section changed on the same feature. Inspect model_inspect.
@@ -4212,6 +4222,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' instead - 'on_face' takes a planar-FACE handle from find_geometry.
 - ', which is a construction PLANE name, not a face handle. Pass it as plane='
 - 'on_face' got '', which is a construction PLANE name, not a face handle. Pass it as plane='' instead - 'on_face' takes a planar-FACE handle from find_geometry.
+- 'plane' is null because this sketch sits on a FACE. find_geometry.normal is the outward face normal; its frame.normal is the supporting plane normal. Place geometry using the returned new-sketch fr...
 
 ### `sketch_delete_entity`
 - | constraint | dimension | text (e.g. 'circle:0', 'dimension:2'). sketch_get(include_entities=true) lists the curve/constraint/dimension indexes; a text index is the one sketch_set_text edits by.
@@ -4893,7 +4904,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' - it is reported as null rather than a fabricated 0 or an unconverted centimetre value.
 - version_number / latest_version_number are read off the DataFile handle this open document HOLDS, and that handle can keep pre-save values after a save. Use a fresh data_get on the URN for cloud id...
 - A null size/center component could not be read or converted to '' - it is reported as null rather than a fabricated 0 or an unconverted centimetre value.
-- observed_generation[strategy] is that strategy's isGenerationAllowed flag, probed with no document or setup - it describes the INSTALLATION, not the open document. false = the entitlement reads abs...
+- observed_generation[strategy] is isGenerationAllowed: true/false reports that strategy's generation permission; null = unread. entitled is their aggregate generation permission, not subscription or...
 - design_get(include=['tree'], component='<name from browser_digest>') -  occurrences is large; scope to a component rather than dumping the whole tree.
 - find_geometry(target='<occurrence/body>') -  bodies; always scope by target (filter by kind/radius/nearest_to) rather than scanning the whole design.
 - sys_get_selection() for full detail (geometry + direction vectors + handles) on the  entity(ies) the user has selected - likely what they mean by 'this'.

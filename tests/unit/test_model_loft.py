@@ -975,6 +975,18 @@ class TestSectionsAndEnds:
         assert "resolved to 2 entities" in msg and "find_geometry" in msg
         assert lofts.last_input is None
 
+    def test_sketch_line_handle_names_the_supported_curve_section_form(self, rig):
+        line = type("SketchLine", (), {})()
+        sketch = make_sketch(name="Beam", lines=[line])
+        line.parentSketch = sketch
+        line.entityToken = "line-token"
+        line.length = 1.0
+        line.isConstruction = False
+        rig.build(_EndLofts([]), tokens={"LINE": line})
+        msg = error_message(so.handler(profiles=["LINE", "E1"], as_surface=True))
+        assert "SketchLine handle, not a loft profile" in msg
+        assert "Beam/line:0" in msg and "sketch-curve section reference" in msg
+
     def test_a_sketch_point_is_a_first_or_last_section_only(self, rig):
         lofts = rig.build(_EndLofts([_built_end("LoftTangentEndCondition", "d17"),
                                      _built_end("LoftPointTangentEndCondition", "d18")]))

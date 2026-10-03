@@ -723,17 +723,17 @@ def _folder_compound_edit(p):
 
 
 def _machining_capabilities(p):
-    """workspace_orient's entitlement block: one observed_generation entry per sentinel strategy and
-    nothing else, each a flag that ANSWERED - null there is 'the probe could not read it', which is
-    not an entitlement. Which way the flags read is this installation's licence to state, not this
-    beat's, so the values are reported rather than asserted - the capability tier is what acts on
-    them."""
-    obs = (p.get("machining_capabilities") or {}).get("observed_generation") or {}
+    """workspace_orient's strategy-generation permission block and its public meaning."""
+    cap = p.get("machining_capabilities") or {}
+    obs = cap.get("observed_generation") or {}
+    note = str(cap.get("note") or "")
     return _measured("machining capability sentinels",
                      {"observed_generation": obs},
                      set(obs) == {"steep_and_shallow", "multiaxis_finishing", "swarf",
                                   "probe_geometry"}
-                     and all(isinstance(v, bool) for v in obs.values()))
+                     and all(isinstance(v, bool) for v in obs.values())
+                     and "generation permission" in note
+                     and "not subscription or license verification" in note)
 
 
 def _types_offered(*names):
@@ -4773,20 +4773,8 @@ _CAM_SCOPE = [
 ]
 
 
-# ACT 10d: THE SECOND SETUP ON THE PART - the bracket turned over and machined from underneath,
-# with a WCS of its own. It opens with the two reads taken on the finished rail job, which the
-# extension act's own capability gates: where the extension is not entitled those two rows do not
-# run, and the flip setup below them does.
+# ACT 10d: the bracket turned over and machined from underneath, with a WCS of its own.
 _CAM_SECOND_SETUP = [
-    ("cam_get_status", {"target": _SW_SETUP}, _needs(MACHINING_EXTENSION, _first_generation), None),
-    # THE NON-EMPTY ORACLE, per operation: the rails cut only on one side of their own direction,
-    # and machining time is the only read that tells a cutting toolpath from an empty one.
-    ("cam_get", {"include": ["time"], "setup": _SW_SETUP},
-     _needs(MACHINING_EXTENSION, _cuts(_SW_SETUP, "swarf_op")), None),
-    # the same oracle over the simultaneous setup: every one of its three operations carries its own
-    # machining time above zero, so none of them generated into air.
-    ("cam_get", {"include": ["time"], "setup": _MX_SETUP},
-     _needs(MACHINING_EXTENSION, _all_cut(_MX_SETUP, 3)), None),
     # back to the real part for the flip: a second setup on the SAME model, cut from the other
     # side, which is how a part with features on two faces is actually run.
     _watch([PART_COMP + ":1"]),
@@ -4952,6 +4940,15 @@ _CAM_SECOND_SETUP = [
 # suppression takes out of it. The rail half of it rides the capability tier; the part's own two
 # setups are posted whatever this installation is entitled to, so the sweep always ends on a post.
 _CAM_MULTI_POST = [
+    ("cam_get_status", {"target": _SW_SETUP}, _needs(MACHINING_EXTENSION, _first_generation), None),
+    # THE NON-EMPTY ORACLE, per operation: the rails cut only on one side of their own direction,
+    # and machining time is the only read that tells a cutting toolpath from an empty one.
+    ("cam_get", {"include": ["time"], "setup": _SW_SETUP},
+     _needs(MACHINING_EXTENSION, _cuts(_SW_SETUP, "swarf_op")), None),
+    # the same oracle over the simultaneous setup: every one of its three operations carries its own
+    # machining time above zero, so none of them generated into air.
+    ("cam_get", {"include": ["time"], "setup": _MX_SETUP},
+     _needs(MACHINING_EXTENSION, _all_cut(_MX_SETUP, 3)), None),
     # REFUSED: the rail toolpath posted through a 3-axis machine configuration. The refusal carries
     # the platform's own cause, and it is what makes the suppression below a step with a reason
     # rather than a precaution. Only the cause is asserted - the rollback's own sentence is a

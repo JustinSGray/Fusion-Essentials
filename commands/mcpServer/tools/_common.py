@@ -586,13 +586,17 @@ def named_with_remainder(items, cap=_MAX_NAMED_CANDIDATES):
 _ECHO_CHARS = 60
 
 
+_MEASURED_EXTENSION_REFUSALS = (
+    "Manufacturing or Design Extension is required",
+    "Requires the Manufacturing Extension to be active",
+)
+
+
 def entitlement_clause(exc, needs, alternative):
-    """The next step after a platform raise names a missing extension, else '': what this install
-    lacks, where that reads, and the route that still works."""
-    if "xtension" not in str(exc):
+    """Add the action requirement and alternative only for a measured extension refusal."""
+    if not any(text in str(exc) for text in _MEASURED_EXTENSION_REFUSALS):
         return ""
-    return (f" This install carries no {needs} entitlement (workspace_orient's "
-            f"machining_capabilities.entitled reads it); {alternative}.")
+    return f" This operation requires the {needs}; {alternative}."
 
 
 def short_ref(value):

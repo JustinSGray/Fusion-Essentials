@@ -48,7 +48,7 @@ def handler() -> dict:
 
 TOOL_DESCRIPTION = (
     "Force a full recompute so downstream features rebuild against current values. Reports "
-    "timeline health and driven_joints_reset (uncaptured poses it reverted).")
+    "timeline health and driven_joints_reset (observed value changes; cause is unknown).")
 
 tool = Tool.create_simple(name="design_recompute", description=TOOL_DESCRIPTION).strict_schema()
 item = Item.create_tool_item(

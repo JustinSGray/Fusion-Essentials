@@ -16,7 +16,7 @@ from verify_acts_model_combine_revolve import (
     _combine_body, _combine_inspect, _combine_pin)
 
 
-def _extrude_definition(extent, distance, distance2=None, units="mm"):
+def _extrude_definition(extent, distance, distance2=None, units="mm", side_count=None):
     """Check definition values without substituting unavailable participants or numeric extents."""
     def check(p):
         d = p.get("definition") or {}
@@ -36,9 +36,11 @@ def _extrude_definition(extent, distance, distance2=None, units="mm"):
                  else d.get("distance_parameter") is None and d.get("distance_expression") is None)
             and (bool(d.get("distance2_parameter")) and bool(d.get("distance2_expression"))
                  if distance2 is not None else True)
+            and d.get("extent_side_count") == side_count
+            and d.get("direction") is None
             and (d.get("symmetric_full_length") is False if extent == "symmetric" else True)
             and d.get("participants") is None and bool(available.get("participants"))
-            and "side" not in d and "direction" not in d)
+            and "side" not in d)
     return check
 
 
@@ -265,7 +267,7 @@ def _extrude_edit_rows():
                                  (high[0] + dx, high[1] + dy, high[2]), volume)(p)
         return check
 
-    def definition(key, extent, distance=None, distance2=None, units="mm"):
+    def definition(key, extent, distance=None, distance2=None, units="mm", side_count=None):
         rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
             lambda p: _measured("complete timeline before definition read", p.get("timeline"),
                 bool((p.get("timeline") or {}).get("timeline"))
@@ -273,7 +275,7 @@ def _extrude_edit_rows():
             ("definition_timeline", _recall("definition_timeline", lambda p: p["timeline"]))))
         rows.append(("design_get", lambda c: {"include": ["definition"],
             "feature": _ctx_get(c, key, "Extrude"), "units": units},
-            _extrude_definition(extent, distance, distance2, units), None))
+            _extrude_definition(extent, distance, distance2, units, side_count), None))
         rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
                      _definition_timeline_unchanged, None))
 
@@ -465,13 +467,13 @@ def _extrude_edit_rows():
                  _extrude_mass_freshness("roof mass after explicit recompute", 4000, 2200,
                                          (15, 5, 32.5), disclose=True), None))
     inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", -450 / 1910))
-    definition("ee_scope", "through_all")
+    definition("ee_scope", "through_all", side_count=1)
     inspect("EditScope:Body1", _extrude_edit_mass(1910, "z", -450 / 1910))
     inspect("EditScope:Body2", _extrude_edit_mass(2000))
     write("model_edit_extrude", lambda c: {
         "feature": "EditProfile/" + _ctx_get(c, "ee_scope", "Extrude").split("/")[-1],
         "action": "extent", "extent": "distance", "distance": 5},
-        _refused("no feature named", "EditProfile"))
+        _refused("no timeline feature matches", "EditProfile/", "design_get", "timeline"))
     rows.append(("find_geometry", {"target": "EditProfile:Body1", "kind": "planar_face",
                                    "units": "mm", "max_results": 6}, _extrude_edit_roof, None))
     inspect("EditProfile:Body2", _extrude_edit_mass(482))
@@ -517,6 +519,7 @@ def _extrude_edit_rows():
                             "extent": "through_all", "symmetric": True,
                             "target_bodies": ["EditScope:Body1"]}, _extruded,
           ("ee_both_source", lambda p: "EditScope/" + p["feature"]))
+    definition("ee_both_source", "through_all", side_count=2)
     for after_refusal in (False, True):
         if after_refusal:
             write("model_edit_extrude", lambda c: {

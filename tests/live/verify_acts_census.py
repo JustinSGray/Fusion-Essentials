@@ -174,6 +174,53 @@ def _flange_top(p):
                      and _num(m.get("area")) and m["area"] > 0)
 
 
+def _probe_type_inferred(p):
+    """A probe face selection reports the type Fusion inferred from that face."""
+    value = p.get("probing_type")
+    return _measured("one probe face selected with a readable inferred type",
+                     {"selections": p.get("selections"), "probing_type": value},
+                     p.get("selections") == 1 and isinstance(value, str) and bool(value)
+                     and value != "probing-unknown")
+
+
+def _probe_type_selected(p):
+    """A probe face selection reports the caller's requested probingType."""
+    return _measured("one probe face selected with probing-z",
+                     {"selections": p.get("selections"), "probing_type": p.get("probing_type")},
+                     p.get("selections") == 1 and p.get("probing_type") == "probing-z")
+
+
+def _probe_type_read(p):
+    """The independent operation parameter read still holds the explicitly selected probe type."""
+    parameters = p.get("parameters") or {}
+    rows = parameters.get("requested_parameters") or []
+    row = rows[0] if len(rows) == 1 else {}
+    return _measured("ProbeGeom probingType reads probing-z",
+                     {"operation": parameters.get("operation"), "parameters": rows},
+                     parameters.get("operation") == "ProbeGeom"
+                     and parameters.get("requested_parameter_count") == 1
+                     and row.get("name") == "probingType"
+                     and row.get("expression") == "'probing-z'")
+
+
+def _probe_type_inferred_read(p):
+    """The independent operation parameter read matches the type the selection returned."""
+    parameters = p.get("parameters") or {}
+    rows = parameters.get("requested_parameters") or []
+    row = rows[0] if len(rows) == 1 else {}
+    expression = row.get("expression")
+    inferred = _RECALL.get("inferred_probe_type")
+    return _measured("ProbeGeom inferred probingType reads back",
+                     {"operation": parameters.get("operation"), "parameters": rows,
+                      "selection_reply": inferred},
+                     parameters.get("operation") == "ProbeGeom"
+                     and parameters.get("requested_parameter_count") == 1
+                     and row.get("name") == "probingType"
+                     and isinstance(inferred, str) and bool(inferred)
+                     and inferred != "probing-unknown"
+                     and expression == f"'{inferred}'")
+
+
 def _wedge_flat(p):
     """find_geometry: the inclined flat on the shaft, told by its AREA. Its plane is neither an
     origin plane nor the shaft wall, so a query that landed on a neighbour reads a different
@@ -569,7 +616,22 @@ _CENSUS_EXT = [
     ("cam_select_geometry",
      lambda c: {"operation": "ProbeGeom", "selection": "probe",
                 "handles": [_ctx_get(c, "ext_top", "the flange top")],
-                "generate": False}, _selected(1), None),
+                "probing_type": "probing-z", "generate": False}, _probe_type_selected, None),
+    ("cam_get", {"include": ["parameters"], "operation": "ProbeGeom",
+                  "parameter_names": ["probingType"]}, _probe_type_read, None),
+    ("cam_select_geometry",
+     lambda c: {"operation": "ProbeGeom", "selection": "probe",
+                "handles": [_ctx_get(c, "ext_top", "the flange top")],
+                "generate": False}, _probe_type_inferred,
+     ("inferred_probe_type", _recall("inferred_probe_type", lambda p: p["probing_type"]))),
+    ("cam_get", {"include": ["parameters"], "operation": "ProbeGeom",
+                  "parameter_names": ["probingType"]}, _probe_type_inferred_read, None),
+    ("cam_select_geometry",
+     lambda c: {"operation": "ProbeGeom", "selection": "probe",
+                "handles": [_ctx_get(c, "ext_top", "the flange top")],
+                "probing_type": "probing-z", "generate": False}, _probe_type_selected, None),
+    ("cam_get", {"include": ["parameters"], "operation": "ProbeGeom",
+                  "parameter_names": ["probingType"]}, _probe_type_read, None),
     ("cam_generate", {"target": HUB_MILL_SETUP, "skip_valid": True},
      _launched_on(HUB_MILL_SETUP, skip_valid=True), None),
 ]

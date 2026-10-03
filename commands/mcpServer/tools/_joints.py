@@ -219,8 +219,7 @@ def driven_joint_snapshot(design):
 
 
 def driven_joints_reset(before, after):
-    """[{name, before, after}] for every joint present in both snapshots (matched by key) whose
-    driven value CHANGED - the rows an uncaptured recompute's pose reset publishes."""
+    """[{name, before, after}] for every joint in both snapshots whose driven value changed."""
     after_by_key = {key: (nm, v) for key, nm, v in after}
     rows = []
     for key, nm, v in before:
@@ -230,9 +229,10 @@ def driven_joints_reset(before, after):
     return rows
 
 
-# The one sentence a driven-joint reset publishes, for every tool whose write recomputes.
-DRIVEN_RESET_NOTE = ("{n} driven joint(s) reset ({names}) - assembly_capture_position("
-                     "action='capture') before a recompute keeps a driven pose.")
+# One shared note for observed driven-joint value changes.
+DRIVEN_RESET_NOTE = ("Observed value changes in {n} driven joint(s) ({names}); their cause is not "
+                     "identified. If the pose is uncaptured, use assembly_capture_position("
+                     "action='capture') before recompute to request pose retention.")
 
 
 def driven_reset_note(reset):
