@@ -413,6 +413,141 @@ def _generating_withholds_ready(p):
                      all("ready to post" not in text for text in readiness))
 
 
+def _capped_scan_args(setup):
+    """Temporarily cap the source and display reads, then compare restored native and public counts."""
+    script = """import adsk.cam, adsk.core, adsk.fusion, json, sys
+
+def run(context):
+    read = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools._cam_read'))
+    common = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools._cam_common'))
+    get = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools.cam_get'))
+    status = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools.cam_get_status'))
+    app = adsk.core.Application.get()
+    cam, error = common.get_cam()
+    assert cam is not None, error
+    node, error = common.resolve_cam_node(cam, SETUP_NAME, kinds=('setup',), label='setup')
+    assert node is not None, error
+    setup = node.obj
+    def payload(result):
+        assert result.get('isError') is False, result
+        return json.loads(result['content'][0]['text'])
+    def read_operations():
+        return payload(get.handler(include=['operations'], setup=SETUP_NAME))
+    def setup_row(result):
+        return next(r for r in result['operations']['setups'] if r['setup'] == SETUP_NAME)
+    doc = app.activeDocument
+    design = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    assert design is not None
+    def snapshot():
+        bodies = []
+        for i in range(design.allComponents.count):
+            component = design.allComponents.item(i)
+            for j in range(component.bRepBodies.count):
+                body = component.bRepBodies.item(j)
+                box = body.boundingBox
+                bodies.append((component.name, body.name,
+                               (box.minPoint.x, box.minPoint.y, box.minPoint.z),
+                               (box.maxPoint.x, box.maxPoint.y, box.maxPoint.z)))
+        data_file = doc.dataFile
+        return {'document': (doc.name, data_file.id if data_file else None, doc.isModified),
+                'workspace': app.userInterface.activeWorkspace.id,
+                'timeline': (design.timeline.markerPosition, design.timeline.count),
+                'body_count': len(bodies), 'body_boxes': bodies}
+    flat = setup.allOperations
+    flat_count = flat.count
+    cast_count = sum(1 for i in range(flat_count)
+                     if adsk.cam.Operation.cast(flat.item(i)) is not None)
+    before_state = snapshot()
+    source_cap = read._MAX_ITEMS
+    display_cap = get._OPERATIONS_CAP
+    try:
+        read._MAX_ITEMS = 1
+        partial = read_operations()
+        read._MAX_ITEMS = source_cap
+        get._OPERATIONS_CAP = 1
+        displayed = read_operations()
+    finally:
+        read._MAX_ITEMS = source_cap
+        get._OPERATIONS_CAP = display_cap
+    complete = read_operations()
+    live = payload(status.handler(target=SETUP_NAME))
+    after_state = snapshot()
+    partial_row = setup_row(partial)
+    displayed_row = setup_row(displayed)
+    complete_row = setup_row(complete)
+    partial_summary = partial_row['summary']
+    displayed_summary = displayed_row['summary']
+    complete_summary = complete_row['summary']
+    status_total = (live.get('live_states') or {}).get('total')
+    checks = {
+        'flat_count_matches_operation_casts': flat_count == cast_count,
+        'source_cap_returns_prefix': len(partial_row['operations']) == 1 and flat_count > 1,
+        'partial_read_marks_scan_incomplete': partial_row['operations_truncated'] is True
+            and partial_summary.get('scan_complete') is False
+            and partial_summary.get('observed_operation_count') == 1,
+        'partial_read_withholds_readiness': partial_summary.get('readiness', '').startswith(
+            'Readiness not established: operation scan incomplete'),
+        'display_cap_keeps_complete_summary': displayed['operations'].get('truncated') is True
+            and len(displayed_row['operations']) == 1
+            and displayed_summary.get('scan_complete') is True
+            and displayed_summary.get('observed_operation_count') == cast_count
+            and displayed_summary == complete_summary
+            and not displayed_summary.get('readiness', '').startswith(
+                'Readiness not established: operation scan incomplete'),
+        'restored_read_has_complete_summary': complete_row['operations_truncated'] is False
+            and complete_summary.get('scan_complete') is True
+            and complete_summary.get('observed_operation_count') == len(complete_row['operations'])
+            and len(complete_row['operations']) == cast_count,
+        'independent_status_covers_flat_operation_count': status_total == flat_count,
+        'both_caps_restored': read._MAX_ITEMS == source_cap and get._OPERATIONS_CAP == display_cap,
+        'observed_native_fields_unchanged': before_state == after_state,
+        'native_state_snapshot_readable': bool(before_state['document'][0])
+            and isinstance(before_state['document'][2], bool)
+            and bool(before_state['workspace']) and before_state['timeline'][1] is not None
+            and before_state['body_count'] > 0,
+    }
+    print(json.dumps({'passed': all(checks.values()), 'checks': checks,
+                      'evidence': {'setup': SETUP_NAME, 'all_operations_count': flat_count,
+                                   'operation_cast_count': cast_count,
+                                   'partial_rows': len(partial_row['operations']),
+                                   'display_rows': len(displayed_row['operations']),
+                                   'restored_rows': len(complete_row['operations']),
+                                   'partial_readiness': partial_summary.get('readiness'),
+                                   'status_total': status_total,
+                                   'before_state': before_state, 'after_state': after_state,
+                                   'source_cap_restored': read._MAX_ITEMS == source_cap,
+                                   'display_cap_restored': get._OPERATIONS_CAP == display_cap}}))
+"""
+    return {"script": script.replace("SETUP_NAME", repr(setup)), "read_only": True}
+
+
+def _capped_scan_guarded(payload):
+    """Require the partial scan verdict, native census, uncapped status and cap restoration."""
+    checks = payload.get("checks") or {}
+    return _measured("incomplete source scan withholds readiness and restores the full read",
+                     payload.get("evidence") or {},
+                     payload.get("passed") is True and checks
+                     and all(value is True for value in checks.values()))
+
+
+def _manufacture_validity(p):
+    """The setup slice reports this call's sync separately from its Manufacture workspace basis."""
+    return _measured("Manufacture workspace basis and validity sync are distinct fields",
+                     {"validity_basis": p.get("validity_basis"),
+                      "validity_synced": p.get("validity_synced")},
+                     p.get("validity_basis") == "manufacture_verified"
+                     and p.get("validity_synced") is True)
+
+
+def _design_validity(p):
+    """A sync can run in Design while operation validity remains outside its trusted workspace."""
+    return _measured("Design workspace remains unverified after a successful validity sync",
+                     {"validity_basis": p.get("validity_basis"),
+                      "validity_synced": p.get("validity_synced")},
+                     p.get("validity_basis") == "unverified_design_workspace"
+                     and p.get("validity_synced") is True)
+
+
 def _op_named(setup, strategy, name):
     """A created operation that landed under the name it ASKED for. 'operation' is a read-back:
     op.name off the operation the platform added, so a deduped name reads back a different string
@@ -1142,7 +1277,7 @@ _CAM_STORY = _setup_preflight_rows() + [
     # sketch the CAM selection already holds by name is unaffected. Put back in the FINALE.
     ("view_set", {"action": "display", "categories": ["sketches"], "visible": False},
      lambda p: p.get("visible") is False, None),
-    ("cam_get", {}, "ok", None),
+    ("cam_get", {}, _manufacture_validity, None),
     # THE ENTITLEMENT READ, before any CAM structure exists: four sentinel strategies, each
     # answering its own isGenerationAllowed flag. The flags need no CAM product and no setup - the
     # read itself needs an active document - and the capability probe takes this same read.
@@ -2281,6 +2416,12 @@ def _setup_ready(setup, count):
 # ACT 10b: CAM read-back + deliverables on the generated job - toolpath shown, NC posted,
 # template saved and re-applied.
 _CAM_DELIVER = [
+    # The source and display caps are injected after generation settles. Native flat operation
+    # items and the uncapped status count independently check the restored public census.
+    ("sys_execute_script", lambda c: _capped_scan_args(CAM_SETUP), _capped_scan_guarded, None),
+    ("view_switch_workspace", {"workspace": "design"}, "ok", None),
+    ("cam_get", {"include": ["setups"]}, _design_validity, None),
+    ("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
     # THE NON-EMPTY ORACLE OVER THE WHOLE JOB, taken first, before any row here suppresses or
     # deletes an operation: every operation the setup holds reports its own machining time above
     # zero. The act-boundary poll fails on an EMPTY toolpath; this says the same thing per

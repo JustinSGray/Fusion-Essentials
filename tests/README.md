@@ -84,7 +84,7 @@ Producer additions list late act-local setup beyond the family default. Entitlem
 | `ACT 8b - THE HUB` | `hub_cam` | family default | inherited | `none` | `always` | `null` |
 | `ACT 9 - THE SHOWCASE` | `showcase` | family default | inherited | `none` | `always` | `null` |
 | `ACT 10a - CAM: JOB + GENERATE` | `part_cam` | family default | manufacture | `model_inspect` | `always` | `{"narrative":"DemoSetup","fallback":"Setup1"}` |
-| `ACT 10b - CAM: DELIVERABLES` | `part_cam` | family default | inherited | `cam_get` | `always` | `{"narrative":"Setup2","fallback":[]}` |
+| `ACT 10b - CAM: DELIVERABLES` | `part_cam` | family default | design -> manufacture | `cam_get` | `always` | `{"narrative":"Setup2","fallback":[]}` |
 | `ACT 10b1 - CAM: TEMPLATE MODES` | `part_cam` | family default | inherited | `cam_get` | `always` | `{"narrative":"TemplateGenerate","fallback":[]}` |
 | `ACT 10b1b - CAM: TEMPLATE CLEANUP` | `part_cam` | family default | inherited | `cam_get` | `always` | `null` |
 | `ACT 10b2 - CAM: COMPONENT SCOPE` | `swarf_cam` | family default | inherited | `none` | `always` | `{"narrative":"SwarfSetup2","fallback":"SwarfSetup2"}` |

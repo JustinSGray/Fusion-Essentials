@@ -799,7 +799,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 ### `cam_get`
 - 'parameter_names', 'include_unavailable' and 'unavailable_offset' apply only with include=['parameters'].
 - Operation rows capped at
-- - 'setup' scopes to one, or include 'default' for the per-setup operation_count.
+- ; 'setup' scopes, 'default' keeps setup counts.
 - rows; 'setup' scopes it, strategy_count is the true total.
 - include=['parameters'] needs 'operation' - the operation whose settings to read (scope first with cam_get(setup=..., include=['operations'])); or 'setup' alone for that SETUP's own parameters (stoc...
 - include=['tool'] needs 'operation' - the operation whose tool to read.

@@ -241,7 +241,7 @@ def get_cam_setups_handler(setup: str = "", units: str = "mm") -> dict:
         return error(f"Could not read setups: {e}")
 
     out = {"setup_count": len(setups), "setups": setups, "truncated": setups_truncated,
-           "validity_synced": validity_synced()}
+           "validity_basis": validity_basis(), "validity_synced": validity_synced()}
     if any(r.get("stock_mode") == _PREVIOUS_SETUP_MODE for r in setups):
         out["note"] = _REST_STOCK_NOTE
     return ok(out)
@@ -255,9 +255,9 @@ _PREVIOUS_SETUP_MODE = "previous_setup"
 _REST_STOCK_UNREADABLE = "the relative box, NOT the rest stock this mode cuts from"
 
 _REST_STOCK_NOTE = (
-    "A setup at stock_mode 'previous_setup' cuts what the setup before it left - stockSolids and "
-    "stock extents do NOT describe that (see stock_extents_describe); size a clearing strategy from "
-    "the preceding setup's own operations.")
+    "A setup at stock_mode 'previous_setup' cuts what its predecessor left; stockSolids and extents "
+    "do NOT describe that (see stock_extents_describe). Size clearing strategies from the predecessor's "
+    "operations.")
 
 _GENERATE_REQUIRES = {"tool": "cam_generate", "workspace": "Manufacture"}
 # A state that never answered is not stale work: the remedy is another READ, in the workspace op
@@ -330,10 +330,10 @@ def _attach_setup_invalidation(rec, setup, cam=None):
 _SUPPRESSED_NOT_COMPARED = "suppressed_not_compared"
 
 _OPERATIONS_NOTE = (
-    "'unread' state: re-read in Manufacture, not cam_generate. 'other_nodes': base nodes with no "
-    "operation, no toolpath. 'spindle_over_machine_max': tool_spindleSpeed vs "
-    "machine_spindle_max_rpm (null if unread); a suppressed row reads spindle_check "
-    "'suppressed_not_compared'.")
+    "'unread': re-read in Manufacture, not cam_generate. 'other_nodes': base nodes, no op/toolpath. "
+    "'spindle_over_machine_max': tool_spindleSpeed vs machine_spindle_max_rpm (null = unread); "
+    "suppressed rows say spindle_check='suppressed_not_compared'. Incomplete scans withhold "
+    "readiness; cam_get_status gives uncapped op counts.")
 
 
 def get_cam_operations_handler(setup: str = "") -> dict:
@@ -360,7 +360,7 @@ def get_cam_operations_handler(setup: str = "") -> dict:
             blocked = blocked_setup_records([s])
             rec = {
             "setup": safe(lambda s=s: s.name),
-            "summary": _operations_summary(ops, blocked),   # exception-first rollup BEFORE the list
+            "summary": _operations_summary(ops, blocked, scan_complete=not ops_truncated),
             "operations": ops,
             "operations_truncated": ops_truncated,
             }
@@ -411,10 +411,8 @@ def _exception_remedies(exceptions, setup_blocked) -> str:
     return f" ({'; '.join(remedies)})" if remedies else ""
 
 
-def _operations_summary(op_records, setup_blocked=None) -> dict:
-    """Exception-first rollup of an operations list: the per-state tally, the active census, the
-    ACTIVE ops that block, and a readiness verdict gated by validity_basis and by the setup's own
-    blocked_by (`setup_blocked`, from blocked_setup_records)."""
+def _operations_summary(op_records, setup_blocked=None, scan_complete=True) -> dict:
+    """Summarize observed operation rows and gate readiness on scan and workspace validity."""
     states = {}
     exceptions = []
     active_total = 0
@@ -456,15 +454,23 @@ def _operations_summary(op_records, setup_blocked=None) -> dict:
 
     basis = validity_basis()
     synced = validity_synced()
-    # 'checked' says the sync for THIS call actually ran, over the bare workspace-gate name.
     reported_basis = "checked" if basis == "manufacture_verified" and synced else basis
     summary = {"states": states, "active_count": active_total, "exceptions": exceptions,
+               "observed_operation_count": len(op_records), "scan_complete": bool(scan_complete),
                "validity_basis": reported_basis, "validity_synced": synced}
+    if setup_blocked:
+        summary["setups_blocked"] = setup_blocked
     if over_spindle:
         summary["spindle_over_machine_max_count"] = over_spindle   # active rows only; absent = none
     if empty_toolpaths:
         summary["empty_toolpath_count"] = empty_toolpaths          # active rows only; absent = none
-    if basis == "manufacture_verified":
+    if not scan_complete:
+        summary["readiness"] = (
+            f"Readiness not established: operation scan incomplete "
+            f"({len(op_records)} operation row(s) observed); use cam_get_status(target=<setup>) "
+            "for uncapped operation counts and re-read cam_get when the collection is readable. "
+            "Any setup blockers are in 'setups_blocked'.")
+    elif basis == "manufacture_verified":
         if generating:
             summary["readiness"] = (f"{valid_active} of {active_total} active ops have valid "
                                     f"toolpaths - {generating} operation(s) still generating; poll "
@@ -480,7 +486,8 @@ def _operations_summary(op_records, setup_blocked=None) -> dict:
                                     + " before posting.")
     else:
         summary["readiness"] = ("op validity is only trustworthy after entering the Manufacture "
-                                "workspace - enter it (and run cam_generate) to assess post-readiness.")
+                                "workspace - enter it and re-read with cam_get; run cam_generate "
+                                "only for operations that read out_of_date or no_toolpath.")
     summary["readiness"] = with_validity_clause(summary["readiness"])
     miss = validity_sync_miss()
     if miss:
@@ -514,7 +521,7 @@ def _operations_in(setup_obj, machine_max=None, cam=None) -> tuple:
     # counted against the setup's own flat total.
     expected = counted(lambda: setup_obj.allOperations.count)
     walked = sum(1 for n in nodes if n.kind == "operation")
-    if expected is not None and walked < expected:
+    if expected is None or walked != expected:
         truncated = True
     try:
         for i, node in enumerate(n for n in nodes if n.kind == "operation"):
@@ -523,6 +530,7 @@ def _operations_in(setup_obj, machine_max=None, cam=None) -> tuple:
                 break
             operation = adsk.cam.Operation.cast(node.obj)
             if not operation:
+                truncated = True
                 continue
             ops.append(_operation_summary(operation, machine_max, node, cam))
     except Exception:

@@ -113,8 +113,8 @@ def _slice_operations(cam, setup):
                 emitted += 1
             su["operations"] = rows
         if payload.get("truncated"):
-            payload["note"] = (f"Operation rows capped at {_OPERATIONS_CAP} - 'setup' scopes to one, "
-                               "or include 'default' for the per-setup operation_count. "
+            payload["note"] = (f"Operation rows capped at {_OPERATIONS_CAP}; 'setup' scopes, "
+                               "'default' keeps setup counts. "
                                + (payload.get("note") or ""))
     return payload, err
 
@@ -749,7 +749,9 @@ def _slice_tool(cam, operation, preset, setup="", units="mm"):
 
 # ── the router ─────────────────────────────────────────────────────────────────────────────────────
 
-_VALIDITY_NOTE = "Readable from any workspace; operation validity only in Manufacture."
+_VALIDITY_NOTE = (
+    "validity_synced means checkValidity ran; summary basis 'checked' means synced Manufacture; "
+    "Design is unverified.")
 
 
 def handler(include=None, setup: str = "", operation: str = "", preset: str = "",
@@ -861,8 +863,7 @@ def handler(include=None, setup: str = "", operation: str = "", preset: str = ""
     remaining = [s for s in _SLICES if s not in inc]
     lines = []
     if want_default and remaining:
-        lines.append("Setups orientation; other slices are the 'include' enum - 'setup' scopes, "
-                     "'operation' drills.")
+        lines.append("Default: setups; 'include' adds slices, 'setup' scopes, 'operation' drills.")
     if want_default or "operations" in inc:
         lines.append(_VALIDITY_NOTE)
     if lines:

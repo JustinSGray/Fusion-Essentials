@@ -78,7 +78,7 @@ class TestDefaultSlice:
 
     def test_default_note_advertises_remaining(self, stub_slices):
         out = _payload(cg.handler())
-        assert "other slices are the 'include' enum" in out["note"]
+        assert "'include' adds slices" in out["note"]
 
     def test_the_worst_composed_router_note_fits_the_wire_budget(self, monkeypatch):
         # the true worst case: _cam_read's rest-stock note (a setup at stock_mode 'previous_setup')
@@ -716,13 +716,18 @@ class TestBounding:
         return {"isError": False, "content": [{"type": "text", "text": json.dumps(payload)}]}
 
     def test_operations_capped_and_flagged(self, monkeypatch):
+        summary = {"readiness": "300 of 300 active ops have valid toolpaths - ready to post.",
+                   "observed_operation_count": cg._OPERATIONS_CAP + 50,
+                   "scan_complete": True}
         big = {"setups": [{"setup": "S", "operations": [
-            {"name": f"Op{i}", "state": "valid"} for i in range(cg._OPERATIONS_CAP + 50)]}]}
+            {"name": f"Op{i}", "state": "valid"} for i in range(cg._OPERATIONS_CAP + 50)],
+            "summary": summary}]}
         self._fake_cam_read(monkeypatch,
                             get_cam_operations_handler=lambda setup="": self._ok(big))
         out, err = cg._slice_operations(object(), "")
         assert err is None
         assert len(out["setups"][0]["operations"]) == cg._OPERATIONS_CAP and out["truncated"] is True
+        assert out["setups"][0]["summary"] == summary
 
     def test_the_worst_composed_note_fits_the_wire_budget(self, monkeypatch):
         # the truncated-cap prefix plus _cam_read's own operations note - both pieces armed at

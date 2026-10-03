@@ -308,6 +308,23 @@ class TestOperationsCap:
         rec = out["setups"][0]
         assert rec["operations_truncated"] is True
         assert len(rec["operations"]) == cr._MAX_ITEMS
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
+
+    def test_an_incomplete_source_scan_withholds_the_setup_verdict(self, install, monkeypatch):
+        row = {"name": "Face1", "state": "valid", "toolpath_valid": True,
+               "has_error": False, "blocked_by": []}
+        monkeypatch.setattr(cr, "_operations_in", lambda *_args: ([row], True, []))
+        monkeypatch.setattr(cr, "validity_basis", lambda: "manufacture_verified")
+        setup = FakeSetup("S1")
+        install(FakeCAM([setup]))
+        summary = _payload(cr.get_cam_operations_handler())["setups"][0]["summary"]
+        assert summary["scan_complete"] is False
+        assert summary["observed_operation_count"] == 1 and summary["active_count"] == 1
+        assert summary["setups_blocked"] == [
+            {"name": "S1", "blocked_by": ["no_machine_selected"]}]
+        assert summary["readiness"].startswith("Readiness not established: operation scan incomplete")
+        assert "cam_get_status(target=<setup>)" in summary["readiness"]
 
 
 class TestOperationsFilterNamedBranch:
@@ -1216,6 +1233,7 @@ class TestOperationsSummaryErrorGate:
         # the whole sentence, not a substring: every demoted verdict CONTAINS "ready to post"
         # inside "'ready to post' is NOT established", so a substring check asserts nothing.
         assert summary["readiness"] == "2 of 2 active ops have valid toolpaths - ready to post."
+        assert summary["scan_complete"] is True and summary["observed_operation_count"] == 2
         assert summary["exceptions"] == []
 
     def test_a_nonfinite_row_is_neither_valid_nor_ready(self, monkeypatch):
@@ -1854,6 +1872,46 @@ class TestContainerRowsAndOtherNodes:
         rec = self._rows(install, setup)
         assert [r["name"] for r in rec["operations"]] == ["Arrange1"]
         assert rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
+
+    def test_a_walk_above_the_flat_operation_count_is_incomplete(self, install,
+                                                                 operation_cast_passthrough):
+        class UnderReportedSetup(FakeSetup):
+            @property
+            def allOperations(self):
+                return SimpleNamespace(count=0)
+
+        rec = self._rows(install, UnderReportedSetup("Build", ops=[FakeOperation("Arrange1")]))
+        assert [r["name"] for r in rec["operations"]] == ["Arrange1"]
+        assert rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
+
+    def test_an_unread_flat_operation_count_is_incomplete(self, install, monkeypatch,
+                                                          operation_cast_passthrough):
+        monkeypatch.setattr(cr, "counted", lambda _getter: None)
+        setup = FakeSetup("Build", ops=[FakeOperation("Arrange1")])
+        rec = self._rows(install, setup)
+        assert [r["name"] for r in rec["operations"]] == ["Arrange1"]
+        assert rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
+
+    def test_a_recast_that_no_longer_reads_an_operation_is_incomplete(self, install, monkeypatch):
+        operation = FakeOperation("Arrange1")
+        setup = FakeSetup("Build", ops=[operation])
+        calls = [0]
+
+        def cast(obj):
+            calls[0] += 1
+            return obj if calls[0] == 1 else None
+
+        monkeypatch.setattr(adsk.cam.Operation, "cast", cast)
+        rec = self._rows(install, setup)
+        assert rec["operations"] == [] and rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
 
 
 class _UnreadableNameFolder(FakeCAMFolder):
@@ -2817,9 +2875,7 @@ class TestValiditySync:
         assert "Validity not synced this call." in summary["readiness"]
         assert "checkValidity raised" in summary["validity_not_synced"]
 
-    def test_a_synced_manufacture_read_reports_validity_basis_checked(self, monkeypatch):
-        # validity_basis says 'manufacture_verified' (the bare workspace gate) unless the sync for
-        # THIS call actually ran - only then does it say 'checked'.
+    def test_a_synced_manufacture_read_reports_checked(self, monkeypatch):
         monkeypatch.setattr(cc, "_VALIDITY_SYNCED", [True])
         monkeypatch.setattr(cr, "validity_basis", lambda: "manufacture_verified")
         summary = cr._operations_summary([])
@@ -2833,10 +2889,21 @@ class TestValiditySync:
         assert summary["validity_synced"] is False
         assert summary["validity_basis"] == "manufacture_verified"
 
+    def test_a_synced_design_read_remains_unverified(self, monkeypatch):
+        monkeypatch.setattr(cc, "_VALIDITY_SYNCED", [True])
+        monkeypatch.setattr(cr, "validity_basis", lambda: "unverified_design_workspace")
+        summary = cr._operations_summary([])
+        assert summary["validity_synced"] is True
+        assert summary["validity_basis"] == "unverified_design_workspace"
+        assert "only trustworthy after entering the Manufacture workspace" in summary["readiness"]
+        assert "run cam_generate only for operations that read out_of_date or no_toolpath" in summary["readiness"]
+
     def test_setups_and_time_slices_report_validity_synced(self, monkeypatch,
                                                            operation_cast_passthrough):
         self._wire(monkeypatch, make_cam(FakeSetup("S1", ops=[FakeOperation("Face1")])))
-        assert _payload(cr.get_cam_setups_handler())["validity_synced"] is True
+        setups_payload = _payload(cr.get_cam_setups_handler())
+        assert setups_payload["validity_synced"] is True
+        assert setups_payload["validity_basis"] == "unverified_design_workspace"
         assert _payload(cr.get_machining_time_handler())["validity_synced"] is True
 
     def test_setups_and_time_slices_report_validity_synced_false_on_a_raising_sync(
@@ -4397,6 +4464,8 @@ class TestSpindleScopedToActiveOps:
         rec = self._rows(install, setup)
         assert [r["name"] for r in rec["operations"]] == ["Rough"]
         assert rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
 
     def test_a_row_read_that_raises_flags_the_list_incomplete(self, install, monkeypatch,
                                                               operation_cast_passthrough):
@@ -4406,6 +4475,27 @@ class TestSpindleScopedToActiveOps:
         setup = FakeSetup("Op1", ops=[_row_op("Rough")])
         rec = self._rows(install, setup)
         assert rec["operations"] == [] and rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
+
+    def test_a_row_read_failure_after_a_valid_prefix_keeps_only_observed_counts(
+            self, install, monkeypatch, operation_cast_passthrough):
+        first = {"name": "First", "state": "valid", "toolpath_valid": True,
+                 "has_error": False, "blocked_by": []}
+
+        def read_row(op, *_args):
+            if op.name == "Second":
+                raise RuntimeError("operation read failed")
+            return first
+
+        monkeypatch.setattr(cr, "_operation_summary", read_row)
+        setup = FakeSetup("Op1", ops=[_row_op("First"), _row_op("Second")])
+        rec = self._rows(install, setup)
+        assert [r["name"] for r in rec["operations"]] == ["First"]
+        assert rec["operations_truncated"] is True
+        assert rec["summary"]["observed_operation_count"] == 1
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
 
 
 # --- get_setup_references_handler / _references_in: X-ref occurrences -> their source docs ---
