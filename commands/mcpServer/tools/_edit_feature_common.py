@@ -11,10 +11,11 @@ from . import _common, _design_common, _geom, _inputs, _sketch_detail
 from ._common import counted, safe
 
 MAP_BLURB = (
-    "read_extrude_definition/read_sweep_definition/feature_definition - reads; "
-    "all_shapes/feature_body_keys/health/same_feature - evidence; retire_failed_create - cleanup; "
-    "operand_source/later_operand_refusal - dependencies; "
-    "sketch_address/at_address/address_text - operands; "
+    "read_extrude_definition/read_sweep_definition/feature_definition - read; "
+    "all_shapes/feature_body_keys/health/same_feature; "
+    "path_sketch_visibility_restore/retire_failed_create - cleanup; "
+    "operand_source/later_operand_refusal - order; "
+    "sketch_address/at_address/address_text; "
     "restore_definition/restore_gaps/matched/shape_match - rollback; "
     "rolled_back_text/failed/identical_geometry_reply - outcomes")
 
@@ -186,6 +187,26 @@ def _empty_solid_shape(body):
             "face_count": faces, "edge_count": edges, "lump_count": lumps}
 
 
+def path_sketch_visibility_restore(comp, raw_path):
+    """Return a verified bulb-restorer for a named sketch path, or None when its state is unreadable."""
+    if not isinstance(raw_path, str) or ":" not in raw_path:
+        return None
+    kind, name = raw_path.split(":", 1)
+    if kind.strip().lower() != "sketch" or not name.strip():
+        return None
+    sketch, _ = _common.target_sketch(comp, name.strip())
+    light = safe(lambda: sketch.isLightBulbOn) if sketch is not None else None
+    visible = safe(lambda: sketch.isVisible) if sketch is not None else None
+    if type(light) is not bool or type(visible) is not bool:
+        return None
+
+    def restore():
+        sketch.isLightBulbOn = light
+        return (safe(lambda: sketch.isLightBulbOn) is light
+                and safe(lambda: sketch.isVisible) is visible)
+    return restore
+
+
 def all_shapes(design, allow_empty_solids=False, components=None):
     """Native body snapshots across supplied components or the design, or None when unreadable."""
     if components is None:
@@ -211,17 +232,20 @@ def all_shapes(design, allow_empty_solids=False, components=None):
     return rows
 
 
-def retire_failed_create(design, feature, before_timeline, before_shapes, components, before_marker):
+def retire_failed_create(design, feature, before_timeline, before_shapes, components, before_marker,
+                         restore_input_visibility=None):
     """Remove only a new last feature with unchanged material, reporting verified timeline restoration."""
     name = safe(lambda: feature.name)
     owner = safe(lambda: feature.parentComponent.name)
     index = counted(lambda: feature.timelineObject.index)
     address = f"{owner}/{name}@{index}" if owner and name and index is not None else name
+    visibility_check = (" Path sketch visibility may have changed; re-read with sketch_get."
+                        if restore_input_visibility is not None else "")
     remedy = (f"Feature '{address}' was retained; inspect it with design_get and remove it with "
               "design_delete_feature.") if address else _common.failed_effect_remedy(design, feature)
     if _inputs.current_design_type(design) != _inputs.MODE_PARAMETRIC:
         return (f"Automatic cleanup of '{address}' was not attempted outside a readable PARAMETRIC "
-                "design; inspect with design_get or undo in Fusion.")
+                "design; inspect with design_get or undo in Fusion." + visibility_check)
     now = _design_common.timeline_census(design)
     old_rows = (before_timeline or {}).get("items")
     rows = (now or {}).get("items")
@@ -235,19 +259,30 @@ def retire_failed_create(design, feature, before_timeline, before_shapes, compon
             or _common.timeline_marker(design) != (len(rows), len(rows))
             or safe(lambda: design.timeline.item(index).entity == feature) is not True
             or before_shapes is None or all_shapes(design, components=components) != before_shapes):
-        return remedy
+        return remedy + visibility_check
     try:
         removed = feature.deleteMe()
     except Exception as exc:
         return (f"Cleanup of '{address}' raised: {exc}. Removal is unconfirmed; re-read "
-                "design_get(include=['timeline']) before using design_delete_feature.")
+                "design_get(include=['timeline']) before using design_delete_feature."
+                + visibility_check)
     after = _design_common.timeline_census(design)
     if (removed is True and after == before_timeline
             and _common.timeline_marker(design) == (before_marker, before_marker)
             and all_shapes(design, components=components) == before_shapes):
-        return f"Failed feature '{address}' was removed; the prior timeline and checked body shapes were restored."
+        visibility = ""
+        if restore_input_visibility is not None:
+            try:
+                restored = restore_input_visibility()
+            except Exception:
+                restored = False
+            visibility = (" The path sketch visibility was restored." if restored is True else
+                          " Path sketch visibility is unconfirmed; re-read it with sketch_get.")
+        return (f"Failed feature '{address}' was removed; the prior timeline and checked body shapes "
+                f"were restored.{visibility}")
     return (f"Cleanup of '{address}' returned {removed!r}, but restoration is unconfirmed; re-read "
-            "design_get(include=['timeline']) and model_inspect before using design_delete_feature.")
+            "design_get(include=['timeline']) and model_inspect before using design_delete_feature."
+            + visibility_check)
 
 
 def feature_body_keys(feature):

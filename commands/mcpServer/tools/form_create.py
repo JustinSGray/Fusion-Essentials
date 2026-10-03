@@ -197,6 +197,13 @@ def handler(primitive=None, cage=None, origin=None, name: str = "", component: s
         left = _form_common.retire(design, ff, label, facts["count_before"])
         return error(f"'{label}' failed {len(problems)} read-back check(s): "
                      + "; ".join(problems[:3]) + "." + (left or " It was removed."))
+    body_areas = [_common.measured(lambda b=b: b.area, 1.0, 9) for b in bodies]
+    if None not in body_areas and sum(body_areas) <= _assert._AREA_TOL_CM2:
+        result_names = [safe(lambda b=b: b.name) for b in bodies]
+        left = _form_common.retire(design, ff, label, facts["count_before"])
+        return error(f"'{label}' created B-Rep body {result_names} with total surface area "
+                     f"{sum(body_areas):.12g} cm2, not above {_assert._AREA_TOL_CM2:g} cm2."
+                     + (left or " It was removed."))
     shape = _shape_facts(bodies, census["closed"])
     box = shape.pop("box_cm")
     extent = [round(box[1][i] - box[0][i], 9) for i in range(3)] if box else None

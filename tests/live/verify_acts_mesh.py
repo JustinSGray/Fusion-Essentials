@@ -78,6 +78,29 @@ def _organic_source_retained(p):
                      and _num(row.get("triangle_count")) and row["triangle_count"] > 0)
 
 
+def _failed_mesh_scope_timeline(p, after=False):
+    """Compare the bounded Mesh-to-BRep failure's retained timeline row independently."""
+    timeline = p.get("timeline") or {}
+    rows = timeline.get("timeline") or []
+    now = [(row.get("name"), row.get("type"), row.get("index")) for row in rows]
+    complete = (timeline.get("count") == timeline.get("marker_position") == len(rows)
+                and not timeline.get("truncated")
+                and (timeline.get("summary") or {}).get("states") == {"healthy": len(rows)})
+    key = "mesh_failed_scope_timeline"
+    before = _RECALL.get(key)
+    if not after:
+        if complete:
+            _RECALL[key] = now
+        return _measured("parametric history before failed mesh conversion", now, complete)
+    added = now[len(before):] if complete and before is not None and now[:len(before)] == before else []
+    valid = (complete and before is not None and len(added) == 1
+             and isinstance(added[0][0], str) and added[0][0].startswith("Base Feature")
+             and added[0][1] == "BaseFeature"
+             and added[0][2] == len(before))
+    return _measured("failed conversion's retained base-feature history row", {
+        "before": before, "after": now, "added": added}, valid)
+
+
 def _mesh_remedy_rows():
     """Exercise a plain miss, its mesh_get remedy and independently scoped decimation."""
     rows = [("doc_get", {}, _home_document, ("mr_story", _home_address)),
@@ -468,6 +491,91 @@ def _form_count_is(key, delta):
         return _measured(f"timeline count {delta:+d}", {"count": count, "before": _RECALL[key]},
                          _num(count) and count == _RECALL[key] + delta)
     return check
+
+
+def _form_body_state(p):
+    """The FormDemo body and aggregate physical-property signature."""
+    mass = p.get("mass") or {}
+    rows = mass.get("per_body") or []
+    bodies = [{key: row.get(key) for key in ("body", "is_solid", "volume", "mass_kg", "lump_count")}
+              for row in rows]
+    aggregate = {key: mass.get(key) for key in ("volume", "area", "mass_kg")}
+    readable = (mass.get("per_body_truncated") is False
+                and bool(bodies)
+                and all(isinstance(row["body"], str) and row["body"]
+                        and row["is_solid"] is True and _num(row["volume"])
+                        and _num(row["mass_kg"]) and type(row["lump_count"]) is int
+                        for row in bodies)
+                and all(_num(value) for value in aggregate.values()))
+    return {"aggregate": aggregate, "bodies": bodies}, readable
+
+
+def _form_body_state_read(p):
+    """Capture FormDemo body geometry and mass before the tiny-Form rollback attempt."""
+    state, readable = _form_body_state(p)
+    if readable:
+        _RECALL["form_body_state_before_tiny"] = state
+    return _measured("FormDemo body geometry before the tiny Form", state, readable)
+
+
+def _form_tiny_rollback_timeline(p):
+    """design_get confirms the rejected tiny Form left the timeline exactly as captured."""
+    timeline = p.get("timeline") or {}
+    rows = timeline.get("timeline") or []
+    before = _RECALL.get("form_timeline_before_tiny")
+    now = {"count": timeline.get("count"), "marker_position": timeline.get("marker_position"),
+           "rows": rows}
+    complete = (isinstance(before, dict) and not timeline.get("truncated")
+                and timeline.get("count") == len(rows) and timeline.get("returned") == len(rows)
+                and now == before)
+    return _measured("timeline history unchanged after the tiny Form", now, complete)
+
+
+def _form_timeline_before_tiny(p):
+    """Capture the complete FormDemo timeline before the tiny-Form rollback attempt."""
+    timeline = p.get("timeline") or {}
+    rows = timeline.get("timeline") or []
+    state = {"count": timeline.get("count"), "marker_position": timeline.get("marker_position"),
+             "rows": rows}
+    complete = (not timeline.get("truncated") and timeline.get("count") == len(rows)
+                and timeline.get("returned") == len(rows)
+                and timeline.get("marker_position") == timeline.get("count"))
+    if complete:
+        _RECALL["form_timeline_before_tiny"] = state
+    return _measured("complete timeline before the tiny Form", state, complete)
+
+
+def _form_body_state_unchanged(p):
+    """model_inspect confirms the rejected tiny Form left FormDemo geometry unchanged."""
+    state, readable = _form_body_state(p)
+    before = _RECALL.get("form_body_state_before_tiny")
+    same = (readable and isinstance(before, dict)
+            and state["bodies"] == before["bodies"]
+            and all(_near_rel(state["aggregate"][key], before["aggregate"][key], 1e-9)
+                    for key in state["aggregate"]))
+    return _measured("FormDemo geometry after the tiny Form rollback", state, same)
+
+
+def _form_box_bounds_read(p):
+    """Capture the existing FormBox's independently measured bounding box."""
+    bounds = {key: p.get(key) for key in ("min_point", "max_point")}
+    good = all(isinstance(bounds[key], dict)
+               and all(_num(bounds[key].get(axis)) for axis in "xyz") for key in bounds)
+    if good:
+        _RECALL["form_box_bounds_before_tiny"] = bounds
+    return _measured("FormBox bounds before the tiny Form", bounds, good)
+
+
+def _form_box_bounds_unchanged(p):
+    """model_inspect confirms the existing FormBox bounds did not change."""
+    bounds = {key: p.get(key) for key in ("min_point", "max_point")}
+    before = _RECALL.get("form_box_bounds_before_tiny")
+    same = (isinstance(before, dict)
+            and all(isinstance(bounds[key], dict)
+                    and all(_num(bounds[key].get(axis))
+                            and _near_rel(bounds[key][axis], before[key][axis], 1e-9)
+                            for axis in "xyz") for key in bounds))
+    return _measured("FormBox bounds after the tiny Form rollback", bounds, same)
 
 
 def _crease_handles_found(p):
@@ -1085,6 +1193,30 @@ _MACHINING = [
     ("form_create", {"primitive": {"shape": "box", "size": [10, 10, 10], "spans": [1, 1, 1]},
                      "cage": {"vertices": [], "faces": []}, "component": "FormDemo:1"},
      _refused("primitive", "cage"), None),
+    ("model_inspect", {"target": "FormDemo:1", "include": ["mass"], "per_body": True},
+     _form_body_state_read, None),
+    ("model_inspect", {"target": "FormBox", "include": ["default", "mass"], "units": "mm"},
+     _form_box_bounds_read, None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000},
+     _form_timeline_before_tiny, None),
+    # This is the measured 0.005 mm box cage with only its first face's four edges creased. The
+    # crease keeps Fusion past its unrelated smooth-seam guard so the area threshold is exercised.
+    ("form_create", {"cage": {
+                         "vertices": [[-0.0025, 0.0025, -0.0025], [0.0025, 0.0025, -0.0025],
+                                      [0.0025, -0.0025, -0.0025], [-0.0025, -0.0025, -0.0025],
+                                      [-0.0025, -0.0025, 0.0025], [0.0025, -0.0025, 0.0025],
+                                      [0.0025, 0.0025, 0.0025], [-0.0025, 0.0025, 0.0025]],
+                         "faces": [[0, 1, 2, 3], [4, 5, 6, 7], [3, 2, 5, 4], [1, 0, 7, 6],
+                                   [2, 1, 6, 5], [0, 3, 4, 7]],
+                         "creases": [[0, 1], [0, 3], [1, 2], [2, 3]]},
+                     "name": "FormTiny", "component": "FormDemo:1"},
+     _refused("FormTiny", "surface area", "1e-06 cm2"), None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000},
+     _form_tiny_rollback_timeline, None),
+    ("model_inspect", {"target": "FormDemo:1", "include": ["mass"], "per_body": True},
+     _form_body_state_unchanged, None),
+    ("model_inspect", {"target": "FormBox", "include": ["default", "mass"], "units": "mm"},
+     _form_box_bounds_unchanged, None),
     # A cage whose surface passes through itself passes the cage check, finishEdit raises, and the
     # Form edit stays OPEN for the user to close (measured: measure_api's last row), so that refusal
     # runs there, never in this story document.
@@ -2370,6 +2502,16 @@ _MESH = [
     ("save_as_mesh", lambda c: {"body": _ctx_get(c, "msh_body", "box body"), "name": "MF", "quality": "low"}, "ok", None),
     ("save_as_mesh", lambda c: {"body": _ctx_get(c, "msh_body", "box body"), "name": "MOPEN", "quality": "low"}, "ok", None),
     ("mesh_get", {"target": "Msh"}, "ok", None),
+    # The closed one-group mesh reproduces the measured prismatic refusal. Read history on both
+    # sides because the failed scoped add can retain a finished BaseFeature.
+    ("design_get", {"include": ["timeline"], "max_results": 2000},
+     _failed_mesh_scope_timeline, None),
+    ("mesh_to_brep", {"mesh": "MA", "method": "prismatic"},
+     _refused("meshConvertFeatures.add raised", "mesh_generate_face_groups",
+              "design_get(include=['timeline'])", "design_delete_feature"), None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000},
+     lambda p: _failed_mesh_scope_timeline(p, True), None),
+    ("mesh_get", {"target": "Msh"}, _organic_source_retained, None),
     # MA is a box cast to mesh, measured to segment 1 -> 6 groups under 'fast', so THIS row's
     # generation must move the count - a payload reporting no movement here is a generation that
     # did nothing. (The tool passes no verdict of its own: one flat region segments into one group.)

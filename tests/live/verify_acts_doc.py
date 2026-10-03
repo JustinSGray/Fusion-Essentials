@@ -940,8 +940,30 @@ _TARGET_CONFIRMATION = _target_begin() + [
      _refused("Invalid Boolean for 'confirm_delete_after_marker'", "'false'", "Use true or false."), None),
 ] + _target_reads("tc_string", _TARGET_CUBE, "tc_rolled") + [
     ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": True},
-     lambda p: p.get("deleted_after_marker") is True and p.get("deleted_timeline_entries") == 1, None),
+     lambda p: (p.get("deleted_after_marker") is True and p.get("deleted_timeline_entries") == 1
+                and p.get("retained_prefix_confirmed") is True), None),
 ] + _target_reads("tc_deleted", _TARGET_CUBE, "tc_rolled", ("tc_rolled_design", "Suffix", "Tail", True)) + _target_end()
+
+
+_TARGET_GROUP_TAIL = _target_begin() + [
+    ("model_create_component", {"name": "Suffix", "activate": True}, _made_component, None),
+] + _target_reads("tg_base", _TARGET_CUBE) + _target_circle("Suffix", "DiscardCircleA", 3) + _target_circle("Suffix", "DiscardCircleB", 4) + [
+    ("design_edit_timeline", {"action": "group", "feature": "Suffix/DiscardCircleA", "end_feature": "Suffix/DiscardCircleB",
+                              "name": "DiscardTail"}, lambda p: p.get("member_count") == 2, None),
+    ("design_get", {"include": ["timeline"]},
+     lambda p: (len([r for r in _timeline_rows(p) if r.get("name") == "DiscardTail"
+                    and r.get("member_count") == 2 and r.get("is_collapsed") is True]) == 1), None),
+    ("design_edit_timeline", {"action": "roll", "feature": "DiscardTail", "to": "before"},
+     lambda p: p.get("rolled") is True, None),
+    ("design_edit_timeline", {"action": "delete_after_marker"},
+     _refused("DISCARDS 2 timeline item(s)", "DiscardTail", "Nothing was deleted"), None),
+    ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": True},
+     lambda p: (p.get("deleted_after_marker") is True and p.get("deleted") == 2
+                and p.get("deleted_timeline_entries") == 1 and p.get("retained_prefix_confirmed") is True), None),
+] + _target_reads("tg_deleted", _TARGET_CUBE, "tg_base") + [
+    ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": True},
+     _refused("Nothing lies after the marker"), None),
+] + _target_reads("tg_repeated", _TARGET_CUBE, "tg_base") + _target_end()
 
 _TARGET_HIDDEN_GEOMETRY = _TARGET_CUBE + [("Hidden", "Twin", 3), ("Hidden", "Sibling", 4)]
 _TARGET_HIDDEN = _target_begin() + [
@@ -1384,6 +1406,7 @@ _OVERTURE = [
                 and "tool's schema" in p.get("note", "")
                 and "handle, name or index" in p.get("note", "")
                 and not any(text in p.get("note", "") for text in ("CLAUDE.md", "_inputs.py", "hand-roll"))), None),
+    ("sys_get_api_doc", {"searchPattern": "a+"}, _refused("unsupported repetition"), None),
     # the introspection FOUND the class in the module it lives in: an adsk submodule that would not
     # import is skipped silently, and the search then answers ok with nothing in it.
     ("sys_get_api_doc", {"searchPattern": "RevolveFeatures", "max_results": 3},
@@ -1485,7 +1508,7 @@ _OVERTURE = [
      "refused", None),
     # a tier-R member names the member and the reason, with nothing written.
     ("sys_set_preferences", {"member": "network.proxyHost", "value": "127.0.0.1"}, "refused", None),
-] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE + _BOOLEAN_FLAGS + _TARGET_CONFIRMATION + _TARGET_HIDDEN + _TARGET_SLASH + _timeline_health_rows() + _product_disclosure_rows()
+] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE + _BOOLEAN_FLAGS + _TARGET_CONFIRMATION + _TARGET_GROUP_TAIL + _TARGET_HIDDEN + _TARGET_SLASH + _timeline_health_rows() + _product_disclosure_rows()
 
 # --- THE SHOWCASE: the finished fixture photographed, renamed, exported and read back -----------
 # It runs BEFORE the machining acts so the sweep ends on the CAM job and its post, which is the

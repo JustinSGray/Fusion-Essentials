@@ -242,7 +242,9 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
     # the add - the same before-image a no-volume-change join error names its orphan body from.
     bodies_before = _common.component_body_names(census) if op_key == "join" else None
     retire_hosts, before_timeline, before_shapes, before_marker = [], None, None, None
+    path_visibility_restore = None
     if op_key == "cut" and participants:
+        path_visibility_restore = _edit_feature_common.path_sketch_visibility_restore(comp, path)
         for owner in [comp] + [safe(lambda b=b: _common._native_of(b).parentComponent) for b in participants]:
             if not any(_common.same_component(owner, prior) is True for prior in retire_hosts):
                 retire_hosts.append(owner)
@@ -302,7 +304,8 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
             remedy = _common.failed_effect_remedy(design, feature)
             if op_key == "cut" and participants and feature:
                 remedy = _edit_feature_common.retire_failed_create(
-                    design, feature, before_timeline, before_shapes, retire_hosts, before_marker)
+                    design, feature, before_timeline, before_shapes, retire_hosts, before_marker,
+                    restore_input_visibility=path_visibility_restore)
             return error(f"Pipe reported success but no body's volume changed, so the {op_key} "
                          f"affected nothing.{extra} " + remedy)
 

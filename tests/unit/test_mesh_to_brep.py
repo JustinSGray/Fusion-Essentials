@@ -316,6 +316,26 @@ class TestMeshToBrep:
         assert out["brep_bodies"][0]["name"] == "ConvertedBody"
         assert bf._starts == 1 and bf._finishes == 1
 
+    def test_failed_parametric_add_discloses_the_retained_scope_and_read_remedy(self):
+        bf = FakeBaseFeature()
+        self._setup(is_closed=True, raise_on_add=True, parametric=True, base_feature=bf)
+        res = mo.handler(mesh="H", method="prismatic")
+        message = res["message"]
+        assert res["isError"] is True
+        assert "may leave base feature 'BaseFeature1' in the timeline" in message
+        assert "design_get(include=['timeline']) and mesh_get" in message
+        assert "design_delete_feature" in message
+        assert bf._starts == 1 and bf._finishes == 1
+
+    def test_failed_parametric_add_still_discloses_an_unread_scope_name(self):
+        bf = FakeBaseFeature()
+        del bf.name
+        self._setup(is_closed=True, raise_on_add=True, parametric=True, base_feature=bf)
+        res = mo.handler(mesh="H", method="prismatic")
+        assert res["isError"] is True
+        assert "may leave a base feature in the timeline" in res["message"]
+        assert "design_get(include=['timeline'])" in res["message"]
+
     def test_brep_handle_to_convert_is_redirected(self):
         # passing a BRep body to mesh_to_brep (it wants a MESH) -> MeshBodyRef redirect
         brep = _brep("AlreadySolid")

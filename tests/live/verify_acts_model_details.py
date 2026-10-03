@@ -25,6 +25,15 @@ from verify_acts_model_precision import (
 from verify_acts_model_sweep import _retire_reads, _retire_material_state
 
 
+def _pipe_path_visibility(p):
+    """Read the disjoint-cut path's visibility from the independent sketch listing."""
+    rows = [r for r in p.get("sketches", []) if r.get("name") == "PipeJoinMissPath"]
+    return _measured("PipeJoinMissPath remains visible", rows,
+                     p.get("sketch_count") == len(p.get("sketches", []))
+                     and p.get("truncated") is not True and len(rows) == 1
+                     and rows[0].get("is_visible") is True and rows[0].get("line_count") == 1)
+
+
 def _bodyref_scale_state(p):
     """Return independent scale-stock bounds and volume when every field reads."""
     mass = p.get("mass") or {}
@@ -825,12 +834,17 @@ _DETAILS = [
     *_retire_reads("pipe_retire", ["PipeJoinMiss:1", "PipeCut:1"],
                   [("PipeJoinMiss", "PipeJoinTargetS"), ("PipeJoinMiss", "PipeJoinMissPath"),
                    ("PipeCut", "PipeCutS"), ("PipeCut", "PipeCutPath")]),
+    ("sketch_get", {"component": "PipeJoinMiss"},
+     _pipe_path_visibility, None),
     ("model_pipe", {"path": "sketch:PipeJoinMissPath", "section_size": 6, "operation": "cut",
                     "target_bodies": ["PipeJoinMiss"]},
-     _refused("no body's volume changed", "was removed", "checked body shapes were restored"), None),
+     _refused("no body's volume changed", "was removed", "checked body shapes were restored",
+              "path sketch visibility was restored"), None),
     *_retire_reads("pipe_retire", ["PipeJoinMiss:1", "PipeCut:1"],
                   [("PipeJoinMiss", "PipeJoinTargetS"), ("PipeJoinMiss", "PipeJoinMissPath"),
                    ("PipeCut", "PipeCutS"), ("PipeCut", "PipeCutPath")], after=True),
+    ("sketch_get", {"component": "PipeJoinMiss"},
+     _pipe_path_visibility, None),
     # then the same path as a JOIN lands an orphan tube, which the error names
     ("model_pipe", {"path": "sketch:PipeJoinMissPath", "section_size": 6, "operation": "join"},
      _refused("no body's volume changed", "operation='join' landed a NEW body (",

@@ -30,14 +30,14 @@ _SELF_INTERSECTS = ("3 : Conversion error for: Body1 / ASM_TSP_BFTS_OUTPUT_BODY_
                     "T-Spline surface self-intersects.")
 
 
-def _converted(solid=True, lo=-0.9, hi=0.9, name=None):
+def _converted(solid=True, lo=-0.9, hi=0.9, name=None, area=20.0):
     """The finish's conversion: one B-Rep body named `name`, else after the T-spline body."""
     def land(ff):
         if ff.tSplineBodies.count:
             tb = ff.tSplineBodies.item(0)
             ff.bodies = _NamedCollection([BRepBody(
                 name=name or tb.name, bbox=make_bbox((lo, lo, lo), (hi, hi, hi)), volume=5.8,
-                is_solid=solid, face_count=6, area=20.0)])
+                is_solid=solid, face_count=6, area=area)])
     return land
 
 
@@ -252,6 +252,17 @@ class TestFormCreate:
     def test_a_closed_cage_reading_open_rolls_back(self, rig):
         ff = _form(rig, on_finish=_converted(solid=False))
         assert "isSolid" in error_message(fc.handler(primitive=_BOX)) and ff._deletes == 1
+
+    def test_a_form_below_the_surface_area_threshold_is_removed_before_recording(self, rig):
+        ff = _form(rig, on_finish=_converted(area=5e-7))
+
+        msg = error_message(fc.handler(primitive=_BOX, name="TinyForm"))
+
+        assert "TinyForm" in msg and "Form1" in msg
+        assert "5e-07 cm2" in msg and "1e-06 cm2" in msg
+        assert "It was removed" in msg and ff._deletes == 1
+        assert rig.timeline.count == 0
+        assert fc._form_common.read_record(ff) is None
 
     def test_an_extent_outside_the_cage_rolls_back(self, rig):
         ff = _form(rig, on_finish=_converted(lo=-2.0, hi=2.0))

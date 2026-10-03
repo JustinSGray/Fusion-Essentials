@@ -111,7 +111,7 @@ def rig(monkeypatch):
     return loft, timeline
 
 
-def test_a_retarget_profile_drawn_after_the_loft_is_refused_before_any_roll(rig, monkeypatch):
+def test_a_later_interior_profile_gets_reorder_advice_after_mode_checks(rig, monkeypatch):
     loft, timeline = rig
     later = Sketch(name="S1Later", timeline_object=SimpleNamespace(index=14))
     monkeypatch.setattr(mod._inputs.ProfileRef, "resolve", lambda _self, _raw, _scope: (
@@ -124,7 +124,7 @@ def test_a_retarget_profile_drawn_after_the_loft_is_refused_before_any_roll(rig,
         "Editing 'Loft1': sketch 'S1Later' is at timeline row 14, after 'Loft1' at row 2. Move it "
         "first with design_edit_timeline(action='reorder', feature='S1Later@14', to='before', "
         "end_feature='Loft1@2'), then retry. Nothing was edited.")
-    assert (rolls, loft.assignments, timeline.markerPosition) == ([], 0, 5)
+    assert (rolls, loft.assignments, timeline.markerPosition) == ([True], 0, 5)
 
 
 def test_endpoint_zero_refuses_before_later_operand_reorder_advice(rig, monkeypatch):
@@ -140,6 +140,20 @@ def test_endpoint_zero_refuses_before_later_operand_reorder_advice(rig, monkeypa
     assert "'section_index'=0 is an endpoint" in message and "Choose an interior" in message
     assert "Nothing was edited" in message and "Move it first" not in message
     assert (reads, rolls, loft.assignments, timeline.markerPosition) == ([], [], 0, 5)
+    assert tuple(section.entity for section in loft.sections) == ("A", "B", "C")
+
+
+def test_last_endpoint_refuses_before_later_operand_reorder_advice(rig, monkeypatch):
+    loft, timeline = rig
+    later = Sketch(name="S1Later", timeline_object=SimpleNamespace(index=14))
+    monkeypatch.setattr(mod._inputs.ProfileRef, "resolve", lambda _self, _raw, _scope: (
+        SimpleNamespace(parentSketch=later), None))
+    result = mod.handler(feature="Loft1", action="retarget", section_index=2,
+                         profile={"sketch": "S1Later", "profile_index": 0})
+    message = error_message(result)
+    assert "'section_index'=2 must select an interior section of 3" in message
+    assert "Nothing was edited" in message and "Move it first" not in message
+    assert loft.assignments == 0 and timeline.markerPosition == 5
     assert tuple(section.entity for section in loft.sections) == ("A", "B", "C")
 
 

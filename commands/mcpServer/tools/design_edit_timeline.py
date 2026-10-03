@@ -523,13 +523,18 @@ def _do_delete_after_marker(timeline, confirm):
         return error(f"confirm_delete_after_marker must be a Boolean, got {confirm!r}. "
                      "Use false for a preview or true to discard the items after the marker.")
     marker = safe(lambda: timeline.markerPosition)
-    count = safe(lambda: timeline.count, 0) or 0
-    if marker is None:
-        return error("Could not read markerPosition, so what lies after the marker is unknown - "
+    count = _common.counted(lambda: timeline.count)
+    if type(marker) is not int or count is None or not 0 <= marker <= count:
+        return error("Could not read a valid markerPosition and timeline count, so what lies after the marker is unknown - "
                      "nothing was deleted.")
     if marker >= count:
         return error(f"Nothing lies after the marker: it is at {marker} of {count} (the end of the "
                      "timeline). Roll it back first with action='roll'.")
+    before = _order(_common.design())
+    if (before is None or len(before) != count or [i for _key, i in before] != list(range(count))
+            or any(not isinstance(key[1], str) or not key[1] for key, _i in before)):
+        return error("The timeline prefix could not be listed completely. Nothing was deleted; "
+                     "read design_get(include=['timeline']) before retrying.")
     after_marker = [o for o in _objects(timeline) if _index(o) >= marker]
     # A collapsed group is ONE entry here and takes every member down with it, so the blast radius
     # is the member count, not the entry count - measured: 5 entries discarded 8 features.
@@ -546,14 +551,24 @@ def _do_delete_after_marker(timeline, confirm):
         did = timeline.deleteAllAfterMarker()
     except Exception as e:
         return error(f"deleteAllAfterMarker failed: {e}")
-    after = safe(lambda: timeline.count, 0) or 0
+    after = _common.counted(lambda: timeline.count)
     if not did:
         return error(f"Fusion declined to delete after the marker (returned false); the timeline "
                      f"still holds {after} item(s).")
+    if after is None:
+        return error("deleteAllAfterMarker reported success but the resulting timeline count is "
+                     "unread. Deletion is unconfirmed; read design_get(include=['timeline']).")
     if after >= count:
         return error(f"deleteAllAfterMarker reported success but the timeline still holds {after} "
                      f"item(s) of {count} - nothing was discarded.")
-    return ok({"deleted_after_marker": True, "deleted": features,
+    after_marker_position = _common.counted(lambda: timeline.markerPosition)
+    retained = _order(_common.design())
+    if after != marker or after_marker_position != marker or retained != before[:marker]:
+        return error(f"deleteAllAfterMarker reported success but the retained timeline prefix or "
+                     f"marker differs from the expected {marker} entries (count={after}, "
+                     f"marker={after_marker_position}). Partial changes may remain; read "
+                     "design_get(include=['timeline']) before retrying; undo in Fusion if unintended.")
+    return ok({"deleted_after_marker": True, "retained_prefix_confirmed": True, "deleted": features,
                "deleted_timeline_entries": count - after, "discarded": doomed[:_PREVIEW_MAX],
                "marker_position": marker, "timeline_count": after,
                "note": "Those items and their geometry are gone. Undo in Fusion if unintended - the "

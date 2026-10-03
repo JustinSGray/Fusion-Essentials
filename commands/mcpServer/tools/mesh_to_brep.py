@@ -44,6 +44,17 @@ def _body_row(b):
             "face_count": _common.counted(lambda: b.faces.count)}
 
 
+def _failed_scope_clause(base_feature):
+    """A failed scoped convert may leave the opened base feature in timeline history."""
+    if base_feature is None:
+        return ""
+    name = safe(lambda: base_feature.name)
+    scope = f"base feature '{name}'" if name else "a base feature"
+    return (f" This failed conversion may leave {scope} in the timeline; inspect "
+            "design_get(include=['timeline']) and mesh_get before continuing. Inspect its contents "
+            "before removing it with design_delete_feature.")
+
+
 def handler(mesh: str = "", method: str = "prismatic", resolution: str = "by_accuracy",
             accuracy: str = "medium", face_count: int = 0,
             operation: str = "parametric") -> dict:
@@ -139,7 +150,8 @@ def handler(mesh: str = "", method: str = "prismatic", resolution: str = "by_acc
                                      ot.BaseFeatureMeshConvertOperationType if op == "base_feature"
                                      else ot.ParametricFeatureMeshConvertOperationType))
         except Exception as e:
-            return error(f"Could not configure the mesh-convert input: {e}")
+            return error(f"Could not configure the mesh-convert input: {e}"
+                         + _failed_scope_clause(base_feature))
 
         before_keys = {k for (k, _b) in _brep_snapshot() if k is not None}
 
@@ -148,7 +160,8 @@ def handler(mesh: str = "", method: str = "prismatic", resolution: str = "by_acc
             feat = feats.add(inp)
         except Exception as e:
             return error(f"Mesh->BRep conversion failed (meshConvertFeatures.add raised): {e}. "
-    "A common cause is a non-watertight or very dense mesh." + _face_groups_hint)
+    "A common cause is a non-watertight or very dense mesh." + _face_groups_hint
+                         + _failed_scope_clause(base_feature))
         # The open BaseFeature can never be re-found once the scope closes, so its name is captured
         # HERE - it is what explains a null feature to the caller.
         return {"feat": feat, "before_keys": before_keys,

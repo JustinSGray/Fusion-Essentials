@@ -1917,6 +1917,8 @@ def _pattern_preflight_rows():
              ("design_get", history, _anchor_history("PatternPreflight", True), None)]
     for knobs, reason in (({"quantity": 1}, "quantity >= 2"),
                           ({"quantity": 3, "suppressed": [True]}, "needs 2 flag(s)"),
+                          ({"quantity": 3, "entities": "circle:99"}, "Could not resolve 'circle:99'"),
+                          ({"quantity": 3, "entities": ""}, "needs 'entities'"),
                           ({"quantity": 3}, None)):
         def args(c, knobs=knobs):
             line, circle = _ctx_get(c, "pattern_ids", "current source ids")

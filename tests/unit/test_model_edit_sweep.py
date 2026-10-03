@@ -149,7 +149,7 @@ _LATER = ("Editing 'Sweep1': sketch 'PathLater' is at timeline row 11, after 'Sw
 
 
 @pytest.mark.parametrize("action", ["path", "profile"])
-def test_an_operand_drawn_after_the_sweep_is_refused_before_any_roll(rig, monkeypatch, action):
+def test_a_later_operand_is_refused_after_read_only_definition_preflight(rig, monkeypatch, action):
     sweep, timeline = rig
     later = Sketch(name="PathLater", timeline_object=SimpleNamespace(index=11))
     line = SimpleNamespace(entityToken="later-line", parentSketch=later)
@@ -160,7 +160,24 @@ def test_an_operand_drawn_after_the_sweep_is_refused_before_any_roll(rig, monkey
     sweep.timelineObject.rollTo = lambda _before: rolls.append(True) or timeline.roll()
     result = mod.handler(feature="Sweep1", action=action, **{action: "PathLater"})
     assert error_message(result) == _LATER
-    assert (rolls, sweep.assignments, timeline.markerPosition) == ([], 0, 3)
+    assert (len(rolls), sweep.assignments, timeline.markerPosition) == (2, 0, 3)
+
+
+def test_a_guided_sweep_mode_refusal_precedes_later_operand_advice(rig, monkeypatch):
+    sweep, timeline = rig
+    sweep.guideRail = object()
+    later = Sketch(name="PathLater", timeline_object=SimpleNamespace(index=11))
+    line = SimpleNamespace(entityToken="later-line", parentSketch=later)
+    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(line), "p", None))
+    rolls = []
+    sweep.timelineObject.rollTo = lambda _before: rolls.append(True) or timeline.roll()
+
+    result = mod.handler(feature="Sweep1", action="path", path="sketch:PathLater")
+
+    text = error_message(result)
+    assert "guide or solid-tool definition" in text
+    assert "Move it first" not in text
+    assert (len(rolls), sweep.assignments, timeline.markerPosition) == (1, 0, 3)
 
 
 @pytest.mark.parametrize("row,refused", [(0, False), (1, True)])

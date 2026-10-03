@@ -143,6 +143,7 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
     before_timeline = _design_common.timeline_census(design)
     before_marker, _ = _common.timeline_marker(design)
     before_shapes = _edit_feature_common.all_shapes(design, components=[host])
+    path_visibility_restore = _edit_feature_common.path_sketch_visibility_restore(host, path)
     try:
         feature = sweeps.add(sweep_input)
     except Exception as exc:
@@ -159,7 +160,8 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
         unchanged = (after is not None and set(after) == set(before)
                      and _common.counted(lambda: feature.faces.count) == 0)
         remedy = _edit_feature_common.retire_failed_create(
-            design, feature, before_timeline, before_shapes if unchanged else None, [host], before_marker)
+            design, feature, before_timeline, before_shapes if unchanged else None, [host], before_marker,
+            restore_input_visibility=path_visibility_restore)
         return error("Solid sweep was built, but its new result body could not be identified "
                      "from created faces and the owner's body census. "
                      + remedy)

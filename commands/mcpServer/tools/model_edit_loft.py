@@ -209,11 +209,10 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
     if section_index == 0:
         return error(f"Editing '{label}': 'section_index'=0 is an endpoint, not an interior section. "
                      "Choose an interior section index. Nothing was edited.")
+    pending_later_refusal = None
     if action == "retarget":
         early, _unresolved = _PROFILE.resolve(profile, component)
-        refusal = later_operand_refusal(label, index, [early])
-        if refusal:
-            return error(refusal)
+        pending_later_refusal = later_operand_refusal(label, index, [early])
     health_before = _health(design, marker)
     if health_before is None:
         return error(f"'{label}'s evaluated-health census is unreadable; nothing was edited.")
@@ -236,6 +235,11 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
                 or definition_before["is_solid"] is not True or definition_before["is_closed"] is not False
                 or definition_before["guide_count"] != 0):
             raise ValueError("Loft must be open, unguided, solid and use the NEW body operation.")
+        if pending_later_refusal:
+            timeline.markerPosition = marker
+            if counted(lambda: timeline.markerPosition) != marker:
+                raise RuntimeError("The Loft marker could not be restored before the operand refusal.")
+            return error(pending_later_refusal)
         if action == "retarget":
             operand, refusal = _PROFILE.resolve(profile, component)
             if refusal:

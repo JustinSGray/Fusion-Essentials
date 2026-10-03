@@ -1040,6 +1040,34 @@ class TestDeleteAfterMarker:
 
 # ── attributes on the entity a timeline item wraps ───────────────────────────
 
+@pytest.mark.parametrize("failure", ["partial", "prefix", "marker", "unread"])
+def test_partial_or_unread_delete_never_reports_exact_removal(wire, monkeypatch, failure):
+    tl = wire(_timeline(marker=1))
+    def delete():
+        tl._items = tl._items[:2 if failure == "partial" else 1]
+        if failure == "prefix":
+            tl._items[0].name = "Replaced"
+        if failure == "marker":
+            tl.markerPosition = 0
+        return True
+    monkeypatch.setattr(tl, "deleteAllAfterMarker", delete)
+    if failure == "unread":
+        counted = et._common.counted
+        monkeypatch.setattr(et._common, "counted", lambda getter: None if len(tl._items) == 1 else counted(getter))
+    result = et.handler(action="delete_after_marker", confirm_delete_after_marker=True)
+    msg = error_message(result)
+    assert "reported success" in msg and "design_get" in msg
+    assert "unread" in msg if failure == "unread" else "Partial changes may remain" in msg
+
+
+def test_unread_initial_count_refuses_before_delete(wire, monkeypatch):
+    tl = wire(_timeline(marker=1))
+    monkeypatch.setattr(et._common, "counted", lambda getter: None)
+    msg = error_message(et.handler(action="delete_after_marker", confirm_delete_after_marker=True))
+    assert "count" in msg and "nothing was deleted" in msg
+    assert tl.delete_calls == 0
+
+
 class TestSetAttribute:
     def test_attaches_to_the_entity_and_reads_the_value_back(self, wire):
         tl = wire(_tagged())

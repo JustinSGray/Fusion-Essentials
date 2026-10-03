@@ -303,9 +303,8 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         return error(f"'{label}' has unreadable timeline identity; nothing was edited.")
     if marker <= index:
         return error(f"'{label}' is after marker {marker}; roll after it with design_edit_timeline.")
-    refusal = _later_refusal(design, component_owner, label, index, action, raw[action], component)
-    if refusal:
-        return error(refusal)
+    pending_later_refusal = _later_refusal(
+        design, component_owner, label, index, action, raw[action], component)
     linked_before = _inactive_link_count(entity, index)
     if linked_before is None:
         return error(f"'{label}' has unreadable or active linked features; nothing was edited.")
@@ -346,6 +345,11 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
                               adsk.fusion.FeatureOperations.IntersectFeatureOperation)
         if operation not in allowed_operations:
             raise ValueError("This Sweep operation is outside model_sweep's editable operation set.")
+        if pending_later_refusal:
+            timeline.markerPosition = marker
+            if counted(lambda: timeline.markerPosition) != marker:
+                raise RuntimeError("The timeline marker could not be restored after the read-only preflight.")
+            return error(pending_later_refusal)
         participants = _participants(entity, operation)
         if participants is None:
             raise ValueError("Current boolean participants are empty or unreadable; their material scope cannot be retained.")

@@ -216,7 +216,7 @@ def _retire_summary(p, after=False):
              and "model_inspect" in box.get("scope", "") and endpoint
              and frame.get("space") == "world" and frame.get("origin_mm") == [100, 0, 0]
              and frame.get("x_world") == [1, 0, 0] and frame.get("y_world") == [0, 1, 0]
-             and (_near(minimum, 97.49, 0.1) and _num(old) and old < 80 < minimum
+             and (_num(old) and _near(minimum, old, 0.1)
                   if after else _near(minimum, 79.98, 0.1)))
     if valid and not after:
         _RECALL["retire_summary_min"] = minimum
@@ -224,13 +224,13 @@ def _retire_summary(p, after=False):
                      {"summary": box, "prior_min_x": old, "min_x": minimum, "sketch_frame": frame}, valid)
 
 
-def _retire_sketch_visibility(p, after=False):
-    """Record the owned path's visibility without attributing all box changes to visibility."""
+def _retire_sketch_visibility(p):
+    """Check the owned path sketch's restored visibility independently."""
     rows = p.get("sketches") or []
     path = [r for r in rows if r.get("name") == "RetireArc"]
     return _measured("surviving path visibility", rows,
                      p.get("sketch_count") == len(rows) == 2 and p.get("truncated") is not True
-                     and len(path) == 1 and path[0].get("is_visible") is (not after)
+                     and len(path) == 1 and path[0].get("is_visible") is True
                      and path[0].get("arc_count") == 1 and path[0].get("point_count") == 4)
 
 
@@ -270,7 +270,7 @@ def _empty_solid_rows():
           _refused("new result body could not be identified", "was removed", "checked body shapes were restored"))
     rows.extend(_retire_reads("solid_retire", targets, sketches, after=True, material_read=_retire_sphere_fixture))
     rows.extend([("workspace_orient", {}, lambda p: _retire_summary(p, True), None),
-                 ("sketch_get", {"component": "RetireSolid:1"}, lambda p: _retire_sketch_visibility(p, True), None)])
+                 ("sketch_get", {"component": "RetireSolid:1"}, _retire_sketch_visibility, None)])
     rows.extend([("doc_activate", lambda c: {"name": _ctx_get(c, "retire_home", "story"),
                     "expect_document": _ctx_get(c, "retire_doc", "retirement scratch")}, "ok", None),
                  ("doc_close", lambda c: {"name": _ctx_get(c, "retire_doc", "retirement scratch"), "save_changes": False,
@@ -1818,7 +1818,7 @@ _LOFT_ALIGNMENT = _loft_alignment_rows()
 
 
 def _loft_endpoint_rows():
-    """Refuse endpoint zero without reorder advice, then verify the legal later interior workflow."""
+    """Refuse both endpoints without reorder advice, then verify the legal interior workflow."""
     from verify_core import _activated
     rows = [("doc_get", {}, _home_document, ("endpoint_story", _home_address)),
             ("doc_new", lambda c: {"expect_document": _ctx_get(c, "endpoint_story", "story")},
@@ -1850,6 +1850,10 @@ def _loft_endpoint_rows():
     write("model_edit_loft", {"feature": "Loft1", "action": "retarget", "section_index": 0,
                               "profile": {"sketch": "Later", "profile_index": 0}},
           _refused("'section_index'=0 is an endpoint", "Choose an interior", "Nothing was edited"))
+    rows += _retire_reads("loft_endpoint", [""], [], True)
+    write("model_edit_loft", {"feature": "Loft1", "action": "retarget", "section_index": 2,
+                              "profile": {"sketch": "Later", "profile_index": 0}},
+          _refused("'section_index'=2 must select an interior section of 3", "Nothing was edited"))
     rows += _retire_reads("loft_endpoint", [""], [], True)
     write("model_edit_loft", {"feature": "Loft1", "action": "retarget", "section_index": 1,
                               "profile": {"sketch": "Later", "profile_index": 0}},
@@ -1884,6 +1888,200 @@ def _loft_endpoint_rows():
 
 _LATER_OPERAND += _loft_endpoint_rows()
 
+
+_GUIDED_SWEEP_CREATE = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None, 'owned unsaved scratch only'
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    component = design.rootComponent
+    main = component.features.createPath(
+        component.sketches.itemByName('GuidedMain').sketchCurves.sketchLines.item(0), False)
+    guide = component.features.createPath(
+        component.sketches.itemByName('GuidedRail').sketchCurves.sketchLines.item(0), False)
+    feature_input = component.features.sweepFeatures.createInput(
+        component.sketches.itemByName('GuidedSeed').profiles.item(0), main,
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    feature_input.guideRail = guide
+    feature = component.features.sweepFeatures.add(feature_input)
+    assert feature is not None
+    feature.name = 'GuidedSweep'
+    print(json.dumps({'name': feature.name, 'health': int(feature.healthState)}))
+"""
+
+_GUIDED_SWEEP_NATIVE = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None, 'owned unsaved scratch only'
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    component = design.rootComponent
+    feature = component.features.sweepFeatures.itemByName('GuidedSweep')
+    def body_state():
+        return [{'name': body.name, 'faces': body.faces.count,
+                 'volume_cm3': round(body.physicalProperties.volume, 9),
+                 'bounds_cm': [[round(body.boundingBox.minPoint.x, 9),
+                                round(body.boundingBox.minPoint.y, 9),
+                                round(body.boundingBox.minPoint.z, 9)],
+                               [round(body.boundingBox.maxPoint.x, 9),
+                                round(body.boundingBox.maxPoint.y, 9),
+                                round(body.boundingBox.maxPoint.z, 9)]]}
+                for body in component.bRepBodies]
+    before = body_state()
+    marker = design.timeline.markerPosition
+    try:
+        assert feature.timelineObject.rollTo(True)
+        rail = feature.guideRail
+        mode = {'guide_rail': [] if rail is None else [
+            {'sketch': rail.item(i).entity.parentSketch.name,
+             'construction': rail.item(i).entity.isConstruction} for i in range(rail.count)],
+            'guide_surfaces': len(feature.guideSurfaces), 'solid_body': feature.solidBody is not None}
+    finally:
+        design.timeline.markerPosition = marker
+        assert design.timeline.markerPosition == marker
+    assert before == body_state(), 'mode read changed body state'
+    print(json.dumps({'mode': mode, 'health': int(feature.healthState),
+        'message': feature.errorOrWarningMessage, 'marker': marker,
+        'order': [design.timeline.item(i).name for i in range(design.timeline.count)],
+        'bodies': body_state()}))
+"""
+
+
+def _guided_sweep_native_state(p):
+    """Return measured guide mode, healthy history and body state when fully readable."""
+    mode = p.get("mode") or {}
+    bodies, order = p.get("bodies"), p.get("order")
+    bounds = (bodies[0].get("bounds_cm") if isinstance(bodies, list) and len(bodies) == 1
+              and isinstance(bodies[0], dict) else None)
+    if (mode != {"guide_rail": [{"sketch": "GuidedRail", "construction": False}],
+                 "guide_surfaces": 0, "solid_body": False}
+            or p.get("health") != 0 or p.get("message") != "" or p.get("marker") != 5
+            or order != ["GuidedSeed", "GuidedMain", "GuidedRail", "GuidedSweep", "LaterProfile"]
+            or not isinstance(bodies, list) or len(bodies) != 1
+            or bodies[0].get("name") != "Body1" or bodies[0].get("faces") != 3
+            or not _near(bodies[0].get("volume_cm3"), 0.031415927, 0.000001)
+            or not isinstance(bounds, list) or len(bounds) != 2
+            or not all(isinstance(side, list) and len(side) == 3 for side in bounds)
+            or not all(_near(got, want, 0.000001) for got, want in zip(
+                [v for side in bounds for v in side], [0, -0.1, -0.1, 1, 0.1, 0.1]))):
+        return None
+    body = bodies[0]
+    stable_body = {"name": body["name"], "faces": body["faces"],
+                   "volume_cm3": round(body["volume_cm3"], 8),
+                   "bounds_cm": [[round(v, 8) for v in side] for side in bounds]}
+    return {"mode": mode, "health": p["health"], "message": p["message"], "marker": p["marker"],
+            "order": order, "bodies": [stable_body]}
+
+
+def _guided_sweep_native_read(stage):
+    """Compare independent native mode and body evidence before and after the refusal."""
+    def check(p):
+        now, before = _guided_sweep_native_state(p), _RECALL.get("guided_sweep_native")
+        valid = now is not None and (stage == "before" or now == before)
+        if valid and stage == "before":
+            _RECALL["guided_sweep_native"] = now
+        return _measured("guided mode and native body/history " + stage, now, valid)
+    return check
+
+
+def _guided_sweep_design(stage):
+    """Check the typed timeline read before and after the guided-mode refusal."""
+    def check(p):
+        timeline = p.get("timeline") or {}
+        names = _timeline_names(p)
+        before = _RECALL.get("guided_sweep_timeline")
+        valid = (p.get("design_type") == "parametric" and names == [
+            "GuidedSeed", "GuidedMain", "GuidedRail", "GuidedSweep", "LaterProfile"]
+            and timeline.get("count") == timeline.get("marker_position") == 5
+            and (stage == "before" or names == before))
+        if valid and stage == "before":
+            _RECALL["guided_sweep_timeline"] = names
+        return _measured("typed healthy timeline " + stage, timeline, valid)
+    return check
+
+
+def _guided_sweep_body(stage):
+    """Compare independent typed material and bounds before and after the refusal."""
+    def check(p):
+        measured = _sweep_mode_shape(p)
+        minimum, maximum = measured.get("min") or {}, measured.get("max") or {}
+        now = {"volume": round(measured["volume"], 8) if _num(measured.get("volume")) else None,
+               "area": round(measured["area"], 8) if _num(measured.get("area")) else None,
+               "min": {k: round(v, 8) for k, v in minimum.items() if _num(v)},
+               "max": {k: round(v, 8) for k, v in maximum.items() if _num(v)}}
+        before = _RECALL.get("guided_sweep_body")
+        valid = (p.get("kind") == "body" and p.get("units") == "cm"
+                 and _near((p.get("mass") or {}).get("volume"), 0.031415927, 0.000001)
+                 and all(_near(minimum.get(k), v, 0.000001) for k, v in
+                         (("x", 0), ("y", -0.1), ("z", -0.1)))
+                 and all(_near(maximum.get(k), v, 0.000001) for k, v in
+                         (("x", 1), ("y", 0.1), ("z", 0.1)))
+                 and (stage == "before" or now == before))
+        if valid and stage == "before":
+            _RECALL["guided_sweep_body"] = now
+        return _measured("typed body material and bounds " + stage, now, valid)
+    return check
+
+
+def _guided_sweep_rows():
+    """Exercise a guided Sweep's mode refusal with independent native and typed state reads."""
+    rows = [
+        ("doc_get", {}, _home_document, ("guided_story", _home_address)),
+        ("doc_new", lambda c: {"expect_document": _ctx_get(c, "guided_story", "story")},
+         _new_document, ("guided_doc", lambda p: p["document_handle"])),
+    ]
+
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: _combine_pin(
+            c, "guided_doc", args(c) if callable(args) else args), check, save))
+
+    write("sketch_create", {"name": "GuidedSeed", "plane": "yz"})
+    write("sketch_add_geometry", {"sketch_name": "GuidedSeed", "units": "mm",
+                                  "geometry": [{"kind": "circle", "cx": 0, "cy": 0, "radius": 1}]})
+    write("sketch_create", {"name": "GuidedMain", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "GuidedMain", "units": "mm",
+                                  "geometry": [{"kind": "line", "x1": 0, "y1": 0, "x2": 10, "y2": 0}]})
+    write("sketch_create", {"name": "GuidedRail", "plane": "xz"})
+    write("sketch_add_geometry", {"sketch_name": "GuidedRail", "units": "mm",
+                                  "geometry": [{"kind": "line", "x1": 0, "y1": 1, "x2": 10, "y2": 1}]})
+    write("sys_execute_script", {"script": _GUIDED_SWEEP_CREATE, "read_only": False},
+          lambda p: _measured("guided sweep fixture created", p, p.get("name") == "GuidedSweep"
+                              and p.get("health") == 0))
+    write("sketch_create", {"name": "LaterProfile", "plane": "yz"})
+    write("sketch_add_geometry", {"sketch_name": "LaterProfile", "units": "mm",
+                                  "geometry": [{"kind": "circle", "cx": 0, "cy": 0, "radius": 0.5}]})
+    rows.extend([
+        ("sys_execute_script", {"script": _GUIDED_SWEEP_NATIVE, "read_only": False},
+         _guided_sweep_native_read("before"), None),
+        ("design_get", {"include": ["default", "tree", "timeline"], "tree_bodies": True,
+                         "max_results": 100}, _guided_sweep_design("before"), None),
+        ("model_inspect", {"target": "Body1", "include": ["default", "mass"],
+                            "accuracy": "very_high", "units": "cm"},
+         _guided_sweep_body("before"), None),
+    ])
+    write("model_edit_sweep", {"feature": "GuidedSweep", "action": "profile",
+                               "profile": {"sketch": "LaterProfile", "profile_index": 0}},
+          _refused("Sweep guide or solid-tool definition is not absent/readable",
+                   "Nothing was edited"))
+    rows.extend([
+        ("sys_execute_script", {"script": _GUIDED_SWEEP_NATIVE, "read_only": False},
+         _guided_sweep_native_read("after"), None),
+        ("design_get", {"include": ["default", "tree", "timeline"], "tree_bodies": True,
+                         "max_results": 100}, _guided_sweep_design("after"), None),
+        ("model_inspect", {"target": "Body1", "include": ["default", "mass"],
+                            "accuracy": "very_high", "units": "cm"},
+         _guided_sweep_body("after"), None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, "guided_story", "story"),
+                                     "expect_document": _ctx_get(c, "guided_doc", "guided scratch")},
+         "ok", None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "guided_doc", "guided scratch"),
+                                  "save_changes": False,
+                                  "expect_document": _ctx_get(c, "guided_story", "story")},
+         _document_closed, None),
+    ])
+    return rows
+
+
+_LATER_OPERAND += _guided_sweep_rows()
 
 
 def _partial_path_shape(length):

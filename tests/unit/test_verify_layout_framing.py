@@ -890,8 +890,9 @@ def test_midpoint_preflight_scene_keeps_original_source_and_read_order_in_full_f
     assert geometry[0] == [{"kind": "line", "x1": 0, "y1": 0, "x2": 20, "y2": 0},
                            {"kind": "circle", "cx": 40, "cy": 0, "radius": 5}]
     constraints = [args["constraints"][0] for tool, args in requests(authored) if tool == "sketch_constrain"]
-    assert [r["quantity"] for r in constraints] == [1, 3, 3]
-    assert constraints[1]["suppressed"] == [True] and "suppressed" not in constraints[2]
+    assert [r["quantity"] for r in constraints] == [1, 3, 3, 3, 3]
+    assert [r["entities"] for r in constraints] == ["circle:0", "circle:0", "circle:99", "", "circle:0"]
+    assert constraints[1]["suppressed"] == [True] and "suppressed" not in constraints[-1]
 
 
 def test_joint_preflight_scene_keeps_measured_local_pair_and_typed_public_read_order():

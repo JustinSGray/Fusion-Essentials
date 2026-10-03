@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 695
+**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 698
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -37,9 +37,9 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
-- `design_get`  <- 58  (desc 12, note 46)
+- `design_get`  <- 59  (desc 12, note 47)
 - `find_geometry`  <- 55  (desc 14, note 41)
-- `design_delete_feature`  <- 41  (desc 16, note 25)
+- `design_delete_feature`  <- 42  (desc 16, note 26)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 34  (desc 15, note 19)
 - `model_inspect`  <- 30  (desc 5, note 25)
@@ -1439,15 +1439,19 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - This design has no timeline (a direct-modelling design keeps no history), so there is no marker to move and nothing to group.
 - confirm_delete_after_marker must be a Boolean, got
 - . Use false for a preview or true to discard the items after the marker.
-- Could not read markerPosition, so what lies after the marker is unknown - nothing was deleted.
+- Could not read a valid markerPosition and timeline count, so what lies after the marker is unknown - nothing was deleted.
 - Nothing lies after the marker: it is at
 - (the end of the timeline). Roll it back first with action='roll'.
+- The timeline prefix could not be listed completely. Nothing was deleted; read design_get(include=['timeline']) before retrying.
 - Refusing: this DISCARDS
 - timeline item(s) after the marker at
 - - and the features and geometry they produced. Pass confirm_delete_after_marker=true to proceed. Nothing was deleted.
 - Fusion declined to delete after the marker (returned false); the timeline still holds
+- deleteAllAfterMarker reported success but the resulting timeline count is unread. Deletion is unconfirmed; read design_get(include=['timeline']).
 - deleteAllAfterMarker reported success but the timeline still holds
 - - nothing was discarded.
+- deleteAllAfterMarker reported success but the retained timeline prefix or marker differs from the expected
+- ). Partial changes may remain; read design_get(include=['timeline']) before retrying; undo in Fusion if unintended.
 - Those items and their geometry are gone. Undo in Fusion if unintended - the API cannot restore them.
 - deleteAllAfterMarker failed:
 - Items after the marker are rolled back - they are not computed and their geometry is absent until the marker returns. Roll to='end' when done.
@@ -1553,6 +1557,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Timeline items .. overlap the expanded group '' (its members span ..), and a timeline item can belong to only one group. Remove it with action='ungroup' first, or pick a range clear of it.
 - confirm_delete_after_marker must be a Boolean, got . Use false for a preview or true to discard the items after the marker.
 - Refusing: this DISCARDS  timeline item(s) after the marker at  of  -  - and the features and geometry they produced. Pass confirm_delete_after_marker=true to proceed. Nothing was deleted.
+- deleteAllAfterMarker reported success but the retained timeline prefix or marker differs from the expected  entries (count=, marker=). Partial changes may remain; read design_get(include=['timeline...
 - '' starts with '', which the attribute search reads as a regular expression instead of this literal name. Name the attribute without that prefix.
 - Deleting attribute '/' from '' returned  but reading it back raised, so nothing confirms it is gone - the delete is UNCONFIRMED. Run this same delete_attribute call again: a refusal naming '/' as a...
 
@@ -2349,6 +2354,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'origin' is three numbers [x, y, z] - got
 - The cage was refused before Fusion saw it:
 - No active design. Create or open a document first (see doc_new).
+- with total surface area
 - A Form has no parameters. To change it: form_get(include=['cage']), edit the cage, form_create it, then delete the Form it replaces.
 - No two-faced B-Rep edge reads sharper than  deg, though the crease records read back exactly; find_geometry lists the edges.
 
@@ -2846,6 +2852,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Could not configure the mesh-convert input:
 - Mesh->BRep conversion failed (meshConvertFeatures.add raised):
 - . A common cause is a non-watertight or very dense mesh.
+- This failed conversion may leave  in the timeline; inspect design_get(include=['timeline']) and mesh_get before continuing. Inspect its contents before removing it with design_delete_feature.
 - This mesh is NOT watertight (is_closed=false), so method='' has no closed volume to convert to a solid. Close the holes with mesh_repair(repair_type='close_holes') and retry, or convert it as a sur...
 - If the failure mentions face groups (MESH_FAILED_BREP / 'Use Generate Face Groups'), run mesh_generate_face_groups on this mesh first, then retry mesh_to_brep(method='prismatic') - prismatic conver...
 

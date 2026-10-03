@@ -696,6 +696,15 @@ def _one(sketch, k, entry):
                           "construction-plane name, or a face handle from find_geometry"
                           + (" (curved faces allowed)." if cname in _CURVED_SURFACE_OK
                              else " (this constraint takes a PLANAR face only)."))
+    ents = None
+    if kind in _LIST_OPERAND_KINDS:
+        ents, _refs, lerr = _common.resolve_entity_refs(sketch, entities)
+        if lerr:
+            return None, lerr
+        if not ents:
+            return None, (f"'{cname}' needs 'entities' - comma-separated '<type>:<index>' refs. "
+                          f"Got '{entities}'.")
+
     if anchor_one:
         e1, perr = _common.anchor_point(sketch, e1, anchor_one)
         if perr:
@@ -709,15 +718,6 @@ def _one(sketch, k, entry):
         return None, (f"'{entity_one}' and '{entity_two}' resolve to ONE sketch point, so there is "
                       "nothing to constrain. Name two different points, or drop the call; "
                       "sketch_get(include_entities=true) lists them.")
-
-    ents = None
-    if kind in _LIST_OPERAND_KINDS:
-        ents, _refs, lerr = _common.resolve_entity_refs(sketch, entities)
-        if lerr:
-            return None, lerr
-        if not ents:
-            return None, (f"'{cname}' needs 'entities' - comma-separated '<type>:<index>' refs. "
-                          f"Got '{entities}'.")
 
     gc = safe(lambda: sketch.geometricConstraints)
     auto_before = None

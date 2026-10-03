@@ -663,6 +663,16 @@ class TestEntityAnchors:
         assert s.sketchPoints.added == [] and s.geometricConstraints.calls == []
         assert not s.sketchCurves.sketchLines.item(0).isFixed and not s.sketchCurves.sketchCircles.item(0).isFixed
 
+    @pytest.mark.parametrize("entities,reason", [("circle:99", "Could not resolve 'circle:99'"),
+                                                ("", "needs 'entities'")])
+    def test_pattern_sources_are_resolved_before_midpoint_mints(self, install, entities, reason):
+        s = _anchored_sketch(); install(s)
+        result = _constrain(constraint="circular_pattern", entities=entities,
+                            entity_one="line:0:mid", quantity=3)
+        assert result["isError"] is True and reason in result["message"]
+        assert s.sketchPoints.added == [] and s.geometricConstraints.calls == []
+        assert s.sketchPoints.count == 2 and s.geometricConstraints.count == 0
+
     @pytest.mark.parametrize("other", ["line:0:mid", "LINE:00:midpoint"])
     def test_repeated_mid_source_refuses_before_either_anchor_mints(self, install, other):
         s = _anchored_sketch(); install(s)

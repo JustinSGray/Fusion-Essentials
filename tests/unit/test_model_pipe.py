@@ -16,7 +16,7 @@ import adsk.fusion
 import pytest
 
 from conftest import (BRepBody, MakeComp, assert_no_active_design, body_proxy, error_message,
-                      install, load_tool, make_design, make_sketch, make_sketch_curve,
+                      install, load_tool, make_design, make_sketch_curve,
                       make_source_document, payload, _NamedCollection, FakePoint,
                       FakeTimeline, FakeTimelineObject, make_bbox)
 
@@ -152,10 +152,19 @@ class _PipeFeatures:
 def _wire(bodies=(), path_closed=False, design_type=1, sketch_curves=1, path_unreadable=False,
           tokens=None, all_components=None, **kw):
     """A design whose root component owns the pipe feature collection and the path factory."""
+    class _PathSketch:
+        def __init__(self):
+            self.name = "Spine"
+            self.sketchCurves = _NamedCollection([make_sketch_curve(f"c{i}")
+                                                  for i in range(sketch_curves)])
+            self.isLightBulbOn = True
+
+        @property
+        def isVisible(self):
+            return self.isLightBulbOn
+
     comp = MakeComp(bodies=bodies,
-                    sketches=[make_sketch(name="Spine",
-                                          lines=[make_sketch_curve(f"c{i}")
-                                                 for i in range(sketch_curves)])])
+                    sketches=[_PathSketch()])
     pf = _PipeFeatures(comp, **kw)
     made_path = _UnreadablePath() if path_unreadable else _Path(path_closed, sketch_curves)
     comp.features = types.SimpleNamespace(
@@ -187,6 +196,8 @@ def empty_pipe_create(monkeypatch):
         def add(inp):
             timeline._items.append(feature.timelineObject)
             timeline._marker += 1
+            if fault == "hidden_path":
+                pf.comp.sketches.itemByName("Spine").isLightBulbOn = False
             if fault == "new_body":
                 pf.comp.bRepBodies._items.append(BRepBody("Orphan", volume=2))
             if fault == "unread_shape":
@@ -212,6 +223,14 @@ class TestEmptyScopedCutRetirement:
         assert res["isError"] is True and "was removed" in error_message(res)
         assert calls == [feature] and timeline.count == timeline.markerPosition == 1
         assert timeline.item(0).name == "Source"
+
+    def test_retirement_restores_the_named_path_sketch_visibility(self, empty_pipe_create):
+        _timeline, _calls, _feature = empty_pipe_create("hidden_path")
+        sketch = mp._common.design().rootComponent.sketches.itemByName("Spine")
+        res = mp.handler(path="sketch:Spine", section_size=6, operation="cut", target_bodies=["Stock"])
+        message = error_message(res)
+        assert "path sketch visibility was restored" in message
+        assert sketch.isLightBulbOn is True and sketch.isVisible is True
 
     @pytest.mark.parametrize("fault", ["new_body", "unread_shape"])
     def test_zero_volume_delta_does_not_authorize_deleting_unknown_or_new_material(self, empty_pipe_create, fault):
