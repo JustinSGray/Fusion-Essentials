@@ -90,6 +90,18 @@ class TestAddHandler:
         assert "rolled back" in res["message"]
         assert up.itemByName("BadP") is None          # removed again
 
+    @pytest.mark.parametrize("args,fragment", [
+        ({"name": 5, "expression": "1 mm"}, "name must be a string; received 5."),
+        ({"name": "W", "expression": 25}, "expression must be a string; received 25."),
+        ({"name": "W", "expression": "1 mm", "unit": None}, "unit must be a string; received None."),
+        ({"name": "W", "expression": "1 mm", "comment": 7}, "comment must be a string; received 7.")])
+    def test_a_non_string_single_field_is_refused_naming_it(self, monkeypatch, args, fragment):
+        up = FakeUserParameters([])
+        _stub_design(monkeypatch, _design(up, make_timeline("A")))
+        res = params.handler(**args)
+        assert res["isError"] is True and fragment in res["message"]
+        assert "No parameter added" in res["message"] and up._added == []
+
     def test_add_requires_name_and_expression(self, monkeypatch):
         design = _design(FakeUserParameters(), FakeTimeline([]))
         _stub_design(monkeypatch, design)

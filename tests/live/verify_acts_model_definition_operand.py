@@ -6,7 +6,7 @@
 import math
 
 from verify_core import (
-    _RECALL, _ctx_get, _datum, _document_closed, _drilled, _face_up_at, _fg, _home_address, _home_document, _made_component, _matched, _measured, _moved_occurrence, _captured, _near, _new_document, _param_added, _param_set_to, _recall, _refused)
+    _RECALL, _ctx_get, _datum, _document_closed, _drilled, _extruded, _face_up_at, _fg, _filleted, _home_address, _home_document, _made_component, _matched, _measured, _moved_occurrence, _captured, _near, _new_document, _num, _param_added, _param_set_to, _recall, _refused)
 
 
 
@@ -56,6 +56,43 @@ def _hole_definition(extent, units, tapped=False):
                     and _near(row.get("diameter_parameter"), 4 * factor, 0.000001)
                     and row.get("diameter_parameter_applicable") is True)
         return _measured("hole definition and actual child in " + units, row, good)
+    return check
+
+
+def _cosmetic_resize(before, after):
+    """The cosmetic reply's radius row, `before` then `after` mm; after None accepts a read radius or the not-measured note."""
+    def check(p):
+        rows, note = p.get("cylinder_radii") or [], p.get("note") or ""
+        row = rows[0] if len(rows) == 1 else {}
+        read = (_near(row.get("after"), after, .0001) if after is not None
+                else _num(row.get("after")) or "was not measured" in note)
+        change = row.get("change")
+        return _measured("cosmetic thread reports its cylinder radius before and after", rows,
+                         p.get("modeled") is False and p.get("units") == "mm"
+                         and _near(row.get("before"), before, .000001) and read
+                         and (change is None or _near(change, row["after"] - row["before"], .000002))
+                         and "may resize" not in note)
+    return check
+
+
+def _thread_ref(park=None):
+    """Save the thread's address; with `park`, also park the one radius its reply read after it."""
+    def take(p):
+        if park:
+            rows = p.get("cylinder_radii") or []
+            _RECALL[park] = rows[0].get("after") if len(rows) == 1 else None
+        return "DefinitionPost/" + p["feature"]
+    return take
+
+
+def _cosmetic_reread(key):
+    """find_geometry: the one face found reads the radius parked under `key`, when one was reported."""
+    def check(p):
+        reported, ms = _RECALL.get(key, "unsaved"), p.get("matches") or []
+        return _measured("find_geometry re-reads the cosmetic radius the reply reported",
+                         {"reported": reported, "matches": ms[:1]},
+                         _matched(1, "cylinder_face")(p) and reported != "unsaved"
+                         and (reported is None or _near(ms[0].get("radius"), reported, .0001)))
     return check
 
 
@@ -448,6 +485,17 @@ def _definition_rows():
                     rows.append((tool, args, lambda p, key=key, extract=extract: _measured(
                         "unknown thread preserves " + key, extract(p), bool(_RECALL.get(key))
                         and extract(p) == _RECALL[key]), None))
+            # No library spelling is near 'QQ', so the refusal names the closest one per type.
+            rows.append(("model_thread", lambda c: _combine_pin(c, "def_doc", {
+                "faces": [_ctx_get(c, "def_post", "post cylinder")], "designation": "QQ",
+                "thread_type": "ISO Metric profile"}),
+                _refused("No thread designation 'QQ'", "Closest designation per thread type: '",
+                         "' in 'ISO Metric profile'",
+                         "Retry with one as designation and its thread_type."), None))
+            for tool, args, key, extract in controls:
+                rows.append((tool, args, lambda p, key=key, extract=extract: _measured(
+                    "far thread spelling preserves " + key, extract(p), bool(_RECALL.get(key))
+                    and extract(p) == _RECALL[key]), None))
         if not full:
             write("sketch_create", {"plane": "xy", "name": "DefinitionPartialS"})
             write("sketch_add_geometry", {"sketch_name": "DefinitionPartialS", "geometry": [
@@ -460,10 +508,12 @@ def _definition_rows():
             "faces": [_ctx_get(c, "def_post", "post cylinder")], "designation": "M6x1" if full else "M10x1.5",
             "thread_type": "ISO Metric profile", "thread_class": "6g",
             **({} if full else {"length": 12, "offset": 2})},
-            ("def_thread", lambda p: "DefinitionPost/" + p["feature"]),
-            lambda p: _measured("cosmetic thread discloses cylinder resizing and measurement", p.get("note"),
-                p.get("modeled") is False and "may resize" in p.get("note", "")
-                and "model_inspect" in p.get("note", "")))
+            ("def_thread", _thread_ref(None if full else "def_cosmetic_after")),
+            _cosmetic_resize(3.0, 2.942) if full else _cosmetic_resize(5.0, None))
+        if not full:
+            rows.append(("find_geometry", {"target": "DefinitionPost", "kind": "cylinder_face",
+                                           "nearest_to": [70, 0, 12.5], "max_results": 1},
+                         _cosmetic_reread("def_cosmetic_after"), None))
         if full:
             rows.append(("design_get", {"include": ["timeline"], "max_results": 1000},
                 lambda p: _measured("literal thread recovery adds only one feature", p.get("timeline"),
@@ -1137,8 +1187,7 @@ def _thread_variant_rows():
         write("model_thread", lambda c, designation=designation: {
             "faces": [_ctx_get(c, "tv_wall", "shaft wall")], "designation": designation,
             "thread_type": "ISO Metric profile", "thread_class": "4g6g", "modeled": False},
-            lambda p: p.get("modeled") is False and "may resize" in p.get("note", "")
-            and "find_geometry" in p.get("note", ""), ("tv_thread", lambda p: p["feature"]))
+            _cosmetic_resize(10.0, radius), ("tv_thread", lambda p: p["feature"]))
         rows.append(("find_geometry", {"target": "Body2", "kind": "cylinder_face"},
                      lambda p, radius=radius: _measured("cosmetic actual radius, not nominal size", p.get("matches"),
                          _matched(1, "cylinder_face")(p) and _near(p["matches"][0].get("radius"), radius, .00001)), None))

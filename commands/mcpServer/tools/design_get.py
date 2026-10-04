@@ -30,7 +30,7 @@ app = adsk.core.Application.get()
 # The deeper slices an agent can opt into (the default returns NONE of these in full - only summaries).
 _SLICES = ("mode", "tree", "timeline", "configurations", "materials", "appearances", "attributes",
            "metadata", "definition", "datums")
-_FEATURE = _inputs.FeatureRef("feature", description="Feature definition.")
+_FEATURE = _inputs.FeatureRef("feature", description="Hole/Thread/Loft/Extrude/Sweep.")
 _DEFINITION_UNREAD = object()
 
 # The orientation slice's name in include=: any deep include omits that slice unless 'default' rides
@@ -365,12 +365,7 @@ def _owner_fields(obj):
     the name alone does not say which row it addresses."""
     # MEASURED: a timeline entity answers assemblyContext None - the timeline holds natives - so
     # there is no occurrence path to publish beside the owning component.
-    ent = safe(lambda: obj.entity)
-    if ent is None:
-        return {}
-    name = safe(lambda: ent.parentComponent.name)
-    if not name and safe(lambda: ent.objectType) == "adsk::fusion::ConstructionPlane":
-        name = safe(lambda: ent.component.name)
+    name = _inputs._owner_component_name(obj)
     return {"component": name} if isinstance(name, str) and name else {}
 
 
@@ -1126,6 +1121,8 @@ def _slice_definition(feature, units):
                    "tapped=false or thread_present=false means absent; applicable=false means "
                    "inapplicable. Other null fields are unknown. Measure tapped bore geometry "
                    "with find_geometry/model_inspect; full-length threads imply no numeric length.")
+    if out.get("not_read"):
+        out["note"] += " This Extrude definition is partial: not_read lists fields it omits."
     return out, None
 
 def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: bool = False,
@@ -1288,7 +1285,7 @@ tool = (
     .add_input_property("library", {"type": "string",
             "description": "Exact library name/id."})
     .add_input_property("name_filter", {"type": "string",
-            "description": "Substring for selected slices."})
+            "description": "Name substring."})
     .add_input_property("max_results", {"type": "integer",
             "description": f"Catalog 50 (max 200); tree {_TREE_CHILDREN_DEFAULT}/level; "
                            f"timeline {_TIMELINE_MAX_ITEMS}; metadata {_METADATA_MAX_ROWS}."})

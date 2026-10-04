@@ -330,10 +330,17 @@ _DENYLIST = {
     "no_timeline_reason": ("_design_common", "def"),
     # The ONE identity-told collapsed-group hint; a name-only copy names the first namesake's group.
     "collapsed_group_hint_for": ("_design_common", "def"),
-    # The ONE hole-flag gate pmi_create and pmi_edit both refuse on before any write.
+    # The ONE hole-flag, hole-value and display gates pmi_create and pmi_edit refuse on before any
+    # write.
     "hole_flags_error": ("_pmi", "def"),
-    # The ONE four-count sketch census a failed entry and its anchor cleanup are judged by.
+    "hole_values_error": ("_pmi", "def"),
+    "display_error": ("_pmi", "def"),
+    # The ONE four-count sketch census a failed entry and its anchor cleanup are judged by, and the
+    # ONE midpoint-anchor retire sketch_dimension and sketch_constrain report through.
     "entry_counts": ("_sketch_batch", "def"),
+    "retired_clause": ("_sketch_batch", "def"),
+    "refuse": ("_sketch_batch", "def"),
+    "MID_ANCHORS": ("_sketch_batch", "assign"),
     # The ONE seam read - a second copy is how two tools call the same seam smooth and sharp.
     "edge_angles": ("_continuity", "def"),
     "body_seams": ("_continuity", "def"),

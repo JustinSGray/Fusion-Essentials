@@ -1816,7 +1816,8 @@ def _anchor_partial(geometry=False, dimension=False):
                          and p.get("failed", {}).get("index") == 1 and p.get("not_attempted") == 1
                          and "retained" not in p and p.get("failed_entry_counts") == {
                              "before": before, "after": {k: before[k] + change[k] for k in before}, "change": change}
-                         and "sketch_get(include_entities=true)" in p.get("note", ""))
+                         and ("Counts do not establish unchanged geometry" in p.get("note", ""))
+                         is (geometry or dimension))
     return check
 
 
@@ -1909,6 +1910,102 @@ def _anchor_retention_rows():
 
 
 _SKETCHWORK += _anchor_retention_rows()
+
+
+def _failed_entry_evidence_rows():
+    """Separate a pre-write refusal, a write failure, a raising entry and a retired midpoint anchor."""
+    rows = [("doc_get", {}, _home_document, ("evidence_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "evidence_home", "home")},
+             _new_document, ("evidence_doc", lambda p: p["document_handle"]))]
+
+    def write(tool, args, check="ok"):
+        rows.append((tool, lambda c, args=args: {**(args(c) if callable(args) else args),
+                    "expect_document": _ctx_get(c, "evidence_doc", "evidence document")}, check, None))
+
+    def parameters(p):
+        return _measured("single-parameter refusal preserves the empty table", p,
+                         p.get("user_parameter_count") == p.get("returned") == p.get("matched") == 0
+                         and p.get("user_parameters") == [] and not p.get("walk_truncated"))
+
+    rows.append(("param_get", {}, parameters, None))
+    for field, value in (("name", 7), ("expression", 7), ("unit", 7), ("comment", 7)):
+        write("param_add", {"name": "EvidenceLength", "expression": "5 mm", field: value},
+              _refused(field, "string", "No parameter added"))
+        rows.append(("param_get", {}, parameters, None))
+    write("param_add", {"name": "EvidenceLength", "expression": "5 mm"},
+          _param_added("EvidenceLength", 5))
+    rows.append(("param_get", {}, _params_listed("EvidenceLength"), None))
+
+    def partial(key, error_fragment, guidance):
+        """One landed horizontal, the second entry failed as named, the third not attempted."""
+        def check(p):
+            failed = p.get("failed") or {}
+            return _measured("failed entry " + key, p,
+                             p.get("constrained") == 1 and [r.get("index") for r in p.get("results", [])] == [0]
+                             and failed.get("index") == 1 and error_fragment in str(failed.get("error"))
+                             and p.get("not_attempted") == 1
+                             and (p.get("failed_entry_counts") or {}).get("change") == {
+                                 "curves": 0, "points": 0, "constraints": 0, "dimensions": 0}
+                             and "Failed-entry count changes: curves=+0" in p.get("note", "")
+                             and ("Counts do not establish unchanged geometry" in p.get("note", "")) is guidance)
+        return check
+
+    for key in ("EvidenceRefusal", "EvidenceWrite", "EvidenceRaise", "EvidenceRetire"):
+        write("sketch_create", {"name": key, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": key, "geometry": [
+            {"kind": "line", "x1": 10, "y1": 10, "x2": 30, "y2": 10},
+            {"kind": "circle", "cx": 60, "cy": 10, "radius": 5},
+            {"kind": "line", "x1": 100, "y1": 100, "x2": 120, "y2": 100}]})
+        read_args = {"sketch_name": key, "include_entities": True, "max_results": 200, "units": "mm"}
+        rows.append(("sketch_get", read_args, _anchor_state(key, "before"),
+                     (key + "_ids", lambda _p, key=key: _RECALL[key + "_ids"])))
+        rows.append(("design_get", {"include": ["default", "timeline"], "max_results": 200},
+                     _anchor_history(key, True), None))
+
+        def entries(c, key=key):
+            line, control, circle = _ctx_get(c, key + "_ids", "current evidence ids")
+            if key == "EvidenceRetire":
+                return {"sketch_name": key, "constraints": [
+                    {"constraint": "coincident", "entity_one": line + ":mid", "entity_two": line}]}
+            second = {"EvidenceRefusal": {"constraint": "horizontal", "entity_one": "line:99"},
+                      "EvidenceWrite": {"constraint": "horizontal", "entity_one": circle},
+                      "EvidenceRaise": {"constraint": "vertical", "entity_one": 5}}[key]
+            return {"sketch_name": key, "constraints": [
+                {"constraint": "horizontal", "entity_one": control}, second,
+                {"constraint": "vertical", "entity_one": control}]}
+
+        verdict = {
+            # An input refusal decided before any write carries the counts but no guidance.
+            "EvidenceRefusal": partial(key, "Could not resolve entity_one 'line:99'", False),
+            # A write the API refuses (addHorizontal takes a SketchLine) keeps the guidance.
+            "EvidenceWrite": partial(key, "Could not apply horizontal", True),
+            # A raise inside one entry is that entry's failure, with the landed entry listed.
+            "EvidenceRaise": lambda p, key=key: partial(key, "The entry raised:", True)(p)
+                             and p.get("retained") is None
+                             and "'int' object has no attribute 'strip'" in p["failed"]["error"],
+            # The midpoint anchor the failed entry minted is deleted, proven by the counts.
+            "EvidenceRetire": _refused("The midpoint anchor(s) it made were deleted",
+                                       "points=+0, constraints=+0"),
+        }[key]
+        write("sketch_constrain", entries, verdict)
+        # Independent effect: the sketch holds the one landed horizontal (or, for the retire,
+        # exactly what it held before), and the history is unchanged.
+        rows.append(("sketch_get", read_args,
+                     _anchor_state(key, "unchanged" if key == "EvidenceRetire" else "mixed"), None))
+        rows.append(("design_get", {"include": ["default", "timeline"], "max_results": 200},
+                     _anchor_history(key, False), None))
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "evidence_home", "home"),
+                                        "expect_document": _ctx_get(c, "evidence_doc", "evidence document")},
+              _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "evidence_doc", "evidence document"),
+                                     "save_changes": False,
+                                     "expect_document": _ctx_get(c, "evidence_home", "home")},
+              _document_closed, None)]
+    return rows
+
+
+_SKETCHWORK += _failed_entry_evidence_rows()
+
 
 
 def _pattern_preflight_rows():

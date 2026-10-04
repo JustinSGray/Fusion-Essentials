@@ -1280,6 +1280,16 @@ class TestBatch:
         assert (len(s.points), len(s.constraints)) == (int(not deletes), int(not (deletes and cascade)))
         assert f"points=+{len(s.points)}, constraints=+{len(s.constraints)}" in msg
 
+    def test_an_add_that_returns_nothing_retires_its_midpoint_anchor(self, monkeypatch):
+        s = _install(monkeypatch, sketches=[_AnchorSketch()])
+        s.sketchDimensions.addDistanceDimension = lambda *args: None
+        msg = sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                      "entity_two": "circle:0:center"}])["message"]
+        assert "Adding the distance dimension returned nothing." in msg
+        assert ("The midpoint anchor(s) it made were deleted: the point and constraint counts "
+                "read back as before the entry.") in msg
+        assert (len(s.points), len(s.constraints)) == (0, 0)
+
     def test_a_failed_add_retires_both_midpoint_anchors_it_made(self, monkeypatch):
         s = _install(monkeypatch, sketches=[_AnchorSketch()])
         s.sketchDimensions.addDistanceDimension = _raiser("points coincide")

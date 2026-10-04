@@ -211,6 +211,46 @@ def test_unfold_design_preflight_refuses_before_input_for_pending_or_incomplete_
     factory.add.assert_not_called()
 
 
+def test_a_lost_association_is_named_as_such_and_its_remedy_lifts_the_refusal(unfold, monkeypatch):
+    # Unfold1.refoldFeature and Refold1.unfoldFeature both read None while both features exist.
+    mod, factory = unfold
+    comp = mod._common.design()._all_components[1]
+    factory._items.append(NS(name='Unfold1', parentComponent=comp, refoldFeature=None))
+    refolds = comp.features.refoldFeatures._items
+    refolds.append(NS(name='Refold1', parentComponent=comp, unfoldFeature=None))
+    msg = mod.handler(stationary_face='face', all_bends=True)['message']
+    assert "'SheetA/Refold1' exists but reads no unfoldFeature" in msg
+    assert "reading no refoldFeature: SheetA/Unfold1 - the unfold/refold association is lost" in msg
+    assert ("design_delete_feature(feature='SheetA/Refold1'), then the same on each unfold "
+            "listed, clears this refusal") in msg
+    assert 'absent' not in msg and 'preflight refuses' not in msg
+    refolds.clear()
+    msg = mod.handler(stationary_face='face', all_bends=True)['message']
+    assert 'Serial unfold policy' in msg and "SheetA/Unfold1" in msg
+    factory.createInput.assert_not_called()
+    factory._items.clear()
+    monkeypatch.setattr(mod._geom, 'faces_moved', lambda faces, before: (7, 14))
+    result = mod.handler(stationary_face='face', all_bends=True)
+    assert result['isError'] is False, result
+    factory.createInput.assert_called_once()
+
+
+def test_a_lost_association_lists_only_the_unfolds_reading_no_refold(unfold):
+    mod, factory = unfold
+    comp = mod._common.design()._all_components[1]
+    refolds = comp.features.refoldFeatures._items
+    factory._items.append(NS(name='Unfold1', parentComponent=comp, refoldFeature=None))
+    refolds.append(NS(name='Refold1', parentComponent=comp, unfoldFeature=None))
+    linked = NS(name='Unfold2', parentComponent=comp)
+    linked.refoldFeature = NS(name='Refold2', parentComponent=comp, unfoldFeature=linked)
+    factory._items.append(linked)
+    refolds.append(linked.refoldFeature)
+    msg = mod.handler(stationary_face='face', all_bends=True)['message']
+    assert "reading no refoldFeature: SheetA/Unfold1 - the unfold/refold association is lost" in msg
+    assert 'Unfold2' not in msg
+    factory.createInput.assert_not_called()
+
+
 def test_unfold_completed_reciprocal_census_allows_a_new_unfold(unfold, monkeypatch):
     mod, factory = unfold
     comp = mod._common.design()._all_components[1]

@@ -4,6 +4,8 @@
 """Mate two occurrences' geometry via Constrain Components - the relationship type is INFERRED from
 the geometry, and a SET of relationships is solved together in ONE constraint. WRITES."""
 
+import math
+
 import adsk.core
 
 from ..mcp_primitives.tool import Tool
@@ -35,6 +37,16 @@ def _newly_unhealthy(before_errors, before_warnings, before_total, design):
             + [n for n in warnings if n not in before_warnings])
 
 
+def _number(label, value):
+    """(float, None) for a finite number, 0.0 for an omitted one; (None, refusal) otherwise."""
+    if value is None:
+        return 0.0, None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None, (f"'{label}' must be a number; received {_common.short_ref(ascii(value))}. "
+                      "Nothing was constrained.")
+    return float(value), None
+
+
 def handler(occurrence_one: str = "", occurrence_two: str = "",
             snap_one: str = "", snap_two: str = "", relationships=None,
             offset: float = 0.0, angle_deg: float = 0.0,
@@ -48,6 +60,10 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
         return error("No active design with components.")
 
     # Normalize inputs into a list of relationship specs: {snap_one, snap_two, flip, offset, angle}.
+    offset_v, refusal = _number("offset", offset)
+    angle_v, angle_refusal = _number("angle_deg", angle_deg)
+    if refusal or angle_refusal:
+        return error(refusal or angle_refusal)
     specs = []
     if relationships:
         if not isinstance(relationships, (list, tuple)):
@@ -59,13 +75,15 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
                 return error(f"Invalid Boolean for 'relationships[{i}].flip': "
                              f"{_common.short_ref(ascii(r['flip']))}. Use true or false. "
                              "Nothing was constrained.")
+            r_offset, refusal = _number(f"relationships[{i}].offset", r.get("offset"))
+            r_angle, angle_refusal = _number(f"relationships[{i}].angle_deg", r.get("angle_deg"))
+            if refusal or angle_refusal:
+                return error(refusal or angle_refusal)
             specs.append({"snap_one": r["snap_one"], "snap_two": r["snap_two"],
-        "flip": r.get("flip", False),
-        "offset": float(r.get("offset", 0.0)),
-        "angle_deg": float(r.get("angle_deg", 0.0))})
+        "flip": r.get("flip", False), "offset": r_offset, "angle_deg": r_angle})
     elif (snap_one or "").strip() or (snap_two or "").strip():
         specs.append({"snap_one": snap_one, "snap_two": snap_two, "flip": bool(flipped),
-        "offset": float(offset or 0.0), "angle_deg": float(angle_deg or 0.0)})
+        "offset": offset_v, "angle_deg": angle_v})
 
     k = _common.scale(units)
     if k is None:
@@ -150,8 +168,8 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
                                  f"not requested '{_common.short_ref(value)}'. {remedy}")
             cin = design.rootComponent.assemblyConstraints.createInput()
             rels = cin.geometricRelationships
-            val = (adsk.core.ValueInput.createByString(f"{float(angle_deg)} deg") if angle_deg
-                   else adsk.core.ValueInput.createByReal(float(offset or 0.0) * k))
+            val = (adsk.core.ValueInput.createByString(f"{angle_v} deg") if angle_v
+                   else adsk.core.ValueInput.createByReal(offset_v * k))
             rels.add(e1, e2, bool(flipped), val)
             for o in (o1, o2):
                 lbl = safe(lambda o=o: o.fullPathName) or safe(lambda o=o: o.name)

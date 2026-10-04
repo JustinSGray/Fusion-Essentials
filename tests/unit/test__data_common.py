@@ -72,11 +72,15 @@ class TestProjectIdPrecedence:
         got, _available = dm._find_project(data, name="requested name")
         assert got is wrong
 
-    def test_duplicate_exact_project_names_are_refused(self):
+    def test_duplicate_exact_project_names_are_refused_naming_each_candidate_id(self):
         data = FakeData(projects=[FakeDataProject("Twin", project_id="p1"),
+                                  FakeDataProject("Other", project_id="p3"),
                                   FakeDataProject("twin", project_id="p2")])
-        with pytest.raises(ValueError, match="matches 2 projects"):
+        with pytest.raises(ValueError, match="matches 2 projects") as refused:
             dm._find_project(data, name="Twin")
+        text = str(refused.value)
+        assert "'Twin' (id p1); 'twin' (id p2)." in text and "Other" not in text
+        assert text.endswith("Refusing to guess which; pass an exact project_id.")
 
     def test_exact_project_id_does_not_read_unrelated_names(self):
         class BlindNameProject:

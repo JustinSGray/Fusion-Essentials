@@ -695,6 +695,14 @@ class TestHoleCallouts:
         assert "Unknown display key 'decimals'" in msg and "precision" in msg
         assert hole.primaryDisplaySettings is None
 
+    def test_a_bad_secondary_refuses_before_the_primary_is_written(self, hole):
+        hole.primaryDisplaySettings = None
+        msg = error_message(pe.handler(action="set_display", annotation="Hole Note1",
+                                       display={"precision": 2,
+                                                "secondary": {"trailing_zeros": "no"}}))
+        assert "display.secondary: Invalid Boolean for 'display.trailing_zeros': 'no'." in msg
+        assert hole.primaryDisplaySettings is None
+
     def test_set_display_republishes_the_secondary_settings_a_note_carries(self, hole, rig):
         mm = pe.adsk.fusion.PMIUnitTypes.MillimetersPMIUnitType
         hole.primaryDisplaySettings = FakePMIDisplaySettings(

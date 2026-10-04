@@ -27,6 +27,13 @@ def _text_unit_remedy(refusal, unit, expression):
     return f" - a 'Text' parameter holds a QUOTED literal: pass \"'{expr}'\", not {expr}."
 
 
+def _non_string(label, value):
+    """The refusal for a field that must be a JSON string, naming the value received; else None."""
+    if isinstance(value, str):
+        return None
+    return f"{label} must be a string; received {_common.short_ref(ascii(value))}."
+
+
 def _add_one(design, name, expression, unit, comment, favorite):
     """Add a single user parameter, health-guarded. Returns (result_dict, error_str). On success
     error_str is None; on failure result_dict is None and error_str explains why (param rolled back
@@ -82,15 +89,13 @@ def handler(name: str = "", expression: str = "", unit: str = "mm",
                 if isinstance(spec[required], str) and not spec[required].strip():
                     return error(f"params[{i}].{required} is empty. No parameters added.")
             for field in ("name", "expression", "unit", "comment"):
-                if field in spec and not isinstance(spec[field], str):
-                    value = ascii(spec[field])
-                    value = value[:77] + "..." if len(value) > 80 else value
-                    return error(f"params[{i}].{field} must be a string; received "
-                                 f"{value}. No parameters added.")
+                refusal = (_non_string(f"params[{i}].{field}", spec[field])
+                           if field in spec else None)
+                if refusal:
+                    return error(f"{refusal} No parameters added.")
         for i, spec in enumerate(params):
             if isinstance(spec, dict) and "favorite" in spec and type(spec["favorite"]) is not bool:
-                value = ascii(spec["favorite"])
-                value = value[:77] + "..." if len(value) > 80 else value
+                value = _common.short_ref(ascii(spec["favorite"]))
                 return error(f"params[{i}].favorite={value} must be JSON true or false. "
                              "No parameters added; omit favorite to keep the default false.")
         results = []
@@ -105,6 +110,11 @@ def handler(name: str = "", expression: str = "", unit: str = "mm",
         "note": f"{len(results)} user parameters added; timeline verified."})
 
     # single path
+    for field, value in (("name", name), ("expression", expression), ("unit", unit),
+                         ("comment", comment)):
+        refusal = _non_string(field, value)
+        if refusal:
+            return error(f"{refusal} No parameter added.")
     res, err = _add_one(design, name, expression, unit, comment, bool(favorite))
     if err:
         return error(err[0].upper() + err[1:])

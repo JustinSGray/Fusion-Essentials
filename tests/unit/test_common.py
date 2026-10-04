@@ -2273,30 +2273,51 @@ class TestBuildPathFromSketch:
         assert comp.coll_calls == [coll]          # the whole collection, unchained
         assert comp.seed_calls == []              # the collection built it - no fallback needed
 
+    @staticmethod
+    def _chain(*entities):
+        """A built Path whose members wrap `entities`, in order."""
+        return SimpleNamespace(count=len(entities), item=lambda i: SimpleNamespace(entity=entities[i]))
+
     def test_a_collection_that_raises_falls_back_to_the_seed_chain(self, monkeypatch):
         import adsk.core
 
         def _boom(_c):
             raise RuntimeError("curves do not connect")
 
-        comp = self._comp(self._sketch(5), _BuiltPath(1), collection_answer=_boom)
+        sketch = self._sketch(5)
+        chain = self._chain(*list(sketch.sketchCurves)[:1])
+        comp = self._comp(sketch, chain, collection_answer=_boom)
         monkeypatch.setattr(adsk.core.ObjectCollection, "create",
                             staticmethod(lambda: _RecordingCollection()))
         p, label, err = common.build_path(comp, "sketch:PathSketch")
         assert err is None
-        assert p.count == 1                        # the seed chain, not the collection
-        assert label == "sketch:PathSketch"
+        assert p is chain                          # the seed chain, not the collection
+        assert label == "sketch:PathSketch (not in the path: line:1, line:2, line:3, line:4)"
         assert comp.seed_calls and comp.seed_calls[0][1] is True
 
     def test_a_collection_that_answers_zero_falls_back_to_the_seed_chain(self, monkeypatch):
         import adsk.core
-        comp = self._comp(self._sketch(5), _BuiltPath(1), collection_answer=lambda c: _BuiltPath(0))
+        sketch = self._sketch(5)
+        chain = self._chain(*list(sketch.sketchCurves)[:1])
+        comp = self._comp(sketch, chain, collection_answer=lambda c: _BuiltPath(0))
         monkeypatch.setattr(adsk.core.ObjectCollection, "create",
                             staticmethod(lambda: _RecordingCollection()))
         p, _label, err = common.build_path(comp, "sketch:PathSketch")
         assert err is None
-        assert p.count == 1
+        assert p is chain
         assert comp.seed_calls
+
+    def test_a_two_of_three_build_names_the_curve_it_left_out(self, monkeypatch):
+        import adsk.core
+        sketch = self._sketch(3)
+        curves = list(sketch.sketchCurves)
+        partial = self._chain(curves[0], curves[2])
+        comp = self._comp(sketch, partial, collection_answer=lambda c: partial)
+        monkeypatch.setattr(adsk.core.ObjectCollection, "create",
+                            staticmethod(lambda: _RecordingCollection()))
+        p, label, err = common.build_path(comp, "sketch:PathSketch")
+        assert err is None and p is partial
+        assert label == "sketch:PathSketch (not in the path: line:1)"
 
     def test_a_construction_curve_is_not_collected(self, monkeypatch):
         import adsk.core
@@ -2338,7 +2359,7 @@ class TestBuildPathFromSketch:
         construction = SimpleNamespace(isConstruction=True)
         real = make_sketch_curve('real')
         sketch = make_sketch('PathSketch', lines=[construction, real])
-        comp = self._comp(sketch, _BuiltPath(1), collection_answer=lambda c: _BuiltPath(0))
+        comp = self._comp(sketch, self._chain(real), collection_answer=lambda c: _BuiltPath(0))
         monkeypatch.setattr(adsk.core.ObjectCollection, 'create',
                             staticmethod(lambda: _RecordingCollection()))
         p, _label, err = common.build_path(comp, 'sketch:PathSketch')

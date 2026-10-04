@@ -582,6 +582,17 @@ def test_a_namesake_group_not_read_as_collapsed_is_not_named(state):
     assert mod._design_common.collapsed_group_hint_for(timeline, own, "Replacement") is None
 
 
+def test_an_item_without_identity_beside_a_readable_namesake_member_is_unproven():
+    own = Sketch(name="Replacement", parent_component=MakeComp(name="Own"))
+    namesake = Sketch(name="Replacement", parent_component=MakeComp(name="Other"))
+    namesake.entityToken = "namesake-sketch"
+    timeline = SimpleNamespace(timelineGroups=_NamedCollection([_collapsed("AGroup", namesake)]))
+    hint = mod._design_common.collapsed_group_hint_for(timeline, own, "Replacement")
+    assert hint == ("'Replacement' names an item inside the collapsed timeline group 'AGroup', "
+                    "which the timeline lists as one item. Run design_edit_timeline("
+                    "action='ungroup', feature='AGroup') - its items are kept - then retry.")
+
+
 def test_an_unnamed_item_found_by_identity_is_not_quoted_as_a_name():
     own = Sketch(name="Replacement", parent_component=MakeComp(name="Own"))
     own.entityToken = "own-sketch"

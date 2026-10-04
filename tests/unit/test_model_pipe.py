@@ -44,6 +44,10 @@ class _Path:
 class _UnreadablePath:
     """A Path whose isClosed read RAISES - what a proxy that stops answering looks like. The reverse
     extent cannot be shown to apply against it, so it must be refused, not set."""
+    def __init__(self, count=None):
+        if count is not None:
+            self.count = count
+
     @property
     def isClosed(self):
         raise RuntimeError("isClosed unavailable")
@@ -166,7 +170,8 @@ def _wire(bodies=(), path_closed=False, design_type=1, sketch_curves=1, path_unr
     comp = MakeComp(bodies=bodies,
                     sketches=[_PathSketch()])
     pf = _PipeFeatures(comp, **kw)
-    made_path = _UnreadablePath() if path_unreadable else _Path(path_closed, sketch_curves)
+    made_path = (_UnreadablePath(sketch_curves) if path_unreadable
+                 else _Path(path_closed, sketch_curves))
     comp.features = types.SimpleNamespace(
         pipeFeatures=pf, createPath=lambda seed, is_chain=True: made_path)
     design = make_design(comp=comp, tokens=tokens, all_components=all_components)

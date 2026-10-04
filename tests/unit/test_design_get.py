@@ -258,6 +258,20 @@ def test_two_side_definition_reads_second_parameter_independently(extrude_defini
     assert result["distance2_parameter"] == "d2" and result["distance2_expression"] == "4 mm"
 
 
+@pytest.mark.parametrize("extent,target", [("DistanceExtentDefinition", False),
+                                           ("ToEntityExtentDefinition", True)])
+def test_the_controls_an_extrude_read_omits_are_listed_as_not_read(extrude_definition_scene,
+                                                                   extent, target):
+    s = extrude_definition_scene
+    s.hole.extentOne.objectType = "adsk::fusion::" + extent
+    out = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert out["not_read"] == (["taper_angle", "thin", "start_extent", "is_solid"]
+                               + (["extent_target"] if target else []))
+    assert "extent" not in out["unavailable"]
+    assert out["note"].endswith(" This Extrude definition is partial: not_read lists fields it "
+                                "omits.")
+
+
 def test_symmetric_definition_keeps_native_full_length_semantics(extrude_definition_scene):
     s = extrude_definition_scene
     s.hole.extentOne.objectType = "adsk::fusion::SymmetricExtentDefinition"
@@ -854,6 +868,17 @@ class TestTimelineSlice:
         assert [(r["name"], r.get("component")) for r in rows] == [
             ("Witness", None), ("Pick", "DatumA"), ("PlaneTwin", "DatumA"),
             ("PlaneTwin", "DatumB"), (" DatumB:1", None)]
+
+    def test_sub_component_axes_and_points_publish_their_component(self):
+        rows = []
+        for index, kind in enumerate(("ConstructionAxis", "ConstructionPoint")):
+            row = self._tlobj(index, kind + "1", entity_name=kind)
+            row.entity.objectType = "adsk::fusion::" + kind
+            row.entity.component = SimpleNamespace(name="DatumB")
+            rows.append(row)
+        out, err = dg._slice_timeline(self._design_with(rows), include_suppressed=True, group="")
+        assert err is None and [(r["name"], r.get("component")) for r in out["timeline"]] == [
+            ("ConstructionAxis1", "DatumB"), ("ConstructionPoint1", "DatumB")]
 
     def test_the_root_owner_is_dropped_as_noise(self):
         # in a single-component design EVERY row would name the root: a column that never varies

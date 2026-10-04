@@ -708,6 +708,14 @@ def _origin_consumer_rows():
     return rows
 
 
+def _constraint_names(p):
+    """Return the complete assembly-constraint census by name, or None when the read is partial."""
+    rows = (p.get("relations") or {}).get("constraints")
+    if p.get("relations_truncated") is not False or not isinstance(rows, list):
+        return None
+    return sorted(str(r.get("name")) for r in rows)
+
+
 def _selected_owner_state(p):
     """Return the complete four-part pose and relationship witness, or None when unread."""
     rows, relations = p.get("all_occurrences"), p.get("relations") or {}
@@ -1441,6 +1449,28 @@ _MOTION += _box("ConA", ox=360, tint="#E5533C") + _box("ConB", ox=360, tint="#1E
     # rather than leave a warned constraint in the design.
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
     _watch(["MateSeat:1", "MateArm:1"]),
+    # A relationship value that is not a number is refused, naming it, before any constraint input
+    # is built; both parts and the constraint census read the same before and after.
+    ("model_inspect", {"target": "MateArm:1", "include": ["default", "mass"], "per_body": True,
+                       "accuracy": "very_high", "units": "mm"},
+     _retire_compare("constrain_number_arm", _retire_material_state, False), None),
+    ("model_inspect", {"target": "MateSeat:1", "include": ["default", "mass"], "per_body": True,
+                       "accuracy": "very_high", "units": "mm"},
+     _retire_compare("constrain_number_seat", _retire_material_state, False), None),
+    ("assembly_get", {"include": ["relations"], "max_relations": 100},
+     _retire_compare("constrain_number_relations", _constraint_names, False), None),
+    ("assembly_constrain", {"relationships": [
+        {"snap_one": "MateArm:1:bottom", "snap_two": "MateSeat:1:top", "flip": True, "offset": "2 mm"}]},
+     _refused("'relationships[0].offset' must be a number; received '2 mm'.",
+              "Nothing was constrained."), None),
+    ("model_inspect", {"target": "MateArm:1", "include": ["default", "mass"], "per_body": True,
+                       "accuracy": "very_high", "units": "mm"},
+     _retire_compare("constrain_number_arm", _retire_material_state, True), None),
+    ("model_inspect", {"target": "MateSeat:1", "include": ["default", "mass"], "per_body": True,
+                       "accuracy": "very_high", "units": "mm"},
+     _retire_compare("constrain_number_seat", _retire_material_state, True), None),
+    ("assembly_get", {"include": ["relations"], "max_relations": 100},
+     _retire_compare("constrain_number_relations", _constraint_names, True), None),
     ("assembly_constrain", {"relationships": [
         {"snap_one": "MateArm:1:bottom", "snap_two": "MateSeat:1:top", "flip": True, "offset": 2},
         {"snap_one": "MateArm:1:front", "snap_two": "MateSeat:1:front", "angle_deg": 30},

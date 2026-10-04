@@ -1849,18 +1849,33 @@ def _thicken_visibility_rows():
                      _fg("thicken_face")))
         def landed(p, body=body, role=role, action=action):
             want_before = role == "visible"
-            return (p.get("thickened") is True and p.get("is_solid") is True and p.get("thickness") == 1
-                    and len(p.get("result_bodies") or []) == 1
-                    and p.get("source_visibility") == [{"face_index": 0, "body": body,
+            sources = p.get("source_visibility") or [{}]
+            handle = sources[0].get("handle")
+            valid = (p.get("thickened") is True and p.get("is_solid") is True and p.get("thickness") == 1
+                     and len(p.get("result_bodies") or []) == 1 and isinstance(handle, str) and handle
+                     and sources == [{"body": body, "face_indices": [0], "handle": handle,
                         "before": {"light_bulb_on": want_before, "visible": want_before},
                         "after": {"light_bulb_on": not want_before, "visible": not want_before}}]
-                    and ("became hidden" if want_before else "became shown") in p.get("note", "")
-                    and "action='" + action + "'" in p["note"])
+                     and p.get("note", "").count(f"Source '{body}' (handle {handle}) became "
+                                                 + ("hidden." if want_before else "shown.")) == 1
+                     and f"Undo it with view_set(action='{action}', target=['{handle}'])." in p["note"])
+            if valid:
+                _RECALL["thicken_source_handle_" + role] = handle
+            return bool(valid)
         write("surface_thicken", lambda c: {"faces": [_ctx_get(c, "thicken_face", "sheet face")], "thickness": 1,
               "units": "mm", "symmetric": False, "chaining": False, "operation": "new"}, landed,
               ("thicken_wall_" + role, lambda p: p["result_bodies"][0]))
         after_key = "thicken_" + role + "_after"
         design_read(after_key, role + "_after", before)
+        # The handle the disclosure names is the source's own tree handle, read independently.
+        rows.append(("design_get", {"include": ["tree"], "tree_bodies": True, "tree_handles": True,
+                                    "max_results": 2000},
+                     lambda p, body=body, role=role: _measured(
+                         "the disclosed source handle is the body's tree handle",
+                         (p.get("tree") or {}).get("root_bodies"),
+                         [b.get("handle") for b in (p.get("tree") or {}).get("root_bodies") or []
+                          if b.get("name") == body] == [_RECALL.get("thicken_source_handle_" + role)]),
+                     None))
         controls(True)
         def wall(p, x=x):
             state = _thicken_material(p)
@@ -2305,6 +2320,10 @@ def _remesh_density_rows():
         ("model_inspect", {"target": "MC", "units": "mm"},
          _retire_compare("density_refusal_target", _remesh_target_state, False), None),
         ("mesh_remesh", {"mesh": "MC", "density": -1}, _refused("density=-1 is negative", "0 for the API default"), None),
+        # A non-number reaches the handler (the transport types only Booleans) and is refused there,
+        # not run as the default remesh; the reads below find both refusals changed nothing.
+        ("mesh_remesh", {"mesh": "MC", "density": "fine"},
+         _refused("density='fine' is not a number", "0 for the API default"), None),
         ("mesh_get", {"target": "Msh"}, _retire_compare("density_refusal_meshes", _remesh_census_state, True), None),
         ("model_inspect", {"target": "MC", "units": "mm"},
          _retire_compare("density_refusal_target", _remesh_target_state, True), None),

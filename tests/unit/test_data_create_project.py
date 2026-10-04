@@ -51,7 +51,22 @@ class TestCreateProject:
                      FakeDataProject("alpha", project_id="p2"))
         res = dm.handler(name="Alpha")
         assert res["isError"] is True and "matches 2 projects" in res["message"]
+        assert "'Alpha' (id p1); 'alpha' (id p2)." in res["message"]
+        assert "use a different name" in res["message"] and "project_id" not in res["message"]
         assert data.dataProjects._added == []
+
+    def test_an_incomplete_name_census_names_no_input_this_tool_lacks(self, cloud):
+        class BlindNameProject:
+            id = "p-hidden"
+
+            @property
+            def name(self):
+                raise RuntimeError("name unreadable")
+
+        data = cloud(FakeDataProject("Alpha", project_id="p1"), BlindNameProject())
+        res = dm.handler(name="Beta")
+        assert res["isError"] is True and "name listing is incomplete" in res["message"]
+        assert "project_id" not in res["message"] and data.dataProjects._added == []
 
     def test_a_project_that_never_relists_is_an_error(self, cloud, monkeypatch):
         # add() handing back a project object is not the project existing. The re-list is the

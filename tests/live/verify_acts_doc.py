@@ -917,10 +917,17 @@ for _bool_tool, _bool_args, _bool_path in [
         "flip": "false"}]}, "relationships[0].flip"),
     ("pmi_create", {"kind": "hole_note", "geometry": ["unresolved"], "flags": {"threaded": "false"}},
      "flags.threaded"),
+    # The display object is checked with the flags, before the geometry resolves or a note exists.
+    ("pmi_create", {"kind": "hole_note", "geometry": ["unresolved"],
+                    "display": {"precision": 2, "leading_zeros": "false"}}, "display.leading_zeros"),
 ]:
     _BOOLEAN_FLAGS += [(_bool_tool, _bool_args,
         _refused("Invalid Boolean for " + repr(_bool_path), "'false'", "Use true or false."), None)]
     _BOOLEAN_FLAGS += _boolean_reads("bool_refused_" + _bool_path, "bool_seed")
+# A Boolean value is refused before the geometry resolves, so the unresolvable geometry never answers.
+_BOOLEAN_FLAGS += [("pmi_create", {"kind": "hole_note", "geometry": ["unresolved"], "values": {"depth": True}},
+    _refused("'depth' must be a number (in 'units'), got True.", "No annotation was created."), None)]
+_BOOLEAN_FLAGS += _boolean_reads("bool_refused_values", "bool_seed")
 for _bool_tag, _bool_flag in [("true", {"suppressed": True}), ("omitted", {})]:
     _BOOLEAN_FLAGS += [("design_edit_timeline", lambda c, flags=_bool_flag: {"action": "suppress",
         "feature": _target_address(c, "bool_seed_design", "Witness", "Extrude1"), **flags},
@@ -1194,7 +1201,7 @@ def _disclosure_witness_material(p):
 
 
 def _product_disclosure_rows():
-    """Disclose plane owners, empty focus and handle lifetime in one owned scene."""
+    """Disclose datum owners, empty focus and handle lifetime in one owned scene."""
     rows = [("doc_get", {}, _home_document, ("disclosure_home", _home_address)),
             ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
                             "tree_handles": True, "max_results": 2000},
@@ -1300,6 +1307,30 @@ def _product_disclosure_rows():
                  _retire_compare("disclosure_witness_material", _disclosure_witness_material, True), None))
     write("param_set", {"name": "DisclosureHeight", "expression": "10 mm"}, _param_set_to("DisclosureHeight", 10))
     unchanged(True)
+    # Namesake axes and points in two sub-components: each timeline row names the owner that
+    # model_construction reported, read here after the plane-owner snapshots above are closed.
+    datums = (("axis", "ConstructionAxis", "AxisTwin", {"mode": "two_planes", "plane": "xz", "plane2": "yz"}),
+              ("point", "ConstructionPoint", "PointTwin",
+               {"mode": "three_planes", "plane": "xy", "plane2": "xz", "plane3": "yz"}))
+    for owner in ("DatumA", "DatumB"):
+        write("design_activate_component", {"occurrence": owner + ":1"})
+        for kind, _type, name, args in datums:
+            write("model_construction", {"kind": kind, "name": name, "units": "mm", **args},
+                  lambda p, owner=owner, kind=kind, name=name: p.get("component") == owner
+                  and p.get("kind") == kind and p.get("name") == name and bool(p.get("handle")),
+                  ("disclosure_" + kind + "_" + owner, _recall("disclosure_" + kind + "_" + owner,
+                                                             lambda p: p.get("component"))))
+    write("design_activate_component", {"occurrence": "root"})
+    def datum_owners(p):
+        tl = p.get("timeline") or {}
+        got = [(r.get("type"), r.get("name"), r.get("component")) for r in tl.get("timeline") or []
+               if r.get("type") in ("ConstructionAxis", "ConstructionPoint")]
+        want = [(t, n, _RECALL.get("disclosure_" + k + "_" + o)) for o in ("DatumA", "DatumB")
+                for k, t, n, _a in datums]       # creation order, which the timeline keeps
+        return _measured("datum timeline owners match model_construction's component", {"rows": got, "want": want},
+                         not tl.get("truncated") and tl.get("count") == tl.get("returned") and got == want
+                         and {w[2] for w in want} == {"DatumA", "DatumB"})
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 2000}, datum_owners, None))
     rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "disclosure_home", "home"),
                                         "expect_document": _ctx_get(c, "disclosure_doc", "owned scene")}, "ok", None),
              ("doc_close", lambda c: {"name": _ctx_get(c, "disclosure_doc", "owned scene"), "save_changes": False,

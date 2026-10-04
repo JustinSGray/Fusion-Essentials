@@ -243,7 +243,15 @@ def _collapsed_unfold_hint(timeline, want):
             else:
                 return uncertain
     if len(matches) > 1:
-        return uncertain
+        steps = [(f"for '{target}' run design_edit_timeline(action='group_state', "
+                  f"feature='{holder}', collapsed=false)") if supported else
+                 (f"'{target}' sits in '{holder}', outside group_state support - inspect it with "
+                  f"design_get(include=['timeline'], group='{holder}')")
+                 for holder, target, supported in matches]
+        more = f"; {len(steps) - 5} more not listed" if len(steps) > 5 else ""
+        return (f"'{want}' names {len(steps)} hidden unfold features in collapsed groups: "
+                + "; ".join(steps[:5]) + more + ". Then retry the original action with that "
+                "qualified reference. Keep the unfold group intact.")
     if not matches:
         return None
     holder, target, supported = matches[0]

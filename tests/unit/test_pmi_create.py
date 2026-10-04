@@ -262,11 +262,28 @@ class TestCreate:
                             display={"precision": 2, "secondary": {"precision": 4}}))
         assert seen == [(rig.hole_ann, {"precision": 2, "secondary": {"precision": 4}})]
 
-    def test_a_display_refusal_reports_the_annotation_as_created(self, rig):
+    @pytest.mark.parametrize("extra,fragment", [
+        ({"display": {"units": "furlong"}}, "display.units must be one of"),
+        ({"display": {"precision": 2, "secondary": {"leading_zeros": "false"}}},
+         "display.secondary: Invalid Boolean for 'display.leading_zeros': 'false'."),
+        ({"display": "precision=2"}, "'display' must be an object"),
+        ({"display": {"precision": 2.5}}, "display.precision must be an integer, got 2.5."),
+        ({"display": {"secondary": [4]}}, "'display.secondary' must be an object: {precision"),
+        ({"values": {"diameter": {"value": 6, "tolerance": {"type": "wonky"}}}},
+         "'diameter'.tolerance: Unknown tolerance type 'wonky'"),
+        ({"values": {"diameter": {"value": 6, "tolerance": {"type": "symmetric", "value": "abc"}}}},
+         "'diameter'.tolerance: Tolerance 'symmetric' needs a number for 'value', got 'abc'."),
+        ({"values": {"diameter": {"value": 6, "tolerance": {"type": "deviation", "upper": "nan"}}}},
+         "Tolerance 'deviation' needs a number for 'upper', got 'nan'."),
+        ({"values": {"depth": "deep"}}, "'depth' must be a number"),
+        ({"values": {"depth": True}}, "'depth' must be a number (in 'units'), got True.")])
+    def test_a_bad_display_or_value_is_refused_before_the_note_is_created(self, rig, extra,
+                                                                          fragment):
         rig.stub_geometry([_face(rig.comp)])
-        msg = error_message(pc.handler(kind="hole_note", geometry=["a"],
-                                       display={"units": "furlong"}))
-        assert "must be one of" in msg and "WAS created" in msg
+        msg = error_message(pc.handler(kind="hole_note", geometry=["a"], **extra))
+        assert fragment in msg and msg.endswith("No annotation was created.")
+        assert "WAS created" not in msg
+        assert rig.hole_notes._added is None and rig.hole_notes.count == 0
 
     def test_bad_text_point_reports_but_names_the_created_annotation(self, rig):
         rig.stub_geometry([_face(rig.comp)])

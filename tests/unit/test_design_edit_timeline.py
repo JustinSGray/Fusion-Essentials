@@ -427,6 +427,48 @@ def test_hidden_unfold_advice_expands_and_retries_original_qualified_action(unfo
     assert member.isSuppressed is False and group.isCollapsed is True
 
 
+def _collapsed_unfold_groups(wire, count, cut_in=()):
+    """`count` collapsed groups, each a sheet's Unfold1 and Refold1, plus Cut1 at the `cut_in` indexes."""
+    groups = []
+    for i in range(count):
+        sheet = f"Sheet{'ABCDEF'[i]}"
+        owner = MakeComp(sheet, entity_token=sheet.lower())
+        names = ("Unfold1", "Refold1", "Cut1") if i in cut_in else ("Unfold1", "Refold1")
+        members = [FakeTimelineObject(name, j, entity=types.SimpleNamespace(
+            entityToken=f"{name}-{sheet}", objectType=("adsk::fusion::ExtrudeFeature" if name == "Cut1"
+                                                       else f"adsk::fusion::{name[:-1]}Feature"),
+            parentComponent=owner)) for j, name in enumerate(names)]
+        group = FakeTimelineGroup(f"Group{i + 1}", i, members=members, collapsed=True)
+        group.isValid = True
+        groups.append(group)
+    wire(FakeTimeline(groups, groups=groups))
+    return groups
+
+
+@pytest.mark.parametrize("cut_in,second", [
+    ((), "for 'SheetB/Unfold1' run design_edit_timeline(action='group_state', feature='Group2', "
+         "collapsed=false)"),
+    ((1,), "'SheetB/Unfold1' sits in 'Group2', outside group_state support - inspect it with "
+           "design_get(include=['timeline'], group='Group2')")])
+def test_two_collapsed_unfold_groups_name_both_qualified_candidates(wire, cut_in, second):
+    groups = _collapsed_unfold_groups(wire, 2, cut_in)
+    message = error_message(et.handler(action='suppress', feature='Unfold1'))
+    assert message.endswith(
+        "'Unfold1' names 2 hidden unfold features in collapsed groups: for 'SheetA/Unfold1' run "
+        "design_edit_timeline(action='group_state', feature='Group1', collapsed=false); "
+        + second + ". Then retry the original action with that qualified reference. Keep "
+        "the unfold group intact.")
+    assert 'could not be read' not in message and all(g.isCollapsed for g in groups)
+
+
+@pytest.mark.parametrize("count,tail", [(5, "'SheetE/Unfold1' run"), (6, "; 1 more not listed.")])
+def test_collapsed_unfold_candidates_past_five_are_counted(wire, count, tail):
+    _collapsed_unfold_groups(wire, count)
+    message = error_message(et.handler(action='suppress', feature='Unfold1'))
+    assert f"names {count} hidden unfold features" in message and tail in message
+    assert "SheetF" not in message and ("more not listed" in message) is (count > 5)
+
+
 def test_hidden_unfold_unread_type_owner_or_slot_never_recommends_ungroup(unfold_group):
     timeline, group, member = unfold_group
     for field in ('objectType', 'parentComponent'):

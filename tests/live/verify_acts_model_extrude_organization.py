@@ -22,9 +22,14 @@ def _extrude_definition(extent, distance, distance2=None, units="mm", side_count
         d = p.get("definition") or {}
         available = d.get("unavailable") or {}
         profile = d.get("profile") or {}
-        numeric = extent != "through_all"
+        numeric = extent not in ("through_all", "to_face")
+        omitted = ["taper_angle", "thin", "start_extent", "is_solid"] + (
+            ["extent_target"] if extent == "to_face" else [])
         return _measured(f"read {extent} Extrude definition in {units}", d,
             d.get("type") == "ExtrudeFeature" and d.get("extent") == extent and d.get("units") == units
+            and d.get("not_read") == omitted and "extent" not in available
+            and (d.get("note") or "").endswith(
+                " This Extrude definition is partial: not_read lists fields it omits.")
             and bool(profile.get("profile_handle")) and profile.get("profile_index") == 0
             and bool(profile.get("source_sketch"))
             and d.get("distance_applicable") is numeric
@@ -323,6 +328,9 @@ def _extrude_edit_rows():
           "action": "extent", "extent": "to_face", "to_object": _ctx_get(c, "ee_roof", "roof")},
           _extrude_edit_landed)
     inspect("EditProfile:Body2", placed("to-face replacement", (20, 0, 0), (30, 10, 30), 3000))
+    definition("ee_profile", "to_face")
+    inspect("EditProfile:Body2", placed("definition read preserves to_face", (20, 0, 0), (30, 10, 30),
+                                        3000))
     edit("ee_profile", {"action": "extent", "extent": "distance", "distance": 5})
     inspect("EditProfile:Body2", placed("distance replacement", (20, 0, 0), (30, 10, 5), 500))
     rectangle("EditDependentCut", (21, 1), (24, 4))

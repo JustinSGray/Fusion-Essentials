@@ -663,7 +663,8 @@ def handler() -> dict:
         f"find_geometry(target='<occurrence/body>') - {body_total} bodies; always scope by target "
         "(filter by kind/radius/nearest_to) rather than scanning the whole design."
         if body_total > _BIG_BODIES else
-        "find_geometry(target='<part>', kind=...) to get stable handles for jointing/filleting.")
+        "find_geometry(target='<part>', kind=...) for short-lived handles to joint/fillet; "
+        "re-find if stale.")
     if joint_count or grounded:
         pointers["kinematics"] = "assembly_get() for full per-occurrence position/ground/joint state."
     if param_total:

@@ -1182,7 +1182,8 @@ def _later_operand_rows():
              lambda p: _measured(label, (p.get("mass") or {}).get("volume"),
                                  _near((p.get("mass") or {}).get("volume"), cm3, 0.0001)))
 
-    # Rows 0-10 hold the features; 11-14 the sketches drawn after every one of them.
+    # Rows 0-10 hold the sweep, extrude and loft with their sketches and planes; 11-14 the
+    # sketches drawn after every one of them.
     sketch("Prof", "yz", {"kind": "circle", "cx": 0, "cy": 0, "radius": 5})
     sketch("PathA", "xy", {"kind": "line", "x1": 0, "y1": 0, "x2": 100, "y2": 0})
     write("model_sweep", {"profile": {"sketch": "Prof", "profile_index": 0},
@@ -1422,6 +1423,7 @@ def _later_operand_rows():
          lambda p: _measured("refused namesake profile edit preserves material",
                              (p.get("mass") or {}).get("volume"),
                              _near((p.get("mass") or {}).get("volume"), .5, .0002)))
+
     rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "lo_story", "story"),
                                          "expect_document": _ctx_get(c, "lo_doc", "later operand")},
               "ok", None),
@@ -2280,13 +2282,17 @@ def _partial_path_rows():
         ("SharedPointRun", [{"kind": "polyline", "points": [[0, 0], [10, 0], [20, 0], [30, 0]]}], [0, 1, 2], 3, 30, "perpendicular"),
     ]
     for name, geometry, indices, count, length, orientation in fixtures:
+        # The non-construction lines are line:0..count-1 in every fixture; the rest were left out.
+        left = ", ".join(f"line:{i}" for i in range(count) if i not in indices)
         write("sketch_create", {"name": name, "plane": "xy"})
         write("sketch_add_geometry", {"sketch_name": name, "geometry": geometry})
         write("model_sweep", {"profile": {"sketch": "PartialProfile", "profile_index": 0},
                               "path": "sketch:" + name, "operation": "new", "orientation": orientation},
-              lambda p, n=len(indices), count=count: _measured("partial path warning and usable remedy", p,
+              lambda p, n=len(indices), count=count, name=name, left=left: _measured(
+                  "partial path names the curves it left out", p,
                   p.get("swept") is True and p.get("path_curves") == n
                   and p.get("path_sketch_curves") == count and len(p.get("result_bodies") or []) == 1
+                  and p.get("path") == "sketch:" + name + (f" (not in the path: {left})" if left else "")
                   and (("WARNING" in p.get("note", "") and "separate path sketch" in p["note"])
                        if n < count else "WARNING" not in p.get("note", ""))),
               ("pp_result", lambda p: {"feature": p["feature"], "body": p["result_bodies"][0]}))

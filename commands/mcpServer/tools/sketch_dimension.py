@@ -17,6 +17,7 @@ from . import _common
 from . import _inputs
 from . import _sketch_batch
 from . import _sketch_detail
+from ._sketch_batch import MID_ANCHORS as _MID_ANCHORS, retired_clause as _retired_clause
 from ._sketch_detail import distance_cm, moved_cm, point_cm, point_mm
 
 app = adsk.core.Application.get()
@@ -107,28 +108,6 @@ def _dim_point(sketch, entity, anchor):
     if anchor is None:
         return _point_of(entity), None
     return _common.anchor_point(sketch, entity, anchor)
-
-
-_MID_ANCHORS = ("mid", "midpoint")
-
-
-def _retired_clause(sketch, minted, baseline):
-    """Delete the midpoint anchor points this entry made; the clause the sketch counts back."""
-    if not minted:
-        return ""
-    # A cleanup of the entry's own points: a delete that raises or declines is judged by the counts.
-    for point in minted:
-        safe(lambda p=point: p.deleteMe())
-    after = _sketch_batch.entry_counts(sketch)
-    stayed = [f"{k}=unknown" if None in (after[k], baseline[k])
-              else f"{k}={after[k] - baseline[k]:+d}" for k in ("points", "constraints")
-              if None in (after[k], baseline[k]) or after[k] != baseline[k]]
-    if not stayed:
-        return (" The midpoint anchor(s) it made were deleted: the point and constraint counts read "
-                "back as before the entry.")
-    return (f" Deleting the midpoint anchor(s) it made left {', '.join(stayed)} against the counts "
-            "before the entry; sketch_get(include_entities=true) lists them and "
-            "sketch_delete_entity removes one.")
 
 
 def _radial_text_point(curve):

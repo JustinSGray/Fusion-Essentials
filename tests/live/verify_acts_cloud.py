@@ -352,6 +352,59 @@ def run(context):
     return {"script": script, "read_only": False}
 
 
+def _duplicate_project_probe(_ctx):
+    """Exercise loaded public handlers with an injected duplicate census and no cloud writes."""
+    return {"read_only": False, "script": '''import json, sys
+from types import SimpleNamespace
+
+def run(context):
+    def module(suffix):
+        hits = [m for n, m in sys.modules.items() if n.endswith(suffix)]
+        assert len(hits) == 1
+        return hits[0]
+    create = module('.tools.data_create_project')
+    read = module('.tools._data_read')
+    get = module('.tools.data_get')
+    adds = []
+    def refuse_add(*args):
+        adds.append(args)
+        raise RuntimeError('diagnostic forbids cloud creation')
+    entries = [SimpleNamespace(name=n, id=i) for n, i in
+               [('SweepDuplicate', 'diagnostic-a'), ('SweepDuplicate', 'diagnostic-b'),
+                ('UnrelatedProject', 'diagnostic-other')]]
+    data = SimpleNamespace(dataProjects=SimpleNamespace(asArray=lambda: entries, add=refuse_add))
+    old_create, old_read = create._data, read.app
+    try:
+        create._data = lambda: data
+        read.app = SimpleNamespace(data=data)
+        refused_create = create.handler(name='SweepDuplicate')
+        refused_read = get.handler(project='SweepDuplicate', recursive=False)
+    finally:
+        create._data, read.app = old_create, old_read
+    def result(value):
+        return {'is_error': value.get('isError') is True,
+                'text': (value.get('content') or [{}])[0].get('text', '')}
+    print(json.dumps({'injected_census': True, 'add_calls': len(adds),
+        'restored': create._data is old_create and read.app is old_read,
+        'create': result(refused_create), 'read': result(refused_read)}))
+'''}
+
+
+def _duplicate_project_result(value):
+    """Check both matching IDs, omitted unrelated candidates, valid remedies and restored seams."""
+    p = value if isinstance(value, dict) else json.loads(value)
+    create, read = p.get('create') or {}, p.get('read') or {}
+    return _measured('injected project-name ambiguity through loaded handlers', p,
+        p.get('injected_census') is True and p.get('add_calls') == 0 and p.get('restored') is True
+        and all(row.get('is_error') is True
+                and all(x in row.get('text', '') for x in ('diagnostic-a', 'diagnostic-b', 'matches 2'))
+                and 'diagnostic-other' not in row.get('text', '')
+                and 'UnrelatedProject' not in row.get('text', '') for row in (create, read))
+        and 'project_id' not in create.get('text', '')
+        and 'use a different name' in create.get('text', '')
+        and 'pass an exact project_id' in read.get('text', ''))
+
+
 def _capped_name_move_result(stdout):
     """Check the cap refusal, unchanged parent and exact-URN idempotence from the native probe."""
     if isinstance(stdout, dict):
@@ -2583,6 +2636,8 @@ def _derive_selector_rows():
             "expect_document": _ctx_get(c, "selector_derive_doc", "derive host")},
             _refused(field, "nonblank", "Remove that entry"), None))
         rows += _selector_reads(reads, True)
+
+
     rows += [
         ("doc_insert_derive", lambda c: {"document_id": _ctx_get(c, "source_urn", "source"),
              "source_components": [SRC_COMP], "exclude_bodies": [],
@@ -2953,6 +3008,7 @@ _CLOUD_DATA = [
     ("data_get", {"project": PROJECT, "folder": RUN_PATH, "include": ["summary"]},
      _folder_summary(RUN_PATH, "run_folder_id", 1, 1), None),
     ("sys_execute_script", _capped_name_move_probe, _capped_name_move_result, None),
+    ("sys_execute_script", _duplicate_project_probe, _duplicate_project_result, None),
     ("data_get", lambda c: {"file": _ctx_get(c, "cloud_file", "the uploaded file")},
      _file_record(RUN_PATH, complete=None), None),
     ("data_get", {"project": PROJECT, "folder": MOVED_PATH, "include": ["summary"]},

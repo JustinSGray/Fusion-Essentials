@@ -7,7 +7,7 @@ import adsk.fusion
 import pytest
 
 from conftest import (BRepBody, BRepEdge, BRepFace, FakeFeature as _SharedFeature, MakeComp,
-                      _NamedCollection, go_stale, install, load_tool, make_design,
+                      _NamedCollection, body_proxy, go_stale, install, load_tool, make_design,
                       make_source_document, payload)
 
 se = load_tool("surface_thicken")
@@ -121,10 +121,11 @@ def _unidentifiable(name):
 
 @pytest.fixture
 def visibility_scene(monkeypatch):
-    def build(before, after, unread=None):
+    def build(before, after, unread=None, wall_solid=True, occurrence=None, **features):
         source = BRepBody("Sheet", is_solid=False, light_bulb=before)
-        wall = BRepBody("Wall", is_solid=True)
-        tf = FakeThickenFeatures(result_bodies=[wall], created_faces=[_face_on(wall)])
+        walls = [] if wall_solid is None else [BRepBody("Wall", is_solid=wall_solid)]
+        tf = FakeThickenFeatures(result_bodies=walls, created_faces=[_face_on(w) for w in walls],
+                                 **features)
         original_add = tf.add
         def add(inp):
             feature = original_add(inp)
@@ -133,7 +134,8 @@ def visibility_scene(monkeypatch):
                 go_stale(source, attrs=("isLightBulbOn",))
             return feature
         monkeypatch.setattr(tf, "add", add)
-        _wire(tf, handle_map={"F1": _face_on(source)}, standing_bodies=[source])
+        picked = body_proxy(source, occurrence) if occurrence else source
+        _wire(tf, handle_map={"F1": _face_on(picked)}, standing_bodies=[source])
         if unread == "before":
             go_stale(source, attrs=("isLightBulbOn",))
         return source
@@ -145,13 +147,53 @@ class TestSourceVisibilityDisclosure:
                                                            (False, True, "shown", "hide")])
     def test_new_wall_discloses_both_native_visibility_transitions(self, visibility_scene, before, after, state, action):
         visibility_scene(before, after)
-        out = payload(se.handler(faces=["F1", "F1"], thickness=1, chaining=False))
+        out = payload(se.handler(faces=["F1", "F1", "F1"], thickness=1, chaining=False))
         assert out["source_visibility"] == [
-            {"face_index": i, "body": "Sheet", "before": {"light_bulb_on": before, "visible": before},
-             "after": {"light_bulb_on": after, "visible": after}} for i in range(2)]
-        assert f"Source 'Sheet' became {state}" in out["note"] and f"action='{action}'" in out["note"]
-        assert "include=['tree']" in out["note"] and "target=[<body handle>]" in out["note"]
+            {"body": "Sheet", "face_indices": [0, 1, 2], "handle": "Sheet",
+             "before": {"light_bulb_on": before, "visible": before},
+             "after": {"light_bulb_on": after, "visible": after}}]
+        assert out["note"].count(f"Source 'Sheet' (handle Sheet) became {state}.") == 1
+        assert out["note"].count("view_set(") == 1 and "design_get" not in out["note"]
+        assert f"Undo it with view_set(action='{action}', target=['Sheet'])." in out["note"]
         assert "source_visibility" not in out.get("unverified", [])
+
+    def test_a_proxy_source_routes_through_the_tree_handle(self, visibility_scene):
+        visibility_scene(True, False, occurrence=types.SimpleNamespace(name="Sub:1",
+                                                                       fullPathName="Sub:1"))
+        out = payload(se.handler(faces=["F1"], thickness=1, chaining=False))
+        assert ("Source 'Sheet' in 'Sub:1' (handle PROXY::Sub:1::Sheet) became hidden. Read "
+                "design_get(include=['tree'], tree_bodies=true), then view_set(action='show', "
+                "target=[<body handle>]).") in out["note"]
+
+    def test_rows_group_by_body_identity_not_by_wrapper(self):
+        # each read hands back a fresh wrapper; a shared native identity, not `is`, groups the faces
+        # under one body
+        first, second = (BRepBody("Sheet", is_solid=False, entity_token="tok-sheet") for _ in "ab")
+        other = BRepBody("Sheet", is_solid=False, entity_token="tok-other")
+        wall = BRepBody("Wall", is_solid=True)
+        tf = FakeThickenFeatures(result_bodies=[wall], created_faces=[_face_on(wall)])
+        _wire(tf, handle_map={"F1": _face_on(first), "F2": _face_on(second),
+                              "F3": _face_on(other)})
+        out = payload(se.handler(faces=["F1", "F2", "F3"], thickness=1, chaining=False))
+        assert [(r["handle"], r["face_indices"]) for r in out["source_visibility"]] == [
+            ("tok-sheet", [0, 1]), ("tok-other", [2])]
+
+    @pytest.mark.parametrize("wall_solid,features,fragment", [
+        (None, {}, "owns no result body"),
+        (False, {}, "did not close into a solid"),
+        (True, {"landed_cm": 0.5}, "reads back 5.0")])
+    def test_every_exit_that_leaves_a_feature_still_discloses_the_hidden_source(
+            self, visibility_scene, wall_solid, features, fragment):
+        visibility_scene(True, False, wall_solid=wall_solid, **features)
+        res = se.handler(faces=["F1"], thickness=1, units="mm", chaining=False)
+        assert res["isError"] is True and fragment in res["message"]
+        assert "Source 'Sheet' (handle Sheet) became hidden." in res["message"]
+        assert "action='show'" in res["message"]
+
+    def test_an_unflipped_source_adds_no_sentence_to_an_error_exit(self, visibility_scene):
+        visibility_scene(True, True, landed_cm=0.5)
+        res = se.handler(faces=["F1"], thickness=1, units="mm", chaining=False)
+        assert res["isError"] is True and "Source" not in res["message"]
 
     @pytest.mark.parametrize("unread", ["before", "after"])
     def test_unread_visibility_does_not_become_a_false_transition(self, visibility_scene, unread):
@@ -160,6 +202,12 @@ class TestSourceVisibilityDisclosure:
         row = out["source_visibility"][0]
         assert row[unread] == {"light_bulb_on": None, "visible": None}
         assert "source_visibility" in out["unverified"] and "became" not in out["note"]
+
+    def test_an_unread_source_name_leaves_source_visibility_unverified(self, visibility_scene):
+        go_stale(visibility_scene(True, True), attrs=("name",))
+        out = payload(se.handler(faces=["F1"], thickness=1, chaining=False))
+        assert out["source_visibility"][0]["body"] is None
+        assert "source_visibility" in out["unverified"]
 
 
 class TestOffsetThickenKind:

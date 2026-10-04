@@ -1570,10 +1570,16 @@ def _edge_extent_rows(duplicate):
             _RECALL[tag + "_edge"] = matches[0]["handle"]
         return _measured("one resolved physical edge at [5,8,0]", matches, valid)
 
-    def fillet_result(p):
-        valid = (p.get("filleted") is True and p.get("edges_requested") == p.get("edges_cut") == 1
-                 and p.get("faces_created") == 1 and p.get("tangent_chain") is False)
-        return _measured("one physical edge requested and resolved", p, valid)
+    def fillet_result(n):
+        def check(p):
+            note = p.get("note") or ""
+            said = f"The {n} handles named 1 distinct edge(s), so each was sent once." in note
+            valid = (p.get("filleted") is True and p.get("edges_requested") == n
+                     and p.get("edges_cut") == 1 and p.get("faces_created") == 1
+                     and p.get("tangent_chain") is False
+                     and (said if n > 1 else "handles named" not in note))
+            return _measured(f"{n} handle(s) naming one physical edge, cut once", p, valid)
+        return check
 
     cases = (("single", 1), ("repeated", 2)) if duplicate else (
         ("AllPositive", 1), ("AllNegative", -1), ("AllSymmetric", 1))
@@ -1583,7 +1589,7 @@ def _edge_extent_rows(duplicate):
                          (tag + "_edge", lambda p: _RECALL[tag + "_edge"])))
             write("model_fillet", lambda c, n=value: {"edges": [
                 _ctx_get(c, tag + "_edge", "physical edge")] * n, "radius": .5,
-                "tangent_chain": False}, fillet_result,
+                "tangent_chain": False}, fillet_result(value),
                 (tag + "_feature", _recall(tag + "_feature", lambda p: p["feature"])))
             expected_volume = 479.4634954084937
         else:

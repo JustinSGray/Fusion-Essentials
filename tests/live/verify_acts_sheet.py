@@ -1681,6 +1681,25 @@ def _sheet_serial_rows():
         rows.append(('model_inspect', {'target': owner + ':1', 'include': ['default', 'mass'], 'per_body': True, 'units': 'mm', 'accuracy': 'very_high'},
                      _retire_compare('serial_folded_material', _retire_material_state, True), None))
         held(other)
+    # Both groups collapsed: the bare 'Unfold1' names each qualified candidate and its group.
+    for group in ('Group1', 'Group2'):
+        write('design_edit_timeline', {'action': 'group_state', 'feature': group, 'collapsed': True},
+              lambda p, group=group: p.get('group') == group and p.get('is_collapsed') is True
+              and p.get('member_count') == 2)
+    rows.extend(_retire_reads('serial_two_groups', ['', 'SerialA:1', 'SerialB:1'], []))
+    write('design_edit_timeline', {'action': 'suppress', 'feature': 'Unfold1'},
+          _refused("'Unfold1' names 2 hidden unfold features in collapsed groups",
+                   "for 'SerialA/Unfold1' run design_edit_timeline(action='group_state', "
+                   "feature='Group1', collapsed=false)",
+                   "for 'SerialB/Unfold1' run design_edit_timeline(action='group_state', "
+                   "feature='Group2', collapsed=false)",
+                   "Keep the unfold group intact."))
+    rows.extend(_retire_reads('serial_two_groups', ['', 'SerialA:1', 'SerialB:1'], [], after=True))
+    for group in ('Group1', 'Group2'):
+        write('design_edit_timeline', {'action': 'group_state', 'feature': group, 'collapsed': False},
+              lambda p, group=group: p.get('group') == group and p.get('is_collapsed') is False
+              and p.get('member_count') == 2)
+
     write('doc_close', lambda c: {'name': _ctx_get(c, 'serial_doc', 'owned serial scene'), 'save_changes': False}, _closed_one)
     rows += [('doc_activate', lambda c: {'name': _ctx_get(c, 'serial_home_handle', 'home')}, 'ok', None),
              ('doc_get', {'max_results': 1000}, _retire_compare('serial_home', _home_snapshot, True), None),
@@ -1690,6 +1709,123 @@ def _sheet_serial_rows():
 
 
 _SHEET_SELECTED += _sheet_serial_rows()
+
+
+def _lost_pair_history(p):
+    """Require LostA's Unfold1 and Refold1 both standing healthy in a complete timeline read."""
+    state = _retire_design_state(p)
+    rows = (state or {}).get('timeline', {}).get('timeline') or []
+    pair = sorted((r.get('type'), r.get('name')) for r in rows if r.get('component') == 'LostA'
+                  and r.get('type') in ('UnfoldFeature', 'RefoldFeature'))
+    valid = (state is not None and pair == [('RefoldFeature', 'Refold1'), ('UnfoldFeature', 'Unfold1')]
+             and all(r.get('health', 'healthy') == 'healthy' for r in rows))
+    if valid:
+        _RECALL['lost_pair_design'] = state
+    return _measured('the unfold and its refold both stand in the timeline', pair, valid)
+
+
+def _lost_pair_gone(p):
+    """Require LostA's rows to be the pair's read minus Unfold1 and Refold1, every row healthy."""
+    def owned(state):
+        return [(r.get('type'), r.get('name')) for r in (state or {}).get('timeline', {}).get('timeline') or []
+                if r.get('component') == 'LostA' and r.get('is_group') is not True]
+    state = _retire_design_state(p)
+    rows = (state or {}).get('timeline', {}).get('timeline') or []
+    expected = [t for t in owned(_RECALL.get('lost_pair_design'))
+                if t not in (('UnfoldFeature', 'Unfold1'), ('RefoldFeature', 'Refold1'))]
+    now = owned(state)
+    valid = (state is not None and bool(expected) and now == expected
+             and all(r.get('health', 'healthy') == 'healthy' for r in rows))
+    return _measured('only the orphan refold and unfold left the timeline', now, valid)
+
+
+def _sheet_lost_association_rows():
+    """Lose an unfold/refold association; the unfold preflight names it, and its remedy lets an unfold land."""
+    rows = [('doc_get', {'max_results': 1000}, lambda p: _retire_compare('lost_home', _home_snapshot, False)(p),
+             ('lost_home_handle', _home_address)),
+            ('doc_new', lambda c: {'expect_document': _ctx_get(c, 'lost_home_handle', 'home')},
+             lambda p: p.get('created') is True and p.get('is_active') is True,
+             ('lost_doc', lambda p: p['document_handle'])),
+            ('design_activate_component', {'occurrence': 'root'}, 'ok', None)]
+    def write(tool, args, check='ok', save=None):
+        rows.append((tool, lambda c: {**(args(c) if callable(args) else args),
+                     'expect_document': _ctx_get(c, 'lost_doc', 'owned lost-association scene')}, check, save))
+    write('model_create_component', {'name': 'LostA', 'sheet_metal': True, 'activate': True},
+          lambda p: p.get('component') == 'LostA' and p.get('sheet_metal') is True)
+    write('sketch_create', {'name': 'LostABase', 'plane': 'xy'})
+    write('sketch_add_geometry', {'sketch_name': 'LostABase', 'units': 'mm', 'geometry': [
+        {'kind': 'rectangle', 'x1': 0, 'y1': 0, 'x2': 80, 'y2': 40}]})
+    write('sheet_create_flange', {'kind': 'base', 'profile': {'sketch': 'LostABase', 'profile_index': 0},
+                                  'component': 'LostA'},
+          lambda p: p.get('created') is True and p.get('kind') == 'base')
+    def rim(p):
+        matches = [r for r in p.get('matches') or [] if r.get('kind') == 'line_edge'
+                   and len(r.get('position') or []) == 3
+                   and all(_near(a, b, .001) for a, b in zip(r['position'], (80, 20, 2.5)))
+                   and _near(r.get('length'), 40, .001)]
+        _measured('one base-flange rim edge', matches, len(matches) == 1 and bool(matches[0].get('handle')))
+        return matches[0]['handle']
+    rows.append(('find_geometry', {'target': 'LostA:1', 'kind': 'line_edge', 'units': 'mm', 'max_results': 100},
+                 lambda p: _edge_extent_geometry(p) is not None, ('lost_rim', rim)))
+    write('sheet_create_flange', lambda c: {'kind': 'edge', 'edges': [_ctx_get(c, 'lost_rim', 'rim edge')],
+                                            'distance': 10, 'units': 'mm'},
+          lambda p: p.get('created') is True)
+    write('design_activate_component', {'occurrence': 'root'})
+    def stationary(key):
+        rows.append(('find_geometry', {'target': 'LostA:1', 'kind': 'planar_face', 'units': 'mm', 'max_results': 100},
+                     _top_face(3000), (key, lambda p: _top_match(p, 3000)['handle'])))
+    def folded(after):
+        rows.append(('find_geometry', {'target': 'LostA:1', 'units': 'mm', 'max_results': 200},
+                     _retire_compare('lost_folded', lambda p: _serial_sheet_geometry(p, True), after), None))
+        rows.append(('model_inspect', {'target': 'LostA:1', 'include': ['default', 'mass'], 'per_body': True,
+                                       'units': 'mm', 'accuracy': 'very_high'},
+                     _retire_compare('lost_folded_material', _retire_material_state, after), None))
+    folded(False)
+    stationary('lost_stationary')
+    write('sheet_create_unfold', lambda c: {'stationary_face': _ctx_get(c, 'lost_stationary', 'top face'),
+                                            'all_bends': True},
+          lambda p: p.get('created') is True and p.get('feature') == 'Unfold1')
+    # The measured sequence that loses both associations: collapse the unfold's group, remove the
+    # group, then refold. The refold lands and its own association check reports the loss.
+    write('design_edit_timeline', {'action': 'group_state', 'feature': 'Group1', 'collapsed': True},
+          lambda p: p.get('group') == 'Group1' and p.get('is_collapsed') is True)
+    write('design_edit_timeline', {'action': 'ungroup', 'feature': 'Group1'},
+          lambda p: p.get('ungrouped') is True and p.get('group') == 'Group1')
+    write('sheet_create_refold', {'unfold': 'LostA/Unfold1'},
+          _refused("Refold 'Refold1' remains", 'unfold association'))
+    rows.append(('design_get', {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True,
+                                'max_results': 2000}, _lost_pair_history, None))
+    stationary('lost_stationary_refolded')
+    write('sheet_create_unfold', lambda c: {'stationary_face': _ctx_get(c, 'lost_stationary_refolded', 'top face'),
+                                            'all_bends': True},
+          _refused("'LostA/Refold1' exists but reads no unfoldFeature",
+                   'reading no refoldFeature: LostA/Unfold1', 'association is lost',
+                   "design_delete_feature(feature='LostA/Refold1'), then the same on each unfold listed",
+                   'Nothing unfolded'))
+    rows.append(('design_get', {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True,
+                                'max_results': 2000},
+                 lambda p: _measured('the refused unfold left the history as it was',
+                                     None, _retire_design_state(p) == _RECALL.get('lost_pair_design')), None))
+    # The remedy the refusal names: delete the orphan refold, then the unfold listed; the next
+    # unfold then lands.
+    for feature in ('LostA/Refold1', 'LostA/Unfold1'):
+        write('design_delete_feature', {'feature': feature},
+              lambda p: p.get('deleted') is True and p.get('also_deleted') == [])
+    rows.append(('design_get', {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True,
+                                'max_results': 2000}, _lost_pair_gone, None))
+    folded(True)
+    stationary('lost_stationary_cleared')
+    write('sheet_create_unfold', lambda c: {'stationary_face': _ctx_get(c, 'lost_stationary_cleared', 'top face'),
+                                            'all_bends': True},
+          lambda p: p.get('created') is True and p.get('all_bends') is True and (p.get('faces_moved') or 0) > 0)
+    write('doc_close', lambda c: {'name': _ctx_get(c, 'lost_doc', 'owned lost-association scene'),
+                                  'save_changes': False}, _closed_one)
+    rows += [('doc_activate', lambda c: {'name': _ctx_get(c, 'lost_home_handle', 'home')}, 'ok', None),
+             ('doc_get', {'max_results': 1000}, _retire_compare('lost_home', _home_snapshot, True), None)]
+    return rows
+
+
+_SHEET_SELECTED += _sheet_lost_association_rows()
 
 
 def _position_variant(position):
@@ -1810,7 +1946,15 @@ def _z_flat_geometry(p, limit=32):
         _measured("unique flat owner", hits, len(hits) == 1)
         flat, geometry = hits[0], hits[0].get("geometry") or {}
         faces, box = geometry.get("faces") or [], geometry.get("bounds_cm") or {}
+        # Each normal carries its label, and a face says when the two disagree in sign - judged here
+        # off the two vectors the same row publishes.
+        planes = [f for f in faces if isinstance(f.get("plane"), dict)]
         valid = (flat.get("present") is True and flat.get("healthy") is True
+                 and "evaluator's outward normal" in (geometry.get("normals") or "")
+                 and "supporting surface's parametric normal" in geometry["normals"]
+                 and all(("note" in f["plane"]) is (sum(a * b for a, b in zip(
+                     f.get("normal_at_sample") or [], [(f["plane"].get("normal") or {}).get(k, 0)
+                                                       for k in "xyz"])) < 0) for f in planes)
                  and geometry.get("development") == "unverified"
                  and geometry.get("frame") == "flatBody native coordinates; not folded-body world coordinates"
                  and geometry.get("face_count") == count and geometry.get("returned") == len(faces) == min(count, limit)
@@ -1822,10 +1966,14 @@ def _z_flat_geometry(p, limit=32):
                          and isinstance(f.get("sample_point_cm"), dict)
                          and len(f.get("normal_at_sample", [])) == 3 for f in faces))
         if limit >= count:
-            broad = [f for f in faces if _near(f.get("area_cm2"), area, 1e-5)]
+            broad = sorted((f for f in faces if _near(f.get("area_cm2"), area, 1e-5)),
+                           key=lambda f: f["plane"]["origin_cm"]["z"])
+            # Outward normals: the lower broad face reads z=-1 and the upper z=+1; a narrow face of
+            # each coupon reads opposite its plane.normal, so at least one face carries the note.
             valid = (valid and len(broad) == 2
-                     and all(_near(abs(f["normal_at_sample"][2]), 1, 1e-6) for f in broad)
-                     and sorted(round(f["plane"]["origin_cm"]["z"], 6) for f in broad) == [low[2], high[2]])
+                     and all(_near(f["normal_at_sample"][2], sign, 1e-6) for f, sign in zip(broad, (-1, 1)))
+                     and [round(f["plane"]["origin_cm"]["z"], 6) for f in broad] == [low[2], high[2]]
+                     and any("note" in f["plane"] for f in planes))
         _measured("independent native flat bounds and broad-plane separation: " + owner, geometry, valid)
     return True
 

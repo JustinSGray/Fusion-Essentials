@@ -66,7 +66,14 @@ def pending_unfolds(design):
             elif linked not in refolds or refolds[linked][1] != identity:
                 return None, f"'{name}/{label}' refold is absent from its owner's collection"
         for identity, (label, linked) in refolds.items():
-            if linked is None or linked not in unfolds or unfolds[linked][1] != identity:
+            if linked is None:
+                orphans = [f"{name}/{u}" for u, link in unfolds.values() if link is None]
+                return None, (f"'{name}/{label}' exists but reads no unfoldFeature, and {name}'s "
+                              f"unfold(s) reading no refoldFeature: {', '.join(orphans) or 'none'} "
+                              "- the unfold/refold association is lost. design_delete_feature("
+                              f"feature='{name}/{label}'), then the same on each unfold listed, "
+                              "clears this refusal")
+            if linked not in unfolds or unfolds[linked][1] != identity:
                 return None, f"'{name}/{label}' unfold is absent from its owner's collection"
     if owners.count(root_key) != 1:
         return None, "allComponents did not include the root exactly once"
@@ -280,6 +287,10 @@ def _flat_face(face, index):
         row["plane"] = {"origin_cm": ptxyz(safe(lambda: geometry.origin), 1),
                         "normal": ptxyz(safe(lambda: geometry.normal), 1)}
         unread.extend("plane." + k for k, v in row["plane"].items() if v is None)
+        surface = row["plane"]["normal"]
+        sign = _geom.dot(normal, [surface[a] for a in "xyz"]) if normal and surface else None
+        if sign is not None and sign < 0:
+            row["plane"]["note"] = "plane.normal points opposite normal_at_sample on this face."
     row["unread"] = unread
     return row
 
@@ -302,6 +313,9 @@ def _flat_geometry(flat, limit):
         else:
             rows.append(_flat_face(face, i))
     return {"frame": "flatBody native coordinates; not folded-body world coordinates",
+            "normals": ("normal_at_sample is the face evaluator's outward normal at "
+                        "sample_point_cm; plane.normal is the supporting surface's parametric "
+                        "normal"),
             "development": "unverified", "bounds_cm": bounds,
             "face_count": total, "returned": len(rows), "limit": limit,
             "truncated": total > limit if total is not None else None,

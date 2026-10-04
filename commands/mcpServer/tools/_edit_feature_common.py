@@ -59,6 +59,9 @@ def extrude_extent_kind(feature):
             "adsk::fusion::ThroughAllExtentDefinition": "through_all"}.get(one)
 
 
+_EXTRUDE_NOT_READ = ("taper_angle", "thin", "start_extent", "is_solid")
+
+
 def read_extrude_definition(feature, limit=None):
     """Read Extrude values at the current marker, with signed lengths in cm and per-field failures."""
     unavailable = {}
@@ -90,6 +93,7 @@ def read_extrude_definition(feature, limit=None):
             "symmetric_full_length": (_common.read_flag(lambda: feature.extentOne.isFullLength)
                                       if kind == "symmetric" else None),
             "participants": participants, "participants_truncated": truncated,
+            "not_read": list(_EXTRUDE_NOT_READ) + (["extent_target"] if kind == "to_face" else []),
             "unavailable": unavailable}
 
 
@@ -145,7 +149,7 @@ def feature_definition(feature, factor):
         out = {key: read[key] for key in ("operation", "extent", "distance_parameter", "distance_expression",
             "extent_side_count", "direction", "distance2_parameter", "distance2_expression",
             "symmetric_full_length", "participants",
-            "participants_truncated", "unavailable")}
+            "participants_truncated", "not_read", "unavailable")}
         out.update(distance=_common.measured(lambda: read["distance_cm"], factor),
                    distance2=_common.measured(lambda: read["distance2_cm"], factor),
                    distance_applicable=applicable,

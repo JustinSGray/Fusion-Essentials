@@ -391,6 +391,7 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
     body_label = None
     census = None
     faces_selected = None
+    handles_sent = None
     want_faces = face_handles not in (None, "", [])
     if want_faces and edge_handles not in (None, "", []):
         return error("Pass 'faces' or 'edges', not both: 'faces' works on every edge of the named "
@@ -424,6 +425,7 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
                           "any fillet/chamfer feature is created, rather than silently rounding fewer "
                           "edges than asked.)" if requested_n else "")
             return error(herr + count_note)
+        handles_sent = len(ents)
         if kind == "fillet" and variant is None:
             ents = _distinct_placed_edges(ents, safe(lambda: design.rootComponent))
         edges = adsk.core.ObjectCollection.create()
@@ -628,7 +630,7 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
     if edges_cut is None:
         chain_note = " The feature's own edge set did not read, so edges_cut is not reported."
     elif edges_cut > edges.count:
-        chain_note = (f" edges_cut {edges_cut} exceeds the {edges.count} handle(s) given: the seeds "
+        chain_note = (f" edges_cut {edges_cut} exceeds the {edges.count} edge(s) given: the seeds "
                       "CHAINED into tangentially connected edges. Pass tangent_chain=false to cut "
                       "only the handles.")
     else:
@@ -643,6 +645,10 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
                        "argument - it cuts the edges handed in.")
     if marker_clause:
         chain_note += " " + marker_clause + "."
+    requested = edges.count if handles_sent is None else handles_sent
+    if requested > edges.count:
+        chain_note = (f" The {requested} handles named {edges.count} distinct edge(s), so each was "
+                      "sent once." + chain_note)
 
     payload = {
         kind + "ed": True,
@@ -652,7 +658,7 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
         size_key: _inputs.expression_report(size),
         "units": units,
         "edge_selection": edge_src,
-        "edges_requested": edges.count,
+        "edges_requested": requested,
         "note": (f"Edges {'rounded' if kind == 'fillet' else 'beveled'}. Pair with view_screenshot."
                  + chain_note
                  + measured_note

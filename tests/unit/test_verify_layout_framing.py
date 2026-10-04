@@ -235,7 +235,7 @@ class TestPlacementFrame:
             ("TapControlBench", [130, 12.5, 30]), ("TapControlBench", [110, 10, 15]),
             ("HoleFeedback", [230, 20, 30]), ("HoleFeedback", [215, 30, 20]),
             ("HoleFeedback", [245, 30, 20]), ("HoleFeedback", [230, 30, 20]),
-            ("DefinitionPost", [70, 0, 12.5])]
+            ("DefinitionPost", [70, 0, 12.5]), ("DefinitionPost", [70, 0, 12.5])]
 
 
 class TestDatumOperandStory:
@@ -954,8 +954,12 @@ def test_sheet_serial_scene_keeps_local_coupons_and_typed_group_recovery_in_full
     assert boxes == [[{'kind': 'rectangle', 'x1': 220, 'y1': 0, 'x2': 240, 'y2': 20}],
                      [{'kind': 'rectangle', 'x1': 0, 'y1': 0, 'x2': 80, 'y2': 40}],
                      [{'kind': 'rectangle', 'x1': 100, 'y1': 0, 'x2': 180, 'y2': 40}]]
-    assert [(a['feature'], a['collapsed']) for t, a in requests(authored) if t == 'design_edit_timeline'] == [
-        ('Group1', True), ('Group1', False)]
+    assert [(a['feature'], a['collapsed']) for t, a in requests(authored)
+            if t == 'design_edit_timeline' and a['action'] == 'group_state'] == [
+        ('Group1', True), ('Group1', False), ('Group1', True), ('Group2', True),
+        ('Group1', False), ('Group2', False)]
+    assert [a['feature'] for t, a in requests(authored)
+            if t == 'design_edit_timeline' and a['action'] == 'suppress'] == ['Unfold1']
     assert [a['unfold'] for t, a in requests(authored) if t == 'sheet_create_refold'] == [
         'SerialA/Unfold1', 'SerialA/Unfold1', 'SerialB/Unfold1']
     first_sketch = next(i for i, row in enumerate(authored) if row[0] == 'sketch_create')

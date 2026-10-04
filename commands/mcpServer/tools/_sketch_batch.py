@@ -5,17 +5,27 @@
 resolved sketch, the first failure stops the run, and the payload says what landed, what failed and
 what was not attempted."""
 
-from ._common import counted, error, ok
+from ._common import counted, error, ok, safe
 
-MAP_BLURB = ("the sketch batch substrate: entries_or_error - the list-shape guard naming a bad "
-             "entry and its unknown fields; run_batch - the entries of a sketch write run in order "
-             "against ONE resolved sketch, stopping at the first failure, publishing the "
-             "landed/failed/not_attempted payload every list tool shares; entry_counts - the four "
-             "sketch counts a failed entry is judged by")
+MAP_BLURB = ("the sketch batch substrate: entries_or_error - the list-shape guard; run_batch - one "
+             "sketch's entries in order, stopping at the first failure or raise, with the shared "
+             "landed/failed/not_attempted payload; refuse - an entry refused before any write; "
+             "entry_counts - the four counts a failed entry is judged by; retired_clause - delete "
+             "an entry's minted midpoint anchors, judged by those counts")
 
 # Above this an entry list is refused: a call is one turn's work, not a whole drawing.
 _MAX_ENTRIES = 200
 UNKNOWN_RETENTION = object()
+MID_ANCHORS = ("mid", "midpoint")
+
+
+class Refusal(str):
+    """An entry error decided before the entry's first write."""
+
+
+def refuse(text):
+    """(None, Refusal) - the return of an entry refused before its first write."""
+    return None, Refusal(text)
 
 
 def entries_or_error(raw, name, allowed):
@@ -43,14 +53,35 @@ def entry_counts(sketch):
     return {key: n if n is not None and n >= 0 else None for key, n in values.items()}
 
 
-def _failed_counts(before, after):
-    """Return per-entry count evidence and its limited readback guidance."""
+def retired_clause(sketch, minted, baseline):
+    """Delete the midpoint anchor points this entry made; the clause the sketch counts back."""
+    if not minted:
+        return ""
+    # A cleanup of the entry's own points: a delete that raises or declines is judged by the counts.
+    for point in minted:
+        safe(lambda p=point: p.deleteMe())
+    after = entry_counts(sketch)
+    stayed = [f"{k}=unknown" if None in (after[k], baseline[k])
+              else f"{k}={after[k] - baseline[k]:+d}" for k in ("points", "constraints")
+              if None in (after[k], baseline[k]) or after[k] != baseline[k]]
+    if not stayed:
+        return (" The midpoint anchor(s) it made were deleted: the point and constraint counts read "
+                "back as before the entry.")
+    return (f" Deleting the midpoint anchor(s) it made left {', '.join(stayed)} against the counts "
+            "before the entry; sketch_get(include_entities=true) lists them and "
+            "sketch_delete_entity removes one.")
+
+
+def _failed_counts(before, after, wrote):
+    """Return per-entry count evidence and its note; the readback guidance only after a write."""
     change = {key: after[key] - value if value is not None and after[key] is not None else None
               for key, value in before.items()}
     text = ", ".join(f"{key}={value:+d}" if value is not None else f"{key}=unknown"
                      for key, value in change.items())
-    note = (f"Failed-entry count changes: {text}. Counts do not establish unchanged geometry. "
-            "Read sketch_get(include_entities=true) for current entities and constraints.")
+    note = f"Failed-entry count changes: {text}."
+    if wrote:
+        note += (" Counts do not establish unchanged geometry. Read "
+                 "sketch_get(include_entities=true) for current entities and constraints.")
     return {"before": before, "after": after, "change": change}, note
 
 
@@ -75,10 +106,14 @@ def run_batch(entries, one, name, verb, sketch_name, *, sketch, result_note="", 
     count_evidence, count_note = None, ""
     for i, entry in enumerate(entries):
         before = entry_counts(sketch)
-        res, err = one(i, entry)
+        try:
+            res, err = one(i, entry)
+        except Exception as e:
+            res, err = UNKNOWN_RETENTION, f"The entry raised: {str(e).rstrip('.')}."
         if err:
             failed = {"index": i, "error": err}
-            count_evidence, count_note = _failed_counts(before, entry_counts(sketch))
+            count_evidence, count_note = _failed_counts(before, entry_counts(sketch),
+                                                        not isinstance(err, Refusal))
             if res is UNKNOWN_RETENTION:
                 retention_unknown = True
             elif res is not None:

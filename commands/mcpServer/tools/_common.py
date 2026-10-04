@@ -1343,8 +1343,8 @@ OPERATIONS = {
 
 def build_path(comp, path_raw):
     """Return (path, label, error): sketch curves, one tangent edge seed, or an exact edge list."""
-    # _inputs imports _common, so the edge-handle kind is bound at call time rather than at import.
-    from . import _inputs
+    # _inputs and _sketch_detail import _common, so both are bound at call time, not at import.
+    from . import _inputs, _sketch_detail
     if isinstance(path_raw, str) and path_raw.strip().lower().startswith("sketch:"):
         nm = path_raw.split(":", 1)[1].strip()
         sk, _ = target_sketch(comp, nm)
@@ -1362,6 +1362,16 @@ def build_path(comp, path_raw):
         coll = adsk.core.ObjectCollection.create()
         for c in selected:
             coll.add(c)
+        intended = [native_identity(c) for c in selected]
+        known = None not in intended and len(set(intended)) == len(selected)
+
+        def members(path):
+            """The native identities of a built path's members, None when any does not read."""
+            n = counted(lambda: path.count)
+            keys = ([native_identity(safe(lambda i=i: path.item(i).entity)) for i in range(n)]
+                    if n is not None else [None])
+            return None if None in keys else keys
+
         p = None
         if safe(lambda: coll.count, 0):
             try:
@@ -1377,19 +1387,22 @@ def build_path(comp, path_raw):
                 if p is None:
                     return None, None, f"Could not build a path from sketch '{nm}': {e}"
                 candidate = None
+            got = members(candidate) if candidate is not None else None
             if p is None:
                 p = candidate
-            elif candidate is not None and counted(lambda: candidate.count) == len(selected):
-                intended = [native_identity(c) for c in selected]
-                actual = [native_identity(safe(lambda i=i: candidate.item(i).entity))
-                          for i in range(len(selected))]
-                if (None not in intended and None not in actual
-                        and len(set(intended)) == len(selected)
-                        and set(actual) == set(intended)):
-                    p = candidate
+            elif (known and got is not None and len(got) == len(selected)
+                  and set(got) == set(intended)):
+                p = candidate
         if not p:
             return None, None, f"createPath returned nothing for sketch '{nm}'."
-        return p, f"sketch:{nm}", None
+        label = f"sketch:{nm}"
+        got = members(p) if (counted(lambda: p.count) or 0) < len(selected) and known else None
+        if got is not None:
+            left = [_sketch_detail.curve_id(sk, c) for c, key in zip(selected, intended)
+                    if key not in got]
+            if left and None not in left:
+                label += f" (not in the path: {named_with_remainder(left)})"
+        return p, label, None
 
     # A single handle is kept whole - a composite handle carries commas in its locator, so it must
     # NOT be comma-split; several must arrive as a JSON list.

@@ -11,7 +11,7 @@ import pytest
 
 from conftest import (load_tool, make_design, install, MakeComp, payload, error_message,
                       assert_no_active_design, assert_unknown_units,
-                      BRepBody, BRepFace, Cylinder, FakePoint, FakeVector3D)
+                      BRepBody, BRepFace, Cylinder, FakePoint, FakeVector3D, _NamedCollection)
 
 mt = load_tool("model_thread")
 
@@ -330,7 +330,7 @@ class TestLibraryChoices:
         assert literal == "M6x1"
         out = payload(mt.handler(**{**args, "designation": literal}))
         assert out["designation"] == literal and out["thread_class"] == "6g"
-        assert "may resize" in out["note"] and "model_inspect" in out["note"]
+        assert "was not measured" in out["note"] and "find_geometry" in out["note"]
         assert "does not check" not in out["note"]
 
     @pytest.mark.parametrize("standard,cls", [("unknown standard", "6g"), ("ISO Metric profile", "6H")])
@@ -343,13 +343,43 @@ class TestLibraryChoices:
         assert "Thread dialog" not in message
         assert library.created_info == [] and library.added == 0
 
-    def test_unreadable_classes_are_not_guessed(self, library, monkeypatch):
+    @pytest.mark.parametrize("listed", [("M6x1", "M6x0.8", "M6x0.75", "M6x0.7", "M6x0.5"),
+                                        ("M6x0.5", "M6x0.7", "M6x0.75", "M6x0.8", "M6x1")])
+    @pytest.mark.parametrize("standard,order", [
+        ("", ("ANSI Metric M Profile", "ISO Metric profile")),
+        ("ISO Metric profile", ("ISO Metric profile", "ANSI Metric M Profile"))])
+    def test_unreadable_classes_name_the_closest_catalog_designation_per_type(
+            self, library, monkeypatch, standard, order, listed):
         def fail(*args):
             raise RuntimeError("unreadable classes")
         monkeypatch.setattr(library.threadDataQuery, "allClasses", fail)
-        message = error_message(mt.handler(faces=["h"], designation="M6x1.0"))
-        assert "No nearby alternative with readable classes was found" in message
+        monkeypatch.setattr(library.threadDataQuery, "allDesignations", lambda t, s: listed)
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.0", thread_type=standard))
+        assert ("No nearby alternative with readable classes was found. Closest designation per "
+                f"thread type: 'M6x1' in '{order[0]}'; 'M6x1' in '{order[1]}'. Retry with one as "
+                "designation and its thread_type.") in message
+        assert "Thread dialog" not in message and "(classes:" not in message
         assert library.created_info == [] and library.added == 0
+
+    @pytest.mark.parametrize("count,more", [(5, ""), (6, "; 1 more thread type(s) not listed")])
+    def test_closest_designations_past_five_types_are_counted(self, library, monkeypatch, count,
+                                                               more):
+        types = tuple(f"T{i}" for i in range(1, count + 1))
+        monkeypatch.setattr(FakeThreadDataQuery, "allThreadTypes", property(lambda _self: types))
+        monkeypatch.setattr(library.threadDataQuery, "allClasses",
+                            lambda *a: (_ for _ in ()).throw(RuntimeError("unreadable classes")))
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.0"))
+        listed = "; ".join(f"'M6x1' in 'T{i}'" for i in range(1, 6))
+        assert (f"Closest designation per thread type: {listed}{more}. Retry with one as "
+                "designation and its thread_type.") in message
+
+    def test_a_library_with_no_readable_designation_lists_its_thread_types(self, library,
+                                                                             monkeypatch):
+        monkeypatch.setattr(library.threadDataQuery, "allDesignations", lambda t, s: ())
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.0"))
+        assert message.endswith("No designation in the thread library read; its thread types: "
+                                "ANSI Metric M Profile, ISO Metric profile.")
+        assert "Thread dialog" not in message and library.added == 0
 
     def test_query_and_reply_choices_are_bounded(self, library, monkeypatch):
         queried = []
@@ -448,6 +478,56 @@ class TestHonesty:
         out = payload(mt.handler(faces=["h"], designation="M10x1.5"))
         assert out["threaded"] is True
         assert "volume_delta_cm3" not in out
+
+
+class TestCosmeticResize:
+    def _resized(self, monkeypatch, after_cm, extra=(), untyped=False, flipped=False):
+        """A 1 cm shaft on its body, `extra` faces beside it, whose radius reads `after_cm` after the thread."""
+        body = BRepBody("Post", volume=100.0)
+        face = _shaft(body)
+        face.geometry.radius = 1.0
+        body.faces = _NamedCollection([face, *extra])
+        feats = FakeThreadFeatures()
+        real_add = feats.add
+
+        def add(inp):
+            face.geometry.radius = after_cm
+            if untyped:
+                face.geometry.surfaceType = None
+            if flipped:
+                face.geometry.axis = FakeVector3D(0.0, 0.0, -1.0)
+            return real_add(inp)
+
+        feats.add = add
+        _wire(monkeypatch, feats, [face])
+        return payload(mt.handler(faces=["h"], designation="M10x1.5"))
+
+    @pytest.mark.parametrize("flipped", [False, True])     # True: the face's axis reads reversed after the thread
+    def test_a_changed_radius_is_reported_before_and_after(self, monkeypatch, flipped):
+        bore = _bore()
+        bore.geometry.radius = 0.5
+        elsewhere = _cyl_face(radial=(-1.0, 0.0, 0.0), axis_origin=(5.0, 0.0, 0.0))   # a shaft
+        elsewhere.geometry.radius = 2.0
+        # A shaft whose axis crosses the threaded one at the origin, perpendicular to it.
+        across = BRepFace(Cylinder(FakeVector3D(1.0, 0.0, 0.0), FakePoint(0.0, 0.0, 0.0)),
+                          body=BRepBody("Body1"), point_on_face=FakePoint(0.0, 0.0, 2.0),
+                          normal=FakeVector3D(0.0, 0.0, 1.0))
+        across.geometry.radius = 2.0
+        out = self._resized(monkeypatch, 1.486725, extra=(bore, elsewhere, across), flipped=flipped)
+        assert out["cylinder_radii"] == [{"before": 10.0, "after": 14.86725, "change": 4.86725}]
+        assert ("Cosmetic thread added; cylinder radius before -> after (mm): face 0 10.0 -> "
+                "14.86725 (+4.86725).") in out["note"] and "may resize" not in out["note"]
+
+    @pytest.mark.parametrize("after_cm,untyped", [(None, False), (1.486725, True)])
+    def test_an_unreadable_radius_says_the_resize_was_not_measured(self, monkeypatch, after_cm,
+                                                                    untyped):
+        coaxial = _shaft()        # reads the before radius, so skipping the threaded face reads 10 -> 10
+        coaxial.geometry.radius = 1.0
+        out = self._resized(monkeypatch, after_cm, extra=(coaxial,), untyped=untyped)
+        assert out["cylinder_radii"] == [{"before": 10.0, "after": None, "change": None}]
+        assert out["note"].startswith("Cosmetic thread added; the resize of face(s) [0] (0-based) "
+                                      "was not measured")
+        assert "find_geometry(kind='cylinder_face')" in out["note"]
 
 
 class TestOutputContract:

@@ -45,8 +45,8 @@ def _data():
     return d
 
 
-def _find_project(data, name=None, project_id=None):
-    """Find one project by id or case-insensitive exact name; return it and the complete name census."""
+def _find_project(data, name=None, project_id=None, id_input="project_id"):
+    """Find one project by id or case-insensitive exact name; a name refusal names `id_input` when one is set."""
     try:
         projects = list(data.dataProjects.asArray())
     except Exception as exc:
@@ -94,11 +94,13 @@ def _find_project(data, name=None, project_id=None):
 
     if unread_names:
         raise RuntimeError(f"Project name listing is incomplete: {unread_names} project name(s) "
-                           "could not be read, so lookup results are unknown. Retry or use an exact "
-                           "project_id.")
+                           "could not be read, so lookup results are unknown. Retry"
+                           + (f" or use an exact {id_input}." if id_input else "."))
     if len(matches) > 1:
-        raise ValueError(f"Project name '{name}' matches {len(matches)} projects - refusing to "
-                         f"guess which: {', '.join(available)}. Pass an exact project_id.")
+        rows = "; ".join(f"'{safe(lambda p=p: p.name)}' "
+                         f"(id {safe(lambda p=p: p.id) or 'unreadable'})" for p in matches)
+        remedy = f" Refusing to guess which; pass an exact {id_input}." if id_input else ""
+        raise ValueError(f"Project name '{name}' matches {len(matches)} projects: {rows}.{remedy}")
     return (matches[0] if matches else None), available
 
 

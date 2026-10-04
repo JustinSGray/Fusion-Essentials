@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 701
+**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 697
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -37,12 +37,12 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
-- `design_get`  <- 59  (desc 12, note 47)
+- `design_get`  <- 58  (desc 12, note 46)
 - `find_geometry`  <- 55  (desc 14, note 41)
 - `design_delete_feature`  <- 42  (desc 16, note 26)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 34  (desc 15, note 19)
-- `model_inspect`  <- 30  (desc 5, note 25)
+- `model_inspect`  <- 29  (desc 5, note 24)
 - `sketch_get`  <- 26  (desc 7, note 19)
 - `doc_open`  <- 25  (desc 5, note 20)
 - `sketch_create`  <- 25  (desc 7, note 18)
@@ -1067,6 +1067,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Project creation returned nothing for '
 - dataProjects.add returned a project but '
 - ' does not appear when the projects are re-listed - the creation did not land.
+- Nothing was created; use a different name.
 - Could not verify whether project '
 - Failed to create project '
 - ), but could not verify it by re-listing projects:
@@ -2732,6 +2733,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `mesh_remesh`
 - Triangle count is unchanged (
 - . Read the mesh back with mesh_get before building on it.
+- is not a number. Pass a positive number, or 0 for the API default.
 - is negative. Use a positive density, or 0 for the API default.
 - No active design. Open or create a document first (see doc_new).
 - This design has no meshRemeshFeatures collection (mesh remesh unavailable here).
@@ -3712,7 +3714,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - is not available on this Fusion version.
 - The thread was created but its
 - Modeled thread cut into the existing cylinder(s). The cut is verified by volume, which catches a designation too large for a shaft or too small for a bore; a designation too large for a BORE also r...
-- Cosmetic thread added; the plain cylinder may resize to the call-out. Measure its actual diameter with find_geometry/model_inspect. Pass modeled=true for a helix.
+- Cosmetic thread added; the resize of face(s)  (0-based) was not measured: no single radius read for it before and after the thread. Measure it with find_geometry(kind='cylinder_face'). Pass modeled...
 - Could not read the outward normal of face(s)  (0-based), so whether they are bores or shafts is unknown. Re-run find_geometry for fresh handles and pass faces whose 'normal' it reports.
 - One Thread feature cannot mix internal and external faces: face(s)  (0-based) are bores and the rest are shafts. Thread each side in its own call.
 - The thread was created but carries designation '', not the requested ''. Remove it with design_delete_feature (feature '').
@@ -3745,8 +3747,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - must be JSON true or false. No parameters added; omit favorite to keep the default false.
 - '. No parameters added.
 - is empty. No parameters added.
-- must be a string; received
-- . No parameters added.
 
 ### `param_delete`
 - Provide 'name' - the parameter to delete.
@@ -4252,7 +4252,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Drive it later by name via param_set.
 - The wedge dimensioned is the one FACING THE SKETCH ORIGIN (the dimension's text point sits at the origin, and the dimensioned wedge is the one containing it) - a value near 180 minus the angle want...
 - A second line that is NOT parallel to the first is ROTATED parallel by this dimension: the constraint MOVES geometry rather than refusing, so re-read sketch_get to confirm the shape is still what w...
-- Deleting the midpoint anchor(s) it made left  against the counts before the entry; sketch_get(include_entities=true) lists them and sketch_delete_entity removes one.
 - The solver moved , but satisfying this dimension demanded only  mm of change ( mm measured before it, driven to  mm) - a move far beyond that is what a dimension attached to the UNINTENDED entity l...
 - already stand(s) at the same  ( mm) as . If one of them is already dimensioned in , tie the two with sketch_constrain '' instead of a second , or move one point off that  first.
 - When present, 'solved' is each REFERENCED entity's geometry read back after the solve, with the distance it moved (moved_mm) getting there; geometry the solve moved elsewhere in the sketch is not c...
@@ -4581,7 +4580,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - No active design. Create or open a document first (see doc_new).
 - Thicken reported success but the feature owns no result body - no wall was created, so there is nothing to read isSolid back off.
 - Thicken reported success but no CREATED body reads isSolid=true - the wall did not close into a solid. The feature remains in the timeline; inspect it with model_inspect or remove it with design_de...
-- Source '' became . Read design_get(include=['tree'], tree_bodies=true), then view_set(action='', target=[<body handle>]).
 - WARNING: operation='join' fused NOTHING - the wall landed as a NEW free-floating body () because the sheet touches no existing solid. Move it into contact (model_move) and thicken again, or pass op...
 
 ### `surface_trim`

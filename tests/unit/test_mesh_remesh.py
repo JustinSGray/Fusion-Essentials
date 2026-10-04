@@ -179,6 +179,16 @@ class TestRemeshDensityReadBack:
         assert bf._starts == bf._finishes == 0 and feats.last_input is None
         assert src.displayMesh.triangleCount == 2000 and src.area == 50.0 and src.volume == 10.0
 
+    @pytest.mark.parametrize("bad,shown", [("abc", "density='abc'"), (float("nan"), "density=nan"),
+                                           (True, "density=True")])
+    def test_a_non_numeric_density_is_refused_before_any_write(self, negative_density_mesh, bad,
+                                                               shown):
+        src, feats, bf = negative_density_mesh
+        result = mo.handler(mesh="H", density=bad)
+        assert result["isError"] is True and f"{shown} is not a number" in result["message"]
+        assert bf._starts == bf._finishes == 0 and feats.last_input is None
+        assert src.displayMesh.triangleCount == 2000
+
     def test_density_that_lands_is_echoed(self):
         # density takes a ValueInput (live-verified; a raw float raises in the SWIG layer) and the
         # set is read back off realValue; a landed density is published, never silently assumed.

@@ -22,8 +22,8 @@ import adsk.core
 import adsk.fusion
 import pytest
 
-from conftest import (MakeComp, Sketch, SketchCurves, _NamedCollection, load_tool, make_design,
-                      install as install_design)
+from conftest import (FakeSketchPoint, MakeComp, Sketch, SketchCurves, _NamedCollection, load_tool,
+                      make_design, install as install_design)
 
 sc = load_tool("sketch_constrain")
 
@@ -882,6 +882,138 @@ class TestEntityAnchors:
                             entity_one="point:0", entity_two="CIRCLE:0:CENTER"))
         _name, args = s.geometricConstraints.calls[0]
         assert args[1].name == "C0C"
+
+
+class _CountedConstraints(FakeConstraints):
+    """GeometricConstraints (no measured shape) whose count is the constraints it holds."""
+    @property
+    def count(self):
+        return len(self.calls)
+
+    @count.setter
+    def count(self, _value):
+        pass
+
+
+class _MintedPoint(FakeSketchPoint):
+    """The shared SketchPoint a 'mid' anchor mints: deleteMe drops it and, with `cascade`, its weld."""
+    def __init__(self, sketch):
+        super().__init__()
+        self.kind = "point"
+        self._sketch = sketch
+
+    def deleteMe(self):
+        s = self._sketch
+        if not s.deletes:
+            return False
+        s.sketchPoints._items.remove(self)
+        if s.cascade:
+            s.geometricConstraints.calls[:] = [c for c in s.geometricConstraints.calls
+                                               if c[1][0] is not self]
+        return True
+
+
+def _retiring_sketch(deletes=True, cascade=True):
+    """The anchored sketch whose minted points and welds count, and can be deleted again."""
+    s = _anchored_sketch()
+    s.deletes, s.cascade = deletes, cascade
+    s.geometricConstraints = _CountedConstraints()
+    s.sketchPoints.add = lambda geometry: (s.sketchPoints._items.append(
+        _MintedPoint(s)) or s.sketchPoints._items[-1])
+    return s
+
+
+class TestFailedEntryEvidence:
+    """What a failed entry reports: count guidance, a raise, and its retired midpoint anchors."""
+
+    def test_count_guidance_follows_a_write_never_a_validation_refusal(self, install):
+        s = _anchored_sketch(); install(s)
+        refused = _constrain(constraint="bogus", entity_one="line:0")["message"]
+        assert "Failed-entry count changes: curves=+0, points=+0" in refused
+        assert "Counts do not establish" not in refused and "sketch_get(" not in refused
+        written = _constrain(constraint="horizontal", entity_one="circle:0")["message"]
+        assert "Counts do not establish unchanged geometry" in written
+
+    def test_a_raising_entry_is_that_entrys_failure_with_the_landed_entries_listed(
+            self, install, monkeypatch):
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        s = _anchored_sketch(); install(s)
+
+        def boom(_geometry):
+            raise RuntimeError("3 : point add refused.")
+        s.sketchPoints.add = boom
+        out = _payload(sc.handler(sketch_name="S", constraints=[
+            {"constraint": "horizontal", "entity_one": "line:1"},
+            {"constraint": "coincident", "entity_one": "line:0:mid", "entity_two": "point:1"},
+            {"constraint": "vertical", "entity_one": "line:1"}]))
+        assert out["constrained"] == 1 and [r["index"] for r in out["results"]] == [0]
+        assert out["failed"] == {"index": 1, "error": "The entry raised: 3 : point add refused."}
+        assert out["retained"] is None and out["not_attempted"] == 1
+        assert out["failed_entry_counts"]["change"]["points"] == 0
+        assert "Counts do not establish" in out["note"]
+
+    @pytest.mark.parametrize("deletes,cascade,clause", [
+        (True, True, "The midpoint anchor(s) it made were deleted: the point and constraint "
+                     "counts read back as before the entry."),
+        (True, False, "Deleting the midpoint anchor(s) it made left constraints=+1 against"),
+        (False, True, "Deleting the midpoint anchor(s) it made left points=+1, constraints=+1 "
+                      "against")])
+    def test_a_failed_write_retires_its_midpoint_anchor_as_the_counts_read_back(
+            self, install, monkeypatch, deletes, cascade, clause):
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        s = _retiring_sketch(deletes, cascade); install(s)
+
+        def refuse(*_args):
+            raise RuntimeError("OVERCONSTRAINTS")
+        s.geometricConstraints.addCoincident = refuse
+        msg = _constrain(constraint="coincident", entity_one="line:0:mid",
+                         entity_two="point:1")["message"]
+        assert "Could not apply coincident: OVERCONSTRAINTS" in msg and clause in msg
+        assert (s.sketchPoints.count, s.geometricConstraints.count) == (
+            2 + int(not deletes), int(not (deletes and cascade)))
+
+    def test_a_failed_write_retires_an_entity_two_midpoint_anchor(self, install, monkeypatch):
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        s = _retiring_sketch(); install(s)
+
+        def refuse(*_args):
+            raise RuntimeError("OVERCONSTRAINTS")
+        s.geometricConstraints.addCoincident = refuse
+        msg = _constrain(constraint="coincident", entity_one="point:1",
+                         entity_two="line:0:mid")["message"]
+        assert "Could not apply coincident: OVERCONSTRAINTS" in msg
+        assert "The midpoint anchor(s) it made were deleted" in msg
+        assert (s.sketchPoints.count, s.geometricConstraints.count) == (2, 0)
+
+    def test_a_write_that_returns_nothing_retires_its_midpoint_anchor(self, install, monkeypatch):
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        s = _retiring_sketch(); install(s)
+        s.geometricConstraints.addCoincident = lambda *_args: None
+        msg = _constrain(constraint="coincident", entity_one="line:0:mid",
+                         entity_two="point:1")["message"]
+        assert "Applying coincident returned no constraint object." in msg
+        assert ("The midpoint anchor(s) it made were deleted: the point and constraint counts "
+                "read back as before the entry.") in msg
+        assert (s.sketchPoints.count, s.geometricConstraints.count) == (2, 0)
+
+    def test_a_failed_second_mint_retires_the_first_anchor(self, install, monkeypatch):
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        s = _retiring_sketch()
+        s.sketchCurves.sketchLines._items[1] = _AnchoredLine(
+            "L1", _endpoint("L1S", 0, 2), _endpoint("L1E", 2, 2))
+        install(s)
+        add = s.sketchPoints.add
+
+        def second_raises(geometry):
+            if len(s.sketchPoints._items) > 2:
+                raise RuntimeError("3 : point add refused.")
+            return add(geometry)
+        s.sketchPoints.add = second_raises
+        msg = _constrain(constraint="coincident", entity_one="line:0:mid",
+                         entity_two="line:1:mid")["message"]
+        assert "entity_two 'line:1:mid': 3 : point add refused. " in msg
+        assert "The midpoint anchor(s) it made were deleted" in msg
+        assert (s.sketchPoints.count, s.geometricConstraints.count) == (2, 0)
 
 
 # ── the 'component' SCOPE ────────────────────────────────────────────────────

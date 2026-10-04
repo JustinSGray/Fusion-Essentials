@@ -84,6 +84,23 @@ def test_feature_geometry_is_bounded_and_normal_uses_actual_sample(flat_geometry
     assert "geometry" not in mod._sheet_common.flat_pattern_row(comp)
 
 
+@pytest.mark.parametrize("plane_normal,opposite", [((0, 0, 1), True), ((0, 0, -1), False),
+                                                   ((1, 0, 0), False)])
+def test_each_normal_is_labelled_and_a_sign_disagreement_is_said(flat_geometry, monkeypatch,
+                                                                  plane_normal, opposite):
+    comp, body, face, calls = flat_geometry
+    monkeypatch.setattr(face.geometry, "normal", FakeVector3D(*plane_normal))
+    out = mod._feature_row(comp, 1)["flat_pattern"]["geometry"]
+    assert "evaluator's outward normal" in out["normals"]
+    assert "supporting surface's parametric normal" in out["normals"]
+    row = out["faces"][0]
+    assert row["normal_at_sample"] == [0, 0, -1]
+    assert ("note" in row["plane"]) is opposite
+    if opposite:
+        assert row["plane"]["note"] == "plane.normal points opposite normal_at_sample on this face."
+    assert row["unread"] == []
+
+
 def test_unread_flat_face_and_number_are_partial_not_zero(flat_geometry, monkeypatch):
     comp, body, face, calls = flat_geometry
     monkeypatch.setattr(body, "faces", _NamedCollection([face, None]))

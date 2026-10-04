@@ -22,7 +22,9 @@ def handler(name: str = "", purpose: str = "") -> dict:
 
     # Guard against duplicate names (Fusion would otherwise create a second project).
     try:
-        existing, _ = _find_project(data, name=name)
+        existing, _ = _find_project(data, name=name, id_input=None)
+    except ValueError as e:
+        return error(f"{e} Nothing was created; use a different name.")
     except Exception as e:
         return error(f"Could not verify whether project '{name}' already exists: {e}")
     if existing:
@@ -35,7 +37,7 @@ def handler(name: str = "", purpose: str = "") -> dict:
     if not proj:
         return error(f"Project creation returned nothing for '{name}'.")
     try:
-        landed, _ = _find_project(data, name=name)
+        landed, _ = _find_project(data, name=name, id_input=None)
     except Exception as e:
         created_id = safe(lambda: proj.id)
         return error(f"Created project '{name}' (id {created_id}), but could not verify it by "

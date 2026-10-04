@@ -5,7 +5,7 @@
 
 from difflib import SequenceMatcher
 
-from ._common import safe
+from ._common import named_with_remainder, safe
 
 MAP_BLURB = ("resolve_thread_info - the ONE thread-table walk turning a bare designation "
              "('M5x0.8', '1/4-20 UNC') into a ThreadInfo, shared by model_hole's tap and "
@@ -62,6 +62,19 @@ def _nearby_choices(tdq, candidates, designation, internal, thread_type, thread_
     return "; ".join(alternatives)
 
 
+def _nearest_per_type(candidates, designation, thread_type):
+    """The closest designation each thread type lists, the supplied type first; past five, the rest counted."""
+    best = {}
+    for ttype, desig in dict.fromkeys(candidates):
+        score = (SequenceMatcher(None, designation, desig).ratio(), desig)
+        if ttype not in best or score > best[ttype]:
+            best[ttype] = score
+    ranked = sorted(best.items(), key=lambda row: (row[0].lower() == thread_type.lower(), row[1]),
+                    reverse=True)
+    more = f"; {len(ranked) - 5} more thread type(s) not listed" if len(ranked) > 5 else ""
+    return "; ".join(f"'{desig}' in '{ttype}'" for ttype, (_ratio, desig) in ranked[:5]) + more
+
+
 def resolve_thread_info(comp, designation, internal=True, thread_type="", thread_class=""):
     """Build a ThreadInfo for a thread DESIGNATION like 'M5x0.8'. `thread_type` picks the standard
     when several carry it, `thread_class` the fit within that standard.
@@ -77,13 +90,19 @@ def resolve_thread_info(comp, designation, internal=True, thread_type="", thread
     candidates = []
     hits = thread_types_for(tdq, designation, candidates)
     if not hits:
+        wanted_type = (thread_type or "").strip()
         choices = _nearby_choices(tdq, candidates, designation, internal,
-                                  (thread_type or "").strip(), (thread_class or "").strip())
+                                  wanted_type, (thread_class or "").strip())
+        nearest = "" if choices else _nearest_per_type(candidates, designation, wanted_type)
+        types = [] if choices or nearest else safe(lambda: list(tdq.allThreadTypes), []) or []
         remedy = (f"Nearby library spellings (not fit recommendations): {choices}. "
                   "Choose a listed designation, type and class, then retry; no selector was changed."
                   if choices else
-                  "No nearby alternative with readable classes was found. "
-                  "Check the designation, thread_type and thread_class in Fusion's Thread dialog.")
+                  "No nearby alternative with readable classes was found. Closest designation per "
+                  f"thread type: {nearest}. Retry with one as designation and its thread_type."
+                  if nearest else
+                  "No designation in the thread library read; its thread types: "
+                  f"{named_with_remainder([str(t) for t in types]) or '(none read)'}.")
         return None, [], f"No thread designation '{designation}' found in the thread library. {remedy}"
     want = (thread_type or "").strip()
     if want:

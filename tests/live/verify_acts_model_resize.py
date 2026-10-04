@@ -83,6 +83,19 @@ def _interference_hidden_overlap(visible):
     return check
 
 
+def _interference_container_child(p):
+    """The child selector a container refusal advertised analyses the child's body, complete and clear."""
+    measured = p.get("measured") or {}
+    census = measured.get("body_census") or {}
+    rows = census.get("bodies") or []
+    valid = (p.get("passed") is True and measured.get("analysis_complete") is True
+             and measured.get("scope") == {"kind": "selected_occurrences", "occurrence_count": 2}
+             and measured.get("interferences") == [] and measured.get("pairs_omitted") == 0
+             and census.get("count") == len(rows) == 2 and census.get("enumeration_complete") is True
+             and {row.get("occurrence_path") for row in rows} == {"Holder:1+Insert:1", "BlockB:1"})
+    return _measured("advertised child selector analyses the child's body beside BlockB", measured, valid)
+
+
 def _interference_scope_clear(p):
     """Check an interference-free selected subset while the wider design contains overlaps."""
     measured = p.get("measured") or {}
@@ -429,6 +442,31 @@ _RESIZE = [
     ("find_geometry", {"target": "HelixCheck:1", "kind": "planar_face",
                        "nearest_to": [8.09017, 5.87785, 121], "max_results": 1},
      lambda p: _fractional_helix_cap(p, turns=0.1, start_z=120), None),
+    # A selected sub-assembly with no direct body but a child occurrence: the refusal names the
+    # child selector, and that selector then analyses the child's body beside BlockB.
+    ("design_activate_component",
+     lambda c: _interference_pin(c, {"occurrence": "root"}), "ok", None),
+    ("model_create_component",
+     lambda c: _interference_pin(c, {"name": "Holder", "activate": True}), _made_component, None),
+    ("model_create_component",
+     lambda c: _interference_pin(c, {"name": "Insert", "parent": "Holder:1", "activate": True}), _made_component, None),
+    ("sketch_create",
+     lambda c: _interference_pin(c, {"plane": "xy", "name": "InsertS"}), "ok", None),
+    ("sketch_add_geometry",
+     lambda c: _interference_pin(c, {"geometry": [{"kind": "rectangle", "x1": 400, "y1": 0,
+                                                    "x2": 410, "y2": 10}], "sketch_name": "InsertS"}),
+     "ok", None),
+    ("model_extrude",
+     lambda c: _interference_pin(c, {"sketch_name": "InsertS", "profile_index": 0, "distance": 10}),
+     _extruded, None),
+    ("design_activate_component",
+     lambda c: _interference_pin(c, {"occurrence": "root"}), "ok", None),
+    ("assembly_inspect_interference", {"occurrences": ["Holder:1", "BlockB:1"]},
+     _refused("1 selected occurrence(s) hold no direct solid body",
+              "Holder:1 (child occurrences: Holder:1+Insert:1)",
+              "Pass the child occurrences that hold the bodies instead", "Nothing was analysed."), None),
+    ("assembly_inspect_interference", {"occurrences": ["Holder:1+Insert:1", "BlockB:1"], "max_results": 2},
+     _interference_container_child, None),
     ("doc_activate",
      lambda c: {"name": _ctx_get(c, "interference_story", "the story document"),
                 "expect_document": _ctx_get(c, "interference_scratch",

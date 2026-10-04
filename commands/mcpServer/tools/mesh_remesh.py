@@ -5,6 +5,8 @@
 density). The write runs inside a BaseFeature edit scope in a parametric design.
 """
 
+import math
+
 import adsk.core
 
 from ..mcp_primitives.tool import Tool
@@ -24,10 +26,13 @@ _REMESH_MESH = _inputs.MeshBodyRef("mesh", required=True)
 
 def handler(mesh: str = "", density: float = 0.0) -> dict:
     """Regenerate a cleaner, more uniform triangulation (repair / even density). WRITES."""
-    try:
-        d = float(density)
-    except Exception:
-        d = 0.0
+    if density is None:
+        density = 0.0
+    if (isinstance(density, bool) or not isinstance(density, (int, float))
+            or not math.isfinite(density)):
+        return error(f"density={_common.short_ref(ascii(density))} is not a number. Pass a "
+                     "positive number, or 0 for the API default.")
+    d = float(density)
     if d < 0:
         return error(f"density={density!a} is negative. Use a positive density, "
                      "or 0 for the API default.")

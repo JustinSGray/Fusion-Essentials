@@ -605,9 +605,10 @@ def _one(sketch, k, entry):
     angle = entry.get("angle", 360.0)
     symmetric = entry.get("symmetric", False)
     suppressed = entry.get("suppressed")
+    refuse = _sketch_batch.refuse
     cname = (constraint or "").strip().lower()
     if cname not in _CONSTRAINTS:
-        return None, f"Unknown constraint '{constraint}'. Valid: {', '.join(_CONSTRAINTS)}."
+        return refuse(f"Unknown constraint '{constraint}'. Valid: {', '.join(_CONSTRAINTS)}.")
     kind, method = _CONSTRAINTS[cname]
     choices, cerr = _inputs.resolve_inputs(
         [_DISTANCE_TYPE, _RESULT_OPTION] + list(_STRATEGY_CHOICES),
@@ -615,84 +616,85 @@ def _one(sketch, k, entry):
                                             "dimension_strategy", "inter_loop_strategy",
                                             "symmetric_strategy", "linear_diameter_dims")})
     if cerr:
-        return None, cerr["message"]
+        return refuse(cerr["message"])
     strategies = {key: choices[key] for key, _prop, _table in _STRATEGY_KNOBS}
     passed = {key: v for key, v in strategies.items() if v}
     if suppressed not in (None, "", []):
         passed["suppressed"] = suppressed
     kerr = _knob_guard(cname, passed)
     if kerr:
-        return None, kerr
+        return refuse(kerr)
 
     flags = None
     if kind == "circ_pattern":
         try:
             if int(quantity) < 2:
-                return None, f"'{cname}' needs quantity >= 2. Got {quantity}."
+                return refuse(f"'{cname}' needs quantity >= 2. Got {quantity}.")
             flags, ferr = _suppressed_flags(suppressed, int(quantity), cname)
             if ferr:
-                return None, ferr
+                return refuse(ferr)
         except Exception as e:
-            return None, f"Could not apply {cname}: {e} | '{cname}' takes {_REQUIRES[cname]}."
+            return refuse(f"Could not apply {cname}: {e} | '{cname}' takes {_REQUIRES[cname]}.")
 
     # A ref's optional third segment names WHICH point of the entity is meant ('circle:0:center') -
     # the same grammar sketch_dimension reads, parsed here before the bare ref is resolved.
     base_one, anchor_one, aerr = _common.parse_anchor_ref(entity_one)
     if aerr:
-        return None, aerr
+        return refuse(aerr)
     base_two, anchor_two, aerr2 = _common.parse_anchor_ref(entity_two)
     if aerr2:
-        return None, aerr2
+        return refuse(aerr2)
     takes_one, takes_two = _ANCHOR_SLOTS.get(cname, (False, False))
     if anchor_one and not takes_one:
-        return None, _anchor_refusal(cname, "entity_one", anchor_one)
+        return refuse(_anchor_refusal(cname, "entity_one", anchor_one))
     if anchor_two and not takes_two:
-        return None, _anchor_refusal(cname, "entity_two", anchor_two)
+        return refuse(_anchor_refusal(cname, "entity_two", anchor_two))
 
     # A SketchText is an operand for fix/unfix alone - every other constraint's add* takes sketch
     # curves or points, which a text is not.
     text_obj, anchor_lines = None, []
     if _is_text_ref(base_one):
         if kind != "fix":
-            return None, (f"a 'text:<index>' ref applies to constraint=fix / unfix only - no other "
+            return refuse(f"a 'text:<index>' ref applies to constraint=fix / unfix only - no other "
                           f"constraint takes a sketch TEXT as an operand. '{cname}' takes "
                           f"{_REQUIRES.get(cname, 'sketch curves or points')}.")
         text_obj, terr = _text_at_ref(sketch, base_one)
         if terr:
-            return None, terr
+            return refuse(terr)
 
     e1 = None
     if text_obj is None and kind != "auto" and (kind not in _OPTIONAL_ENTITY_ONE or base_one.strip()):
         e1 = _common.resolve_entity_ref(sketch, base_one)
         if not e1:
-            return None, (f"Could not resolve entity_one '{entity_one}' "
+            return refuse(f"Could not resolve entity_one '{entity_one}' "
                           f"(use '<type>:<index>', type = {'/'.join(_common.ENTITY_REF_KINDS)}).")
     # A midpoint anchor creates both a point and a relation; validate operands first.
     e2 = None
     if kind in _TWO_ENTITY_KINDS:
         e2 = _common.resolve_entity_ref(sketch, base_two)
         if not e2:
-            return None, (f"'{cname}' needs 'entity_two' (a second '<type>:<index>'). "
+            return refuse(f"'{cname}' needs 'entity_two' (a second '<type>:<index>'). "
                           f"Got '{entity_two}'.")
     for slot, entity, anchor in (("entity_one", e1, anchor_one), ("entity_two", e2, anchor_two)):
         if anchor:
             _point, perr = _common.anchor_preflight(entity, anchor)
             if perr:
-                return None, f"{slot}: {perr}"
-    if cname == "coincident" and anchor_one in ("mid", "midpoint") and anchor_two in ("mid", "midpoint"):
+                return refuse(f"{slot}: {perr}")
+    mid_one, mid_two = (a in _sketch_batch.MID_ANCHORS for a in (anchor_one, anchor_two))
+    if cname == "coincident" and mid_one and mid_two:
         kind_one, _, index_one = base_one.strip().lower().rpartition(":")
         kind_two, _, index_two = base_two.strip().lower().rpartition(":")
         if kind_one == kind_two == "line" and int(index_one) == int(index_two):
-            return None, (f"'{entity_one}' and '{entity_two}' name the SAME line midpoint, so there is "
-                          "nothing to constrain. Name two different anchors, or drop the call; "
+            return refuse(f"'{entity_one}' and '{entity_two}' name the SAME line midpoint, so there "
+                          "is nothing to constrain. Name two different anchors, or drop the call; "
                           "sketch_get(include_entities=true) lists the source geometry.")
     surf = None
     if kind == "entity_surface":
         surf, serr = _SURFACE.resolve(surface, cname)
         if serr:
-            return None, serr
+            return refuse(serr)
         if surf is None:
-            return None, (f"'{cname}' needs 'surface' - a plane alias (xy/xz/yz), a "
+            return refuse(f"'{cname}' needs 'surface' - a plane alias (xy/xz/yz), a "
                           "construction-plane name, or a face handle from find_geometry"
                           + (" (curved faces allowed)." if cname in _CURVED_SURFACE_OK
                              else " (this constraint takes a PLANAR face only)."))
@@ -700,22 +702,35 @@ def _one(sketch, k, entry):
     if kind in _LIST_OPERAND_KINDS:
         ents, _refs, lerr = _common.resolve_entity_refs(sketch, entities)
         if lerr:
-            return None, lerr
+            return refuse(lerr)
         if not ents:
-            return None, (f"'{cname}' needs 'entities' - comma-separated '<type>:<index>' refs. "
+            return refuse(f"'{cname}' needs 'entities' - comma-separated '<type>:<index>' refs. "
                           f"Got '{entities}'.")
+
+    # A midpoint anchor MINTS a welded point; the points this entry minted are retired when a later
+    # step of the entry fails before its constraint lands.
+    minted = []
+    baseline = _sketch_batch.entry_counts(sketch) if mid_one or mid_two else None
+
+    def failed(text):
+        return None, text + _sketch_batch.retired_clause(sketch, minted, baseline)
 
     if anchor_one:
         e1, perr = _common.anchor_point(sketch, e1, anchor_one)
         if perr:
             return None, f"entity_one '{entity_one}': {perr}"
+        minted += [e1] if mid_one else []
     if anchor_two:
-        e2, perr = _common.anchor_point(sketch, e2, anchor_two)
+        try:
+            e2, perr = _common.anchor_point(sketch, e2, anchor_two)
+        except Exception as e:
+            return failed(f"entity_two '{entity_two}': {str(e).rstrip('.')}.")
         if perr:
-            return None, f"entity_two '{entity_two}': {perr}"
+            return failed(f"entity_two '{entity_two}': {perr}")
+        minted += [e2] if mid_two else []
     if (cname == "coincident" and _names_a_point(base_one, anchor_one)
             and _names_a_point(base_two, anchor_two) and _one_operand(e1, e2)):
-        return None, (f"'{entity_one}' and '{entity_two}' resolve to ONE sketch point, so there is "
+        return failed(f"'{entity_one}' and '{entity_two}' resolve to ONE sketch point, so there is "
                       "nothing to constrain. Name two different points, or drop the call; "
                       "sketch_get(include_entities=true) lists them.")
 
@@ -731,7 +746,7 @@ def _one(sketch, k, entry):
                 return _already_full_noop(sketch, choices["result_option"])
             result_obj, autoerr = _apply_auto(sketch, choices["result_option"], strategies)
             if autoerr:
-                return None, autoerr
+                return failed(autoerr)
         elif kind == "fix":
             want = (cname == "fix")
             # The requested mutation - set it directly (inside this try) so a failure is reported, not
@@ -739,14 +754,14 @@ def _one(sketch, k, entry):
             if text_obj is not None:
                 anchor_lines = _text_anchor_lines(text_obj)
                 if not anchor_lines:
-                    return None, (f"'{entity_one}' resolved to a sketch text whose definition hands "
+                    return failed(f"'{entity_one}' resolved to a sketch text whose definition hands "
                                   "back no rectangle lines - there is no anchor to lock.")
                 for ln in anchor_lines:
                     ln.isFixed = want
                 landed = sum(1 for ln in anchor_lines
                              if _common.read_flag(lambda ln=ln: ln.isFixed) is want)
                 if landed != len(anchor_lines):
-                    return None, (f"{landed} of {len(anchor_lines)} anchor lines took the {cname} - "
+                    return failed(f"{landed} of {len(anchor_lines)} anchor lines took the {cname} - "
                                   "the text's anchor is left partly locked. Re-read the sketch with "
                                   "sketch_get before relying on its constrained state.")
                 result_obj = True
@@ -760,70 +775,70 @@ def _one(sketch, k, entry):
         elif kind == "symmetry":
             e2 = _common.resolve_entity_ref(sketch, entity_two)
             if not e2:
-                return None, f"'symmetry' needs 'entity_two'. Got '{entity_two}'."
+                return refuse(f"'symmetry' needs 'entity_two'. Got '{entity_two}'.")
             sline = _common.resolve_entity_ref(sketch, symmetry_line)
             if not sline:
-                return None, ("'symmetry' needs 'symmetry_line' - the axis line ref "
+                return refuse("'symmetry' needs 'symmetry_line' - the axis line ref "
                               "(e.g. 'line:0').")
             result_obj = getattr(gc, method)(e1, e2, sline)
         elif kind == "entity_surface":
             result_obj = getattr(gc, method)(e1, surf)
         elif kind == "entity_list":
             if len(ents) < 3:
-                return None, (f"'{cname}' needs at least 3 lines in 'entities' to close a shape. "
+                return refuse(f"'{cname}' needs at least 3 lines in 'entities' to close a shape. "
                               f"Got {len(ents)}.")
             result_obj = getattr(gc, method)(ents)
         elif kind == "offset":
             d1, derr = _length(_DISTANCE, distance, k, cname, "distance")
             if derr:
-                return None, derr
+                return refuse(derr)
             result_obj = _apply_offset(gc, cname, ents, d1)
         elif kind == "circ_pattern":
             result_obj, perr = _apply_circ_pattern(gc, ents, e1, int(quantity), float(angle),
                                                    bool(symmetric), flags)
             if perr:
-                return None, perr
+                return failed(perr)
         elif kind == "rect_pattern":
             e2_dir = _common.resolve_entity_ref(sketch, entity_two)
             if e1 is None or e2_dir is None:
                 missing = [n for n, v in (("entity_one", e1), ("entity_two", e2_dir)) if v is None]
-                return None, (f"'{cname}' needs BOTH direction lines - {' and '.join(missing)} did "
+                return refuse(f"'{cname}' needs BOTH direction lines - {' and '.join(missing)} did "
                               "not resolve. A null direction is documented as the sketch X axis but "
                               "the API refuses it ('invalid argument directionOneEntity').")
             if int(quantity) < 1 or int(quantity_two) < 1:
-                return None, (f"'{cname}' needs quantity >= 1 and quantity_two >= 1. "
+                return refuse(f"'{cname}' needs quantity >= 1 and quantity_two >= 1. "
                               f"Got {quantity} and {quantity_two}.")
             d1, derr = _length(_DISTANCE, distance, k, cname, "distance")
             if derr:
-                return None, derr
+                return refuse(derr)
             d2, d2err = _length(_DISTANCE_TWO,
                                 distance_two if distance_two is not None else distance, k,
                                 cname, "distance_two")
             if d2err:
-                return None, d2err
+                return refuse(d2err)
             dtype = _enum_member(adsk.fusion.PatternDistanceType, choices["distance_type"],
                                  _DISTANCE_TYPES)
             if dtype is None:
-                return None, (f"PatternDistanceType.{_DISTANCE_TYPES[choices['distance_type']]} is "
+                return refuse(f"PatternDistanceType.{_DISTANCE_TYPES[choices['distance_type']]} is "
                               "not available on this Fusion version.")
             flags, ferr = _suppressed_flags(suppressed, int(quantity) * int(quantity_two), cname)
             if ferr:
-                return None, ferr
+                return refuse(ferr)
             result_obj, perr = _apply_rect_pattern(gc, ents, e1, e2_dir, int(quantity),
                                                    int(quantity_two), d1, d2, dtype,
                                                    bool(symmetric), flags)
             if perr:
-                return None, perr
+                return failed(perr)
         else:
-            return None, f"unsupported constraint kind '{kind}'."
+            return failed(f"unsupported constraint kind '{kind}'.")
     except Exception as e:
         # The API raises the same way for a wrong operand type and for an unsolvable sketch.
         req = _REQUIRES.get(cname)
         if req:
-            return None, f"Could not apply {cname}: {e} | '{cname}' takes {req}."
-        return None, f"Could not apply {cname}: {e}"
+            return failed(f"Could not apply {cname}: {e} | '{cname}' takes {req}.")
+        return failed(f"Could not apply {cname}: {e}")
     if not result_obj:
-        return None, f"Applying {cname} returned no constraint object."
+        return failed(f"Applying {cname} returned no constraint object.")
     if kind == "auto":
         return _auto_payload(sketch, result_obj, choices["result_option"], auto_before, strategies)
 

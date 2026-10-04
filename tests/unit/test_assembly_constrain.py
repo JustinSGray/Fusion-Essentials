@@ -280,6 +280,23 @@ class TestMultiRelationshipConstraint:
         assert "Use true or false. Nothing was constrained." in res["message"]
         assert ac.last_input is None and ac.added == 0
 
+    @pytest.mark.parametrize("args,fragment", [
+        ({"relationships": [{"snap_one": "A:1:top", "snap_two": "B:1:top", "offset": "ten"}]},
+         "'relationships[0].offset' must be a number; received 'ten'."),
+        ({"relationships": [{"snap_one": "A:1:top", "snap_two": "B:1:top", "angle_deg": True}]},
+         "'relationships[0].angle_deg' must be a number; received True."),
+        ({"snap_one": "A:1:top", "snap_two": "B:1:top", "offset": "5mm"},
+         "'offset' must be a number; received '5mm'."),
+        ({"snap_one": "A:1:top", "snap_two": "B:1:top", "angle_deg": "30 deg"},
+         "'angle_deg' must be a number; received '30 deg'.")])
+    def test_a_non_numeric_value_is_refused_before_any_input_is_built(self, constrain, args,
+                                                                       fragment):
+        _design, ac = constrain()
+        res = ja.handler(**args)
+        assert res["isError"] is True and fragment in res["message"]
+        assert "Nothing was constrained." in res["message"]
+        assert ac.last_input is None and ac.added == 0
+
     def test_single_pair_still_works(self, constrain):
         # back-compat: snap_one/snap_two shorthand == a one-relationship list
         constrain()
@@ -325,6 +342,13 @@ class TestConstraintValueEncoding:
         ja.handler(snap_one="A:1:top", snap_two="B:1:top", offset=2, units="in")
         value = ac.last_input.geometricRelationships.added[0][3]
         assert value[0] == "real" and abs(value[1] - 5.08) < 1e-9   # 2 in -> 5.08 cm
+
+    def test_a_relationship_offset_reaches_the_add_scaled(self, constrain):
+        ac = self._stub(constrain)
+        ja.handler(relationships=[{"snap_one": "A:1:top", "snap_two": "B:1:top", "offset": 2}],
+                   units="in")
+        value = ac.last_input.geometricRelationships.added[0][3]
+        assert value[0] == "real" and abs(value[1] - 5.08) < 1e-9
 
     def test_unknown_units_errors_not_silently_treated_as_mm(self, constrain):
         # An unrecognized unit must be REFUSED, not silently treated as mm, like joint_create errors

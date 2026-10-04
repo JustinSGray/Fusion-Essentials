@@ -872,8 +872,22 @@ class TestTangentChainTargeting:
         ff.result = FakeCountingFeature("Fillet1", faces=1, tangent=False, cut_edges=1)
         out = _payload(fl.handler(edges=["E1", "Alias", "E1"], radius=.5,
                                   tangent_chain=False))
-        assert ff.last.edge_set[0].count == out["edges_requested"] == out["edges_cut"] == 1
+        assert ff.last.edge_set[0].count == out["edges_cut"] == 1 and out["edges_requested"] == 3
         assert out["edge_selection"] == "1 edge seed(s) from handles" and ff.result.deleted is False
+
+    def test_three_handles_naming_two_edges_say_so_and_publish_what_was_sent(self):
+        one, alias, two = (_edge_ent(token=t) for t in ("physical", "physical", "other"))
+        ff, _ = _install_edge_handles({"E1": one, "Alias": alias, "E2": two},
+                                      timeline=make_timeline("Extrude1", "Fillet1", marker=2))
+        root = fl._inputs._common.design().rootComponent
+        for edge in (one, alias, two):
+            edge.assemblyContext = None
+            edge.body.parentComponent = root
+        ff.result = FakeCountingFeature("Fillet1", faces=2, tangent=False, cut_edges=2)
+        out = _payload(fl.handler(edges=["E1", "Alias", "E2"], radius=.5, tangent_chain=False))
+        assert ff.last.edge_set[0].count == out["edges_cut"] == 2 and out["edges_requested"] == 3
+        assert ("The 3 handles named 2 distinct edge(s), so each was sent once." in out["note"]
+                and ff.result.deleted is False)
 
     def test_proxy_aliases_use_native_identity_with_the_same_actual_placement(self):
         native = _edge_ent(token="physical")
@@ -883,7 +897,7 @@ class TestTangentChainTargeting:
             edge.assemblyContext = type("Context", (), {"fullPathName": "Placed:1"})()
         ff, _ = _install_edge_handles({"E1": one, "Alias": alias})
         out = _payload(fl.handler(edges=["E1", "Alias"], radius=.5, tangent_chain=False))
-        assert ff.last.edge_set[0].count == out["edges_requested"] == 1
+        assert ff.last.edge_set[0].count == 1 and out["edges_requested"] == 2
 
     @pytest.mark.parametrize("paths,tokens", [(("A:1", "A:2"), ("physical", "physical")),
         (("A:1", None), ("physical", "physical")), ((None, None), ("physical", "physical")),
@@ -894,8 +908,9 @@ class TestTangentChainTargeting:
         for edge, path in zip((one, two), paths):
             if path is not None:
                 edge.assemblyContext = type("Context", (), {"fullPathName": path})()
-        _payload(fl.handler(edges=["E1", "E2"], radius=.5, tangent_chain=False))
-        assert ff.last.edge_set[0].count == 2
+        out = _payload(fl.handler(edges=["E1", "E2"], radius=.5, tangent_chain=False))
+        assert ff.last.edge_set[0].count == out["edges_requested"] == 2
+        assert "handles named" not in out["note"]
 
 
 class TestVariableRadius:
