@@ -262,7 +262,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 
 | | Tool | Summary |
 |---|---|---|
-| ✎ | `drawing_add_sketch` | Draw 2D geometry on a NEW sketch on a sheet of the active drawing |
+| ✎ | `drawing_add_sketch` | New sheet sketch, max 16 curves |
 | ✎ | `drawing_add_symbol` | Place one GD&T symbol leadered from a curve point of drawing_get(include=['curves'], view=N) |
 | ✎ | `drawing_create` | Create a cloud drawing; doc_open file_id, then drawing_export, no UI step by default |
 | ⚠ | `drawing_delete_sketch` | Delete a drawing sketch by exact name from a sheet of the active drawing |

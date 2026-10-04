@@ -2053,6 +2053,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Adding a sketch to sheet '
 - entities onto sketch '
 - Could not add a sketch to sheet '
+- geometry[] brings this request to  curves; the limit is . A line with N points counts as N-1 segments, and each other entity counts as one. Split into smaller sketches. Nothing was drawn.
 - geometry[] ('') carries , far outside . This call bounds every coordinate and radius to ,  times the sheet's longer side; coordinates are taken as . A coordinate far outside the sheet can stop this...
 - Deleting sketch '' is NOT CONFIRMED: deleteMe answered  and sheet '' would not report its sketch count. Read drawing_get for sheet '' before drawing on it again
 

@@ -80,9 +80,19 @@ _DRAWING_UPDATE_BEFORE_PDF = DOWNLOAD_DIR + f"/drawing_update_before_{_STAMP}.pd
 _DRAWING_UPDATE_AFTER_PDF = DOWNLOAD_DIR + f"/drawing_update_after_{_STAMP}.pdf"
 _DRAWING_RESTORED_PDF = DOWNLOAD_DIR + f"/drawing_restored_{_STAMP}.pdf"
 _DRAWING_SKETCH_DXF = DOWNLOAD_DIR + f"/drawing_sketch_readback_{_STAMP}.dxf"
+_DRAWING_WORKLOAD_DXF = DOWNLOAD_DIR + f"/drawing_workload_readback_{_STAMP}.dxf"
 _DRAWING_BLANK_DXF = DOWNLOAD_DIR + f"/drawing_blank_sheet_{_STAMP}.dxf"
 _DRAWING_SKETCH_NAME = "SweepCloudSketch"
+_DRAWING_WORKLOAD_NAME = "SweepCloudWorkload16"
 _DRAWING_BLANK_SKETCH_NAME = "SweepCloudBlankSketch"
+_DRAWING_WORKLOAD_GEOMETRY = [
+    {"kind": "line", "points": [[20 + 2 * i, 20], [21 + 2 * i, 22]]}
+    for i in range(16)]
+_DRAWING_WORKLOAD_17_ENTITIES = [
+    {"kind": "line", "points": [[20 + 2 * i, 30], [21 + 2 * i, 32]]}
+    for i in range(17)]
+_DRAWING_WORKLOAD_17_SEGMENT_CHAIN = {
+    "kind": "line", "points": [[20 + i, 40 + i % 2] for i in range(18)]}
 _DRAWING_TWO_BEFORE_KEY = "drawing-two-before-" + _STAMP
 _DRAWING_TWO_AFTER_KEY = "drawing-two-after-" + _STAMP
 _DRAWING_POPULATED_KEY = "drawing-populated-" + _STAMP
@@ -2343,6 +2353,34 @@ def _drawing_sketch_deleted(sketch_name, sheet_name):
     return check
 
 
+def _drawing_sketch_count_values(p):
+    rows = p.get("sheets")
+    if not isinstance(rows, list):
+        return {}
+    return {row.get("name"): row.get("sketches") for row in rows if isinstance(row, dict)}
+
+
+def _drawing_sketch_census(p):
+    counts = _drawing_sketch_count_values(p)
+    rows = p.get("sheets")
+    valid = (_sheets_answer(p) and isinstance(rows, list)
+             and len(counts) == len(rows)
+             and all(isinstance(name, str) and type(value) is int and value >= 0
+                     for name, value in counts.items()))
+    return _measured("every drawing sheet reports its sketch count", {"counts": counts}, valid)
+
+
+def _drawing_sketch_census_unchanged(key):
+    def check(p):
+        counts = _drawing_sketch_count_values(p)
+        valid = (_drawing_sketch_census(p)
+                 and _RECALL.get(key) is not None
+                 and counts == _RECALL.get(key))
+        return _measured("the refused sketch request left all sheet sketch counts unchanged",
+                         {"counts": counts, "before": _RECALL.get(key)}, valid)
+    return check
+
+
 def _dxf_layer_entities(path, layer):
     """Every entity one DXF carries on `layer`, as (type, [(x, y), ...]) - None when the file will
     not read. A drawing-sketch curve exposes no geometry to the API, so this export is the only
@@ -2401,11 +2439,10 @@ def _sketch_readback(sketch_name, curves):
 
 
 def _blank_sheet_readback(p):
-    """drawing_export(dxf): the blank sheet's DXF carries neither the other sheet's sketch layer
-    nor the deleted sketch's OWN layer - the second is what proves the delete reached this export,
-    not merely the tool's own count read-back."""
+    """drawing_export(dxf): the blank sheet carries none of the three named sketch layers."""
     return (_sketch_readback(_DRAWING_SKETCH_NAME, 0)(p)
-            and _sketch_readback(_DRAWING_BLANK_SKETCH_NAME, 0)(p))
+            and _sketch_readback(_DRAWING_BLANK_SKETCH_NAME, 0)(p)
+            and _sketch_readback(_DRAWING_WORKLOAD_NAME, 0)(p))
 
 
 def _derived(source):
@@ -3700,6 +3737,28 @@ _CLOUD_DRAWING = [
      _sketch_readback(_DRAWING_SKETCH_NAME, 4), None),
     ("drawing_edit_sheet", {"action": "add", "new_name": "SweepCloudSheet"},
      _sheet_added("SweepCloudSheet"), None),
+    ("drawing_add_sketch", {"name": _DRAWING_WORKLOAD_NAME,
+                             "sheet_name": "SweepCloudSheet",
+                             "geometry": _DRAWING_WORKLOAD_GEOMETRY},
+     _sketch_landed(_DRAWING_WORKLOAD_NAME, 16), None),
+    ("drawing_export", {"format": "dxf", "file_path": _DRAWING_WORKLOAD_DXF},
+     _sketch_readback(_DRAWING_WORKLOAD_NAME, 16), None),
+    ("drawing_delete_sketch", {"sketch": _DRAWING_WORKLOAD_NAME,
+                                "sheet": "SweepCloudSheet"},
+     _drawing_sketch_deleted(_DRAWING_WORKLOAD_NAME, "SweepCloudSheet"), None),
+    ("drawing_get", {}, _drawing_sketch_census,
+     ("drawing_workload_counts", _recall("drawing_workload_counts",
+                                          _drawing_sketch_count_values))),
+    ("drawing_add_sketch", {"name": _DRAWING_BLANK_SKETCH_NAME + "OverLimitEntries",
+                             "sheet_name": "SweepCloudSheet",
+                             "geometry": _DRAWING_WORKLOAD_17_ENTITIES},
+     _refused("brings this request to 17 curves", "Nothing was drawn"), None),
+    ("drawing_get", {}, _drawing_sketch_census_unchanged("drawing_workload_counts"), None),
+    ("drawing_add_sketch", {"name": _DRAWING_BLANK_SKETCH_NAME + "OverLimitChain",
+                             "sheet_name": "SweepCloudSheet",
+                             "geometry": [_DRAWING_WORKLOAD_17_SEGMENT_CHAIN]},
+     _refused("brings this request to 17 curves", "Nothing was drawn"), None),
+    ("drawing_get", {}, _drawing_sketch_census_unchanged("drawing_workload_counts"), None),
     # drawing_delete_sketch: a sketch added then deleted on the blank sheet, its own count
     # read-back (before - 1) proving the delete landed - the positive case beside the 1e300
     # refusal row above, which never lets a bad coordinate reach the sheet at all.
