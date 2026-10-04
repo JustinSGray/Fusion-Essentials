@@ -957,7 +957,9 @@ def test_sheet_serial_scene_keeps_local_coupons_and_typed_group_recovery_in_full
         ('Group1', True), ('Group1', False)]
     assert [a['unfold'] for t, a in requests(authored) if t == 'sheet_create_refold'] == [
         'SerialA/Unfold1', 'SerialA/Unfold1', 'SerialB/Unfold1']
-    assert authored[4][:2] == ('design_activate_component', {'occurrence': 'root'})
+    first_sketch = next(i for i, row in enumerate(authored) if row[0] == 'sketch_create')
+    assert first_sketch > 0
+    assert authored[first_sketch - 1][:2] == ('design_activate_component', {'occurrence': 'root'})
     assert all(t != 'sys_execute_script' for t, _a, _c, _s in authored)
 
 

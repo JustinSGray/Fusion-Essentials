@@ -35,6 +35,108 @@ def _fillet_expression_followed(expression, mm):
     return check
 
 
+def _interference_body_handle(p):
+    """Return BlockA's sole body handle from the complete occurrence tree."""
+    tree = p.get("tree") or {}
+    hits = [node for node in (tree.get("children") or []) if node.get("name") == "BlockA:1"]
+    if (len(hits) != 1 or hits[0].get("body_count") != 1
+            or hits[0].get("bodies_truncated") or tree.get("truncated")
+            or tree.get("children_truncated")):
+        return None
+    bodies = hits[0].get("bodies") or []
+    if (len(bodies) != 1 or bodies[0].get("is_solid") is not True
+            or bodies[0].get("visible") is not True
+            or not isinstance(bodies[0].get("handle"), str) or not bodies[0]["handle"]):
+        return None
+    return bodies[0]["handle"]
+
+
+def _interference_body_visibility(visible):
+    """Check a body bulb's readback after view_set hide/show."""
+    def check(p):
+        rows = p.get("bodies") or []
+        valid = (p.get("action") == ("show" if visible else "hide") and len(rows) == 1
+                 and rows[0].get("light_bulb_on") is visible
+                 and rows[0].get("visible") is visible)
+        return _measured("BlockA body visibility", rows, valid)
+    return check
+
+
+def _interference_hidden_overlap(visible):
+    """Check hidden-body visibility and independently retain the measured placed overlap."""
+    def check(p):
+        measured = p.get("measured") or {}
+        census = measured.get("body_census") or {}
+        rows = census.get("bodies") or []
+        body = next((r for r in rows if r.get("occurrence_path") == "BlockA:1"), {})
+        pairs = measured.get("interferences") or []
+        valid = (p.get("passed") is False and measured.get("analysis_complete") is True
+                 and census.get("enumeration_complete") is True and census.get("count") == 2
+                 and body.get("occurrence_visible") is True
+                 and body.get("body_visible") is visible
+                 and len(pairs) == 1
+                 and {pairs[0].get("occurrence_one"), pairs[0].get("occurrence_two")}
+                 == {"BlockA:1", "Peg:1"})
+        return _measured("hidden BlockA body remains in interference analysis", {
+            "body_visible": body.get("body_visible"), "pairs": pairs,
+            "analysis_complete": measured.get("analysis_complete")}, valid)
+    return check
+
+
+def _interference_scope_clear(p):
+    """Check an interference-free selected subset while the wider design contains overlaps."""
+    measured = p.get("measured") or {}
+    census = measured.get("body_census") or {}
+    rows = census.get("bodies") or []
+    valid = (p.get("passed") is True and measured.get("analysis_complete") is True
+             and measured.get("scope") == {"kind": "selected_occurrences", "occurrence_count": 2}
+             and measured.get("interferences") == [] and measured.get("pairs_analyzed") == 0
+             and measured.get("pairs_pruned") == 1 and measured.get("pairs_omitted") == 0
+             and measured.get("root_bodies_checked") == 0
+             and census.get("count") == census.get("returned_count") == len(rows) == 2
+             and census.get("enumeration_complete") is True and census.get("truncated") is False
+             and census.get("next_offset") is None
+             and {row.get("occurrence_path") for row in rows} == {"BlockB:1", "Peg:1"}
+             and all(row.get("pairs_analyzed") == row.get("pairs_omitted") == 0
+                     and row.get("pairs_pruned") == 1 for row in rows))
+    return _measured("clear selected body subset excludes the wider design's overlaps",
+                     {"scope": measured.get("scope"), "census": census,
+                      "pairs": {k: measured.get(k) for k in
+                                ("pairs_analyzed", "pairs_pruned", "pairs_omitted")}}, valid)
+
+
+def _interference_scope_page(offset):
+    """Check a one-body census page and its independently repeated selected-pair result."""
+    def check(p):
+        measured = p.get("measured") or {}
+        census = measured.get("body_census") or {}
+        rows = census.get("bodies") or []
+        scope = measured.get("scope") or {}
+        pairs = measured.get("interferences") or []
+        valid = (p.get("passed") is False and measured.get("analysis_complete") is True
+                 and scope == {"kind": "selected_occurrences", "occurrence_count": 2}
+                 and census.get("count") == 2 and census.get("offset") == offset
+                 and census.get("returned_count") == 1 and census.get("enumeration_complete") is True
+                 and census.get("truncated") is (offset == 0)
+                 and census.get("next_offset") == (1 if offset == 0 else None)
+                 and len(rows) == 1 and rows[0].get("body_handle")
+                 and rows[0].get("body_name") and rows[0].get("occurrence_handle")
+                 and rows[0].get("occurrence_path") in {"BlockA:1", "Peg:1"}
+                 and rows[0].get("pairs_analyzed") == 1
+                 and rows[0].get("pairs_pruned") == rows[0].get("pairs_omitted") == 0
+                 and len(pairs) == 1
+                 and {pairs[0].get("occurrence_one"), pairs[0].get("occurrence_two")}
+                 == {"BlockA:1", "Peg:1"})
+        key = "interference_scope_page_0_path"
+        if valid and offset == 0:
+            _RECALL[key] = rows[0]["occurrence_path"]
+        elif valid:
+            valid = rows[0]["occurrence_path"] != _RECALL.get(key)
+        return _measured("selected placed bodies and pair participation on census page " + str(offset),
+                         {"scope": scope, "body_census": census, "interferences": pairs}, valid)
+    return check
+
+
 # --- ACT 6: THE RESIZE - the parametric resize check (mirrors scenario S6) ---------------------
 # Bump the one driving length; the whole bracket grows. It runs BEFORE the billet and the vise are
 # built, which is the order a shop works in: the part is settled, then the stock is sized from it
@@ -147,6 +249,35 @@ _RESIZE = [
      lambda c: _interference_pin(c, {"component": "Peg", "x": 50}),
      lambda p: p.get("created") is True, None),
     ("assembly_inspect_interference", {}, _interference_pair_named, None),
+    ("assembly_inspect_interference", {"occurrences": []},
+     _refused("at least one occurrence"), None),
+    ("assembly_inspect_interference", {"occurrences": ["BlockA:1", "BlockA:1"]},
+     _refused("repeats placement", "BlockA:1"), None),
+    ("assembly_inspect_interference", {"occurrences": ["NoSuch:1", "BlockA:1"]},
+     _refused("no occurrence matching", "NoSuch:1"), None),
+    ("assembly_inspect_interference", {"occurrences": ["BlockB:1", "Peg:1"], "max_results": 2},
+     _interference_scope_clear, None),
+    # An explicit list analyzes only these two placed bodies; the census is paged independently
+    # from pair work, and each page re-runs the scoped check.
+    ("assembly_inspect_interference", {"occurrences": ["Peg:1", "BlockA:1"], "max_results": 1},
+     _interference_scope_page(0), None),
+    ("assembly_inspect_interference", {"occurrences": ["Peg:1", "BlockA:1"], "max_results": 1, "offset": 1},
+     _interference_scope_page(1), None),
+    ("design_get", {"include": ["tree"], "tree_bodies": True, "tree_handles": True,
+                     "max_depth": 2, "max_results": 2000},
+     lambda p: _measured("BlockA body identity for visibility control", p.get("tree"),
+                         _interference_body_handle(p) is not None),
+     ("interference_hidden_body", _recall("interference_hidden_body", _interference_body_handle))),
+    ("view_set", lambda c: _interference_pin(c, {"action": "hide", "target": [
+         _ctx_get(c, "interference_hidden_body", "BlockA body handle")]}),
+     _interference_body_visibility(False), None),
+    ("assembly_inspect_interference", {"occurrences": ["Peg:1", "BlockA:1"], "max_results": 2},
+     _interference_hidden_overlap(False), None),
+    ("view_set", lambda c: _interference_pin(c, {"action": "show", "target": [
+         _ctx_get(c, "interference_hidden_body", "BlockA body handle")]}),
+     _interference_body_visibility(True), None),
+    ("assembly_inspect_interference", {"occurrences": ["Peg:1", "BlockA:1"], "max_results": 2},
+     _interference_hidden_overlap(True), None),
     ("find_geometry", {"target": "Peg", "kind": "cylinder_face"}, _peg_faces_per_instance, None),
     ("model_create_component",
      lambda c: _interference_pin(c, {"name": "OverlapPart", "activate": True, "x": 200}),

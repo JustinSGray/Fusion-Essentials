@@ -320,19 +320,21 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `assembly_inspect_interference`
 - interfering occurrence pair(s) - bodies overlap or meet at coincident faces. Each lists the two occurrences and readable overlap volume from analysed body pairs; fix positioning/sizing/joints. (A s...
-- No interference found among the compared solid bodies; coincident faces
+- No interference found among the compared solid bodies
+- within the selected occurrences
 - No active design to analyze.
-- Cannot check interference: this design exposes
-- comparable solid entit
-- occurrence(s) at any depth,
+- max_results must be an integer from 1 to
+- offset must be a nonnegative integer.
+- Cannot check interference: this scope exposes
 - root-level solid body(ies)
 - ), and interference needs at least two solid bodies. No verdict was formed - this is NOT a pass.
 - Cannot certify interference-free:
-- placed-body pair(s) WERE analysed and none interfere; no pass was formed over the whole assembly.
+- placed-body pair(s) WERE analysed and none interfere; no pass was formed over this scope.
+- Cannot check interference: at least one selected solid-body collection or isSolid flag did not read, so the analysis set is unknown. Re-read the selected bodies before retrying; no verdict was formed.
 - Interference analysis failed:
-- Cannot check interference: this design exposes  comparable solid entit ( occurrence(s) at any depth,  root-level solid body(ies)), and interference needs at least two solid bodies. No verdict was f...
+- Cannot check interference: this scope exposes  comparable solid bod ( occurrence(s),  root-level solid body(ies)), and interference needs at least two solid bodies. No verdict was formed - this is ...
 - occurrence(s) hold an unresolved external reference () - their component could not be read, so they carry no geometry this analysis could compare
-- Cannot certify interference-free: .  placed-body pair(s) WERE analysed and none interfere; no pass was formed over the whole assembly.
+- Cannot certify interference-free: .  placed-body pair(s) WERE analysed and none interfere; no pass was formed over this scope.
 - occurrence(s) with an unresolved external reference were NOT compared - their component could not be read, so they carry no geometry for this analysis; measured.unresolved_references names them.
 
 ### `assembly_move`
@@ -2534,9 +2536,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' motion is not axis-based - it has no single axis to re-point, so the direction given here would be dropped rather than set. Drop axis/world_axis, or name an axis-based joint_type (revolute, slide...
 - Joint edited in place + full recompute (downstream features settled). view_screenshot to view.
 - Joint edited in place, but the full recompute RAISED - downstream features may be unsettled and their health unread. Run design_recompute and check workspace_orient before trusting the model state.
-- enable flag/value did not read. No edits applied. Read assembly_get before retrying.
-- : it conflicts with retained enabled
-- deg. No edits applied. Read assembly_get; choose a nonconflicting value or provide both rotation bounds.
 - A direction was given with no joint_type, and this joint's own motion does not read as one this tool can re-apply (its jointMotion is absent, or its class is none of:
 - ). Pass joint_type to say what to set.
 - ' answers no current motion axis, so setting '
@@ -2556,8 +2555,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Published null () - each was assigned but could not be read back off the joint, so whether it TOOK is UNKNOWN here (it is not a 'yes').
 - Refused: whether '' belongs to a motion link did not read, so whether this re-aim would leave one compute-failed is not known here - and a link an axis change breaks cannot be re-valued back. Read ...
 - Refused: re-aiming '' leaves motion link  compute-failed - the link then reads 'Motion Link joint DOF is wrong type', carries no motion, and setMotionData raises on it, so it cannot be re-valued ba...
+- Refused =: it conflicts with retained enabled = . No edits applied. Read assembly_get; choose a nonconflicting value or provide both  bounds.
 - '' is an AS-BUILT joint with no offset/angle ModelParameter; = cannot be set. No edits applied. Read assembly_get, then remove the joint with design_delete_feature(feature=...) and recreate the pai...
-- Refused =: it conflicts with retained enabled = deg. No edits applied. Read assembly_get; choose a nonconflicting value or provide both rotation bounds.
 - A direction was given with no joint_type, and this joint's own motion does not read as one this tool can re-apply (its jointMotion is absent, or its class is none of: ). Pass joint_type to say what...
 - '' motion is not axis-based - it has no single axis to re-point, so the direction given here would be dropped rather than set. Drop axis/world_axis, or name an axis-based joint_type (revolute, slid...
 - '' answers no current motion axis, so setting '' motion has no direction to keep and this tool will not pick one. Name it: axis=x|y|z (FRAME-relative, the joint's own frame) or world_axis=x|y|z (a ...
@@ -2566,7 +2565,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - - a re-selected input likely appears LATER in the timeline than the joint; a joint can only reference geometry/origins created before it. Recreate the joint after that input with joint_create.
 - Joint edited + recomputed, but the timeline still has errored feature(s) () - no cause is read here. Each one's own message is in design_get(include=['timeline']), and a relation's in assembly_get(...
 - WARNING: this joint is SUPPRESSED - the edit landed on the definition but the joint is INERT and positions nothing until it is unsuppressed (design_edit_timeline action='suppress', suppressed=false).
-- FRAME-relative, not world; on its own it re-aims the current motion, and omitted it KEEPS the joint's own direction. pin_slot: the rotation axis.
 
 ### `joint_motion_link`
 - Joints linked - value_one/value_two are the link's own parameters READ BACK after the set. Whether the link moves the partner is not claimed here: joint_drive ONE member and its receipt answers whe...

@@ -14,7 +14,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | `BodyRef` | A reference to a BODY, by a 'handle' from find_geometry (precise - bodies are auto-named |
 | `BodyRefList` | A LIST of body references (handles or names) - for tools that act on several bodies. Kind-checks |
 | `Choice` | One of a fixed set of string options. Emits a JSON-schema `enum` so the legal values are |
-| `CurvePointRef` | A point of a drawing view curve as '<curve_index>:<start|end|mid|center>'. |
+| `CurvePointRef` | A point of a drawing view curve as '<curve_index>:<start\|end\|mid\|center>'. |
 | `Distance` | A length value in display 'units', resolved to Fusion's internal cm. The companion 'units' |
 | `EdgeLoopRef` | A boundary of find_geometry edge handles: closed=True a CLOSED loop, a one-body set checked |
 | `FeatureRef` | A reference to ONE timeline FEATURE by name, '<component>/<name>', or timeline index, as |
@@ -53,14 +53,12 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | · | `model_compute_holder` | Profile a solid holder body into CAM tool-holder segments, returned with 'holder_json'. |
 | ✎ | `model_construction` | Add a construction point, axis or plane; each 'mode' reads its own inputs. |
 | ✎ | `model_create_component` | Create a new EMPTY component occurrence, at root unless 'parent' nests it |
-| ✎ | `model_draft` | Taper (draft) faces relative to a pull plane.
-Produces: feature -> design_delete_feature, faces_drafted, faces_moved, faces_compared. |
+| ✎ | `model_draft` | Taper (draft) faces relative to a pull plane |
 | ✎ | `model_edit_body` | Copy, move, or make a child component for a BRep or mesh body |
 | ✎ | `model_edit_extrude` | Edit solid Extrude; refs from design_get/sketch_get. |
 | ✎ | `model_edit_loft` | Edit interior sections of an open unguided solid NEW Loft |
 | ✎ | `model_edit_sweep` | Edit Sweep profile/path |
-| ✎ | `model_emboss` | Stamp sketch profiles or text onto faces; a negative 'depth' engraves.
-Produces: feature -> design_delete_feature. |
+| ✎ | `model_emboss` | Stamp sketch profiles or text onto faces; a negative 'depth' engraves |
 | ✎ | `model_extrude` | Extrude profiles/curves to solids/surfaces; sketch_get handles. |
 | ✎ | `model_fillet` | Round (fillet) edges; model_chamfer bevels |
 | ✎ | `model_hole` | Drill a Hole feature; multiple points share one feature. |
@@ -68,35 +66,23 @@ Produces: feature -> design_delete_feature. |
 | ✎ | `model_loft` | Loft ordered sections; G1/G2: open surface edge to open sketch curve |
 | · | `model_measure_between` | Measure the distance or angle between two targets; a distance of 0 is touching. |
 | · | `model_measure_continuity` | Measure gap, normal angle and curvature jump across each edge's seam; a one-faced edge reads against the 'against' body. |
-| · | `model_measure_relation` | Judge a geometric relation between two entities.
-Produces: passed. |
+| · | `model_measure_relation` | Judge a geometric relation between two entities |
 | ✎ | `model_mirror` | Mirror bodies or timeline features across a plane. |
-| ✎ | `model_move` | Move bodies as a timeline feature; assembly_move moves an occurrence.
-Produces: feature -> design_delete_feature, displacement. |
-| ✎ | `model_offset_face` | Push faces along the normal; positive adds material.
-Produces: feature -> design_delete_feature. |
+| ✎ | `model_move` | Move bodies as a timeline feature; assembly_move moves an occurrence |
+| ✎ | `model_offset_face` | Push faces along the normal; positive adds material |
 | ✎ | `model_pattern_circular` | Pattern occurrences or bodies evenly around an axis. |
-| ✎ | `model_pattern_path` | Pattern occurrences or bodies along a path.
-Produces: feature -> design_delete_feature. |
+| ✎ | `model_pattern_path` | Pattern occurrences or bodies along a path |
 | ✎ | `model_pattern_rectangular` | Pattern occurrences or bodies in a rectangular grid. |
-| ✎ | `model_pipe` | Build a pipe along a path.
-Produces: feature -> design_delete_feature, result_bodies, hollow, path_curves. |
-| ✎ | `model_replace_face` | Replace body faces with an open surface (see surface_patch).
-Produces: feature -> design_delete_feature. |
+| ✎ | `model_pipe` | Build a pipe along a path |
+| ✎ | `model_replace_face` | Replace body faces with an open surface (see surface_patch) |
 | ✎ | `model_revolve` | Revolve a sketch profile about an axis; sketch one half - the profile must not cross the axis. |
-| ✎ | `model_scale` | Resize solid bodies about an anchor point that stays put.
-Produces: feature -> design_delete_feature, volume_ratio, scale_check. |
-| ✎ | `model_set_material` | Assign a PHYSICAL material; appearance_set does color.
-Produces: material -> model_inspect, density_kg_per_m3. |
-| ✎ | `model_shell` | Hollow a solid; 'remove_faces' opens the shell.
-Produces: feature. |
-| ✎ | `model_split` | Split a body into pieces, or its faces along a curve.
-Produces: feature -> design_delete_feature, result_count. |
+| ✎ | `model_scale` | Resize solid bodies about an anchor point that stays put |
+| ✎ | `model_set_material` | Assign a PHYSICAL material; appearance_set does color |
+| ✎ | `model_shell` | Hollow a solid; 'remove_faces' opens the shell |
+| ✎ | `model_split` | Split a body into pieces, or its faces along a curve |
 | ✎ | `model_stitch` | Stitch surface bodies into a solid; 'became_solid' reports whether they closed. |
-| ✎ | `model_sweep` | Sweep profile or solid body.
-Produces: result_bodies, is_solid, path_curves. |
-| ✎ | `model_thread` | Thread an existing cylindrical face; model_hole taps its holes.
-Produces: feature -> design_delete_feature. |
+| ✎ | `model_sweep` | Sweep profile or solid body |
+| ✎ | `model_thread` | Thread an existing cylindrical face; model_hole taps its holes |
 | ✎ | `model_unstitch` | Explode a body into per-face surface bodies - the inverse of model_stitch. |
 
 ### surface
@@ -104,21 +90,17 @@ Produces: feature -> design_delete_feature. |
 | | Tool | Summary |
 |---|---|---|
 | ✎ | `surface_create_ruled` | Create a ruled surface off an edge chain. |
-| ✎ | `surface_delete_face` | Delete faces from their bodies; 'heal'=false leaves the opening, turning a solid into a surface.
-Produces: feature, bodies_consumed. |
+| ✎ | `surface_delete_face` | Delete faces from their bodies; 'heal'=false leaves the opening, turning a solid into a surface |
 | ✎ | `surface_extend` | Extend an open surface outward from its open edges. |
 | ✎ | `surface_extrude` | Extrude an open profile into a sheet body; model_extrude makes a capped solid. |
-| ✎ | `surface_fill` | Seal the volume enclosed by several surface and/or solid bodies into a solid.
-Produces: feature -> design_delete_feature. |
+| ✎ | `surface_fill` | Seal the volume enclosed by several surface and/or solid bodies into a solid |
 | ✎ | `surface_offset` | Offset faces into another surface body. |
 | ✎ | `surface_patch` | Fill closed edge loop(s) with surface face(s) - cap a hole, bridge a gap. |
-| ✎ | `surface_reverse_normal` | Reverse the normals of open surface bodies; ALL faces of each are flipped.
-Produces: feature, reversed_confirmed. |
+| ✎ | `surface_reverse_normal` | Reverse the normals of open surface bodies; ALL faces of each are flipped |
 | ✎ | `surface_revolve` | Revolve an open profile into a sheet body; model_revolve makes a solid. |
 | ✎ | `surface_thicken` | Thicken faces into a solid wall. |
 | ✎ | `surface_trim` | Trim a surface body with an intersecting tool; only the target loses cells. |
-| ✎ | `surface_untrim` | Restore trimmed faces to their natural extent, or remove an internal hole loop.
-Produces: feature, area_after. |
+| ✎ | `surface_untrim` | Restore trimmed faces to their natural extent, or remove an internal hole loop |
 
 ### form
 
@@ -161,11 +143,9 @@ Produces: feature, area_after. |
 | ✎ | `sketch_dimension` | Add dimensional constraints to one sketch, each optionally driven to a value. |
 | ✎ | `sketch_edit_curve` | Edit an EXISTING sketch curve in place |
 | · | `sketch_get` | Read sketches, curves, constraints and profile handles for model_extrude. |
-| ✎ | `sketch_insert_svg` | Import an SVG into a sketch at (x,y).
-Produces: curves_added, sketch_extent. |
+| ✎ | `sketch_insert_svg` | Import an SVG into a sketch at (x,y) |
 | ✎ | `sketch_move` | MOVE existing sketch entities by one transform. |
-| ✎ | `sketch_project` | Create sketch curves from model geometry.
-Produces: entity_refs -> sketch_constrain/sketch_dimension. |
+| ✎ | `sketch_project` | Create sketch curves from model geometry |
 | ✎ | `sketch_set_text` | Set the displayed string of sketch text, or add new text with create=true. |
 
 ### cam
@@ -185,18 +165,13 @@ Produces: entity_refs -> sketch_constrain/sketch_dimension. |
 | ✎ | `cam_edit_operation` | Edit a CAM operation: its parameters (the feeds/speeds/depths no other CAM tool reaches), its cutting tool, preset, name or suppression |
 | ✎ | `cam_edit_setup` | Edit a CAM SETUP: its machine, its model/fixture/stock selections (bodies or occurrence names, each REPLACED), its WCS, any other setup parameter, or its name |
 | ✎ | `cam_edit_tools` | Read and manage CAM TOOL LIBRARIES and their tools - list, add, remove or edit tools, manage presets, or create a library |
-| · | `cam_find_holes` | Recognize solid bodies' holes, GROUPED by similar geometry, for cam_select_geometry(selection='holes').
-Produces: faces -> cam_select_geometry. |
-| · | `cam_find_pockets` | Recognize solid bodies' pockets down an attack vector, for cam_select_geometry(selection='pocket').
-Produces: faces -> cam_select_geometry. |
-| ✎ | `cam_generate` | Launch CAM toolpath (re)generation from the MANUFACTURE workspace.
-Produces: handle -> cam_get_status. |
-| ✎ | `cam_generate_setup_sheet` | Generate a machinist SETUP SHEET, named after the DOCUMENT - a second call to the same folder overwrites it.
-Produces: file_path. |
+| · | `cam_find_holes` | Recognize solid bodies' holes, GROUPED by similar geometry, for cam_select_geometry(selection='holes') |
+| · | `cam_find_pockets` | Recognize solid bodies' pockets down an attack vector, for cam_select_geometry(selection='pocket') |
+| ✎ | `cam_generate` | Launch CAM toolpath (re)generation from the MANUFACTURE workspace |
+| ✎ | `cam_generate_setup_sheet` | Generate a machinist SETUP SHEET, named after the DOCUMENT - a second call to the same folder overwrites it |
 | · | `cam_get` | Read the active document's CAM (Manufacture) state: one row per setup by default, deeper slices via 'include' |
 | · | `cam_get_status` | Read toolpath generation progress; 'readiness' carries the verdict |
-| · | `cam_inspect_toolpaths` | Check whether CAM toolpaths are generated and up to date.
-Produces: passed. |
+| · | `cam_inspect_toolpaths` | Check CAM toolpath validity |
 | ✎ | `cam_post` | Create (or reuse) an NC Program and post it to a G-code / NC file on disk - the final CAM step |
 | ✎ | `cam_reorder` | Reorder a CAM item in the machining sequence: move 'entity' before or after 'reference' (both are names from cam_get / cam_edit_folders) |
 | ✎ | `cam_save_template` | Bundle some of a setup's operations into a NEW toolpath template. |
@@ -214,7 +189,7 @@ Produces: passed. |
 | ⚠ | `assembly_edit_relations` | Edit or remove an existing assembly relation; create one with assembly_rigid_group / joint_motion_link / assembly_constrain. |
 | · | `assembly_get` | Read assembly occurrences, grounding, body counts, joints and health |
 | ✎ | `assembly_ground` | Lock an occurrence to its parent (isGroundToParent): true re-locks it at its TIMELINE placement, DISCARDING any free move; false frees it to move or joint. |
-| · | `assembly_inspect_interference` | Check solid overlap or coincident contact; list pairs and readable volume (cm^3) |
+| · | `assembly_inspect_interference` | Solid overlap/contact; hidden bodies count |
 | ✎ | `assembly_move` | Move an occurrence by editing its transform - a free reposition, no joint |
 | ✎ | `assembly_rigid_group` | Lock two or more component occurrences together as a single rigid unit (Rigid Group). |
 
@@ -227,7 +202,7 @@ Produces: passed. |
 | ✎ | `joint_create_as_built` | Joint two occurrences WHERE THEY ALREADY ARE - neither part moves; joint_create moves the free part instead |
 | ✎ | `joint_create_origin` | Create a Joint Origin, a reusable coordinate frame; feed it to joint_create or joint_at_geometry by name. |
 | ✎ | `joint_drive` | Drive a joint to a value - the pose is TRANSIENT until assembly_capture_position(action='capture') keeps it. |
-| ✎ | `joint_edit` | Edit an existing joint's DEFINITION in place; joint_drive poses it to a value instead. |
+| ✎ | `joint_edit` | Edit joint; joint_drive poses it |
 | ✎ | `joint_motion_link` | Link two existing joints' motion with a ratio (the Motion Link command): driving one drives the other proportionally. |
 
 ### design
@@ -235,22 +210,19 @@ Produces: passed. |
 | | Tool | Summary |
 |---|---|---|
 | ✎ | `design_activate_component` | Make an existing component the active edit target - new features build into it. |
-| ✎ | `design_add_instance` | Place another INSTANCE of a component already in this design - it SHARES the original's geometry; placement coords in 'units', angles in degrees.
-Produces: full... |
+| ✎ | `design_add_instance` | Place another INSTANCE of a component already in this design - it SHARES the original's geometry; placement coords in 'units', angles in degrees |
 | ✎ | `design_configure` | Build or switch a Configured Design; 'action' picks the verb |
 | ⚠ | `design_delete_feature` | Delete one timeline feature by name; a pattern/mirror delete takes every instance it created. |
 | ⚠ | `design_delete_occurrence` | Delete one component occurrence; if it was the last instance of its component, the component goes too. |
 | ⚠ | `design_edit_timeline` | Edit timeline items from design_get(include=['timeline']); roll to='end' when done. |
 | ✎ | `design_export` | Export a body, component/occurrence or the whole design (omit 'target') to a CAD file on local disk. |
 | · | `design_get` | Design summary and opt-in detail. |
-| ✎ | `design_move_occurrence` | Re-parent an occurrence into another occurrence's component.
-Produces: full_path -> joint_create/assembly_move. |
+| ✎ | `design_move_occurrence` | Re-parent an occurrence into another occurrence's component |
 | ✎ | `design_recompute` | Force a full recompute so downstream features rebuild against current values |
 | ✎ | `design_remove_feature` | Remove ONE body or occurrence as a timeline Remove FEATURE. |
 | ✎ | `design_set_metadata` | Set a component's part number and/or description; an occurrence sets its COMPONENT's |
 | ⚠ | `design_set_mode` | Convert the active design between parametric and direct modeling; going direct destroys the timeline and all design history. |
-| ✎ | `design_set_name` | Rename a body or component; an occurrence renames its COMPONENT.
-Produces: name -> find_geometry/design_get. |
+| ✎ | `design_set_name` | Rename a body or component; an occurrence renames its COMPONENT |
 
 ### doc
 
@@ -268,8 +240,7 @@ Produces: name -> find_geometry/design_get. |
 | ✎ | `doc_restore_version` | Promote a prior version of the ACTIVE cloud document to latest - a NEW tip version carries its content |
 | ✎ | `doc_save` | Save the ACTIVE document in place as a new cloud version; a never-saved one needs doc_save_as. |
 | ✎ | `doc_save_as` | Save the ACTIVE document into a cloud project/folder under 'name' - including a design never saved before. |
-| ✎ | `doc_save_milestone` | Save the ACTIVE document as a NAMED MILESTONE - a new cloud version marked, findable by name.
-Produces: document_id -> doc_open/data_get. |
+| ✎ | `doc_save_milestone` | Save the ACTIVE document as a NAMED MILESTONE - a new cloud version marked, findable by name |
 | ✎ | `doc_update_xref` | Refresh the active document's external references and derive links to their latest cloud version. |
 
 ### data
@@ -280,8 +251,7 @@ Produces: document_id -> doc_open/data_get. |
 | ✎ | `data_create_project` | Create a new project in the user's active Autodesk hub |
 | ⚠ | `data_delete_file` | Delete a document on the cloud, IRREVERSIBLY, by its lineage URN: 'confirm_name' must EXACTLY match the file's current name. |
 | ⚠ | `data_delete_folder` | Delete a folder on the cloud, IRREVERSIBLY: 'confirm_name' must EXACTLY match the folder's current name. |
-| ✎ | `data_download_file` | Download ONE non-Fusion cloud file to a local folder; the transfer is SYNCHRONOUS and freezes Fusion until it finishes.
-Produces: file_path, size_bytes. |
+| ✎ | `data_download_file` | Download ONE non-Fusion cloud file to a local folder; the transfer is SYNCHRONOUS and freezes Fusion until it finishes |
 | · | `data_get` | Read the CLOUD data model by scope: hubs and projects, one project's files, its folder tree, one folder's summary, or ONE file's record |
 | · | `data_get_upload_status` | Poll a data_upload_file upload: 'state' is uploading, processing, complete (file_id included) or failed. |
 | ✎ | `data_move_file` | Move ONE cloud file into an EXISTING folder of its own project; it creates nothing. |
@@ -292,22 +262,17 @@ Produces: file_path, size_bytes. |
 
 | | Tool | Summary |
 |---|---|---|
-| ✎ | `drawing_add_sketch` | Draw 2D geometry on a NEW sketch on a sheet of the active drawing.
-Produces: sketch_name, curves_landed. |
+| ✎ | `drawing_add_sketch` | Draw 2D geometry on a NEW sketch on a sheet of the active drawing |
 | ✎ | `drawing_add_symbol` | Place one GD&T symbol leadered from a curve point of drawing_get(include=['curves'], view=N) |
 | ✎ | `drawing_create` | Create a cloud drawing; doc_open file_id, then drawing_export, no UI step by default |
-| ⚠ | `drawing_delete_sketch` | Delete a drawing sketch by exact name from a sheet of the active drawing.
-Produces: sketch_count. |
-| ✎ | `drawing_dimension` | Dimension one view of the active drawing: auto, or one dimension on curves from drawing_get(include=['curves'], view=N).
-Produces: dimension_count_after. |
+| ⚠ | `drawing_delete_sketch` | Delete a drawing sketch by exact name from a sheet of the active drawing |
+| ✎ | `drawing_dimension` | Dimension one view of the active drawing: auto, or one dimension on curves from drawing_get(include=['curves'], view=N) |
 | ⚠ | `drawing_edit_revisions` | Add, update, delete, hide or show rows of a sheet's one revision table |
 | ⚠ | `drawing_edit_sheet` | Manage the active 2D drawing's sheets; tidy_up lays a sheet's views out again. |
-| ✎ | `drawing_export` | Export the active 2D drawing to PDF, DXF or DWG on local disk - open the drawing first (doc_open by file_id).
-Produces: file_path, size_bytes. |
+| ✎ | `drawing_export` | Export the active 2D drawing to PDF, DXF or DWG on local disk - open the drawing first (doc_open by file_id) |
 | · | `drawing_get` | Read the ACTIVE 2D drawing: standard, units and per-sheet facts. |
 | · | `drawing_get_status` | Poll deferred drawing_create, drawing_update or drawing_export by request_key; it reads stored state and does not replay work. |
-| ✎ | `drawing_insert_image` | Place an image file from local disk onto the active drawing's active sheet.
-Produces: document_modified. |
+| ✎ | `drawing_insert_image` | Place an image file from local disk onto the active drawing's active sheet |
 | ✎ | `drawing_update` | Refresh the active 2D drawing's stale references from its saved source |
 
 ### param
@@ -324,8 +289,7 @@ Produces: document_modified. |
 
 | | Tool | Summary |
 |---|---|---|
-| ✎ | `pmi_create` | Create a PMI annotation: kind='note' a leader note on ONE face/edge/vertex, kind='hole_note' a callout off the hole/boss faces, 'text' appended.
-Produces: annot... |
+| ✎ | `pmi_create` | Create a PMI annotation: kind='note' a leader note on ONE face/edge/vertex, kind='hole_note' a callout off the hole/boss faces, 'text' appended |
 | ⚠ | `pmi_delete` | Delete ONE PMI annotation by its name from pmi_get |
 | ✎ | `pmi_edit` | Edit one PMI annotation, named from pmi_get: 'action' picks the edit and the inputs it reads. |
 | · | `pmi_get` | Read the design's PMI - Product Manufacturing Information, the 3D annotations on model geometry, authored and imported alike: counts by kind plus light records,... |
@@ -345,8 +309,7 @@ Produces: annot... |
 
 | | Tool | Summary |
 |---|---|---|
-| · | `find_geometry` | Find world geometry and handles.
-Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/model_chamfer/model_construction/model_mirror/mo... |
+| · | `find_geometry` | Find world geometry and handles |
 
 ### workspace
 
@@ -391,12 +354,9 @@ Produces: handle -> joint_at_geometry/sketch_create/model_extrude/model_fillet/m
 | · | `sys_find_tool` | Search this server's tools by keyword when you don't know the name; sys_capability_map lists the families. |
 | · | `sys_get_api_doc` | Search installed Fusion API declarations and full docs |
 | · | `sys_get_guidance` | Call with no arguments first for the index and five kernel rules |
-| · | `sys_get_preferences` | Read the APPLICATION's preferences: app.preferences, which belong to no document.
-Produces: preferences -> sys_set_preferences. |
-| · | `sys_get_selection` | Read the user's CURRENT selection in Fusion.
-Produces: handle -> joint_at_geometry/model_extrude/model_fillet/model_chamfer/model_construction. |
+| · | `sys_get_preferences` | Read the APPLICATION's preferences: app.preferences, which belong to no document |
+| · | `sys_get_selection` | Read the user's CURRENT selection in Fusion |
 | ✎ | `sys_reload_addin` | Reload the add-in to pick up code changes |
-| ✎ | `sys_request_selection` | Hand the pick to the USER: holds the call, and by default clears their current selection.
-Produces: handle -> joint_at_geometry/model_extrude/model_fillet/model... |
+| ✎ | `sys_request_selection` | Hand the pick to the USER: holds the call, and by default clears their current selection |
 | ⚠ | `sys_set_preferences` | SET one APPLICATION preference, by the path sys_get_preferences reports |
 

@@ -128,6 +128,39 @@ def _set_one_parameter(param, key, wanted, expression, unit_scale):
     return landed, None
 
 
+def _retained_limit_error(joint, joint_type, *, min_deg, max_deg, min_mm, max_mm, units="mm"):
+    """Refuse a single bound that crosses the enabled opposite bound already on the joint."""
+    checks = []
+    if joint_type in ("revolute", "cylindrical") and (min_deg is None) != (max_deg is None):
+        checks.append(("rotationLimits", "max_deg" if min_deg is None else "min_deg",
+                       max_deg if min_deg is None else min_deg,
+                       "min_deg" if min_deg is None else "max_deg",
+                       "isMinimumValueEnabled" if min_deg is None else "isMaximumValueEnabled",
+                       "minimumValue" if min_deg is None else "maximumValue", _DEG_PER_RAD))
+    if joint_type in ("slider", "cylindrical", "pin_slot") and (min_mm is None) != (max_mm is None):
+        cm_scale = _common.scale(units) or 0.1
+        checks.append(("slideLimits", "max_mm" if min_mm is None else "min_mm",
+                       max_mm if min_mm is None else min_mm,
+                       "min_mm" if min_mm is None else "max_mm",
+                       "isMinimumValueEnabled" if min_mm is None else "isMaximumValueEnabled",
+                       "minimumValue" if min_mm is None else "maximumValue", 1.0 / cm_scale))
+    for attr, key, value, opposite, flag, member, scale in checks:
+        limits = safe(lambda attr=attr: getattr(joint.jointMotion, attr))
+        enabled = _common.read_flag(lambda: getattr(limits, flag))
+        retained = (_common.measured(lambda: getattr(limits, member), scale=scale, places=9)
+                    if enabled else None)
+        if enabled is None or enabled and retained is None:
+            return (f"Cannot check {key}={value}: the retained {opposite} enable flag/value did "
+                    "not read. No edits applied. Read assembly_get before retrying.")
+        if enabled and (float(value) < retained if key.startswith("max_")
+                        else float(value) > retained):
+            unit = "deg" if key.endswith("deg") else units
+            return (f"Refused {key}={value}: it conflicts with retained enabled "
+                    f"{opposite}={retained} {unit}. No edits applied. Read assembly_get; "
+                    f"choose a nonconflicting value or provide both {unit} bounds.")
+    return None
+
+
 def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
             joint_type: str = "", axis: str = "", slide_axis: str = "", world_axis: str = "",
             flip=None, offset=None, angle=None, units: str = "mm",
@@ -184,21 +217,12 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
             "the joint with design_delete_feature(feature=...) and recreate the pair with "
             "joint_create for parameter-driven positioning.")
 
-    if not want_motion and _current_joint_type(joint) == "revolute" and (min_deg is None) != (max_deg is None):
-        key, value, opposite, flag, member = (
-            ("max_deg", max_deg, "min_deg", "isMinimumValueEnabled", "minimumValue")
-            if min_deg is None else
-            ("min_deg", min_deg, "max_deg", "isMaximumValueEnabled", "maximumValue"))
-        limits = safe(lambda: joint.jointMotion.rotationLimits)
-        enabled = _common.read_flag(lambda: getattr(limits, flag))
-        retained = _common.measured(lambda: getattr(limits, member), scale=_DEG_PER_RAD, places=9) if enabled else None
-        if enabled is None or enabled and retained is None:
-            return error(f"Cannot check {key}={value}: the retained {opposite} enable flag/value "
-                         "did not read. No edits applied. Read assembly_get before retrying.")
-        if enabled and (float(value) < retained if min_deg is None else float(value) > retained):
-            return error(f"Refused {key}={value}: it conflicts with retained enabled "
-                         f"{opposite}={retained} deg. No edits applied. Read assembly_get; "
-                         "choose a nonconflicting value or provide both rotation bounds.")
+    if not want_motion:
+        conflict = _retained_limit_error(
+            joint, _current_joint_type(joint), min_deg=min_deg, max_deg=max_deg,
+            min_mm=min_mm, max_mm=max_mm, units=units)
+        if conflict:
+            return error(conflict)
 
     # Validate motion type up front (before touching the timeline). With only a direction given,
     # the joint's CURRENT motion type is what gets re-applied at it.
@@ -489,7 +513,7 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
 
 
 TOOL_DESCRIPTION = (
-"Edit an existing joint's DEFINITION in place; joint_drive poses it to a value instead."
+"Edit joint; joint_drive poses it. Linear limits use units."
 )
 tool = (
     Tool.create_simple(name="joint_edit", description=TOOL_DESCRIPTION)
@@ -502,18 +526,16 @@ tool = (
     .add_input_property(*_inputs.joint_motion(default="", options=_MOTIONS,
             description="").as_property())
     .add_input_property(*_inputs.frame_axis("axis", default="",
-            description="FRAME-relative, not world; on its own it re-aims the current motion, and "
-                        "omitted it KEEPS the joint's own direction. pin_slot: the rotation axis."
+            description="FRAME-relative; omitted keeps direction; pin_slot uses rotation axis."
             ).as_property())
     .add_input_property(*_inputs.frame_axis("slide_axis", default="",
             description="pin_slot only.").as_property())
     .add_input_property(*_inputs.frame_axis("world_axis", default="",
-            description="Re-point the motion to a TRUE WORLD axis.").as_property())
+            description="World axis.").as_property())
     .add_input_property("flip", {"type": "boolean",
             "description": "Sets the flag - not a toggle."})
     .add_input_property("offset", {"type": "number",
-            "description": "In 'units'; the anchor offset along the joint frame's Z, not a slide "
-                           "value (joint_drive poses that)."})
+            "description": "Joint-frame Z offset, in units."})
     .add_input_property("angle", {"type": "number", "description": "In degrees."})
     .add_input_property(*_inputs.UNITS.as_property())
     # rotation_deg is intentionally NOT exposed: the handler still accepts the kwarg and returns a
@@ -522,9 +544,9 @@ tool = (
     .add_input_property("min_deg", {"type": "number"})
     .add_input_property("max_deg", {"type": "number"})
     .add_input_property("rest_deg", {"type": "number"})
-    .add_input_property("min_mm", {"type": "number", "description": "In 'units'."})
-    .add_input_property("max_mm", {"type": "number", "description": "In 'units'."})
-    .add_input_property("rest_mm", {"type": "number", "description": "In 'units'."})
+    .add_input_property("min_mm", {"type": "number"})
+    .add_input_property("max_mm", {"type": "number"})
+    .add_input_property("rest_mm", {"type": "number"})
     .strict_schema()
 )
 item = Item.create_tool_item(

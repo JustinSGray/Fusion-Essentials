@@ -142,12 +142,20 @@ def _contact_overlap(volumes):
 def _interference_budget(p):
     """Require a partial self-volume when the dense body's pair count exceeds the limit."""
     m = p.get("measured") or {}
+    census = m.get("body_census") or {}
+    body_rows = census.get("bodies") or []
     rows = [r for r in m.get("interferences", [])
             if r.get("occurrence_one") == r.get("occurrence_two") == "BudgetPart:1"]
     return _measured("dense overlap stops with disclosed omitted pairs and partial volume", m,
                      p.get("passed") is False and m.get("analysis_complete") is False
                      and 0 < m.get("pairs_analyzed", 0) <= 5000
                      and m.get("pairs_omitted", 0) > 0
+                     and census.get("count", 0) >= 102 and census.get("offset") == 0
+                     and census.get("returned_count") == len(body_rows) == 30
+                     and census.get("truncated") is True and census.get("next_offset") == 30
+                     and all(isinstance(row.get(k), int) and row[k] >= 0
+                             for row in body_rows
+                             for k in ("pairs_analyzed", "pairs_pruned", "pairs_omitted"))
                      and len(rows) == 1 and rows[0].get("partial") is True
                      and isinstance(rows[0].get("overlap_volume_cm3"), (int, float))
                      and 0 < rows[0]["overlap_volume_cm3"] < 34133.96)

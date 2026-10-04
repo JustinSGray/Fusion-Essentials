@@ -58,7 +58,7 @@ def _first_sentence(text: str, limit: int = 160) -> str:
     """First sentence of a description (mirrors sys_find_tool's summary), trimmed."""
     if not text:
         return ""
-    s = text.split(". ")[0].strip()
+    s = " ".join(text.split()).split(". ")[0]
     return s[:limit] + ("..." if len(s) > limit else "")
 
 
@@ -241,7 +241,8 @@ def render(data) -> str:
         "|---|---|",
     ]
     for k in kinds:
-        lines.append(f"| `{k['kind']}` | {k['summary']} |")
+        summary = k["summary"].replace("|", "\\|")
+        lines.append(f"| `{k['kind']}` | {summary} |")
     lines.append("")
     lines.append("## Tools by family")
     lines.append("")
@@ -260,7 +261,8 @@ def render(data) -> str:
         lines.append("| | Tool | Summary |")
         lines.append("|---|---|---|")
         for t in sorted(items, key=lambda x: x["name"]):
-            lines.append(f"| {_MARK[t['write']]} | `{t['name']}` | {t['summary']} |")
+            summary = t["summary"].replace("|", "\\|")
+            lines.append(f"| {_MARK[t['write']]} | `{t['name']}` | {summary} |")
         lines.append("")
     return "\n".join(lines)
 

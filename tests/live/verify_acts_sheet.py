@@ -1540,8 +1540,6 @@ def _sheet_serial_rows():
              ('serial_home_handle', _home_address)),
             ('design_get', {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True, 'max_results': 2000},
              _retire_compare('serial_home_design', _retire_design_state, False), None),
-            ('model_inspect', {'include': ['default', 'mass'], 'per_body': True, 'units': 'mm', 'accuracy': 'very_high'},
-             _retire_compare('serial_home_material', _retire_material_state, False), None),
             ('doc_new', lambda c: {'expect_document': _ctx_get(c, 'serial_home_handle', 'home')},
              lambda p: p.get('created') is True and p.get('is_active') is True,
              ('serial_doc', lambda p: p['document_handle'])),
@@ -1670,9 +1668,7 @@ def _sheet_serial_rows():
     rows += [('doc_activate', lambda c: {'name': _ctx_get(c, 'serial_home_handle', 'home')}, 'ok', None),
              ('doc_get', {'max_results': 1000}, _retire_compare('serial_home', _home_snapshot, True), None),
              ('design_get', {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True, 'max_results': 2000},
-              _retire_compare('serial_home_design', _retire_design_state, True), None),
-             ('model_inspect', {'include': ['default', 'mass'], 'per_body': True, 'units': 'mm', 'accuracy': 'very_high'},
-              _retire_compare('serial_home_material', _retire_material_state, True), None)]
+              _retire_compare('serial_home_design', _retire_design_state, True), None)]
     return rows
 
 

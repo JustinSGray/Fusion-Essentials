@@ -312,6 +312,20 @@ class TestPairCap:
         assert out["measured"]["analysis_complete"] is False
         assert out["measured"]["pairs_omitted"] == 2
         assert "total overlap volume" not in out["note"]
+        by_name = {row["body_name"]: row for row in out["measured"]["body_census"]["bodies"]}
+        assert by_name["A"]["pairs_analyzed"] == 1 and by_name["A"]["pairs_omitted"] == 1
+        assert by_name["B"]["pairs_analyzed"] == 1 and by_name["B"]["pairs_omitted"] == 1
+        assert by_name["C"]["pairs_omitted"] == 2
+
+    def test_pruned_pair_participation_is_counted_for_both_bodies(self, world):
+        a = _solid("A", (0, 0, 0), (1, 1, 1))
+        b = _solid("B", (100, 0, 0), (101, 1, 1))
+        world([_occ("A:1", bodies=[a]), _occ("B:1", bodies=[b])], pair_volumes={})
+        out = payload(ai.handler())
+        rows = {row["body_name"]: row for row in out["measured"]["body_census"]["bodies"]}
+        assert out["passed"] is True and out["measured"]["pairs_pruned"] == 1
+        assert rows["A"]["pairs_pruned"] == rows["B"]["pairs_pruned"] == 1
+        assert rows["A"]["pairs_analyzed"] == rows["B"]["pairs_analyzed"] == 0
 
     def test_time_budget_stops_between_calls_and_marks_partial_volume(self, monkeypatch, world):
         monkeypatch.setattr(ai, "_TIME_BUDGET_S", 20.0)
@@ -422,17 +436,78 @@ class TestInterferenceHandler:
         assert res["isError"] is True
         assert "result count did not read" in res["message"]
 
+    def test_unread_body_identity_marks_the_census_unknown_without_changing_geometry_analysis(self, world):
+        a, b = _solid("A", (0, 0, 0), (1, 1, 1)), _solid("B", (100, 0, 0), (101, 1, 1))
+        a.entityToken = None
+        a.name = None
+        world([_occ("A:1", bodies=[a]), _occ("B:1", bodies=[b])], pair_volumes={})
+        out = payload(ai.handler())
+        assert out["passed"] is True
+        assert out["measured"]["analysis_complete"] is True
+        census = out["measured"]["body_census"]
+        assert census["enumeration_complete"] is False
+        assert "census enumeration is incomplete" in out["note"]
+
     def test_clear_when_nothing_registers_a_volume(self, world):
         a, b = _solid("A", (0, 0, 0), (5, 5, 5)), _solid("B", (0, 0, 0), (5, 5, 5))
         world([_occ("A:1", bodies=[a]), _occ("B:1", bodies=[b])], pair_volumes={})
         out = payload(ai.handler())
         assert out["passed"] is True and out["measured"]["interference_count"] == 0
-        assert out["note"] == ("No interference found among the compared solid bodies; "
-                               "coincident faces excluded.")
+        assert "No interference found among the compared solid bodies in the whole design" in out["note"]
+        assert "Body pages are separate reads" in out["note"]
         with_contacts = payload(ai.handler(include_coincident_faces=True))
         assert with_contacts["passed"] is True
-        assert with_contacts["note"] == ("No interference found among the compared solid bodies; "
-                                         "coincident faces included.")
+        assert "No interference found among the compared solid bodies" in with_contacts["note"]
+        assert "coincident faces included" in with_contacts["note"]
+
+    def test_selected_placements_page_only_their_direct_bodies_and_pair_counts(self, world):
+        a, b, outside = (_solid("A", (0, 0, 0), (5, 5, 5)),
+                         _solid("B", (1, 0, 0), (6, 5, 5)),
+                         _solid("Outside", (2, 0, 0), (7, 5, 5)))
+        des = world([_occ("A:1", bodies=[a]), _occ("B:1", bodies=[b]),
+                     _occ("Outside:1", bodies=[outside])],
+                    pair_volumes={frozenset({id(a), id(b)}): 2.0,
+                                  frozenset({id(a), id(outside)}): 3.0})
+        first = payload(ai.handler(occurrences=["A:1", "B:1"], max_results=1))
+        census = first["measured"]["body_census"]
+        assert first["passed"] is False and first["measured"]["analysis_complete"] is True
+        assert first["measured"]["scope"] == {"kind": "selected_occurrences", "occurrence_count": 2}
+        assert first["measured"]["interferences"] == [
+            {"occurrence_one": "A:1", "occurrence_two": "B:1", "overlap_volume_cm3": 2.0}]
+        assert census["count"] == 2 and census["offset"] == 0 and census["returned_count"] == 1
+        assert census["truncated"] is True and census["next_offset"] == 1
+        assert census["enumeration_complete"] is True
+        row = census["bodies"][0]
+        assert row["occurrence_path"] in {"A:1", "B:1"}
+        assert row["pairs_analyzed"] == 1 and row["pairs_pruned"] == row["pairs_omitted"] == 0
+        second = payload(ai.handler(occurrences=["A:1", "B:1"], max_results=1, offset=1))
+        page = second["measured"]["body_census"]
+        assert page["count"] == 2 and page["offset"] == 1 and page["returned_count"] == 1
+        assert page["truncated"] is False and page["next_offset"] is None
+        assert page["bodies"][0]["occurrence_path"] in {"A:1", "B:1"}
+        assert page["bodies"][0]["occurrence_path"] != row["occurrence_path"]
+        assert all(r["occurrence_path"] != "Outside:1" for r in census["bodies"] + page["bodies"])
+        assert len(des.calls) == 2
+
+    @pytest.mark.parametrize("selection,fragment", [([], "at least one occurrence"),
+                                                       (["A:1", "A:1"], "repeats placement")])
+    def test_invalid_explicit_scope_refuses_without_running_analysis(self, world, selection, fragment):
+        a, b = _solid("A", (0, 0, 0), (5, 5, 5)), _solid("B", (1, 0, 0), (6, 5, 5))
+        des = world([_occ("A:1", bodies=[a]), _occ("B:1", bodies=[b])],
+                    pair_volumes={frozenset({id(a), id(b)}): 2.0})
+        result = ai.handler(occurrences=selection)
+        assert result["isError"] is True and fragment in result["message"]
+        assert des.calls == []
+
+    def test_unread_solid_body_collection_cannot_form_a_clear_verdict(self, world):
+        a, b = _solid("A", (0, 0, 0), (5, 5, 5)), _solid("B", (100, 0, 0), (105, 5, 5))
+        unread = _occ("A:1", bodies=[a])
+        unread.bRepBodies = _NamedCollection(raises="body count unread")
+        des = world([unread, _occ("B:1", bodies=[b])], pair_volumes={})
+        result = ai.handler()
+        assert result["isError"] is True and "collection" in result["message"]
+        assert "no verdict was formed" in result["message"]
+        assert des.calls == []
 
     def test_under_two_comparable_entities_REFUSES_rather_than_passing(self, world):
         a = _solid("A", (0, 0, 0), (1, 1, 1))
@@ -546,6 +621,7 @@ class TestUnresolvedReferences:
         out = payload(ai.handler())
         assert out["passed"] is False
         assert out["measured"]["unresolved_references"] == ["45740"]
+        assert out["measured"]["body_census"]["enumeration_complete"] is False
         assert "were NOT compared" in out["note"]
 
     def test_zero_unresolved_leaves_the_pass_verdict_and_the_fast_walk(self, world):

@@ -72,6 +72,18 @@ class TestGenManifestFamilies:
         assert any(t["name"] == "cam_get" for t in fam.get("cam", []))
         assert any(t["name"] == "zzz_thing" for t in fam.get("other", []))
 
+    def test_manifest_summary_newlines_and_pipes_stay_inside_table_cells(self):
+        summary = gen_manifest._first_sentence("First\ncontinued | details. More text")
+        data = {"kinds": [{"kind": "CurvePointRef", "summary": "<start|end|mid|center>"}],
+                "tools": [{"name": "doc_open", "write": "read", "summary": summary}], "helpers": []}
+
+        out = gen_manifest.render(data)
+
+        assert "First continued \\| details" in out
+        assert "| `CurvePointRef` | <start\\|end\\|mid\\|center> |" in out
+        assert "| · | `doc_open` | First continued \\| details |" in out
+        assert "First\ncontinued" not in out
+
     def test_catalog_escapes_pipes_in_kind_hints(self):
         data = {"kinds": [{"kind": "UnitField", "hint": "mm | cm | in selector", "summary": ""}],
                 "tools": [{"name": "model_extrude"}], "helpers": []}

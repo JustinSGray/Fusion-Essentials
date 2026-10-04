@@ -600,6 +600,27 @@ class TestSuppressedScoping:
         assert out["tolerance_used"]["verdict_counts"] == "active_operations"
         assert "1 suppressed op(s) excluded from the tally and from 'passed'." in out["note"]
 
+    def test_document_active_verdict_keeps_empty_setup_and_manual_nc_disclosed(self, wire):
+        suppressed = FakeOperation("SuppressMe", has_toolpath=False, operation_state=2,
+                                   suppressed=True)
+        manual = FakeOperation("ManualNote", has_toolpath=False, strategy="manual")
+        work = FakeSetup("Work", ops=[suppressed, manual])
+        empty = FakeSetup("Empty")
+        cam = wire(_cam(work, empty, all_raises=_NOT_CAM_OBJECTS))
+
+        out = _payload(mod.handler())
+
+        assert out["passed"] is True
+        assert out["checked"] == "per-active-operation check"
+        assert len(cam.checked) == 1 and cam.checked[0].name == "ManualNote"
+        assert out["measured"]["states"]["valid"] == 1
+        assert out["measured"]["states"]["total"] == 1
+        assert out["measured"]["suppressed_excluded"] == 1
+        assert out["measured"]["empty_toolpath_count"] == 0
+        assert out["measured"]["empty_toolpaths"] == []
+        assert out["measured"]["empty_setups_excluded"] == 1
+        assert out["measured"]["empty_setups"] == ["Empty"]
+
     def test_counting_the_suppressed_operations_takes_cams_own_verdict(self, wire):
         # the other side of the same job: include_suppressed=true puts them back in the tally, and
         # the verdict is CAM's own check over the scope - which counts them too.

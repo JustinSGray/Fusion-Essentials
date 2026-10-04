@@ -25,7 +25,7 @@ import adsk.fusion
 import pytest
 
 from conftest import (FakeJoint, FakeMatrix3D, FakeModelParameter, FakeMotionLink, FakeTimeline,
-                      FakeTimelineObject, MakeComp, PinSlotJointMotion, PlanarJointMotion,
+                      FakeTimelineObject, MakeComp, CylindricalJointMotion, PinSlotJointMotion, PlanarJointMotion,
                       RigidJointMotion, RevoluteJointMotion, SliderJointMotion, _MotionLimits,
                       _NamedCollection, install, load_tool, make_design, make_occurrence)
 from conftest import payload as _payload
@@ -167,6 +167,75 @@ def test_disabled_stored_opposite_is_not_an_enabled_rotation_bound(retained_rota
     out = _payload(jt.handler(joint_name="AB", max_deg=-20))
     assert out["changes"] == {"max_deg": -20}
     assert limits.isMinimumValueEnabled is False
+
+
+@pytest.mark.parametrize("motion,key,value,limits", [
+    ("slider", "max_mm", -10, "slideLimits"),
+    ("cylindrical", "max_mm", -10, "slideLimits"),
+    ("pin_slot", "max_mm", -10, "slideLimits"),
+    ("cylindrical", "max_deg", -20, "rotationLimits"),
+])
+def test_single_linear_or_cylindrical_bound_refuses_before_the_platform_moves_the_other(
+        monkeypatch, motion, key, value, limits):
+    cls = {"slider": SliderJointMotion, "cylindrical": CylindricalJointMotion,
+           "pin_slot": PinSlotJointMotion}[motion]
+    joint = _joint("AB", motion=cls())
+    axis_limits = _MotionLimits(minimum=-0.5 if key.endswith("mm") else math.radians(-10),
+                                maximum=0.5 if key.endswith("mm") else math.radians(10))
+    setattr(joint.jointMotion, limits, axis_limits)
+    _install_joints([joint])
+    res = jt.handler(joint_name="AB", **{key: value})
+    opposite = "min_mm" if key.endswith("mm") else "min_deg"
+    assert res["isError"] is True and f"{key}={value}" in res["message"]
+    assert f"{opposite}=-5.0" in res["message"] if key.endswith("mm") else f"{opposite}=-10.0" in res["message"]
+    assert "No edits applied" in res["message"]
+    assert _rolls(joint) == []
+    assert axis_limits.minimumValue == (-0.5 if key.endswith("mm") else math.radians(-10))
+    assert axis_limits.maximumValue == (0.5 if key.endswith("mm") else math.radians(10))
+
+
+@pytest.mark.parametrize("units,key,value,opposite,landed_cm", [
+    ("cm", "max_mm", -1, "min_mm=-0.5 cm", None),
+    ("in", "min_mm", 1, "max_mm=0.196850394 in", None),
+    ("cm", "max_mm", 0.6, None, 0.6),
+    ("in", "max_mm", 0.1, None, 0.254),
+])
+def test_retained_linear_bounds_compare_in_caller_units_and_allow_a_legal_bound(
+        monkeypatch, units, key, value, opposite, landed_cm):
+    joint = _joint("AB", motion=SliderJointMotion())
+    limits = _MotionLimits(minimum=-0.5, maximum=0.5)
+    monkeypatch.setattr(joint.jointMotion, "slideLimits", limits)
+    _install_joints([joint])
+
+    res = jt.handler(joint_name="AB", units=units, **{key: value})
+    if opposite is not None:
+        assert res["isError"] is True and opposite in res["message"]
+        assert "No edits applied" in res["message"] and _rolls(joint) == []
+        assert limits.minimumValue == -0.5 and limits.maximumValue == 0.5
+    else:
+        out = _payload(res)
+        assert out["changes"] == {key: value}
+        assert math.isclose(limits.maximumValue, landed_cm)
+        assert limits.minimumValue == -0.5
+
+
+@pytest.mark.parametrize("motion,key,value,limits", [
+    ("slider", "max_mm", 10, "slideLimits"),
+    ("cylindrical", "max_mm", 10, "slideLimits"),
+    ("pin_slot", "max_mm", 10, "slideLimits"),
+    ("cylindrical", "max_deg", 20, "rotationLimits"),
+])
+def test_nonconflicting_measured_single_bound_still_lands(monkeypatch, motion, key, value, limits):
+    cls = {"slider": SliderJointMotion, "cylindrical": CylindricalJointMotion,
+           "pin_slot": PinSlotJointMotion}[motion]
+    joint = _joint("AB", motion=cls())
+    axis_limits = _MotionLimits(minimum=-0.5 if key.endswith("mm") else math.radians(-10),
+                                maximum=0.5 if key.endswith("mm") else math.radians(10))
+    setattr(joint.jointMotion, limits, axis_limits)
+    _install_joints([joint])
+    out = _payload(jt.handler(joint_name="AB", **{key: value}))
+    assert out["changes"] == {key: value}
+    assert axis_limits.isMinimumValueEnabled is True
 
 
 # ── find / guards ────────────────────────────────────────────────────────────

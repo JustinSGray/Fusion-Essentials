@@ -61,6 +61,34 @@ def _joint_preflight_assembly(motion, limits):
     return check
 
 
+def _joint_limit_snapshot(name, motion, unit, lo, hi, key, baseline):
+    """Read the enabled bounds and placed-state bundle before and after a refused edit."""
+    limit_key = "rotation_limits_deg" if unit == "deg" else "slide_limits_mm"
+    def check(p):
+        row = next((j for j in (p.get("joints") or []) if j.get("name") == name), None)
+        limits = (row or {}).get(limit_key) or {}
+        poses = [{k: occ.get(k) for k in ("name", "origin", "x_axis", "y_axis", "z_axis",
+                                           "body_count", "bbox_center", "bbox_size")}
+                 for occ in p.get("occurrences") or []]
+        state = {"type": (row or {}).get("type"), "limits": limits,
+                 "value_now": (row or {}).get("value_now"), "frame": (row or {}).get("frame"),
+                 "rotation_axis": (row or {}).get("rotation_axis"),
+                 "slide_direction": (row or {}).get("slide_direction"), "poses": poses}
+        valid = (p.get("is_healthy") is True and state["type"] == motion
+                 and _near(limits.get("min"), lo, 1e-3) and _near(limits.get("max"), hi, 1e-3)
+                 and p.get("occurrences_truncated") is False
+                 and p.get("joints_truncated") is False
+                 and len(poses) == p.get("occurrence_count") and len(poses) >= 2
+                 and all(isinstance(occ.get("body_count"), int) and occ["body_count"] >= 0
+                         and (occ["body_count"] == 0 or occ.get("bbox_size")) for occ in poses))
+        prior = _RECALL.get(key)
+        valid = valid and (prior is None if baseline else prior is not None and state == prior)
+        if baseline and valid:
+            _RECALL[key] = state
+        return _measured(f"'{name}' keeps its {lo}/{hi} {unit} limits and placed state", state, valid)
+    return check
+
+
 def _joint_preflight_material(p):
     """Read the two independent 4x4x10 millimeter boxes' complete physical snapshot."""
     state = _retire_material_state(p)
@@ -1090,17 +1118,98 @@ _MOTION = (
     ("assembly_get", {}, _joint_is("JRig", "revolute"), None),
     ("joint_edit", {"joint_name": "JRig", "joint_type": "slider", "axis": "x"}, "ok", None),
     ("assembly_get", {}, _joint_is("JRig", "slider"), None),
+    ("joint_edit", {"joint_name": "JRig", "min_mm": -5, "max_mm": 5},
+     lambda p: p.get("changes") == {"min_mm": -5, "max_mm": 5}, None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "slider", "mm", -5, 5, "jrig_slider_limits", True), None),
+    ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                     "max_results": 2000},
+     _retire_compare("jrig_slider_limit_history", _retire_design_state, False), None),
+    ("joint_edit", {"joint_name": "JRig", "max_mm": -10},
+     _refused("max_mm=-10", "min_mm=-5", "No edits applied", "assembly_get"), None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "slider", "mm", -5, 5, "jrig_slider_limits", False), None),
+    ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                     "max_results": 2000},
+     _retire_compare("jrig_slider_limit_history", _retire_design_state, True), None),
+    ("joint_edit", {"joint_name": "JRig", "max_mm": -1, "units": "cm"},
+     _refused("max_mm=-1", "min_mm=-0.5 cm", "No edits applied", "assembly_get"), None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "slider", "mm", -5, 5, "jrig_slider_limits", False), None),
+    ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                     "max_results": 2000},
+     _retire_compare("jrig_slider_limit_history", _retire_design_state, True), None),
+    ("joint_edit", {"joint_name": "JRig", "min_mm": 1, "units": "in"},
+     _refused("min_mm=1", "max_mm=0.196850394 in", "No edits applied", "assembly_get"), None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "slider", "mm", -5, 5, "jrig_slider_limits", False), None),
+    ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                     "max_results": 2000},
+     _retire_compare("jrig_slider_limit_history", _retire_design_state, True), None),
+    ("joint_edit", {"joint_name": "JRig", "max_mm": 0.6, "units": "cm"},
+     lambda p: p.get("changes") == {"max_mm": 0.6}, None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "slider", "mm", -5, 6, "jrig_slider_cm_legal", True), None),
+    ("joint_edit", {"joint_name": "JRig", "max_mm": 5, "units": "mm"},
+     lambda p: p.get("changes") == {"max_mm": 5.0}, None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "slider", "mm", -5, 5, "jrig_slider_limits", False), None),
+    ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                     "max_results": 2000},
+     _retire_compare("jrig_slider_limit_history", _retire_design_state, True), None),
     ("joint_edit", {"joint_name": "JRig", "joint_type": "cylindrical", "axis": "z"}, "ok", None),
     ("assembly_get", {}, _joint_is("JRig", "cylindrical"), None),
+    ("joint_edit", {"joint_name": "JRig", "min_mm": -5, "max_mm": 5},
+     lambda p: p.get("changes") == {"min_mm": -5, "max_mm": 5}, None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "cylindrical", "mm", -5, 5, "jrig_cyl_slide_limits", True), None),
+    ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                     "max_results": 2000},
+     _retire_compare("jrig_cyl_slide_limit_history", _retire_design_state, False), None),
+    ("joint_edit", {"joint_name": "JRig", "max_mm": -10},
+     _refused("max_mm=-10", "min_mm=-5", "No edits applied", "assembly_get"), None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "cylindrical", "mm", -5, 5, "jrig_cyl_slide_limits", False), None),
+    ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                     "max_results": 2000},
+     _retire_compare("jrig_cyl_slide_limit_history", _retire_design_state, True), None),
+    ("joint_edit", {"joint_name": "JRig", "min_deg": -10, "max_deg": 10},
+     lambda p: p.get("changes") == {"min_deg": -10, "max_deg": 10}, None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "cylindrical", "deg", -10, 10, "jrig_cyl_rotation_limits", True), None),
+    ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                     "max_results": 2000},
+     _retire_compare("jrig_cyl_rotation_limit_history", _retire_design_state, False), None),
+    ("joint_edit", {"joint_name": "JRig", "max_deg": -20},
+     _refused("max_deg=-20", "min_deg=-10", "No edits applied", "assembly_get"), None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "cylindrical", "deg", -10, 10, "jrig_cyl_rotation_limits", False), None),
+    ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                     "max_results": 2000},
+     _retire_compare("jrig_cyl_rotation_limit_history", _retire_design_state, True), None),
     ("joint_edit", {"joint_name": "JRig", "joint_type": "planar", "axis": "z"}, "ok", None),
     ("assembly_get", {}, _joint_is("JRig", "planar"), None),
     ("joint_edit", {"joint_name": "JRig", "joint_type": "ball"}, "ok", None),
     ("assembly_get", {}, _joint_is("JRig", "ball"), None),
     # pin_slot alone takes TWO frame directions - it rotates about one and slides along another, so
     # the pair must differ.
-    ("joint_edit", {"joint_name": "JRig", "joint_type": "pin_slot", "axis": "z",
-                    "slide_axis": "y"}, "ok", None),
+    ("joint_edit", {"joint_name": "JRig", "joint_type": "pin_slot", "world_axis": "y",
+                    "slide_axis": "x"}, "ok", None),
     ("assembly_get", {}, _joint_is("JRig", "pin_slot"), None),
+    ("joint_edit", {"joint_name": "JRig", "min_mm": -5, "max_mm": 5},
+     lambda p: p.get("changes") == {"min_mm": -5, "max_mm": 5}, None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "pin_slot", "mm", -5, 5, "jrig_pin_slot_limits", True), None),
+    ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                     "max_results": 2000},
+     _retire_compare("jrig_pin_slot_limit_history", _retire_design_state, False), None),
+    ("joint_edit", {"joint_name": "JRig", "max_mm": -10},
+     _refused("max_mm=-10", "min_mm=-5", "No edits applied", "assembly_get"), None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "pin_slot", "mm", -5, 5, "jrig_pin_slot_limits", False), None),
+    ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                     "max_results": 2000},
+     _retire_compare("jrig_pin_slot_limit_history", _retire_design_state, True), None),
     ("joint_edit", {"joint_name": "JRig", "joint_type": "pin_slot", "axis": "y",
                     "slide_axis": "y"}, "refused", None),
     ("joint_edit", {"joint_name": "JRig", "joint_type": "rigid"}, "ok", None),

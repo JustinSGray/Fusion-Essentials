@@ -39,6 +39,7 @@ VISE_BASE = "ViseBase"         # the fixture bodies the setup is told about
 JAW_FIXED = "JawFixed"
 JAW_MOVING = "JawMoving"
 CAM_SETUP = "DemoSetup"        # the milling setup the job, the post and the template ride on
+_SUPPRESSED_EMPTY_SETUP = "SuppressedDisclosureEmpty"
 FLIP_SETUP = "FlipSetup"       # the second setup: the part turned over, machined from underneath
 FLIP_WCS = "FlipWCS"           # that setup's own origin, a Joint Origin at the part's own centre
 
@@ -763,6 +764,79 @@ def _setup_scope(setup, require_operations=False):
                          {"setup_count": p.get("setup_count"), "names": names,
                           "operation_setups": [r.get("setup") for r in (operations or [])]},
                          p.get("setup_count") == 1 and names == [setup] and scoped_ops)
+    return check
+
+
+def _empty_setup_scope(setup):
+    """Independently read one named setup with no operations."""
+    def check(p):
+        rows = p.get("setups") or []
+        row = next((r for r in rows if r.get("name") == setup), None)
+        return _measured(f"'{setup}' exists with no operations",
+                         {"setup_count": p.get("setup_count"), "row": row},
+                         p.get("setup_count") == 1 and row is not None
+                         and row.get("operation_count") == 0)
+    return check
+
+
+def _setup_absent(setup):
+    """Independently read that a temporary setup no longer exists."""
+    def check(p):
+        names = [r.get("name") for r in p.get("setups") or []]
+        return _measured(f"'{setup}' was removed from the CAM setup census",
+                         {"setup_count": p.get("setup_count"), "names": names},
+                         p.get("truncated") is False
+                         and isinstance(p.get("setup_count"), int)
+                         and len(names) == p.get("setup_count")
+                         and setup not in names)
+    return check
+
+
+def _manual_nc_valid_without_path(setup):
+    """Independently read a valid Manual NC row without a toolpath or empty-path warning."""
+    def check(p):
+        rec, rows = _setup_operation_rows(p, setup)
+        row = rows[0] if len(rows) == 1 else None
+        return _measured(f"'{setup}' holds one valid pathless Manual NC operation",
+                         {"row": row},
+                         bool(rec) and row is not None and bool(row.get("name"))
+                         and row.get("strategy") == "manual"
+                         and row.get("state") == "valid" and row.get("has_toolpath") is False
+                         and "empty_toolpath" not in row
+                         and "tool_unselected" not in (row.get("blocked_by") or []))
+    return check
+
+
+def _document_suppression_view(setup, include_suppressed=False):
+    """Check the document suppression route, tally and empty setup disclosure."""
+    checked = "per-setup fallback" if include_suppressed else "per-active-operation check"
+    tally = "all_operations" if include_suppressed else "active_operations"
+    suppressed = 1 if include_suppressed else 0
+    excluded = 0 if include_suppressed else 1
+    def check(p):
+        measured = p.get("measured") or {}
+        states = measured.get("states") or {}
+        empty_names = measured.get("empty_setups") or []
+        empty_paths = measured.get("empty_toolpaths") or []
+        total = states.get("total")
+        count_matches = (total == _RECALL.get("document_ops_active") + 1
+                         if include_suppressed else isinstance(total, int) and total > 0)
+        return _measured("document suppression read keeps the empty setup disclosure",
+                         {"passed": p.get("passed"), "checked": p.get("checked"),
+                          "states": states, "suppressed_excluded": measured.get("suppressed_excluded"),
+                          "empty_setups": empty_names,
+                          "empty_setups_excluded": measured.get("empty_setups_excluded"),
+                          "empty_toolpaths": empty_paths},
+                         isinstance(p.get("passed"), bool)
+                         and p.get("checked") == checked
+                         and count_matches
+                         and states.get("suppressed") == suppressed
+                         and measured.get("suppressed_excluded") == excluded
+                         and p.get("tolerance_used", {}).get("tally_counts") == tally
+                         and p.get("tolerance_used", {}).get("verdict_counts") == tally
+                         and measured.get("empty_setups_excluded") == 1
+                         and empty_names == [setup]
+                         and _RECALL.get("manual_template_op_name") not in empty_paths)
     return check
 
 
@@ -2664,6 +2738,15 @@ _CAM_DELIVER = [
      lambda p: p["deleted"] is True, None),
     ("cam_delete", lambda c: {"entity": _ctx_get(c, "adaptive_op", "the created adaptive op")},
      _op_deleted("adaptive_op"), None),
+    ("cam_create_setup", {"models": [PART_COMP], "name": _SUPPRESSED_EMPTY_SETUP},
+     lambda p: p.get("created") is True and p.get("setup_name") == _SUPPRESSED_EMPTY_SETUP
+     and p.get("operation_count") == 0, None),
+    ("cam_get", {"include": ["setups"], "setup": _SUPPRESSED_EMPTY_SETUP},
+     _empty_setup_scope(_SUPPRESSED_EMPTY_SETUP), None),
+    ("cam_get", {"include": ["operations"], "setup": "SetupManualTmpl"},
+     _manual_nc_valid_without_path("SetupManualTmpl"),
+     ("manual_template_op_name", _recall("manual_template_op_name", lambda p:
+         _setup_operation_rows(p, "SetupManualTmpl")[1][0]["name"]))),
     # SUPPRESSION, last of the job edits: the flag is a WRITE here, and it is what gives
     # include_suppressed's FILTERING its live reading. It sits after the post, the setup sheet and
     # the template because suppressing DISCARDS the operation's toolpath - here that costs no later
@@ -2698,9 +2781,17 @@ _CAM_DELIVER = [
      and p["measured"]["suppressed_excluded"] == 0
      and p["tolerance_used"]["verdict_counts"] == "all_operations"
      and p["passed"] is False, None),
+    ("cam_inspect_toolpaths", {}, _document_suppression_view(_SUPPRESSED_EMPTY_SETUP),
+     ("document_ops_active",
+      _recall("document_ops_active", lambda p: p["measured"]["states"]["total"]))),
+    ("cam_inspect_toolpaths", {"include_suppressed": True},
+     _document_suppression_view(_SUPPRESSED_EMPTY_SETUP, include_suppressed=True), None),
     ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "drill_op", "the drill op"),
                                       "suppressed": False},
      lambda p: p["is_suppressed"] is False, None),
+    ("cam_delete", {"entity": _SUPPRESSED_EMPTY_SETUP},
+     lambda p: p.get("deleted") is True and p.get("entity_type") == "setup", None),
+    ("cam_get", {"include": ["setups"]}, _setup_absent(_SUPPRESSED_EMPTY_SETUP), None),
     # A FAULTED operation suppressed: the face op is driven into the generator's own fault (a
     # bottom offset above its top), generated to it, then suppressed - and the readiness read and
     # the census both count it SUPPRESSED, not errored, although the platform keeps hasError and
