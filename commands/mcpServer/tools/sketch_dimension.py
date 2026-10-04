@@ -109,6 +109,28 @@ def _dim_point(sketch, entity, anchor):
     return _common.anchor_point(sketch, entity, anchor)
 
 
+_MID_ANCHORS = ("mid", "midpoint")
+
+
+def _retired_clause(sketch, minted, baseline):
+    """Delete the midpoint anchor points this entry made; the clause the sketch counts back."""
+    if not minted:
+        return ""
+    # A cleanup of the entry's own points: a delete that raises or declines is judged by the counts.
+    for point in minted:
+        safe(lambda p=point: p.deleteMe())
+    after = _sketch_batch.entry_counts(sketch)
+    stayed = [f"{k}=unknown" if None in (after[k], baseline[k])
+              else f"{k}={after[k] - baseline[k]:+d}" for k in ("points", "constraints")
+              if None in (after[k], baseline[k]) or after[k] != baseline[k]]
+    if not stayed:
+        return (" The midpoint anchor(s) it made were deleted: the point and constraint counts read "
+                "back as before the entry.")
+    return (f" Deleting the midpoint anchor(s) it made left {', '.join(stayed)} against the counts "
+            "before the entry; sketch_get(include_entities=true) lists them and "
+            "sketch_delete_entity removes one.")
+
+
 def _radial_text_point(curve):
     """A text-point for a radial/diameter dimension: a Point3D offset from the arc/circle CENTER
     along +X by one radius (sketch-local, z=0)."""
@@ -401,6 +423,11 @@ def _one(sketch, entry):
             _point, perr = _common.anchor_preflight(entity, anchor)
             if perr:
                 return None, f"{slot}: {perr}"
+    # A midpoint anchor MINTS a welded point; the points this entry minted are retired when its
+    # second anchor returns an error or its dimension add fails.
+    minted = []
+    baseline = (_sketch_batch.entry_counts(sketch)
+                if anchor1 in _MID_ANCHORS or anchor2 in _MID_ANCHORS else None)
     if dt in _DISTANCE_TYPES:
         if lone_line:
             p1 = safe(lambda: e1.startSketchPoint)
@@ -409,13 +436,16 @@ def _one(sketch, entry):
             p1, perr1 = _dim_point(sketch, e1, anchor1)
             if perr1:
                 return None, (f"entity_one: {perr1}")
+            minted += [p1] if anchor1 in _MID_ANCHORS else []
             p2, perr2 = _dim_point(sketch, e2, anchor2)
             if perr2:
-                return None, (f"entity_two: {perr2}")
+                return None, f"entity_two: {perr2}" + _retired_clause(sketch, minted, baseline)
+            minted += [p2] if anchor2 in _MID_ANCHORS else []
     elif dt == "point_to_surface":
         p1, perr1 = _dim_point(sketch, e1, anchor1)
         if perr1:
             return None, (f"entity_one: {perr1}")
+        minted += [p1] if anchor1 in _MID_ANCHORS else []
     # Where the referenced entities sit BEFORE the solve - the baseline the post-solve read-back
     # measures movement against; gap_before is what the dimension measures between them right now.
     pairs = _referenced_pairs((base1, e1), (base2, e2))
@@ -460,24 +490,28 @@ def _one(sketch, entry):
         else:  # line_to_surface
             dim = dims.addDistanceBetweenLineAndPlanarSurfaceDimension(e1, surf, is_driving)
     except Exception as e:
+        msg = None
         if dt in _SHARED_COORD and _OVER_CONSTRAINED in str(e).upper():
             one, two = ((entity_one, entity_two) if not lone_line
                         else (f"{entity_one}:start", f"{entity_one}:end"))
             clause = _shared_coordinate_clause(sketch, dt, [(f"'{two}'", p2), (f"'{one}'", p1)])
             if clause:
-                return None, f"Could not add the {dt} dimension: {e}.{clause}"
-        if dt in _SELF_NAMING_FAILURE:
-            return None, (f"Could not add the {dt} dimension: {e}")
-        if kinds1:
-            hint = (f"'{dt}' takes {_kinds_text(kinds1)} as entity_one"
-                    + (f" and {_kinds_text(kinds2)} as entity_two" if kinds2 else "")
-                    + (" plus a 'surface'" if dt in _SURFACE_TYPES else "") + ".")
-        else:
-            hint = ("Check the entity types match the dimension - radius/diameter need an "
-                    "arc/circle, angle needs two lines.")
-        return None, (f"Could not add the {dt} dimension: {e}. ({hint})")
+                msg = f"Could not add the {dt} dimension: {e}.{clause}"
+        if msg is None and dt in _SELF_NAMING_FAILURE:
+            msg = f"Could not add the {dt} dimension: {e}"
+        elif msg is None:
+            if kinds1:
+                hint = (f"'{dt}' takes {_kinds_text(kinds1)} as entity_one"
+                        + (f" and {_kinds_text(kinds2)} as entity_two" if kinds2 else "")
+                        + (" plus a 'surface'" if dt in _SURFACE_TYPES else "") + ".")
+            else:
+                hint = ("Check the entity types match the dimension - radius/diameter need an "
+                        "arc/circle, angle needs two lines.")
+            msg = f"Could not add the {dt} dimension: {e}. ({hint})"
+        return None, msg + _retired_clause(sketch, minted, baseline)
     if not dim:
-        return None, (f"Adding the {dt} dimension returned nothing.")
+        return None, (f"Adding the {dt} dimension returned nothing."
+                      + _retired_clause(sketch, minted, baseline))
 
     value_driven = False
     set_error = None

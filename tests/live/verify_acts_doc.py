@@ -912,6 +912,11 @@ for _bool_tool, _bool_args, _bool_path in [
         "overwrite": "false", "expect_document": _ctx_get(c, "story_doc", "the inactive story document")}, "overwrite"),
     ("form_create", lambda c: {"primitive": {"shape": "cylinder", "size": [10, 10], "spans": [8, 2],
         "capped": "false"}, "expect_document": _ctx_get(c, "story_doc", "the inactive story document")}, "primitive.capped"),
+    # Untyped objects reach the handler, whose own gate refuses the string before any write.
+    ("assembly_constrain", {"relationships": [{"snap_one": "Witness:1:top", "snap_two": "Witness:1:bottom",
+        "flip": "false"}]}, "relationships[0].flip"),
+    ("pmi_create", {"kind": "hole_note", "geometry": ["unresolved"], "flags": {"threaded": "false"}},
+     "flags.threaded"),
 ]:
     _BOOLEAN_FLAGS += [(_bool_tool, _bool_args,
         _refused("Invalid Boolean for " + repr(_bool_path), "'false'", "Use true or false."), None)]
@@ -1372,7 +1377,9 @@ _SMALL_EDITS = [
      ("small_edit_native_before", _recall("small_edit_native_before", lambda p: p))),
     ("appearance_set", {"target": "EditTarget:1", "color": "#00FF00",
                          "opacity": 35, "name": "ProbeGreen"},
-     _refused("reached NONE", "ProbeRed", "Component opacity", "ProbeGreen"), None),
+     _refused("reached NONE", "ProbeRed",
+              "Component opacity now reads", "(before this call: 1.0)",
+              "Occurrence appearance now reads {'name': 'ProbeGreen'"), None),
     ("design_get", {"include": ["appearances"], "name_filter": "ProbeGreen"},
      _small_edit_asset, None),
     ("sys_execute_script", {"script": _SMALL_EDIT_NATIVE, "read_only": True},

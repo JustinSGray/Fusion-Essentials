@@ -169,6 +169,47 @@ def test_disabled_stored_opposite_is_not_an_enabled_rotation_bound(retained_rota
     assert limits.isMinimumValueEnabled is False
 
 
+@pytest.mark.parametrize("cls,args,attr,minimum,opposite", [
+    (RevoluteJointMotion, {"joint_type": "revolute", "axis": "z", "max_deg": -20},
+     "rotationLimits", math.radians(-10), "min_deg=-10"),
+    (SliderJointMotion, {"joint_type": "slider", "axis": "x", "max_mm": -10},
+     "slideLimits", -0.5, "min_mm=-5"),
+])
+def test_a_motion_reset_with_one_crossing_bound_refuses_before_roll_or_setter(
+        cls, args, attr, minimum, opposite):
+    joint = _joint("AB", motion=cls())
+    limits = _MotionLimits(minimum=minimum, maximum=-minimum)
+    setattr(joint.jointMotion, attr, limits)
+    _install_joints([joint])
+    res = jt.handler(joint_name="AB", **args)
+    key = next(k for k in args if k.startswith("max_"))
+    assert res["isError"] is True and f"{key}={args[key]}" in res["message"]
+    assert opposite in res["message"] and "No edits applied" in res["message"]
+    assert _rolls(joint) == [] and joint._motion_calls == []
+    assert (limits.minimumValue, limits.maximumValue) == (minimum, -minimum)
+
+
+def test_a_retype_is_not_refused_over_a_limit_kind_the_current_motion_lacks(monkeypatch):
+    joint = _joint("AB", motion=RevoluteJointMotion(limits=_MotionLimits(
+        minimum=math.radians(-10), maximum=math.radians(10))))
+    _install_joints([joint])
+    slider = SliderJointMotion()
+    monkeypatch.setattr(jt, "_apply_motion", lambda j, *_a, **_k: (
+        setattr(j, "jointMotion", slider) or True, None))
+    out = _payload(jt.handler(joint_name="AB", joint_type="slider", axis="x", max_mm=5))
+    assert out["changes"]["max_mm"] == 5 and slider.slideLimits.maximumValue == 0.5
+
+
+@pytest.mark.parametrize("field", ["offset", "angle"])
+def test_a_missing_parameter_after_a_flip_names_the_flip_that_landed(field):
+    joint = _joint("AB", **{field: None})
+    _install_joints([joint])
+    res = jt.handler(joint_name="AB", flip=True, **{field: 5})
+    assert res["isError"] is True and f"no {field} parameter" in res["message"]
+    assert res["message"].endswith("Edits already applied before the failure: flipped=True.")
+    assert joint.isFlipped is True
+
+
 @pytest.mark.parametrize("motion,key,value,limits", [
     ("slider", "max_mm", -10, "slideLimits"),
     ("cylindrical", "max_mm", -10, "slideLimits"),

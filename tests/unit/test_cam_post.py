@@ -337,6 +337,60 @@ def _payload(result):
     return json.loads(result["content"][0]["text"])
 
 
+@pytest.fixture
+def failed_reused_post(monkeypatch, tmp_path):
+    old_setup, requested = _Setup("Old", [_Op("OldFace")]), _Setup("New", [_Op("NewFace")])
+    cam = _install(monkeypatch, _CAM([old_setup, requested], writes=False, existing=["JOB1"]))
+    program = cam.ncPrograms.itemByName("JOB1")
+    old_post = types.SimpleNamespace(description="Old post")
+    monkeypatch.setattr(program, "operations", [old_setup])
+    monkeypatch.setattr(program, "postConfiguration", old_post)
+    monkeypatch.setattr(program.parameters.itemByName(cp._P_FOLDER), "expression", "'" + tmp_path.as_posix() + "'")
+    monkeypatch.setattr(program.parameters.itemByName(cp._P_COMMENT), "expression", "'Old comment'")
+    monkeypatch.setattr(cp, "_post_log_errors", lambda *_: [])
+    return cam, program, old_setup, requested, old_post, _write_cps(tmp_path), tmp_path
+
+
+@pytest.fixture
+def reused_failure_exit(failed_reused_post, monkeypatch, request):
+    cam, program, old_setup, requested, old_post, cps, directory = failed_reused_post
+    case = request.param
+    folder = program.parameters.itemByName(cp._P_FOLDER)
+    unit = program.parameters.itemByName(cp._P_UNIT)
+    if case == "membership":
+        monkeypatch.setattr(type(program), "operations", property(
+            lambda self: self.__dict__["operations"],
+            lambda self, value: self.__dict__.__setitem__("operations", [])), raising=False)
+    elif case in ("folder", "units"):
+        get_param = program.parameters.itemByName
+        missing = cp._P_FOLDER if case == "folder" else cp._P_UNIT
+        monkeypatch.setattr(program.parameters, "itemByName",
+                            lambda name: None if name == missing else get_param(name))
+    elif case == "fail_mode":
+        monkeypatch.setattr(cp, "_refresh_generate_flat_scope",
+                            lambda *_: ({"flat_setups_regenerated": 1}, None))
+        monkeypatch.setattr(cp._export, "applied_pair", lambda *_: (None, False))
+    elif case == "post_exception":
+        def raised(_program):
+            raise RuntimeError("post kaboom")
+        monkeypatch.setattr(cam, "_do_post", raised)
+    elif case == "partial_file":
+        def partial(_program):
+            (directory / "changed" / "partial.nc").write_text("%\nG0 X0 Y0\n%\n")
+            return False
+        monkeypatch.setattr(cam, "_do_post", partial)
+    elif case in ("operations_exception", "post_config_exception"):
+        field = "operations" if case == "operations_exception" else "postConfiguration"
+        def raised_assignment(self, value):
+            if field == "operations":
+                self.__dict__[field] = value
+            raise RuntimeError("assignment kaboom")
+        monkeypatch.setattr(type(program), field, property(
+            lambda self: self.__dict__[field], raised_assignment), raising=False)
+    (directory / "changed").mkdir()
+    return case, failed_reused_post, folder, unit
+
+
 # -- guards --------------------------------------------------------------------
 
 class TestGuards:
@@ -1020,6 +1074,80 @@ class TestPostWritesFile:
         assert res["isError"] is True
         assert cam.ncPrograms.count == 1                    # still there
         assert cam.ncPrograms.itemByName("JOB1").deleted is False
+
+    def test_failed_reconfigure_names_retained_configuration(self, failed_reused_post):
+        cam, program, _old, requested, old_post, cps, directory = failed_reused_post
+        output = str(directory / "changed")
+        result = cp.handler(program_name="JOB1", scope="New", post=str(cps),
+                            output_folder=output, program_comment="Retained comment", overwrite=True)
+        assert result["isError"] is True and "usable NC file" in result["message"]
+        assert "Existing-program configuration edits remain" in result["message"]
+        assert "operations, post configuration, output folder" in result["message"]
+        assert "cam_get(include=['nc_programs'])" in result["message"]
+        assert cam.ncPrograms.itemByName("JOB1") is program and program.deleted is False
+        assert program.operations == [requested] and program.postConfiguration is not old_post
+        assert _unq(program.parameters.itemByName(cp._P_FOLDER).expression) == output.replace("\\", "/")
+        assert _unq(program.parameters.itemByName(cp._P_COMMENT).expression) == "Retained comment"
+
+    @pytest.mark.parametrize("reused_failure_exit", [
+        "membership", "folder", "units", "fail_mode", "post_exception", "partial_file",
+    ], indirect=True)
+    def test_reconfigure_failure_exits_disclose_retained_values(self, reused_failure_exit):
+        case, state, folder, unit = reused_failure_exit
+        cam, program, _old, requested, old_post, cps, directory = state
+        result = cp.handler(program_name="JOB1", scope="New", post=str(cps),
+                            output_folder=str(directory / "changed"),
+                            program_comment="Retained comment", overwrite=True,
+                            units="mm" if case == "units" else "document")
+        if case == "partial_file":
+            data = _payload(result)
+            assert data["partial"] is True and data["posted"] is False and data["file_count"] == 1
+            message = data["note"]
+        else:
+            assert result["isError"] is True
+            message = result["message"]
+            expected = {"membership": "ZERO operations", "folder": "no 'nc_program_output_folder'",
+                        "units": "no 'nc_program_unit'", "fail_mode": "fail-on-post behavior",
+                        "post_exception": "Post processing raised: post kaboom"}
+            assert expected[case] in message
+        assert "Existing-program configuration edits remain where applied" in message
+        assert "operations, post configuration, output folder or comment" in message
+        assert "cam_get(include=['nc_programs'])" in message
+        assert cam.ncPrograms.itemByName("JOB1") is program and program.deleted is False
+        assert program.operations == ([] if case == "membership" else [requested])
+        assert program.postConfiguration is not old_post
+        assert _unq(folder.expression) == (directory if case == "folder" else directory / "changed").as_posix()
+        assert _unq(program.parameters.itemByName(cp._P_COMMENT).expression) == "Retained comment"
+        assert unit.value.value == "$doc"
+
+    @pytest.mark.parametrize("reused_failure_exit", [
+        "operations_exception", "post_config_exception",
+    ], indirect=True)
+    def test_assignment_exception_discloses_only_possible_partial_reconfiguration(self, reused_failure_exit):
+        _case, state, folder, _unit = reused_failure_exit
+        cam, program, _old, requested, old_post, cps, directory = state
+        result = cp.handler(program_name="JOB1", scope="New", post=str(cps),
+                            output_folder=str(directory / "changed"),
+                            program_comment="Retained comment", overwrite=True)
+        assert result["isError"] is True and "assignment kaboom" in result["message"]
+        assert "Reconfiguration may be partial" in result["message"]
+        assert "Existing-program configuration edits remain where applied" in result["message"]
+        assert "cam_get(include=['nc_programs'])" in result["message"]
+        assert cam.ncPrograms.itemByName("JOB1") is program and program.deleted is False
+        assert program.operations == [requested] and program.postConfiguration is old_post
+        assert _unq(folder.expression) == directory.as_posix()
+        assert _unq(program.parameters.itemByName(cp._P_COMMENT).expression) == "Old comment"
+        assert cam.posted == []
+
+    def test_failed_as_is_post_does_not_claim_configuration_edits(self, failed_reused_post):
+        cam, program, old_setup, _requested, old_post, _cps, directory = failed_reused_post
+        result = cp.handler(program_name="JOB1")
+        assert result["isError"] is True and "usable NC file" in result["message"]
+        assert "configuration edits" not in result["message"]
+        assert cam.ncPrograms.itemByName("JOB1") is program and program.deleted is False
+        assert program.operations == [old_setup] and program.postConfiguration is old_post
+        assert _unq(program.parameters.itemByName(cp._P_FOLDER).expression) == directory.as_posix()
+        assert _unq(program.parameters.itemByName(cp._P_COMMENT).expression) == "Old comment"
 
     def test_missing_output_folder_param_is_error(self, monkeypatch, tmp_path):
         # Without nc_program_output_folder the file can't be aimed at out_dir - fail loudly, name it,

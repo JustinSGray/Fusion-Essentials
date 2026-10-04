@@ -4,9 +4,10 @@
 """Sweep and loft editing checks for model acts."""
 
 import math
+import re
 
 from verify_core import (
-    _RECALL, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _measured, _near, _num, _new_document, _prof, _recall, _refused, _revolved, _swept, _watch)
+    _RECALL, _Refusal, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _measured, _near, _num, _new_document, _prof, _recall, _refused, _revolved, _swept, _watch)
 
 
 
@@ -659,6 +660,27 @@ def _sweep_edit_modes_rows():
 _SWEEP_EDIT_MODES = _sweep_edit_modes_rows()
 
 
+class _FilletRadiusRefusal(_Refusal):
+    """Capture the numeric solved radius for comparison with an independent sketch read."""
+    def __init__(self, key):
+        super().__init__(("requested 20 mm", "REMAINS", "arc:0", "line:0", "line:1", "sketch_get"))
+        self.key = key
+
+    def missing(self, text):
+        _RECALL.pop(self.key, None)
+        missing = super().missing(text)
+        match = re.search(r"\bsolved (\S+) mm\b", text)
+        try:
+            radius = float(match[1]) if match else None
+        except ValueError:
+            radius = None
+        if radius is None or not math.isfinite(radius) or radius <= 0:
+            missing.append("finite positive solved radius in mm")
+        elif not missing:
+            _RECALL[self.key] = radius
+        return missing
+
+
 def _tangent_path_expected(p):
     """Derive tube volume and terminal point from the independently read, solved sketch."""
     entities = {e["id"]: e for e in p.get("entities") or []}
@@ -667,6 +689,10 @@ def _tangent_path_expected(p):
              and (p.get("counts") or {}).get("lines") == 2
              and (p.get("counts") or {}).get("arcs") == 1)
     _measured("filleted path has two solved lines and one arc", p.get("counts"), valid)
+    reported = _RECALL.get("tp_fillet_reported_radius")
+    _measured("reported fillet radius matches independent sketch read",
+              {"reported": reported, "radius": arc.get("radius")},
+              _num(reported) and _near(arc.get("radius"), reported, .001))
     points = [tuple(row[side][a] for a in ("x", "y"))
               for row in (first, last) for side in ("start", "end")]
     center = tuple(arc["center"][a] for a in ("x", "y"))
@@ -731,7 +757,7 @@ def _tangent_path_rows():
     write("sketch_edit_curve", {"sketch_name": "FilletPath", "action": "fillet",
                                 "entity_one": "line:0", "entity_two": "line:1", "radius": 20,
                                 "x1": 200, "y1": -30, "x2": 230, "y2": -36},
-          _refused("requested 20 mm", "solved", "REMAINS", "arc:0", "line:0", "line:1", "sketch_get"))
+          _FilletRadiusRefusal("tp_fillet_reported_radius"))
     rows.append(("sketch_get", {"sketch_name": "FilletPath", "include_entities": True},
                  lambda p: bool(_tangent_path_expected(p)),
                  ("tp_fillet_shape", _recall("tp_fillet_shape", _tangent_path_expected))))
@@ -1106,6 +1132,17 @@ def _later_refusal(sketch, row, feature, feature_row):
                     f"end_feature='{feature}@{feature_row}'), then retry. Nothing was edited.")
 
 
+class _RefusedWithout(_Refusal):
+    """A refusal carrying every fragment and none of `banned`."""
+
+    def __init__(self, fragments, banned):
+        super().__init__(fragments)
+        self.banned = banned
+
+    def missing(self, text):
+        return super().missing(text) + [f"absent {b!r}" for b in self.banned if b in text]
+
+
 def _timeline_names(p):
     """The timeline's row names in order, or None unless every row is listed and healthy."""
     t = p.get("timeline") or {}
@@ -1343,6 +1380,48 @@ def _later_operand_rows():
          lambda p: _measured("ungrouped profile independent material read",
                              (p.get("mass") or {}).get("volume"),
                              _near((p.get("mass") or {}).get("volume"), 0.72, .0002)))
+    # Two components each hold a sketch 'Twin' in its own collapsed group, the namesake's first:
+    # the refusal names the group holding the edited extrude's own profile sketch.
+    for part, size in (("A", 10), ("B", 12)):
+        write("model_create_component", {"name": f"Twin{part}", "activate": True}, _made_component)
+        for name, x, side in ((f"TwinPad{part}1", 940, 10), ("Twin", 960, size),
+                              (f"TwinPad{part}2", 980, 10)):
+            write("sketch_create", {"plane": "xy", "name": name})
+            write("sketch_add_geometry", {"sketch_name": name, "component": f"Twin{part}", "geometry": [
+                {"kind": "rectangle", "x1": x, "y1": 0, "x2": x + side, "y2": side}]})
+        if part == "B":
+            read("sketch_get", {"sketch_name": "Twin", "component": "TwinB"},
+                 lambda p: _measured("TwinB's own Twin profile", len(p.get("profiles") or []),
+                                     len(p.get("profiles") or []) == 1), _prof("lo_twin_profile"))
+            write("model_extrude", {"sketch_name": "TwinPadB1", "profile_index": 0, "distance": 5},
+                  _extruded, ("lo_twin_extrude", _recall("lo_twin_extrude", lambda p: p)))
+        write("design_edit_timeline", {"action": "group", "name": f"TwinGroup{part}",
+                                       "feature": f"TwinPad{part}1", "end_feature": f"TwinPad{part}2"},
+              lambda p, part=part: _measured("namesake sketch group", p, p.get("grouped") is True
+                                             and p.get("group") == f"TwinGroup{part}"
+                                             and p.get("member_count") == 3))
+        write("design_activate_component", {"occurrence": "root"})
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         lambda p: _measured("two namesake groups, A listed first", p.get("timeline"),
+                             list(((p.get("timeline") or {}).get("groups") or {}).items())
+                             == [("TwinGroupA", 3), ("TwinGroupB", 3)]),
+         ("lo_twin_rows", _recall("lo_twin_rows", lambda p: p["timeline"])))
+    read("model_inspect", {"target": "TwinB:1", "include": ["mass"], "units": "cm"},
+         lambda p: _measured("TwinB control material", (p.get("mass") or {}).get("volume"),
+                             _near((p.get("mass") or {}).get("volume"), .5, .0002)))
+    write("model_edit_extrude", lambda c: {
+        "feature": "TwinB/" + _ctx_get(c, "lo_twin_extrude", "twin extrusion")["feature"],
+        "action": "profile", "profile": _ctx_get(c, "lo_twin_profile", "TwinB Twin profile")},
+          _RefusedWithout(("'Twin' is inside the collapsed timeline group 'TwinGroupB'",
+                           "design_edit_timeline(action='ungroup', feature='TwinGroupB')",
+                           "timeline row does not read; nothing was edited"), ("TwinGroupA",)))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         lambda p: _measured("refused namesake profile edit preserves timeline", p.get("timeline"),
+                             p.get("timeline") == _RECALL.get("lo_twin_rows")))
+    read("model_inspect", {"target": "TwinB:1", "include": ["mass"], "units": "cm"},
+         lambda p: _measured("refused namesake profile edit preserves material",
+                             (p.get("mass") or {}).get("volume"),
+                             _near((p.get("mass") or {}).get("volume"), .5, .0002)))
     rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "lo_story", "story"),
                                          "expect_document": _ctx_get(c, "lo_doc", "later operand")},
               "ok", None),
@@ -1354,6 +1433,74 @@ def _later_operand_rows():
 
 
 _LATER_OPERAND = _later_operand_rows()
+
+
+def _later_operand_preflight_rows():
+    """Refuse later operands a reorder would not cure before any reorder advice; nothing moves."""
+    rows = [("doc_get", {}, _home_document, ("lp_story", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "lp_story", "story")},
+             _new_document, ("lp_doc", lambda p: p["document_handle"]))]
+
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: _combine_pin(c, "lp_doc", args), check, save))
+
+    def sketch(name, plane, geometry):
+        write("sketch_create", {"plane": plane, "name": name})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [geometry]})
+
+    sketch("Prof", "yz", {"kind": "circle", "cx": 0, "cy": 0, "radius": 5})
+    sketch("PathA", "xy", {"kind": "line", "x1": 0, "y1": 0, "x2": 100, "y2": 0})
+    write("model_sweep", {"profile": {"sketch": "Prof", "profile_index": 0},
+                          "path": "sketch:PathA", "operation": "new"}, _swept,
+          ("lp_body", lambda p: p["result_bodies"][0]))
+    for offset in (20, 40):
+        write("model_construction", {"kind": "plane", "plane": "xy", "offset": offset,
+                                     "name": f"PlaneZ{offset}"}, _datum_plane("xy"))
+    for name, plane, radius in (("S0", "xy", 10), ("S1", "PlaneZ20", 6), ("S2", "PlaneZ40", 10)):
+        sketch(name, plane, {"kind": "circle", "cx": 400, "cy": 0, "radius": radius})
+    write("model_loft", {"profiles": [{"sketch": s, "profile_index": 0} for s in ("S0", "S1", "S2")]},
+          _lofted)
+    # Drawn after both features: an open line in the root, and two closed circles in another part.
+    sketch("OpenLater", "yz", {"kind": "line", "x1": -5, "y1": 0, "x2": 5, "y2": 0})
+    write("model_create_component", {"name": "OtherPart", "activate": True}, _made_component)
+    sketch("OtherProf", "yz", {"kind": "circle", "cx": 0, "cy": 0, "radius": 4})
+    sketch("OtherS1", "xy", {"kind": "circle", "cx": 400, "cy": 0, "radius": 7})
+    write("design_activate_component", {"occurrence": "root"})
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 _timeline_reads("later-operand preflight baseline",
+                                 lambda names: "Sweep1" in names and names[-2:] == ["OtherProf", "OtherS1"]),
+                 ("lp_rows", _recall("lp_rows", _timeline_names))))
+    owner_mode = ("Editing 'Sweep1': Replacement profile must keep this Sweep's owner and "
+                  "solid/surface mode. Nothing was edited.")
+    write("model_edit_sweep", {"feature": "Sweep1", "action": "profile",
+                               "profile": {"sketch": "OpenLater", "profile_index": 0}},
+          _refused(owner_mode))
+    write("model_edit_sweep", {"feature": "Sweep1", "action": "profile", "component": "OtherPart",
+                               "profile": {"sketch": "OtherProf", "profile_index": 0}},
+          _refused(owner_mode))
+    write("model_edit_loft", {"feature": "Loft1", "action": "retarget", "section_index": 1,
+                              "component": "OtherPart",
+                              "profile": {"sketch": "OtherS1", "profile_index": 0}},
+          _refused("Editing 'Loft1': 'profile' is outside the Loft's owning component. "
+                   "Nothing was edited."))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                 _timeline_reads("the refusals moved no timeline row",
+                                 lambda names: names == _RECALL.get("lp_rows")), None))
+    rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "lp_body", "sweep body"),
+                                             "include": ["mass"], "units": "cm"},
+                 lambda p: _measured("the refusals left the sweep volume", (p.get("mass") or {}).get("volume"),
+                                     _near((p.get("mass") or {}).get("volume"), 7.853982, 0.0001)), None))
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "lp_story", "story"),
+                                         "expect_document": _ctx_get(c, "lp_doc", "later preflight")},
+              "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "lp_doc", "later preflight"),
+                                      "save_changes": False,
+                                      "expect_document": _ctx_get(c, "lp_story", "story")},
+              _document_closed, None)]
+    return rows
+
+
+_LATER_OPERAND += _later_operand_preflight_rows()
 
 
 def _loft_scoped_body(case, stage, role, expected, previous=None):

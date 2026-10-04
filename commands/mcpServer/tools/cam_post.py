@@ -790,6 +790,9 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
                      "ungenerated. Run cam_generate (in the Manufacture workspace) first. "
                      f"({live.get('readiness', '')})")
 
+    retained = (" Existing-program configuration edits remain where applied: operations, post configuration, "
+                "output folder or comment. Inspect cam_get(include=['nc_programs']) before retrying."
+                if reused and not as_is else "")
     if as_is:
         # Post the program exactly as stored: no configuration writes.
         program = existing
@@ -821,21 +824,20 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
                 program.postConfiguration = post_config
         except Exception as e:
             return error(f"Could not {'update' if reused else 'create'} the NC Program '{prog_name}': {e}. "
-                         f"(Post config: {post_label}.)")
+                         f"(Post config: {post_label}.)"
+                         + (" Reconfiguration may be partial." if reused else "") + retained)
 
         if program is None:
             return error(f"NC Program '{prog_name}' was not {'updated' if reused else 'created'} "
-                         "(the API returned null).")
+                         "(the API returned null)." + retained)
 
         # What the program's OWN operations read back as - the assignment is not taken on trust.
         membership, merr = _membership_facts(program, prog_name, requested_ops)
         if merr:
-            return error(merr + _rollback_program(cam, program, prog_name, reused))
+            return error(merr + retained + _rollback_program(cam, program, prog_name, reused))
 
         if units_key != "document" and (_P_UNIT in unresolved or unit_note):
             reason = (unit_note or f"The NC Program has no '{_P_UNIT}' parameter, so output units could not be set.")
-            retained = (" Existing-program configuration edits remain; inspect the program before retrying."
-                        if reused else "")
             return error(reason + retained + _rollback_program(cam, program, prog_name, reused))
 
         if unresolved and _P_FOLDER in unresolved:
@@ -843,7 +845,7 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
             # the file-landed gate below can't see it - fail loudly and name the missing parameter.
             return error(f"The NC Program has no '{_P_FOLDER}' parameter, so the output folder could not be "
                          f"set to '{out_dir}'. Unresolved parameters: {', '.join(unresolved)}."
-                         + _rollback_program(cam, program, prog_name, reused))
+                         + retained + _rollback_program(cam, program, prog_name, reused))
 
     program_number = safe(lambda: _stored_str_param(program.parameters, _P_NUMBER))
     post_log_key = program_number or prog_name
@@ -861,13 +863,13 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
             if landed is None:
                 return error("Flat paths were generated, but fail-on-post behavior did not read back; "
                              "no NC file was posted."
-                             + _rollback_program(cam, program, prog_name, reused))
+                             + retained + _rollback_program(cam, program, prog_name, reused))
         posted = program.postProcess(options)
     except Exception as e:
         # Do not leave a just-created program behind a failed post - and say which way that went.
         return error(f"Post processing raised: {e}. (Post config: {post_label}; check the post matches "
                      "the machine/operations.)"
-                     + _rollback_program(cam, program, prog_name, reused))
+                     + retained + _rollback_program(cam, program, prog_name, reused))
 
     # Honesty gate: postProcess returning true is NOT proof a file landed - diff the folder. A '.failed'
     # stub is a failure marker, NOT a deliverable - keep the two apart so a failed post never lists a
@@ -890,7 +892,7 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         log_errors = _post_log_errors(post_log_key, started)
         msg = (f"NC Program '{prog_name}' did not post a usable NC file to '{out_dir}' "
                f"(postProcess={bool(posted)}, failed_stub={bool(failed_markers)})."
-               + rolled + " ")
+               + rolled + retained + " ")
         if log_errors:
             msg += ("Post log: " + " | ".join(log_errors)
                     + _program_number_clause(log_errors, prog_name, program_number, reused))
@@ -952,7 +954,7 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
             result["failed_stubs"] = failed_markers
         reason = (" ".join(log_errors) if log_errors
                   else f"postProcess={bool(posted)}, program_error={program_error}")
-        result["note"] = (f"Post did not report clean success - review before running. {reason}")
+        result["note"] = (f"Post did not report clean success - review before running. {reason}" + retained)
         if log_errors:
             result["note"] += _program_number_clause(log_errors, prog_name, program_number, True)
         if program_number is None:

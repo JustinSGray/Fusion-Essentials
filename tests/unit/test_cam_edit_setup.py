@@ -218,6 +218,61 @@ class TestGuards:
 
 # ── set parameters (WCS / stock / anything) ─────────────────────────────────
 
+@pytest.fixture
+def setup_retention(monkeypatch):
+    def prepare(case="machine"):
+        target = _install(monkeypatch).setups.item(0)
+        if case == "setter":
+            _replace(target.parameters, _EnumRefusingSetupParam("wcs_origin_boxPoint", "'top center'"))
+        elif case == "collection":
+            monkeypatch.setattr(target, "models_stick", False)
+        elif case == "restore":
+            _replace(target.parameters, _ThirdValueSetupParam("stockZHigh", "0.0"))
+        return target
+    return prepare
+
+
+def _observed_setup(result):
+    assert result["isError"] is True
+    return json.loads(result["message"].split("Observed setup state: ", 1)[1].split(". Null fields", 1)[0])
+
+
+class TestRetainedSetupState:
+    def test_machine_resolution_refuses_before_changing_stock_mode(self, setup_retention):
+        target = setup_retention()
+        before = target.stockMode
+        result = ces.handler(setup="Setup1", stock_mode="fixed_cylinder", machine="Nope|X")
+        assert result["isError"] is True and "Nope|X" in result["message"]
+        assert target.stockMode == before
+
+    def test_setter_refusal_names_retained_stock_mode_and_completed_parameter(self, setup_retention):
+        setup_retention("setter")
+        result = ces.handler(setup="Setup1", stock_mode="fixed_cylinder",
+                             parameters={"stockZHigh": "1 mm", "wcs_origin_boxPoint": "invalid"})
+        state = _observed_setup(result)
+        assert state["before"]["stock_mode"] == "relative_box"
+        assert state["now"]["stock_mode"] == "fixed_cylinder"
+        assert state["now"]["parameters"] == {"stockZHigh": "1 mm", "wcs_origin_boxPoint": "'top center'"}
+        assert "Already applied: none" not in result["message"]
+        assert "Partial changes may remain." in result["message"]
+
+    def test_collection_refusal_keeps_parameter_and_mode_evidence(self, setup_retention):
+        setup_retention("collection")
+        result = ces.handler(setup="Setup1", stock_mode="fixed_cylinder",
+                             parameters={"stockZHigh": "1 mm"}, models=["Plate"])
+        state = _observed_setup(result)
+        assert state["now"]["stock_mode"] == "fixed_cylinder"
+        assert state["now"]["parameters"]["stockZHigh"] == "1 mm"
+        assert state["now"]["models_count"] == 0
+
+    def test_failed_restoration_is_not_reported_as_rolled_back(self, setup_retention):
+        setup_retention("restore")
+        result = ces.handler(setup="Setup1", parameters={"stockZHigh": "1 mm"})
+        assert "Parameter restoration is UNCONFIRMED for: stockZHigh" in result["message"]
+        assert "Rolled back all" not in result["message"]
+        assert _observed_setup(result)["now"]["parameters"]["stockZHigh"] == "999"
+
+
 class TestParameters:
     def test_sets_wcs_and_stock_params(self, monkeypatch):
         cam = _install(monkeypatch)
@@ -423,6 +478,7 @@ class TestParameterNoTake:
         res = ces.handler(setup="Setup1", parameters={"stockZHigh": "2.5"})
         assert res["isError"] is True
         assert "UNCONFIRMED" in res["message"] and "stockZHigh" in res["message"]
+        assert "Partial changes may remain." in res["message"]
         # and NOT worded as a no-take: no expression was read to say what it still holds
         assert "reads back" not in res["message"]
 
@@ -446,6 +502,8 @@ class TestParameterNoTake:
         assert res["isError"] is True
         assert sp.itemByName("wcs_origin_boxPoint").expression == "'top center'"   # rolled back
         assert "Rolled back all 2 parameter(s)" in res["message"]
+        assert "Observed setup fields match their pre-call values." in res["message"]
+        assert "Partial changes may remain." not in res["message"]
 
     def test_a_store_that_quotes_the_request_is_not_a_no_take(self, monkeypatch):
         # What the receipt measured is two-sided: a numeric parameter's expression reads back the

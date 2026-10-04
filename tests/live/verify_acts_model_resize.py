@@ -255,6 +255,10 @@ _RESIZE = [
      _refused("repeats placement", "BlockA:1"), None),
     ("assembly_inspect_interference", {"occurrences": ["NoSuch:1", "BlockA:1"]},
      _refused("no occurrence matching", "NoSuch:1"), None),
+    # EmptyA holds no solid body: beside the two separated blocks it is refused, not dropped.
+    ("assembly_inspect_interference", {"occurrences": ["EmptyA:1", "BlockA:1", "BlockB:1"]},
+     _refused("1 selected occurrence(s) hold no direct solid body", "EmptyA:1 (no child occurrence found)",
+              "Nothing was analysed."), None),
     ("assembly_inspect_interference", {"occurrences": ["BlockB:1", "Peg:1"], "max_results": 2},
      _interference_scope_clear, None),
     # An explicit list analyzes only these two placed bodies; the census is paged independently

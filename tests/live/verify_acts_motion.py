@@ -168,8 +168,10 @@ def _joint_preflight_rows():
     rows += [("assembly_get", assembly, _joint_preflight_assembly("revolute", {"min": -10, "max": 10}), None),
              ("design_get", history, _retire_compare("joint_preflight_limit_history", history_state, False), None)]
     held(True)
-    for field, value, opposite in (("max_deg", -20, "min_deg=-10"), ("min_deg", 20, "max_deg=10")):
-        write("joint_edit", {"joint_name": "AB", field: value},
+    # The same-axis motion re-set keeps the limits, so a single crossing bound beside it is refused too.
+    for motion, field, value, opposite in (({}, "max_deg", -20, "min_deg=-10"), ({}, "min_deg", 20, "max_deg=10"),
+                                           ({"joint_type": "revolute", "axis": "z"}, "max_deg", -20, "min_deg=-10")):
+        write("joint_edit", {"joint_name": "AB", **motion, field: value},
               _refused(field + "=" + str(value), opposite, "No edits applied", "assembly_get"))
         rows += [("assembly_get", assembly, _joint_preflight_assembly("revolute", {"min": -10, "max": 10}), None),
                  ("design_get", history, _retire_compare("joint_preflight_limit_history", history_state, True), None)]

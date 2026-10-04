@@ -15,8 +15,9 @@ MAP_BLURB = (
     "run_in_base_feature/base_feature_run_wrapper - a mutation in an always-finished "
     "base-feature scope; "
     "timeline_census/timeline_item_key/census_caveat - an edit census; "
-    "collapsed_group_hint/hidden_twin_hint - a grouped member's miss or hidden twin; "
-    "unfold_group_members - the bounded group-state member census; "
+    "collapsed_group_hint(_for)/hidden_twin_hint - a grouped member's miss (by name or entity) "
+    "or hidden twin; "
+    "unfold_group_members - the group-state census; "
     "no_timeline_reason")
 
 # A delete or suppress reply appends this when its before/after census could not be diffed.
@@ -87,13 +88,18 @@ def census_caveat(census):
             "them.")
 
 
+def _collapsed_groups(timeline):
+    """Yield (name, members) for each collapsed timeline group."""
+    for g in _common.iter_collection(safe(lambda: timeline.timelineGroups)):
+        if safe(lambda g=g: g.isCollapsed) is True:
+            yield safe(lambda g=g: g.name) or "(unnamed group)", list(_common.iter_collection(g))
+
+
 def collapsed_group_holding(timeline, want):
     """The collapsed group holding a member matched by the shared timeline selector, or None."""
-    for g in _common.iter_collection(safe(lambda: timeline.timelineGroups)):
-        if safe(lambda g=g: g.isCollapsed) is not True:
-            continue
-        if _inputs._match_timeline_objects(list(_common.iter_collection(g)), want):
-            return safe(lambda g=g: g.name) or "(unnamed group)"
+    for holder, members in _collapsed_groups(timeline):
+        if _inputs._match_timeline_objects(members, want):
+            return holder
     return None
 
 
@@ -110,6 +116,18 @@ def hidden_twin_hint(timeline, want, visible):
             f"design_edit_timeline(action='ungroup', feature='{holder}') and retry.")
 
 
+def _inside_group(label, holder):
+    """The sentence placing `label` (quoted by the caller) inside one collapsed group."""
+    return (f"{label} is inside the collapsed timeline group '{holder}', which the timeline lists "
+            "as one item.")
+
+
+def _ungroup_remedy(holder):
+    """The ungroup call that lists a collapsed group's members again."""
+    return (f" Run design_edit_timeline(action='ungroup', feature='{holder}') - its items "
+            "are kept - then retry.")
+
+
 def collapsed_group_hint(timeline, want, roll=False):
     """The miss sentence for a collapsed group's member (target the group for a roll, else ungroup)."""
     if not roll:
@@ -119,12 +137,38 @@ def collapsed_group_hint(timeline, want, roll=False):
     holder = collapsed_group_holding(timeline, want)
     if not holder:
         return None
-    head = (f"'{want}' is inside the collapsed timeline group '{holder}', which the timeline lists "
-            "as one item.")
     if roll:
-        return head + f" Target '{holder}' itself - rolling to a collapsed group works."
-    return head + (f" Run design_edit_timeline(action='ungroup', feature='{holder}') - its items "
-                   "are kept - then retry.")
+        return (_inside_group(f"'{want}'", holder)
+                + f" Target '{holder}' itself - rolling to a collapsed group works.")
+    return _inside_group(f"'{want}'", holder) + _ungroup_remedy(holder)
+
+
+def collapsed_group_hint_for(timeline, entity, name):
+    """The ungroup hint for the group holding `entity` by identity, else for each holding `name`."""
+    want = _common.native_identity(entity)
+    exact, unproven = [], []
+    for holder, members in _collapsed_groups(timeline):
+        keys = [_common.native_identity(safe(lambda m=m: m.entity)) for m in members]
+        named = _inputs._match_timeline_objects(members, name) if name else []
+        if want is not None and want in keys:
+            exact.append(holder)
+        elif any(want is None or key is None for m, key in zip(members, keys)
+                 if any(m is hit for hit in named)):
+            unproven.append(holder)
+    label = f"'{name}'" if name else "The item"
+    if len(exact) == 1:
+        return _inside_group(label, exact[0]) + _ungroup_remedy(exact[0])
+    holders = exact or unproven
+    if len(holders) == 1:
+        return (f"{label} names an item inside the collapsed timeline group '{holders[0]}', which "
+                "the timeline lists as one item." + _ungroup_remedy(holders[0]))
+    if not holders:
+        return None
+    listed = ", ".join(f"'{h}'" for h in holders)
+    return (f"{label} names an item in each of the collapsed timeline groups {listed}, and which "
+            "one holds it could not be told apart. design_get(include=['timeline'], "
+            "group='<name>') lists a group's members; run design_edit_timeline(action='ungroup', "
+            "feature='<name>') on the one holding it, then retry.")
 
 
 def unfold_group_members(group):

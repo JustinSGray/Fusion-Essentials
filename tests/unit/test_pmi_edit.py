@@ -671,6 +671,13 @@ class TestHoleCallouts:
             assert "action='set_flags'" in msg and "non-empty 'flags'" in msg
         assert not hasattr(hole, "isThrough")
 
+    def test_a_string_flag_value_is_refused_before_any_flag_is_set(self, hole):
+        msg = error_message(pe.handler(action="set_flags", annotation="Hole Note1",
+                                       flags={"through": True, "threaded": "false"}))
+        assert "Invalid Boolean for 'flags.threaded': 'false'. Use true or false." in msg
+        assert "No flag was set." in msg
+        assert not hasattr(hole, "isThrough") and not hasattr(hole, "isThreaded")
+
     def test_an_unknown_flag_is_refused(self, hole):
         assert "Unknown flag 'bogus'" in error_message(
             pe.handler(action="set_flags", annotation="Hole Note1", flags={"bogus": True}))

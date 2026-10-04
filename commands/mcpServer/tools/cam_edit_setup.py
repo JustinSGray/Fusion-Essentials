@@ -5,6 +5,8 @@
 model/fixture/stock body collections. Parameters are validated before any is applied, so a typo
 can't half-edit the setup."""
 
+import json
+
 import adsk.core
 import adsk.cam
 
@@ -229,6 +231,26 @@ def _bind_cad_param(setup, cad_param_name, entity):
     return (len(list(after)) if after else 0), None
 
 
+def _edit_state(target, parameters, collections, machine, wcs):
+    """Read the requested setup fields without turning unread values into unchanged state."""
+    names = list(dict.fromkeys(list(parameters) + [_WCS_BINDINGS[k][0] for k in wcs]))
+    state = {"setup": safe(lambda: target.name),
+             "stock_mode": stock_mode_name(safe(lambda: target.stockMode)),
+             "parameters": {name: safe(lambda name=name: target.parameters.itemByName(name).expression)
+                            for name in names}}
+    for arg in collections:
+        state[arg + "_count"] = safe(lambda arg=arg: getattr(target, _BODY_COLLECTIONS[arg][0]).count)
+    if "fixtures" in collections:
+        state["fixtures_enabled"] = read_flag(lambda: target.fixtureEnabled)
+    if machine:
+        state["machine"] = machine_label(safe(lambda: target.machine))
+        state["job_type"] = _job_type_reading(target)
+    if wcs:
+        state["wcs_bound_counts"] = {key: safe(lambda key=key: len(list(
+            target.parameters.itemByName(_WCS_BINDINGS[key][2]).value.value))) for key in wcs}
+    return state
+
+
 def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=None,
             machine: str = "", machine_strip_simulation: bool = False, wcs=None,
             rename: str = "", stock_mode: str = "") -> dict:
@@ -313,6 +335,26 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
         if werr:
             return error(werr)
 
+    resolved_machine = None
+    if want_machine:
+        m_obj, m_label, m_err = resolve_machine(want_machine)
+        if m_err:
+            return error(m_err)
+        resolved_machine = (m_obj, m_label)
+
+    before_state = _edit_state(target, wanted, resolved_bodies, want_machine, resolved_wcs)
+
+    def failed(message):
+        observed = {"before": before_state,
+                    "now": _edit_state(target, wanted, resolved_bodies, want_machine, resolved_wcs)}
+        unread = any(value is None for field in observed["now"].values()
+                     for value in (field.values() if isinstance(field, dict) else [field]))
+        outcome = ("Partial changes may remain." if before_state != observed["now"] or unread else
+                   "Observed setup fields match their pre-call values.")
+        return error(message + " " + outcome + " Observed setup state: "
+                     + json.dumps(observed) + ". Null fields are unread. Re-read with "
+                     "cam_get(include=['setups','parameters'], setup=...).")
+
     # stock_mode can UNLOCK another wanted parameter (job_continueMachining reads isEditable False
     # until 'previous_setup' lands) - applied and verified FIRST, so the lock check below sees the
     # post-mode state instead of forcing a caller into two calls.
@@ -332,10 +374,10 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
         try:
             target.stockMode = member
         except Exception as e:
-            return error(f"Could not set stock_mode='{want_stock_mode}' on setup '{setup}': {e}.")
+            return failed(f"Could not set stock_mode='{want_stock_mode}' on setup '{setup}': {e}.")
         applied_mode = stock_mode_name(safe(lambda: target.stockMode))
         if applied_mode != want_stock_mode:
-            return error(f"Stock mode did not take on setup '{setup}': set '{want_stock_mode}' but "
+            return failed(f"Stock mode did not take on setup '{setup}': set '{want_stock_mode}' but "
                          f"Setup.stockMode now reads '{applied_mode}'.")
         stock_mode_applied = {"stock_mode_set": applied_mode, "was_stock_mode": was_stock_mode}
 
@@ -354,14 +396,7 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
                      "cam_get(include=['parameters'], setup=...) marks each refusing row "
                      "editable false.")
 
-    resolved_machine = None
-    if want_machine:
-        m_obj, m_label, m_err = resolve_machine(want_machine)
-        if m_err:
-            return error(m_err)
-        resolved_machine = (m_obj, m_label)
-
-    # ── apply parameters first (before bodies/machine/wcs, so a rollback here leaves the setup as found) ──
+    # Parameters precede collections, machine assignment and WCS bindings.
     changed = []
     eval_failures = []
     no_takes = []
@@ -377,8 +412,7 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
         try:
             p.expression = written
         except Exception as e:
-            return error(f"Could not set '{name}' = '{expr}' on setup '{setup}': {e}. "
-                         f"(Already applied: {', '.join(c['name'] for c in changed) or 'none'}.)"
+            return failed(f"Could not set '{name}' = '{expr}' on setup '{setup}': {e}. "
                          + enumeration_remedy(str(e), written, _PARAM_READ))
         # Read the expression BACK for its evaluation state: the platform stores an unresolvable
         # expression silently (edited==true, .expression echoes the text) - only .error exposes it.
@@ -400,12 +434,16 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
             # shared codec rather than comparing bytes.
             no_takes.append((name, str(expr), after))
 
-    # A stored-but-unevaluated expression is a swallowed no-op the platform reports as success, and
-    # so is one reading back anything but what was written. Every parameter set here is rolled back
-    # to its prior expression, so the setup is left exactly as found.
+    # Failed expression verification attempts to restore each prior readable expression.
     if eval_failures or no_takes or unreadable:
         for rec in changed:
-            safe(lambda rec=rec: setattr(resolved_params[rec["name"]], "expression", rec["before"]))
+            if rec["before"] is not None:
+                try:
+                    resolved_params[rec["name"]].expression = rec["before"]
+                except Exception:
+                    pass
+        unconfirmed = [rec["name"] for rec in changed if rec["before"] is None or
+                       safe(lambda rec=rec: resolved_params[rec["name"]].expression) != rec["before"]]
         parts = []
         if eval_failures:
             detail = "; ".join(f"'{n}' = '{e}' ({why})" for n, e, why in eval_failures)
@@ -428,11 +466,9 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
                       "setup=...).)")
         else:
             remedy = "(Re-read the setup with cam_get(include=['parameters'], setup=...).)"
-        no_change = ("no change was applied." if not stock_mode_applied else
-                     f"'stock_mode' already landed on '{stock_mode_applied['stock_mode_set']}' and "
-                     "was not rolled back; no other parameter change was applied.")
-        return error(f"Setup '{setup}': {'; '.join(parts)}. Rolled back all "
-                     f"{len(changed)} parameter(s); {no_change} {remedy}")
+        restored = (f"Parameter restoration is UNCONFIRMED for: {', '.join(unconfirmed)}."
+                    if unconfirmed else f"Rolled back all {len(changed)} parameter(s).")
+        return failed(f"Setup '{setup}': {'; '.join(parts)}. {restored} {remedy}")
 
     result = {
         "edited": True,
@@ -455,23 +491,23 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
             try:
                 target.stockMode = adsk.cam.SetupStockModes.SolidStock
             except Exception as e:
-                return error(f"Could not switch setup '{setup}' to from-solid stock (SolidStock mode): {e}.")
+                return failed(f"Could not switch setup '{setup}' to from-solid stock (SolidStock mode): {e}.")
         elif arg == "fixtures":
             try:
                 target.fixtureEnabled = True
             except Exception as e:
-                return error(f"Could not enable fixtures on setup '{setup}': {e}.")
+                return failed(f"Could not enable fixtures on setup '{setup}': {e}.")
         coll = _object_collection()
         for b in bodies:
             coll.add(b)
         try:
             setattr(target, attr, coll)
         except Exception as e:
-            return error(f"Could not set {arg} on setup '{setup}': {e}.")
-        got = safe(lambda target=target, attr=attr: getattr(target, attr).count, 0) or 0
+            return failed(f"Could not set {arg} on setup '{setup}': {e}.")
+        got = safe(lambda target=target, attr=attr: getattr(target, attr).count)
         # Read the collection back: setting it and getting 0 is a swallowed no-op, not a success.
         if got != len(bodies):
-            return error(f"Set {arg} on setup '{setup}' but it reads back {got} bodies, not "
+            return failed(f"Set {arg} on setup '{setup}' but it reads back {got} bodies, not "
                          f"{len(bodies)} - the assignment did not take.")
         result[key] = got
 
@@ -485,7 +521,7 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
             try:
                 m_obj.clearSimulationModel()
             except Exception as e:
-                return error(f"Could not strip the simulation model from '{m_label}': {e}")
+                return failed(f"Could not strip the simulation model from '{m_label}': {e}")
             result["machine_simulation_stripped"] = True
         try:
             target.machine = m_obj                       # Setup.machine takes a transient copy
@@ -496,16 +532,16 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
                     "model - the spindle maximum and every axis range read back unchanged through "
                     "Setup.machine - or pick a simulation_ready=false machine from "
                     "cam_get(include=['machines']).")
-            return error(f"Could not assign machine '{want_machine}' to setup '{setup}': {e}.{hint}")
+            return failed(f"Could not assign machine '{want_machine}' to setup '{setup}': {e}.{hint}")
         # Read Setup.machine back to CONFIRM the assignment took - a swallowed no-op must not report ok.
         applied = machine_label(safe(lambda: target.machine))
         if not applied or applied != m_label:
-            return error(f"Machine assignment did not take on setup '{setup}': set '{m_label}' but the "
+            return failed(f"Machine assignment did not take on setup '{setup}': set '{m_label}' but the "
                          f"setup now reports '{applied}'.")
         result["machine_set"] = applied
         kept, jerr = _keep_job_type(target, job_before, applied)
         if jerr:
-            return error(jerr)
+            return failed(jerr)
         if kept is not None:
             # absent = the assignment left the setup's job type where it found it
             result["job_type_kept"] = kept
@@ -516,18 +552,18 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
             mode_param, mode_value, cad_param, _req = _WCS_BINDINGS[key]
             mp = safe(lambda mode_param=mode_param: target.parameters.itemByName(mode_param))
             if mp is None:
-                return error(f"Setup '{setup}' has no WCS mode parameter '{mode_param}'.")
+                return failed(f"Setup '{setup}' has no WCS mode parameter '{mode_param}'.")
             try:
                 mp.expression = mode_value        # e.g. wcs_origin_mode -> 'point'
             except Exception as e:
-                return error(f"Could not set WCS mode '{mode_param}={mode_value}' on setup '{setup}': {e}.")
+                return failed(f"Could not set WCS mode '{mode_param}={mode_value}' on setup '{setup}': {e}.")
             bound, berr = _bind_cad_param(target, cad_param, entity)
             if berr:
-                return error(f"wcs.{key}: {berr}")
+                return failed(f"wcs.{key}: {berr}")
             # Binding and reading 0 entities back is a swallowed no-op - a geometry-bound WCS with no
             # geometry is not what was asked for.
             if not bound:
-                return error(f"wcs.{key} bound no geometry - '{cad_param}' reads back empty after the "
+                return failed(f"wcs.{key} bound no geometry - '{cad_param}' reads back empty after the "
                              "set. The handle may not be a valid WCS reference for this setup.")
             wcs_set[key] = {"mode": safe(lambda mode_param=mode_param:
                                          target.parameters.itemByName(mode_param).value.value),
@@ -550,11 +586,11 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
         # An unread name settles NOTHING - neither the declined case nor the deduped one - and
         # publishing it would hand back 'None' as the setup's address.
         if final is None:
-            return error(f"Set the name of setup '{was}' to '{want_rename}' but Setup.name does "
+            return failed(f"Set the name of setup '{was}' to '{want_rename}' but Setup.name does "
                          "not read back, so the rename is UNCONFIRMED. Re-read it with cam_get. "
                          "Every other change in this call was applied and is NOT rolled back.")
         if final == was:
-            return error(f"Renaming setup '{was}' to '{want_rename}' did not take - Setup.name "
+            return failed(f"Renaming setup '{was}' to '{want_rename}' did not take - Setup.name "
                          f"still reads {final!r}. Every other change in this call was applied and "
                          "is NOT rolled back.")
         result["setup"] = final

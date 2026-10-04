@@ -1122,7 +1122,7 @@ def _setup_preflight_material(p):
 
 
 def _setup_preflight_rows():
-    """Refuse four mode-independent setup inputs without moving paired setups or source/witness state."""
+    """Check setup preflight conservation and the disclosed mode retained by a later enum refusal."""
     rows = [("doc_get", {}, _home_document, ("setup_preflight_home", _home_address))]
     rows += _retire_reads("setup_preflight_home", [PART_COMP + ":1", STOCK_COMP + ":1"], [])
     rows += [("doc_new", lambda c: {"expect_document": _ctx_get(c, "setup_preflight_home", "CAM story")},
@@ -1182,9 +1182,22 @@ def _setup_preflight_rows():
     for extra, offender in (({"rename": "SetupB"}, "SetupB"),
                             ({"parameters": {"NoSuchProbeParameter": "1 mm"}}, "NoSuchProbeParameter"),
                             ({"models": ["MissingProbeBody"]}, "MissingProbeBody"),
+                            ({"machine": "NoSuchProbeVendor|NoSuchProbeMachine"}, "NoSuchProbe"),
                             ({"wcs": {"bogus": True}}, "bogus")):
         write("cam_edit_setup", {"setup": "SetupA", "stock_mode": "fixed_cylinder", **extra}, _refused(offender))
         snapshot(True)
+    write("cam_edit_setup", {"setup": "SetupA", "stock_mode": "fixed_cylinder",
+                             "parameters": {"wcs_origin_boxPoint": "NoSuchProbeBoxPoint"}},
+          _refused("Invalid enumeration", "NoSuchProbeBoxPoint", "Observed setup state",
+                   '\"before\": {\"setup\": \"SetupA\", \"stock_mode\": \"fixed_box\"',
+                   '\"now\": {\"setup\": \"SetupA\", \"stock_mode\": \"fixed_cylinder\"'))
+    snapshot(True, "fixed_cylinder")
+    rows.append(("cam_get", {"include": ["parameters"], "setup": "SetupA",
+                             "parameter_names": list(_SETUP_PREFLIGHT_PARAMS)},
+                 _retire_compare("setup_preflight_SetupA_job_wcs",
+                                 lambda p: _setup_preflight_parameters(p, "SetupA", True), True), None))
+    mode_edit("fixed_box")
+    snapshot(True)
     mode_edit("fixed_cylinder")
     snapshot(True, "fixed_cylinder")
     mode_edit("fixed_box")
@@ -1236,8 +1249,20 @@ def _setup_preflight_rows():
           lambda p: p.get("setup") == "SetupB" and p.get("stock_mode_set") == "relative_box")
     rows.append(("cam_get", lambda c: unlock_read,
                  _retire_compare("setup_unlock_before", unlock_parameter, True), None))
-    write("cam_edit_setup", {"setup": "SetupB", "parameters": {"job_stockOffsetSides": "2 mm", "job_stockOffsetTop": "2 mm"}},
-          lambda p: p.get("setup") == "SetupB" and p.get("updated_count") == 2)
+    write("cam_edit_setup", {"setup": "SetupB", "parameters": {
+              "job_stockOffsetSides": "2 mm", "job_stockOffsetTop": "2 mm",
+              "wcs_origin_boxPoint": "NoSuchProbeBoxPoint"}},
+          _refused("Invalid enumeration", "NoSuchProbeBoxPoint", "Observed setup state",
+                   '\"job_stockOffsetSides\": \"2 mm\"', '\"job_stockOffsetTop\": \"2 mm\"'))
+    rows.append(("cam_get", {"include": ["parameters"], "setup": "SetupB",
+                             "parameter_names": ["job_stockOffsetSides", "job_stockOffsetTop"]},
+                 lambda p: _measured("earlier stock expressions remain after the later enum refusal",
+                     (p.get("parameters") or {}).get("requested_parameters"),
+                     (p.get("parameters") or {}).get("setup") == "SetupB"
+                     and (p.get("parameters") or {}).get("requested_parameter_count") == 2
+                     and sorted((r.get("name"), r.get("expression")) for r in
+                                (p.get("parameters") or {}).get("requested_parameters") or [])
+                     == [("job_stockOffsetSides", "2 mm"), ("job_stockOffsetTop", "2 mm")]), None))
     def stock_offset_effect(p):
         state = _setup_preflight_state(p, "fixed_box")
         before = _RECALL.get("setup_preflight_setups")
@@ -2623,10 +2648,15 @@ _CAM_DELIVER = [
     # independently set the number back and prove the same listing posts as-is.
     ("cam_set_nc_comment", {"program": "1001", "set_number": "C3_BAD_NUMBER"},
      _nc_numbered("1001", "1001", "C3_BAD_NUMBER"), None),
-    ("cam_post", {"program_name": "1001"},
+    ("cam_post", {"program_name": "1001", "scope": CAM_SETUP, "post": "haas", "post_scope": "local",
+                  "output_folder": EXPORT_DIR + "/nc", "program_comment": "Failed-post retained comment"},
      _refused("Program number", "is out of range", "cam_set_nc_comment(program='1001'",
-              "set_number='<number accepted by this post>'"), None),
+              "set_number='<number accepted by this post>'", "Existing-program configuration edits remain"), None),
     ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "C3_BAD_NUMBER"), None),
+    ("cam_set_nc_comment", {"program": "1001", "comment": "BRACKET sweep"},
+     lambda p: p.get("set") is True and p.get("programs_changed") == 1
+     and [(r.get("program"), r.get("comment_before"), r.get("comment_after")) for r in p.get("programs") or []]
+     == [("1001", "Failed-post retained comment", "BRACKET sweep")], None),
     ("cam_set_nc_comment", {"program": "1001", "set_number": "1001"},
      _nc_numbered("1001", "C3_BAD_NUMBER", "1001"), None),
     ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "1001"), None),
@@ -3690,10 +3720,15 @@ _CAM_FB_DELIVER = [
      _nc_numbered("1001", "1101", "1001"), None),
     ("cam_set_nc_comment", {"program": "1001", "set_number": "C3_BAD_NUMBER"},
      _nc_numbered("1001", "1001", "C3_BAD_NUMBER"), None),
-    ("cam_post", {"program_name": "1001"},
+    ("cam_post", {"program_name": "1001", "scope": "Setup1", "post": "haas", "post_scope": "local",
+                  "output_folder": EXPORT_DIR + "/nc", "program_comment": "Failed-post retained comment"},
      _refused("Program number", "is out of range", "cam_set_nc_comment(program='1001'",
-              "set_number='<number accepted by this post>'"), None),
+              "set_number='<number accepted by this post>'", "Existing-program configuration edits remain"), None),
     ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "C3_BAD_NUMBER"), None),
+    ("cam_set_nc_comment", {"program": "1001", "comment": "BRACKET sweep"},
+     lambda p: p.get("set") is True and p.get("programs_changed") == 1
+     and [(r.get("program"), r.get("comment_before"), r.get("comment_after")) for r in p.get("programs") or []]
+     == [("1001", "Failed-post retained comment", "BRACKET sweep")], None),
     ("cam_set_nc_comment", {"program": "1001", "set_number": "1001"},
      _nc_numbered("1001", "C3_BAD_NUMBER", "1001"), None),
     ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "1001"), None),
@@ -5215,51 +5250,147 @@ def _lookup_guarded(payload):
 
 
 def _lookup_library_args(_ctx):
-    """Probe capped names and seen exact URLs against native shipped libraries without writes."""
-    script = """import adsk.cam, json, sys
+    """Probe capped library names and exact URLs through public CAM handlers."""
+    script = """import adsk.core, adsk.cam, json, os, sys, uuid
 
 def run(context):
     ct = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools.cam_edit_tools'))
     cp = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools.cam_post'))
     cc = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools._cam_common'))
+    cam = adsk.cam.CAM.cast(adsk.core.Application.get().activeProduct)
+    assert cam is not None
     libraries = adsk.cam.CAMManager.get().libraryManager.toolLibraries
     root = libraries.urlByLocation(adsk.cam.LibraryLocations.Fusion360LibraryLocation)
     assets = list(libraries.childAssetURLs(root))
     assert len(assets) > 1
     asset = assets[0]
+    native_tool_lib = libraries.toolLibraryAtURL(asset)
+    native_tool_count = native_tool_lib.count
+    assert type(native_tool_count) is int and native_tool_count >= 0
+    native_first = native_tool_lib.item(0) if native_tool_count else None
+    native_description = cc.safe(
+        lambda: native_first.parameters.itemByName('tool_description').value.value)
+    native_diameter = cc.safe(
+        lambda: native_first.parameters.itemByName('tool_diameter').value.value)
+    def outcome(result):
+        text = (result.get('content') or [{}])[0].get('text', '')
+        try:
+            payload = json.loads(text)
+        except Exception:
+            payload = text
+        return {'is_error': result.get('isError'), 'payload': payload}
+    def state():
+        setups = []
+        target = None
+        for i in range(cam.setups.count):
+            setup = cam.setups.item(i)
+            operations = []
+            for j in range(setup.allOperations.count):
+                op = setup.allOperations.item(j)
+                op_name = cc.safe(lambda op=op: op.name)
+                operations.append(op_name)
+                if (setup.name == 'LookupGuardSetup'
+                        and op_name == 'LookupGuardOperation'):
+                    target = {'id': cc.safe(lambda op=op: op.operationId),
+                              'has_toolpath': cc.safe(lambda op=op: op.hasToolpath),
+                              'toolpath_valid': cc.safe(lambda op=op: op.isToolpathValid)}
+            setups.append({'name': cc.safe(lambda setup=setup: setup.name),
+                           'operations': operations})
+        nc_names = [cc.safe(lambda i=i: cam.ncPrograms.item(i).name)
+                    for i in range(cam.ncPrograms.count)]
+        return {'nc_program_count': cam.ncPrograms.count,
+                'nc_program_names': nc_names, 'target': target,
+                'tool_count': cam.documentToolLibrary.count, 'setups': setups}
     original = ct.library_assets
     post_cap = cp._POST_MAX_ASSETS['fusion']
     checks = {}
+    post_name = 'CodexLookupCap' + uuid.uuid4().hex[:10]
+    output_folder = os.path.join(OUTPUT_ROOT, post_name)
+    assert not os.path.exists(output_folder)
     try:
         ct.library_assets = lambda lib, url: cc.library_assets(lib, url, max_assets=1)
-        target, problem = ct._resolve_target('fusion', asset.leafName)
-        checks['tool_name_refused'] = target is None and 'was capped' in (problem or '')
-        target, exact_problem = ct._resolve_target('fusion', asset.toString())
-        checks['tool_exact_seen_url'] = target is not None and exact_problem is None
-        checks['tool_miss_unknown'] = 'absence is unknown' in (ct._resolve_target('fusion', 'SweepLookupMissing')[1] or '')
+        tool_before = outcome(ct.handler(action='list', scope='fusion', library=asset.toString()))
+        tool_refused = outcome(ct.handler(action='list', scope='fusion', library=asset.leafName))
+        tool_unknown = outcome(ct.handler(action='list', scope='fusion', library='SweepLookupMissing'))
+        tool_exact = outcome(ct.handler(action='list', scope='fusion', library=asset.toString()))
+        public_first = ((tool_before['payload'].get('tools') or [{}])[0]
+                        if isinstance(tool_before['payload'], dict) else {})
+        checks['tool_exact_baseline_read'] = (tool_before['is_error'] is False
+            and isinstance(tool_before['payload'], dict)
+            and tool_before['payload'].get('tool_count') == native_tool_count
+            and native_tool_count == len(tool_before['payload'].get('tools', []))
+            and (native_tool_count == 0 or (
+                public_first.get('index') == 0
+                and public_first.get('description') == native_description
+                and public_first.get('diameter_mm') == (
+                    round(native_diameter * 10.0, 4)
+                    if isinstance(native_diameter, (int, float)) else None))))
+        checks['tool_name_refused_by_public_handler'] = (tool_refused['is_error'] is True
+            and 'was capped' in str(tool_refused['payload']))
+        checks['tool_missing_name_unknown'] = (tool_unknown['is_error'] is True
+            and 'absence is unknown' in str(tool_unknown['payload']).lower())
+        checks['tool_exact_url_within_cap_window'] = (tool_exact['is_error'] is False
+            and tool_exact['payload'] == tool_before['payload'])
+
         posts = cp._post_library()
         post_root = posts.urlByLocation(adsk.cam.LibraryLocations.Fusion360LibraryLocation)
         post_assets = list(posts.childAssetURLs(post_root))
         assert len(post_assets) > 1
         post = post_assets[0]
         cp._POST_MAX_ASSETS['fusion'] = 1
-        config, _, problem = cp._resolve_library_post(post.leafName, 'fusion')
-        checks['post_name_refused'] = config is None and 'was capped' in (problem or '')
-        config, label, exact_problem = cp._resolve_library_post(post.toString(), 'fusion')
-        checks['post_exact_seen_url'] = config is not None and label == post.toString() and exact_problem is None
-        checks['post_miss_unknown'] = 'absence is unknown' in (cp._resolve_library_post('SweepLookupMissing', 'fusion')[2] or '')
+        before_post = state()
+        assert all(setup['name'] and all(setup['operations'])
+                   for setup in before_post['setups'])
+        guard_setups = [setup for setup in before_post['setups']
+                        if setup['name'] == 'LookupGuardSetup']
+        assert len(guard_setups) == 1
+        assert len(guard_setups[0]['operations']) == 1
+        guard_operation = before_post['target']
+        assert (guard_operation is not None and guard_operation['id'] is not None
+                and isinstance(guard_operation['has_toolpath'], bool)
+                and isinstance(guard_operation['toolpath_valid'], bool))
+        assert before_post['nc_program_count'] == 0 and before_post['nc_program_names'] == []
+        post_refused = outcome(cp.handler(scope='LookupGuardOperation', post=post.leafName,
+            post_scope='fusion', output_folder=output_folder, program_name=post_name))
+        after_name = state()
+        post_unknown = outcome(cp.handler(scope='LookupGuardOperation', post='SweepLookupMissing',
+            post_scope='fusion', output_folder=output_folder, program_name=post_name))
+        after_unknown = state()
+        exact_post = outcome(cp.handler(scope='LookupGuardOperation', post=post.toString(),
+            post_scope='fusion', output_folder=output_folder, program_name=post_name))
+        after_exact = state()
+        checks['post_name_refused_by_public_handler'] = (post_refused['is_error'] is True
+            and 'search was capped' in str(post_refused['payload']))
+        checks['post_name_refusal_no_program_or_output'] = (after_name == before_post
+            and not os.path.exists(output_folder))
+        checks['post_missing_name_unknown'] = (post_unknown['is_error'] is True
+            and 'absence is unknown' in str(post_unknown['payload']).lower()
+            and after_unknown == before_post)
+        checks['post_exact_url_within_cap_window_reached_readiness_guard'] = (exact_post['is_error'] is True
+            and 'No valid toolpaths to post' in str(exact_post['payload']))
+        checks['post_exact_readiness_refusal_no_program_or_output'] = (after_exact == before_post
+            and not os.path.exists(output_folder))
     finally:
         ct.library_assets = original
         cp._POST_MAX_ASSETS['fusion'] = post_cap
     checks['diagnostic_caps_restored'] = ct.library_assets is original and cp._POST_MAX_ASSETS['fusion'] == post_cap
-    print(json.dumps({'passed': all(checks.values()), 'checks': checks, 'diagnostic_asset_cap': 1, 'tool_url': asset.toString(), 'post_url': post.toString()}))
+    print(json.dumps({'passed': all(checks.values()), 'checks': checks,
+        'diagnostic_asset_cap': 1, 'tool_url': asset.toString(), 'post_url': post.toString(),
+        'tool_public_baseline': tool_before, 'tool_name_refusal': tool_refused,
+        'tool_missing_name': tool_unknown, 'tool_exact_recovery': tool_exact,
+        'post_name_refusal': post_refused, 'post_missing_name': post_unknown,
+        'post_exact_readiness': exact_post, 'post_before': before_post,
+        'post_after_name': after_name, 'post_after_unknown': after_unknown,
+        'post_after_exact': after_exact,
+        'post_exact_url_scope': 'within cap window only; readiness refusal, not successful posting'}))
 """
-    return {"script": script, "read_only": True}
+    script = script.replace("OUTPUT_ROOT", repr(EXPORT_DIR))
+    return {"script": script, "read_only": False}
 
 
 def _lookup_gui_args(correlation, unique=False):
     """Exercise one bundled GUI correlation on the owned operation and return native effects."""
-    script = """import adsk.core, adsk.cam, json, sys, uuid
+    script = """import adsk.core, adsk.cam, json, os, sys, types, uuid
 from types import SimpleNamespace
 from contextlib import redirect_stdout
 from io import StringIO
@@ -5273,17 +5404,59 @@ def run(context):
     op = setup.allOperations.item(0)
     assert op.name == 'LookupGuardOperation'
     command = next(m for n,m in sys.modules.items() if n.endswith('.commands.updateTools.entry'))
+    attestation = next((m for n,m in sys.modules.items()
+                        if n.endswith('.lib.loaded_attestation')), None)
+    loaded_codes = {
+        'remove_tip_keys': command.remove_tip_keys.__code__,
+        'replace_with_library_tool': command.replace_with_library_tool.__code__,
+        'get_tool': command.LibraryTool.get_tool.__code__,
+    }
+    source_path = os.path.normcase(os.path.realpath(command.__file__))
+    code_path = os.path.normcase(os.path.realpath(
+        loaded_codes['replace_with_library_tool'].co_filename))
+    with open(source_path, 'rb') as source_file:
+        compiled_source = compile(source_file.read(),
+                                  loaded_codes['replace_with_library_tool'].co_filename,
+                                  'exec', dont_inherit=True)
+    def nested_codes(code):
+        for constant in code.co_consts:
+            if isinstance(constant, types.CodeType):
+                yield constant
+                yield from nested_codes(constant)
+    source_codes = {code.co_name: code for code in nested_codes(compiled_source)
+                    if code.co_name in loaded_codes}
+    checks = {'loaded_matcher_matches_source': (
+        source_path == code_path and attestation is not None
+        and set(source_codes) == set(loaded_codes)
+        and all(attestation._code_digest(source_codes[name])
+                == attestation._code_digest(code)
+                for name, code in loaded_codes.items()))}
+    assert checks['loaded_matcher_matches_source'], 'Loaded Update Tools code differs from source'
     def state():
         return {'tool': json.loads(op.tool.toJson()), 'preset': {'name': op.toolPreset.name, 'id': op.toolPreset.id} if op.toolPreset else None, 'count': cam.documentToolLibrary.count}
     before = state()
     library = adsk.cam.ToolLibrary.createEmpty()
-    for diameter in DIAMETERS:
+    library_items = []
+    for index, diameter in enumerate(DIAMETERS):
         item = json.loads(json.dumps(before['tool']))
         item['guid'] = str(uuid.uuid4())
-        for key in ('DC', 'SFDM', 'shoulder-diameter', 'tip-diameter'):
-            item['geometry'][key] = diameter
+        if CORRELATION == 'Geometry':
+            if UNIQUE:
+                item['description'] = 'SweepGeometryUnique'
+                item['product-id'] = 'SweepGeometryUnique'
+            else:
+                item['description'] = f'SweepGeometryHolder{index}'
+                item['product-id'] = f'SweepGeometryProduct{index}'
+        else:
+            for key in ('DC', 'SFDM', 'shoulder-diameter', 'tip-diameter'):
+                item['geometry'][key] = diameter
         library.add(adsk.cam.Tool.createFromJson(json.dumps(item)))
+        library_items.append(json.loads(library.item(library.count - 1).toJson()))
     assert library.count == len(DIAMETERS)
+    def geometry_key(tool_json):
+        geometry = json.loads(json.dumps(tool_json['geometry']),
+                              parse_float=lambda value: round(float(value), 3))
+        return json.dumps(command.remove_tip_keys(geometry))
     original_ui = command.ui
     messages = []
     console = StringIO()
@@ -5294,16 +5467,30 @@ def run(context):
     finally:
         command.ui = original_ui
     after = state()
-    checks = {'ui_restored': command.ui is original_ui}
+    checks['ui_restored'] = command.ui is original_ui
     if UNIQUE:
-        checks['unique_tool_landed'] = after['tool']['geometry']['DC'] == DIAMETERS[0]
+        if CORRELATION == 'Geometry':
+            checks['unique_tool_landed'] = (
+                after['tool']['description'] == 'SweepGeometryUnique'
+                and after['tool']['product-id'] == 'SweepGeometryUnique'
+                and after['tool']['geometry'] == before['tool']['geometry'])
+        else:
+            checks['unique_tool_landed'] = after['tool']['geometry']['DC'] == DIAMETERS[0]
         checks['unique_document_entry'] = after['count'] == before['count'] + 1
         checks['unique_preset_preserved'] = after['preset'] == before['preset']
         checks['unique_no_notice'] = messages == []
     else:
-        checks['tool_preset_catalog_unchanged'] = after == before
+        checks['operation_and_document_tool_state_unchanged'] = after == before
         checks['ambiguity_named'] = 'ambiguous' in console.getvalue().lower() and CORRELATION in console.getvalue()
         checks['notice_present'] = len(messages) == 1 and 'could not be correlated' in messages[0]
+        if CORRELATION == 'Geometry':
+            checks['candidate_geometry_equal'] = (
+                len(library_items) == 2
+                and geometry_key(library_items[0]) == geometry_key(library_items[1])
+                and geometry_key(library_items[0]) == geometry_key(before['tool']))
+            checks['candidate_metadata_differs'] = (
+                library_items[0]['description'] != library_items[1]['description']
+                and library_items[0]['product-id'] != library_items[1]['product-id'])
     print(json.dumps({'passed': all(checks.values()), 'checks': checks, 'correlation': CORRELATION, 'unique': UNIQUE, 'before_diameter': before['tool']['geometry']['DC'], 'after_diameter': after['tool']['geometry']['DC'], 'before_count': before['count'], 'after_count': after['count'], 'preset': after['preset']}))
 """
     script = script.replace("DIAMETERS", repr((9,) if unique else (8, 12)))
@@ -5324,6 +5511,8 @@ _CAM_LOOKUP_GUARDS = [
     ("sys_execute_script", _lookup_library_args, _lookup_guarded, None),
     ("sys_execute_script", _lookup_gui_args("Description"), _lookup_guarded, None),
     ("sys_execute_script", _lookup_gui_args("Product ID"), _lookup_guarded, None),
+    ("sys_execute_script", _lookup_gui_args("Geometry"), _lookup_guarded, None),
+    ("sys_execute_script", _lookup_gui_args("Geometry", unique=True), _lookup_guarded, None),
     ("sys_execute_script", _lookup_gui_args("Description", unique=True), _lookup_guarded, None),
     ("cam_get", {"include": ["tool"], "operation": "LookupGuardOperation"},
      lambda p: _measured("unique GUI match independently reads 9 mm", p.get("tool") or {},

@@ -128,16 +128,18 @@ def _set_one_parameter(param, key, wanted, expression, unit_scale):
     return landed, None
 
 
-def _retained_limit_error(joint, joint_type, *, min_deg, max_deg, min_mm, max_mm, units="mm"):
-    """Refuse a single bound that crosses the enabled opposite bound already on the joint."""
+def _retained_limit_error(joint, joint_types, *, min_deg, max_deg, min_mm, max_mm, units="mm"):
+    """Refuse a single bound crossing an enabled opposite bound of a kind every type here carries."""
     checks = []
-    if joint_type in ("revolute", "cylindrical") and (min_deg is None) != (max_deg is None):
+    if (all(t in ("revolute", "cylindrical") for t in joint_types)
+            and (min_deg is None) != (max_deg is None)):
         checks.append(("rotationLimits", "max_deg" if min_deg is None else "min_deg",
                        max_deg if min_deg is None else min_deg,
                        "min_deg" if min_deg is None else "max_deg",
                        "isMinimumValueEnabled" if min_deg is None else "isMaximumValueEnabled",
                        "minimumValue" if min_deg is None else "maximumValue", _DEG_PER_RAD))
-    if joint_type in ("slider", "cylindrical", "pin_slot") and (min_mm is None) != (max_mm is None):
+    if (all(t in ("slider", "cylindrical", "pin_slot") for t in joint_types)
+            and (min_mm is None) != (max_mm is None)):
         cm_scale = _common.scale(units) or 0.1
         checks.append(("slideLimits", "max_mm" if min_mm is None else "min_mm",
                        max_mm if min_mm is None else min_mm,
@@ -217,13 +219,6 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
             "the joint with design_delete_feature(feature=...) and recreate the pair with "
             "joint_create for parameter-driven positioning.")
 
-    if not want_motion:
-        conflict = _retained_limit_error(
-            joint, _current_joint_type(joint), min_deg=min_deg, max_deg=max_deg,
-            min_mm=min_mm, max_mm=max_mm, units=units)
-        if conflict:
-            return error(conflict)
-
     # Validate motion type up front (before touching the timeline). With only a direction given,
     # the joint's CURRENT motion type is what gets re-applied at it.
     jtype = (joint_type or "").strip().lower()
@@ -242,6 +237,14 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
                      "the direction given here would be dropped rather than set. Drop axis/"
                      "world_axis, or name an axis-based joint_type (revolute, slider, cylindrical, "
                      "planar, pin_slot).")
+
+    # A same-axis motion re-set keeps the enabled limits (measured), so a motion edit is checked
+    # too: against the limits the joint holds now, of the kinds its current and new type share.
+    held = _current_joint_type(joint)
+    conflict = _retained_limit_error(joint, {held, jtype or held}, min_deg=min_deg,
+                                     max_deg=max_deg, min_mm=min_mm, max_mm=max_mm, units=units)
+    if conflict:
+        return error(conflict)
 
     # An omitted axis KEEPS the direction the joint is already aimed at, read off its own motion -
     # re-aiming a joint nobody asked to re-aim also drops the rotation limits it carried.

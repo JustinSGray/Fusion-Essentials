@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import adsk.fusion
 import pytest
 
-from conftest import (FakeTimeline, Sketch, SketchCurves, _NamedCollection, error_message,
+from conftest import (FakeTimeline, Profile, Sketch, SketchCurves, _NamedCollection, error_message,
                       load_tool, payload)
 
 
@@ -178,6 +178,63 @@ def test_a_guided_sweep_mode_refusal_precedes_later_operand_advice(rig, monkeypa
     assert "guide or solid-tool definition" in text
     assert "Move it first" not in text
     assert (len(rolls), sweep.assignments, timeline.markerPosition) == (1, 0, 3)
+
+
+_OWNER_MODE = ("Editing 'Sweep1': Replacement profile must keep this Sweep's owner and "
+               "solid/surface mode. Nothing was edited.")
+
+
+@pytest.mark.parametrize("action,refusal", [
+    ("profile", _OWNER_MODE),
+    ("path", "Editing 'Sweep1': 'path' has a member outside the Sweep's owning component. "
+             "Nothing was edited.")])
+def test_a_later_operand_from_another_component_gets_the_owner_refusal_not_reorder_advice(
+        rig, monkeypatch, action, refusal):
+    sweep, timeline = rig
+    other = SimpleNamespace(name="Other")
+    later = Sketch(name="PathLater", timeline_object=SimpleNamespace(index=11), parent_component=other)
+    line = SimpleNamespace(entityToken="later-line", parentSketch=later, isValid=True)
+    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(line), "p", None))
+    monkeypatch.setattr(mod._sweep_common, "resolve_profile", lambda *_args: (
+        line, True, False, other, None, None))
+    monkeypatch.setattr(mod._common, "same_component", lambda a, b: a is b)
+    monkeypatch.setattr(mod, "_operand_error", _real_operand_error)
+    result = mod.handler(feature="Sweep1", action=action, **{action: "PathLater"})
+    assert error_message(result) == refusal
+    assert (sweep.assignments, timeline.markerPosition) == (0, 3)
+
+
+@pytest.mark.parametrize("solid", [True, False])
+def test_a_later_open_profile_gets_the_mode_refusal_only_for_a_solid_sweep(rig, monkeypatch, solid):
+    sweep, timeline = rig
+    later = Sketch(name="OpenLater", timeline_object=SimpleNamespace(index=11),
+                   parent_component=sweep.parentComponent)
+    curve = SimpleNamespace(entityToken="open-curve", parentSketch=later, isValid=True)
+    monkeypatch.setattr(mod._sweep_common, "resolve_profile", lambda *_args: (
+        Profile(parent_sketch=None), False, True, sweep.parentComponent, later, None))
+    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(curve), "p", None))
+    monkeypatch.setattr(mod, "_operand_error", _real_operand_error)
+    rigged = mod._definition
+    monkeypatch.setattr(mod, "_definition", lambda entity: {**rigged(entity), "is_solid": solid})
+    text = error_message(mod.handler(feature="Sweep1", action="profile",
+                                     profile={"sketch": "OpenLater", "profile_index": 0}))
+    assert (text == _OWNER_MODE) is solid and ("Move it first" in text) is not solid
+    assert (sweep.assignments, timeline.markerPosition) == (0, 3)
+
+
+def test_a_later_profile_invalid_at_the_current_marker_gets_no_reorder_advice(rig, monkeypatch):
+    sweep, timeline = rig
+    later = Sketch(name="PathLater", timeline_object=SimpleNamespace(index=11),
+                   parent_component=sweep.parentComponent)
+    line = SimpleNamespace(entityToken="later-line", parentSketch=later, isValid=False)
+    monkeypatch.setattr(mod._sweep_common, "resolve_profile", lambda *_args: (
+        line, True, False, sweep.parentComponent, None, None))
+    monkeypatch.setattr(mod, "_operand_error", _real_operand_error)
+    text = error_message(mod.handler(feature="Sweep1", action="profile", profile="PathLater"))
+    assert text == ("Editing 'Sweep1': 'profile' has an invalid member at the current marker. "
+                    "Nothing was edited.")
+    assert "Move it first" not in text
+    assert (sweep.assignments, timeline.markerPosition) == (0, 3)
 
 
 @pytest.mark.parametrize("row,refused", [(0, False), (1, True)])

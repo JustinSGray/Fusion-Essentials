@@ -277,7 +277,7 @@ def _file_record(folder_path, complete=True):
 
 
 def _capped_name_move_probe(ctx):
-    """Build a read-only native probe for capped name lookup and exact-URN control."""
+    """Build a native probe for capped name lookup and exact-URN control."""
     file_name = _ctx_get(ctx, "cloud_file_name", "the uploaded file")
     file_id = _ctx_get(ctx, "cloud_file", "the uploaded file")
     project_id = _ctx_get(ctx, "data_root_summary", "the configured project")["project_id"]
@@ -349,7 +349,7 @@ def run(context):
         'capped_by_name': outcome(refused), 'injected_project_error': outcome(project_error),
         'exact_urn': outcome(exact)}}))
 '''
-    return {"script": script, "read_only": True}
+    return {"script": script, "read_only": False}
 
 
 def _capped_name_move_result(stdout):

@@ -601,6 +601,21 @@ def _install_mp(monkeypatch, root, existing_appearances=(ap._BASE_NAME,), tokens
     return design, apps
 
 
+@pytest.fixture
+def retained_occurrence_appearance(monkeypatch):
+    comp = MakeComp("Wheel", bodies=[FakeBody("Kept", inherited_opacity=0.3499999940395355)])
+    monkeypatch.setattr(comp, "opacity", 1.0, raising=False)
+    kept = FakeBody("Kept")
+    occ = FanoutOcc("Wheel:1", bodies=[kept], component=comp, keeps_override=["Kept"])
+    monkeypatch.setattr(occ, "appearance", None)
+    kept.appearance.appearanceProperties.itemByName("opaque_albedo").value = FakeColor(255, 0, 0)
+    _design, apps = _install_mp(monkeypatch, _root(occurrences=[occ]))
+    monkeypatch.setattr(ap.adsk.core.Color, "create",
+                        staticmethod(lambda r, g, b, o: FakeColor(r, g, b, o)))
+    monkeypatch.setattr(ap._TARGET, "resolve", lambda raw: ((occ, "occurrence"), None))
+    return comp, occ, apps
+
+
 class TestOccurrenceFanout:
     """An occurrence write is NOT one assignment: it fans onto the bodies, and the occurrence's own
     read-back agrees with what was set even for bodies it never reached. The payload publishes the
@@ -671,18 +686,17 @@ class TestOccurrenceFanout:
         assert "Document appearance count is" in res["message"]
         assert "Occurrence appearance" in res["message"]
 
-    def test_occurrence_failure_after_opacity_discloses_retained_writes(self, monkeypatch):
-        comp = MakeComp("Wheel", bodies=[FakeBody("Kept", inherited_opacity=0.35)])
-        kept = FakeBody("Kept")
-        occ = FanoutOcc("Wheel:1", bodies=[kept], component=comp, keeps_override=["Kept"])
-        kept.appearance.appearanceProperties.itemByName("opaque_albedo").value = FakeColor(255, 0, 0)
-        design, apps = _install_mp(monkeypatch, _root(occurrences=[occ]))
-        monkeypatch.setattr(ap.adsk.core.Color, "create",
-                            staticmethod(lambda r, g, b, o: FakeColor(r, g, b, o)))
-        _resolve_to(occ, "occurrence")
+    def test_occurrence_failure_after_opacity_discloses_retained_writes(self, retained_occurrence_appearance):
+        comp, occ, apps = retained_occurrence_appearance
+        assert comp.opacity == 1.0 and occ.appearance is None
         result = ap.handler(target="Wheel:1", color="#1E8E3E", opacity=35)
         assert result["isError"] is True and comp.opacity == 0.35
-        assert "Component opacity now reads 0.35" in result["message"]
+        opacity_clause = result["message"].split("Component opacity now reads ", 1)[1]
+        assert float(opacity_clause.split(" ", 1)[0]) == pytest.approx(0.35, abs=1e-6)
+        assert "(before this call: 1.0)" in opacity_clause
+        assert "Occurrence appearance now reads {'name': 'AgentColor_1E8E3E'" in result["message"]
+        assert "Component opacity still reads" not in result["message"]
+        assert "Occurrence appearance still reads" not in result["message"]
         assert "'name': 'AgentColor_1E8E3E'" in result["message"]
         assert "'color_rgb': [30, 142, 62]" in result["message"]
         assert "'id': 'asset:" in result["message"]

@@ -70,6 +70,9 @@ def handler(kind=None, geometry=None, text="", name="", text_point=None, leader_
     kind_v, kerr = _KIND.resolve(kind)
     if kerr:
         return error(kerr)
+    flag_err = _pmi.hole_flags_error(flags) if kind_v == "hole_note" and flags is not None else None
+    if flag_err:
+        return error(flag_err + " No annotation was created.")
     ents, gerr = _GEOMETRY.resolve(geometry)
     if gerr:
         return error(gerr)

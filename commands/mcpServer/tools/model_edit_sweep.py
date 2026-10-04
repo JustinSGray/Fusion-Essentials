@@ -26,6 +26,7 @@ _FEATURE = _inputs.FeatureRef("feature", required=True)
 _ACTION = _inputs.Choice("action", ("profile", "path"), required=True)
 _SPEC = [_FEATURE, _ACTION]
 _UNREAD = object()
+_KEEP_OWNER_MODE = "Replacement profile must keep this Sweep's owner and solid/surface mode."
 
 
 def _profile_members(profile):
@@ -93,13 +94,22 @@ def _addresses(operand):
 
 
 def _later_refusal(design, owner, label, index, action, raw, component):
-    """The later-operand refusal for the replacement as it resolves at the current marker."""
+    """(reorder advice, refusal a move would not cure, open profile) at the current marker."""
+    open_profile = host = None
     if action == "path":
         operand, _label, refusal = _common.build_path(owner, raw)
     else:
-        operand, _solid, _open, _host, _sketch, refusal = _sweep_common.resolve_profile(
+        operand, _solid, open_profile, host, sketch, refusal = _sweep_common.resolve_profile(
             design, owner, raw, False, component)
-    return None if refusal else later_operand_refusal(label, index, _members(operand))
+        # An open Profile has no parentSketch; its source curves carry timeline provenance.
+        if not refusal and open_profile:
+            operand, _label, refusal = _common.build_path(host, f"sketch:{sketch.name}")
+    advice = None if refusal else later_operand_refusal(label, index, _members(operand))
+    if advice is None:
+        return None, None, False
+    if action == "profile" and _common.same_component(host, owner) is not True:
+        return advice, _KEEP_OWNER_MODE, open_profile
+    return advice, safe(lambda: _operand_error(operand, action, owner, None)), open_profile
 
 
 def _members_text(addresses):
@@ -203,7 +213,7 @@ def _operand_owner(entity):
 
 
 def _operand_error(operand, action, component, index):
-    """A refusal for a future, foreign or invalid replacement operand, or None."""
+    """A refusal for a future, foreign or invalid operand, or None; index None skips row checks."""
     if action == "profile" and safe(lambda: operand.objectType) == "adsk::fusion::Path":
         members = [safe(lambda i=i: operand.item(i).entity)
                    for i in range(counted(lambda: operand.count) or 0)]
@@ -219,6 +229,10 @@ def _operand_error(operand, action, component, index):
         owner, row = _operand_owner(member)
         if _common.same_component(owner, component) is not True:
             return f"'{action}' has a member outside the Sweep's owning component."
+        if index is None:
+            if safe(lambda m=member: m.isValid) is not True:
+                return f"'{action}' has an invalid member at the current marker."
+            continue
         if (row is None and safe(lambda m=member: m.parentSketch) is not None) or (
                 row is not None and row >= index):
             return f"'{action}' has a member at row {row}; every source must precede Sweep row {index}."
@@ -303,7 +317,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         return error(f"'{label}' has unreadable timeline identity; nothing was edited.")
     if marker <= index:
         return error(f"'{label}' is after marker {marker}; roll after it with design_edit_timeline.")
-    pending_later_refusal = _later_refusal(
+    pending_later_refusal, later_blocker, later_open = _later_refusal(
         design, component_owner, label, index, action, raw[action], component)
     linked_before = _inactive_link_count(entity, index)
     if linked_before is None:
@@ -345,23 +359,28 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
                               adsk.fusion.FeatureOperations.IntersectFeatureOperation)
         if operation not in allowed_operations:
             raise ValueError("This Sweep operation is outside model_sweep's editable operation set.")
-        if pending_later_refusal:
-            timeline.markerPosition = marker
-            if counted(lambda: timeline.markerPosition) != marker:
-                raise RuntimeError("The timeline marker could not be restored after the read-only preflight.")
-            return error(pending_later_refusal)
         participants = _participants(entity, operation)
         if participants is None:
             raise ValueError("Current boolean participants are empty or unreadable; their material scope cannot be retained.")
         participants_before = {_common.native_identity(body) for body in participants}
         participant_names = [safe(lambda b=body: b.name) for body in participants]
+        if pending_later_refusal:
+            # Every refusal a reorder would not cure comes first: the advice is a lasting change.
+            if later_blocker:
+                raise ValueError(later_blocker)
+            if later_open and definition_before["is_solid"]:
+                raise ValueError(_KEEP_OWNER_MODE)
+            timeline.markerPosition = marker
+            if counted(lambda: timeline.markerPosition) != marker:
+                raise RuntimeError("The timeline marker could not be restored after the read-only preflight.")
+            return error(pending_later_refusal)
         if action == "profile":
             operand, solid, open_profile, host, source_sketch, refusal = _sweep_common.resolve_profile(
                 design, component_owner, profile, not definition_before["is_solid"], component)
             if refusal:
                 raise ValueError(refusal)
             if _common.same_component(host, component_owner) is not True or solid != definition_before["is_solid"]:
-                raise ValueError("Replacement profile must keep this Sweep's owner and solid/surface mode.")
+                raise ValueError(_KEEP_OWNER_MODE)
             checked_operand = operand
             if open_profile:
                 source_name = safe(lambda: source_sketch.name)

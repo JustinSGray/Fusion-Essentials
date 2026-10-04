@@ -10,6 +10,7 @@ from conftest import FakeTimeline, Sketch, _NamedCollection, error_message, load
 
 mod = load_tool("model_edit_loft")
 _real_target_error = mod._target_error
+_real_operand_error = mod._operand_error
 
 
 class Timeline(FakeTimeline):
@@ -125,6 +126,39 @@ def test_a_later_interior_profile_gets_reorder_advice_after_mode_checks(rig, mon
         "first with design_edit_timeline(action='reorder', feature='S1Later@14', to='before', "
         "end_feature='Loft1@2'), then retry. Nothing was edited.")
     assert (rolls, loft.assignments, timeline.markerPosition) == ([True], 0, 5)
+
+
+def test_a_later_profile_from_another_component_gets_the_owner_refusal_not_reorder_advice(
+        rig, monkeypatch):
+    loft, timeline = rig
+    later = Sketch(name="S1Later", timeline_object=SimpleNamespace(index=14),
+                   parent_component=SimpleNamespace(name="Other"))
+    foreign = SimpleNamespace(objectType=adsk.fusion.Profile.classType(), parentSketch=later,
+                              isValid=True)
+    monkeypatch.setattr(mod._inputs.ProfileRef, "resolve", lambda _self, _raw, _scope: (foreign, None))
+    monkeypatch.setattr(mod, "_operand_error", _real_operand_error)
+    result = mod.handler(feature="Loft1", action="retarget", section_index=1,
+                         profile={"sketch": "S1Later", "profile_index": 0}, component="Other")
+    assert error_message(result) == ("Editing 'Loft1': 'profile' is outside the Loft's owning "
+                                     "component. Nothing was edited.")
+    assert (loft.assignments, timeline.markerPosition) == (0, 5)
+    assert tuple(section.entity for section in loft.sections) == ("A", "B", "C")
+
+
+def test_a_later_profile_invalid_at_the_current_marker_gets_no_reorder_advice(rig, monkeypatch):
+    loft, timeline = rig
+    later = Sketch(name="S1Later", timeline_object=SimpleNamespace(index=14),
+                   parent_component=loft.parentComponent)
+    stale = SimpleNamespace(objectType=adsk.fusion.Profile.classType(), parentSketch=later,
+                            isValid=False)
+    monkeypatch.setattr(mod._inputs.ProfileRef, "resolve", lambda _self, _raw, _scope: (stale, None))
+    monkeypatch.setattr(mod, "_operand_error", _real_operand_error)
+    text = error_message(mod.handler(feature="Loft1", action="retarget", section_index=1,
+                                     profile={"sketch": "S1Later", "profile_index": 0}))
+    assert text == ("Editing 'Loft1': 'profile' is invalid at the current marker. "
+                    "Nothing was edited.")
+    assert "Move it first" not in text
+    assert (loft.assignments, timeline.markerPosition) == (0, 5)
 
 
 def test_endpoint_zero_refuses_before_later_operand_reorder_advice(rig, monkeypatch):

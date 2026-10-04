@@ -328,6 +328,12 @@ _DENYLIST = {
     "timeline_item_key": ("_design_common", "def"),
     # The ONE no-timeline refusal text every no-timeline call site shares.
     "no_timeline_reason": ("_design_common", "def"),
+    # The ONE identity-told collapsed-group hint; a name-only copy names the first namesake's group.
+    "collapsed_group_hint_for": ("_design_common", "def"),
+    # The ONE hole-flag gate pmi_create and pmi_edit both refuse on before any write.
+    "hole_flags_error": ("_pmi", "def"),
+    # The ONE four-count sketch census a failed entry and its anchor cleanup are judged by.
+    "entry_counts": ("_sketch_batch", "def"),
     # The ONE seam read - a second copy is how two tools call the same seam smooth and sharp.
     "edge_angles": ("_continuity", "def"),
     "body_seams": ("_continuity", "def"),

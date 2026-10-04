@@ -388,6 +388,37 @@ class TestBodylessCensus:
         assert out["measured"]["occurrences_checked"] == 2
         assert out["measured"]["interference_count"] == 1
 
+    def _frame_and_bolt(self, world):
+        rail, post, bolt, washer = (_solid(n, (0, 0, 0), (2, 2, 2))
+                                    for n in ("Rail", "Post", "Bolt", "Washer"))
+        kids = [_occ("Frame:1+Rail:1", bodies=[rail]), _occ("Frame:1+Post+Cap:1", bodies=[post])]
+        return world([_occ("Frame:1", children=kids), *kids, _occ("Bolt:1", bodies=[bolt, washer])],
+                     pair_volumes={})
+
+    def test_a_selected_container_is_refused_naming_its_children_before_any_analysis(self, world):
+        des = self._frame_and_bolt(world)
+        res = ai.handler(occurrences=["Frame:1", "Bolt:1"])
+        assert res["isError"] is True
+        assert ("1 selected occurrence(s) hold no direct solid body, so the analysis would leave "
+                "them out: Frame:1 (child occurrences: Frame:1+Rail:1, Frame:1+Post+Cap:1)"
+                ) in res["message"]
+        assert "Nothing was analysed." in res["message"] and des.calls == []
+
+    def test_a_selected_occurrence_whose_bodies_do_not_read_is_not_called_bodyless(self, world):
+        a, b = _solid("A", (0, 0, 0), (1, 1, 1)), _solid("B", (100, 0, 0), (101, 1, 1))
+        unread = _occ("Unread:1")
+        unread.bRepBodies = _NamedCollection(raises="body count unread")
+        world([unread, _occ("A:1", bodies=[a]), _occ("B:1", bodies=[b])], pair_volumes={})
+        res = ai.handler(occurrences=["Unread:1", "A:1", "B:1"])
+        assert res["isError"] is True and "hold no direct solid body" not in res["message"]
+        assert "solid-body collections or solid flags did not read" in res["message"]
+
+    def test_a_selected_child_holding_bodies_is_analysed(self, world):
+        des = self._frame_and_bolt(world)
+        out = payload(ai.handler(occurrences=["Frame:1+Rail:1", "Bolt:1"]))
+        assert out["passed"] is True and out["measured"]["occurrences_checked"] == 2
+        assert len(des.calls) == 3
+
 
 class TestInterferenceHandler:
     def test_reports_pairs_by_occurrence_with_volume(self, world):

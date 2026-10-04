@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 700
+**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 701
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -147,6 +147,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - No relationships to constrain. Provide 'relationships' or snap_one/snap_two.
 - Assembly constraint failed:
 - ] needs both 'snap_one' and 'snap_two'.
+- Invalid Boolean for 'relationships[
+- . Use true or false. Nothing was constrained.
 - Provide 'relationships' or 'snap_one'/'snap_two' ('<occurrence>:<snap>') for autonomous geometry, OR select ONE entity on each occurrence in Fusion first then call again. (Got
 - selected; need exactly 2 in requested order.)
 - Could not read the two selected entities. Re-select and try again.
@@ -332,6 +334,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - placed-body pair(s) WERE analysed and none interfere; no pass was formed over this scope.
 - Cannot check interference: at least one selected solid-body collection or isSolid flag did not read, so the analysis set is unknown. Re-read the selected bodies before retrying; no verdict was formed.
 - Interference analysis failed:
+- Cannot check interference:  selected occurrence(s) hold no direct solid body, so the analysis would leave them out: . Pass the child occurrences that hold the bodies instead, or remove these from '...
 - Cannot check interference: this scope exposes  comparable solid bod ( occurrence(s),  root-level solid body(ies)), and interference needs at least two solid bodies. No verdict was formed - this is ...
 - occurrence(s) hold an unresolved external reference () - their component could not be read, so they carry no geometry this analysis could compare
 - Cannot certify interference-free: .  placed-body pair(s) WERE analysed and none interfere; no pass was formed over this scope.
@@ -642,6 +645,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Nothing to do. Provide 'parameters' {name: expression}, 'models'/'fixtures'/'stock' body lists, a 'machine', a 'stock_mode', a 'wcs' binding, and/or 'rename'.
 - ' has no parameter(s):
 - . (Read the setup's parameter names first; only existing ones are settable.)
+- . Null fields are unread. Re-read with cam_get(include=['setups','parameters'], setup=...).
+- Observed setup state:
 - A setup exposes many parameters it takes no write to; set one it does - cam_get(include=['parameters'], setup=...) marks each refusing row editable false.
 - ' does not accept a write to:
 - (isEditable reads False on each).
@@ -650,25 +655,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - This Fusion build's SetupStockModes carries no '
 - ' member, so 'stock_mode=
 - ' cannot be assigned. Pick another mode.
-- Stock mode did not take on setup '
-- ' but Setup.stockMode now reads '
-- - the assignment did not take.
-- Machine assignment did not take on setup '
-- ' but the setup now reports '
-- Could not set stock_mode='
-- Could not assign machine '
-- ' has no WCS mode parameter '
-- bound no geometry - '
-- ' reads back empty after the set. The handle may not be a valid WCS reference for this setup.
-- Set the name of setup '
-- ' but Setup.name does not read back, so the rename is UNCONFIRMED. Re-read it with cam_get. Every other change in this call was applied and is NOT rolled back.
-- ' did not take - Setup.name still reads
-- . Every other change in this call was applied and is NOT rolled back.
-- Could not switch setup '
-- ' to from-solid stock (SolidStock mode):
-- Could not strip the simulation model from '
-- Could not set WCS mode '
-- Could not enable fixtures on setup '
 - Machine '' landed on setup '' and moved its job_type to '' (Setup.operationType ); putting it back did not take. Set it with cam_edit_setup(parameters={'job_type': ""}), or assign a machine of this...
 - 'wcs' must be an object like {'origin': <handle-or-JO>, 'z_axis': <handle>} - a find_geometry handle or a Joint Origin per axis you want to bind.
 - wcs.: a Joint Origin can bind the WCS ORIGIN only - the platform rejects one as an axis. Bind z_axis/x_axis to a face (its normal) or a straight edge via a find_geometry handle; to center a WCS on ...
@@ -883,6 +869,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ; check the post matches the machine/operations.)
 - Omit 'scope' to post the whole document.
 - ' stored operations could not be enumerated; no flat refresh or post was attempted.
+- Reconfiguration may be partial.
 - Flat paths were generated, but fail-on-post behavior did not read back; no NC file was posted.
 - Post config not found for ''. Tried: . Provide a full .cps path, or a post name in the personal () or installed () post folder. post_scope=fusion resolves the same name against the posts this insta...
 - Cannot resolve  post '' by name: the search was capped, so uniqueness or absence is unknown. Pass an exact post asset url from this library, or retry a complete listing.
@@ -902,6 +889,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - NC Program '' already exists, but its stored operations cannot be compared with what 'scope' resolves to:  stored and  requested operation(s) have no readable operationId, so whether reconfiguring ...
 - NC Program '' already exists and its stored operations differ from what 'scope' resolves to - reconfiguring would overwrite a program that may be machinist-curated. Omit 'scope', 'setups', 'post', ...
 - No valid toolpaths to post - every operation is out-of-date, errored, or ungenerated. Run cam_generate (in the Manufacture workspace) first. ()
+- Existing-program configuration edits remain where applied: operations, post configuration, output folder or comment. Inspect cam_get(include=['nc_programs']) before retrying.
 - Program '' posted AS-IS from its stored configuration -  file(s), nothing reconfigured. 'readiness' carries its health.
 
 ### `cam_reorder`
@@ -3814,6 +3802,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `pmi_create`
 - Verify placement visually with view_screenshot; read all PMI with pmi_get.
 - No active design. Create or open a document first (see doc_new).
+- No annotation was created.
 - '. Use mm, cm, or in.
 - 'flags'/'values'/'display' apply to kind='hole_note' only.
 - 'plane'/'plane_face'/'leader_point' apply to kind='note' only - a hole note derives its plane and leader from the hole faces.
@@ -4263,6 +4252,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Drive it later by name via param_set.
 - The wedge dimensioned is the one FACING THE SKETCH ORIGIN (the dimension's text point sits at the origin, and the dimensioned wedge is the one containing it) - a value near 180 minus the angle want...
 - A second line that is NOT parallel to the first is ROTATED parallel by this dimension: the constraint MOVES geometry rather than refusing, so re-read sketch_get to confirm the shape is still what w...
+- Deleting the midpoint anchor(s) it made left  against the counts before the entry; sketch_get(include_entities=true) lists them and sketch_delete_entity removes one.
 - The solver moved , but satisfying this dimension demanded only  mm of change ( mm measured before it, driven to  mm) - a move far beyond that is what a dimension attached to the UNINTENDED entity l...
 - already stand(s) at the same  ( mm) as . If one of them is already dimensioned in , tie the two with sketch_constrain '' instead of a second , or move one point off that  first.
 - When present, 'solved' is each REFERENCED entity's geometry read back after the solve, with the distance it moved (moved_mm) getting there; geometry the solve moved elsewhere in the sketch is not c...

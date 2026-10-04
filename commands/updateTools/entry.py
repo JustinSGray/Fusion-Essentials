@@ -165,7 +165,7 @@ def replace_with_library_tool(operations: List[adsk.cam.Operation], library: Too
     # Iterate through each operation in the setup and replace the tool with the library tool
     library_tool_description: Dict[str, List[int]] = {}
     library_tool_product_ids: Dict[str, List[int]] = {}
-    library_tool_geometry_hash: Dict[str, int] = {}
+    library_tool_geometry_hash: Dict[str, List[int]] = {}
     library_tool_used: List[LibraryTool] = []
     library_tool_details: List[Dict[str, str]] = []
     bad_correlation = False
@@ -193,7 +193,7 @@ def replace_with_library_tool(operations: List[adsk.cam.Operation], library: Too
             geometry = json.dumps(remove_tip_keys(tool_json["geometry"]))
             geometry_hash = sha256(geometry.encode()).hexdigest()
             geom_debug += f'{geometry_hash}: \"{geometry}\"\n'
-            library_tool_geometry_hash[geometry_hash] = lib_num
+            library_tool_geometry_hash.setdefault(geometry_hash, []).append(lib_num)
     geom_debug += "Setup tools: \n"
     timer.mark('replace_tool:iterate_operations')
     for operation in operations:
@@ -231,13 +231,15 @@ def replace_with_library_tool(operations: List[adsk.cam.Operation], library: Too
             geometry_hash = sha256(geometry.encode()).hexdigest()
             geom_debug += f'{geometry_hash}: \"{geometry}\"\n'
             print_str += f'matching by Geometry Hash: {geometry_hash}'
-            library_tool = library_tool_geometry_hash.get(geometry_hash)
+            matching_candidates = library_tool_geometry_hash.get(geometry_hash)
         if matching_candidates:
             if len(matching_candidates) == 1:
                 library_tool = matching_candidates[0]
             else:
-                selector = 'Description' if correlation_type == 'Description' else 'Product ID'
-                selector_value = tool_json["description" if selector == 'Description' else "product-id"]
+                selector = correlation_type
+                selector_value = (tool_json["description"] if selector == 'Description' else
+                                  tool_json["product-id"] if selector == 'Product ID' else
+                                  geometry_hash)
                 candidate_details = [
                     f'{index}: description={library_tool_details[index]["description"]!r}, '
                     f'product-id={library_tool_details[index]["product-id"]!r}'

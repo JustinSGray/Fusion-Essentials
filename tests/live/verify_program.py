@@ -33,7 +33,8 @@ from verify_acts_sheet import (_SHEET, _SHEET_CAM_READ, _SHEET_DRAWING,
                                _SHEET_CAM_REFRESH, _SHEET_CAM_RESTORE)
 from verify_acts_sheet_flange import _SHEET_FLANGE
 from verify_families import (
-    ACT_PRODUCER_OVERRIDES, FAMILY_DEPENDENCIES, FAMILY_GROUPS, FAMILY_SLOTS,
+    ACT_PRODUCER_CONDITIONAL_OVERRIDES, ACT_PRODUCER_OVERRIDES,
+    FAMILY_DEPENDENCIES, FAMILY_GROUPS, FAMILY_SLOTS,
     PRODUCER_ROWS, PRODUCER_SLOTS, family_names, fixture_steps)
 from verify_core import CLOUD_LINK_CRASH_REVIEW, CLOUD_TIER, _DWELL, _PLANE_VIEW, _SKETCH_PLANE, _watch
 from verify_layout import (
@@ -516,6 +517,7 @@ for _act in ACTS:
     ACT_DEPENDENCIES[_name] = {
         "family": _family,
         "producers": tuple(_producers),
+        "conditional_producers": ACT_PRODUCER_CONDITIONAL_OVERRIDES.get(_name, {}),
         "slots": _slots,
         "requires": _family_dep["requires"],
         "provides": _family_dep["provides"],

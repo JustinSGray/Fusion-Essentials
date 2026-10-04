@@ -71,14 +71,14 @@ def _touch(box_a, box_b):
 
 
 def _comparable_entities(occurrences, root=None, include_root=True):
-    """Return solid-owning placements, root bodies, bodyless labels and read completeness."""
+    """Return solid placements, root bodies, (bodyless occurrence, readable) pairs, completeness."""
     occ_entities, bodyless = [], []
     complete = True
     for occ in occurrences:
         bodies, readable = _own_solid_bodies(occ)
         complete = complete and readable
         if not bodies:
-            bodyless.append(_geom.address(occ))
+            bodyless.append((occ, readable))
             continue
         occ_entities.append({"label": _geom.address(occ), "bodies": bodies,
                              "occurrence": occ,
@@ -148,6 +148,24 @@ def _count_pair(by_id, pair, key):
         row = by_id.get(id(side["body"]))
         if row is not None:
             row[key] += 1
+
+
+def _bodyless_selection_error(bodyless):
+    """The refusal naming each selected occurrence read with no direct solid body, or None."""
+    empty = [occ for occ, readable in bodyless if readable]
+    if not empty:
+        return None
+    rows = []
+    for occ in empty:
+        kids = [_geom.address(c) for c in
+                _common.iter_collection(safe(lambda occ=occ: occ.childOccurrences))]
+        rows.append(f"{_geom.address(occ)} (" + (
+            f"child occurrences: {_common.named_with_remainder(kids, cap=6)})" if kids
+            else "no child occurrence found)"))
+    return (f"Cannot check interference: {len(empty)} selected occurrence(s) hold no direct solid "
+            f"body, so the analysis would leave them out: {'; '.join(rows)}. Pass the child "
+            "occurrences that hold the bodies instead, or remove these from 'occurrences'. "
+            "Nothing was analysed.")
 
 
 def _resolve_scope(raw):
@@ -223,6 +241,9 @@ def handler(include_coincident_faces: bool = False, occurrences=None,
         selected_occurrences, root if not explicit_scope else None, include_root=not explicit_scope)
     entities = occ_entities + root_entities
     n_occ, n_root_bodies = len(selected_occurrences), len(root_entities)
+    refusal = _bodyless_selection_error(bodyless) if explicit_scope else None
+    if refusal:
+        return error(refusal)
 
     if sum(len(e["bodies"]) for e in entities) < 2:
         solid_count = sum(len(e["bodies"]) for e in entities)
@@ -232,9 +253,10 @@ def handler(include_coincident_faces: bool = False, occurrences=None,
                          "the selected bodies before retrying; no verdict was formed.")
         # A body-less occurrence (a container, or one whose component holds no solid) is not a
         # comparable solid - two of them alone give nothing to compare, never a clean pass.
-        bodyless_note = (f", {len(bodyless)} body-less occurrence(s) excluded "
-                         f"({', '.join(bodyless[:8])}{', ...' if len(bodyless) > 8 else ''})"
-                         if bodyless else "")
+        labels = [_geom.address(occ) for occ, _readable in bodyless]
+        bodyless_note = (f", {len(labels)} body-less occurrence(s) excluded "
+                         f"({', '.join(labels[:8])}{', ...' if len(labels) > 8 else ''})"
+                         if labels else "")
         return error(
             f"Cannot check interference: this scope exposes {solid_count} comparable solid "
             f"bod{'y' if solid_count == 1 else 'ies'} ({n_occ} occurrence(s), "

@@ -163,7 +163,7 @@ def _settle(design, entity, label, section_index, address, rows, remedy, details
 
 
 def _operand_error(profile, component, index):
-    """A refusal for a foreign, future or invalid replacement profile."""
+    """A refusal for a foreign, future or invalid profile; index None skips the row check."""
     if safe(lambda: profile.objectType) != adsk.fusion.Profile.classType():
         return "'profile' must resolve to one sketch profile."
     sketch = safe(lambda: profile.parentSketch)
@@ -171,10 +171,11 @@ def _operand_error(profile, component, index):
     row = counted(lambda: sketch.timelineObject.index)
     if _common.same_component(owner, component) is not True:
         return "'profile' is outside the Loft's owning component."
-    if row is None or row >= index:
+    if index is not None and (row is None or row >= index):
         return f"'profile' source row {row} must precede Loft row {index}."
     if safe(lambda: profile.isValid) is not True:
-        return "'profile' is invalid at the Loft edit position."
+        return "'profile' is invalid at the " + (
+            "current marker." if index is None else "Loft edit position.")
     return None
 
 
@@ -209,10 +210,12 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
     if section_index == 0:
         return error(f"Editing '{label}': 'section_index'=0 is an endpoint, not an interior section. "
                      "Choose an interior section index. Nothing was edited.")
-    pending_later_refusal = None
+    pending_later_refusal = later_blocker = None
     if action == "retarget":
         early, _unresolved = _PROFILE.resolve(profile, component)
         pending_later_refusal = later_operand_refusal(label, index, [early])
+        if pending_later_refusal:
+            later_blocker = _operand_error(early, owner, None)
     health_before = _health(design, marker)
     if health_before is None:
         return error(f"'{label}'s evaluated-health census is unreadable; nothing was edited.")
@@ -236,6 +239,9 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
                 or definition_before["guide_count"] != 0):
             raise ValueError("Loft must be open, unguided, solid and use the NEW body operation.")
         if pending_later_refusal:
+            # A refusal the move would not cure comes first: the advice is a lasting change.
+            if later_blocker:
+                raise ValueError(later_blocker)
             timeline.markerPosition = marker
             if counted(lambda: timeline.markerPosition) != marker:
                 raise RuntimeError("The Loft marker could not be restored before the operand refusal.")

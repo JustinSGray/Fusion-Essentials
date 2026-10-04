@@ -349,7 +349,10 @@ def render_act_dependencies():
                   "| Act | Family | Producer additions | Workspace transitions | Precondition | Entitlement | Poll |",
                   "|---|---|---|---|---|---|---|"])
     for name, row in ACT_DEPENDENCIES.items():
-        producers = ", ".join(ACT_PRODUCER_OVERRIDES.get(name, ())) or "family default"
+        additions = [", ".join(ACT_PRODUCER_OVERRIDES.get(name, ()))]
+        additions.extend(f"when {gate}: {', '.join(producers)}"
+                         for gate, producers in row.get("conditional_producers", {}).items())
+        producers = "; ".join(value for value in additions if value) or "family default"
         gate = row["entitlement"] or "always"
         generation = json.dumps(row["generation"], ensure_ascii=True, separators=(",", ":"))
         lines.append(f"| `{name}` | `{row['family']}` | {producers} | {row['workspace']} | "

@@ -16,7 +16,7 @@ from verify_core import (
     _new_document, _document_closed, _activated, _near)
 from verify_layout import _px, _py
 from verify_acts_model_combine_revolve import _combine_pin
-from verify_acts_model_sweep import _retire_compare, _retire_sketch_state, _timeline_names
+from verify_acts_model_sweep import _FilletRadiusRefusal, _retire_compare, _retire_sketch_state, _timeline_names
 
 
 def _split_public(stage):
@@ -1736,7 +1736,7 @@ def _anchor_state(key, stage):
                 _RECALL[key + "_ids"] = selected + [circles[0]["id"]]
             return _measured("fresh independent sketch witness", facts, good)
         old = _RECALL.get(key, {})
-        if stage == "unchanged":
+        if stage in ("unchanged", "solver"):
             return _measured("preflight preserves the full disclosed sketch", facts, facts == old)
         prior = {e["id"]: e for e in old.get("entities", [])}
         new = [e for i, e in by.items() if i not in prior]
@@ -1764,7 +1764,7 @@ def _anchor_state(key, stage):
         line, control, circle = _RECALL.get(key + "_ids", [None] * 3)
         centers = [e["id"] for e in prior.values() if e.get("type") == "point"
                    and e.get("position") == {"x": 60.0, "y": 10.0}]
-        n = 0 if stage == "mixed" else 1 if stage in ("success", "con_success", "geometry") else 2
+        n = 1 if stage in ("success", "con_success", "geometry") else 0
         added_points = [e for e in new if e.get("type") == "point"]
         expected_position = {"x": 40.0, "y": 40.0} if stage == "geometry" else {"x": 20.0, "y": 10.0}
         expected_counts = dict(old.get("counts", {}))
@@ -1807,8 +1807,10 @@ def _anchor_partial(geometry=False, dimension=False):
     def check(p):
         before = {"curves": 4 if geometry else 3, "points": 7 if geometry else 6,
                   "constraints": 0 if geometry or dimension else 1, "dimensions": int(dimension)}
-        change = {"curves": 0, "points": 2 if dimension else 0, "constraints": 2 if dimension else 0, "dimensions": 0}
+        change = {"curves": 0, "points": 0, "constraints": 0, "dimensions": 0}
+        retired = "The midpoint anchor(s) it made were deleted" in p.get("note", "")
         return _measured("per-entry counts exclude the completed prefix", p,
+                         retired is dimension and
                          p.get("drawn" if geometry else "dimensioned" if dimension else "constrained") == 1 and p.get("requested") == 3
                          and len(p.get("results", [])) == 1 and p["results"][0].get("index") == 0
                          and p.get("failed", {}).get("index") == 1 and p.get("not_attempted") == 1
@@ -1816,6 +1818,17 @@ def _anchor_partial(geometry=False, dimension=False):
                              "before": before, "after": {k: before[k] + change[k] for k in before}, "change": change}
                          and "sketch_get(include_entities=true)" in p.get("note", ""))
     return check
+
+
+def _anchor_retained(p):
+    """Check a rejected value on a midpoint-anchored distance names every effect it kept."""
+    return _measured("retained anchored dimension with its point and constraint", p,
+                     p.get("dimensioned") == 0 and p.get("results") == [] and p.get("not_attempted") == 0
+                     and len(p.get("retained") or []) == 1 and p["retained"][0].get("value_driven") is False
+                     and (p.get("failed_entry_counts") or {}).get("change") == {
+                         "curves": 0, "points": 1, "constraints": 1, "dimensions": 1}
+                     and ("The failed entry left points=+1, constraints=+1, dimensions=+1 in the sketch; "
+                          "'retained' identifies 1 of those effects") in (p.get("note") or ""))
 
 
 def _anchor_retention_rows():
@@ -1831,7 +1844,8 @@ def _anchor_retention_rows():
     for key, stage in (("AnchorSurface", "unchanged"), ("AnchorConKind", "unchanged"), ("AnchorKind", "unchanged"),
                        ("AnchorConSolver", "unchanged"), ("AnchorDimSolver", "solver"),
                        ("AnchorMixed", "mixed"), ("AnchorDimMixed", "dim_mixed"), ("AnchorGeometry", "geometry"),
-                       ("AnchorConSuccess", "con_success"), ("AnchorSuccess", "success")):
+                       ("AnchorConSuccess", "con_success"), ("AnchorSuccess", "success"),
+                       ("AnchorDimRetained", "success")):
         write("sketch_create", {"name": key, "plane": "xy"})
         write("sketch_add_geometry", {"sketch_name": key, "geometry": [
             {"kind": "line", "x1": 10, "y1": 10, "x2": 30, "y2": 10},
@@ -1864,9 +1878,13 @@ def _anchor_retention_rows():
             entries = [{"dim_type": "radius", "entity_one": circle, "value": "5 mm"}] if key == "AnchorDimMixed" else []
             entries += [{"dim_type": "distance", "entity_one": line + ":mid",
                          "entity_two": circle + ":mid" if key == "AnchorKind" else
-                         circle + ":center" if key == "AnchorSuccess" else line + ":mid"}]
+                         circle + ":center" if key in ("AnchorSuccess", "AnchorDimRetained")
+                         else line + ":mid"}]
             if key == "AnchorSuccess":
                 entries[-1]["value"] = "40 mm"
+            if key == "AnchorDimRetained":
+                # A rejected value keeps the measured 40 mm dimension on its welded midpoint.
+                entries[-1]["value"] = "1 mm +"
             if key == "AnchorDimMixed":
                 entries += [{"dim_type": "distance", "entity_one": control, "value": "20 mm"}]
             return {"sketch_name": key, "dimensions": entries}
@@ -1874,8 +1892,10 @@ def _anchor_retention_rows():
         tool = ("sketch_add_geometry" if stage == "geometry" else "sketch_constrain"
                 if key in ("AnchorSurface", "AnchorConKind", "AnchorConSolver", "AnchorMixed", "AnchorConSuccess") else "sketch_dimension")
         verdict = (_anchor_partial(stage == "geometry", stage == "dim_mixed") if stage in ("mixed", "dim_mixed", "geometry")
+                   else _anchor_retained if key == "AnchorDimRetained"
                    else "ok" if stage in ("success", "con_success")
-                   else _refused("points=+2, constraints=+2", "sketch_get(include_entities=true)") if stage == "solver"
+                   else _refused("The midpoint anchor(s) it made were deleted", "points=+0, constraints=+0")
+                   if stage == "solver"
                    else _refused("points=+0", "constraints=+0", "needs 'surface'" if key == "AnchorSurface"
                                  else "SAME line midpoint" if key == "AnchorConSolver" else "LINE"))
         write(tool, arguments, verdict)
@@ -1953,9 +1973,12 @@ def _solved_fillet_effect(control=False):
                  and _near(arc.get("radius"), radius, .001)
                  and tangent == {("arc:0", "line:0"), ("arc:0", "line:1")})
         if valid and not control:
+            reported = _RECALL.get("fillet_reported_radius")
             old = _RECALL.get("fillet_before") or {}
             prior = {r.get("id"): r for r in old.get("entities", [])}
-            valid = (lines[0].get("end") != prior.get("line:0", {}).get("end")
+            valid = (isinstance(reported, (int, float)) and not isinstance(reported, bool)
+                     and _near(arc.get("radius"), reported, .001)
+                     and lines[0].get("end") != prior.get("line:0", {}).get("end")
                      and lines[1].get("start") != prior.get("line:1", {}).get("start")
                      and _near(lines[0]["end"].get("x"), 214.6263, .001)
                      and _near(lines[1]["start"].get("x"), 224.5797, .001))
@@ -1992,7 +2015,7 @@ def _fillet_radius_rows():
                               False), None)]
     write("sketch_edit_curve", {"sketch_name": "FilletPath", "action": "fillet", "entity_one": "line:0",
                                 "entity_two": "line:1", "x1": 200, "y1": -30, "x2": 230, "y2": -36, "radius": 20},
-          _refused("requested 20 mm", "solved", "REMAINS", "arc:0", "line:0", "line:1", "sketch_get"))
+          _FilletRadiusRefusal("fillet_reported_radius"))
     rows += [("sketch_get", path, _solved_fillet_effect(), None),
              ("sketch_get", corner, _retire_compare("fillet_control", _retire_sketch_state, True), None),
              ("design_get", {"include": ["timeline"], "max_results": 200},

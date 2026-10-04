@@ -10,7 +10,8 @@ from ._common import counted, error, ok
 MAP_BLURB = ("the sketch batch substrate: entries_or_error - the list-shape guard naming a bad "
              "entry and its unknown fields; run_batch - the entries of a sketch write run in order "
              "against ONE resolved sketch, stopping at the first failure, publishing the "
-             "landed/failed/not_attempted payload every list tool shares")
+             "landed/failed/not_attempted payload every list tool shares; entry_counts - the four "
+             "sketch counts a failed entry is judged by")
 
 # Above this an entry list is refused: a call is one turn's work, not a whole drawing.
 _MAX_ENTRIES = 200
@@ -34,7 +35,7 @@ def entries_or_error(raw, name, allowed):
     return raw, None
 
 
-def _entry_counts(sketch):
+def entry_counts(sketch):
     """Read the four sketch collection counts, retaining unknown values."""
     values = {label: counted(lambda attr=attr: getattr(sketch, attr).count)
               for label, attr in (("curves", "sketchCurves"), ("points", "sketchPoints"),
@@ -53,6 +54,18 @@ def _failed_counts(before, after):
     return {"before": before, "after": after, "change": change}, note
 
 
+def _retained_text(kept, change):
+    """The failed entry's retained-effect clause, naming each counted kind that changed."""
+    moved = [(key, n) for key, n in change.items() if n]
+    unread = [key for key, n in change.items() if n is None]
+    if [n for _key, n in moved] == [kept] and not unread:
+        return f"The failed entry left {kept} retained effect in the sketch, identified in 'retained'"
+    text = (f"The failed entry left {', '.join(f'{k}={n:+d}' for k, n in moved)} in the sketch; "
+            f"'retained' identifies {kept} of those effects" if moved else
+            f"The failed entry kept {kept} effect, identified in 'retained'")
+    return text + (f" ({', '.join(unread)} did not read)" if unread else "")
+
+
 def run_batch(entries, one, name, verb, sketch_name, *, sketch, result_note="", result_fields=None):
     """Run one sketch batch and report completed, retained, failed, and unattempted entries."""
     results = []
@@ -61,11 +74,11 @@ def run_batch(entries, one, name, verb, sketch_name, *, sketch, result_note="", 
     failed = None
     count_evidence, count_note = None, ""
     for i, entry in enumerate(entries):
-        before = _entry_counts(sketch)
+        before = entry_counts(sketch)
         res, err = one(i, entry)
         if err:
             failed = {"index": i, "error": err}
-            count_evidence, count_note = _failed_counts(before, _entry_counts(sketch))
+            count_evidence, count_note = _failed_counts(before, entry_counts(sketch))
             if res is UNKNOWN_RETENTION:
                 retention_unknown = True
             elif res is not None:
@@ -95,8 +108,8 @@ def run_batch(entries, one, name, verb, sketch_name, *, sketch, result_note="", 
         if retained:
             payload["retained"] = retained
             note = (f"{len(results)} of {requested} {name} completed. Stopped at "
-                    f"{name}[{failed['index']}]: {failed['error']} The failed entry left "
-                    f"{len(retained)} retained effect in the sketch, identified in 'retained'; "
+                    f"{name}[{failed['index']}]: {failed['error']} "
+                    f"{_retained_text(len(retained), count_evidence['change'])}; "
                     f"{payload['not_attempted']} after it were not attempted.")
         elif retention_unknown:
             payload["retained"] = None

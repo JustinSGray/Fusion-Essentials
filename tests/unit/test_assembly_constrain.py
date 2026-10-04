@@ -269,6 +269,17 @@ class TestMultiRelationshipConstraint:
         assert added[0][2] is True     # flipped on first
         assert added[1][2] is False    # not on second
 
+    @pytest.mark.parametrize("flip", ["false", 0, None])
+    def test_a_non_boolean_flip_is_refused_before_any_input_is_built(self, constrain, flip):
+        _design, ac = constrain()
+        res = ja.handler(relationships=[
+            {"snap_one": "A:1:bottom", "snap_two": "B:1:top", "flip": True},
+            {"snap_one": "A:1:left", "snap_two": "B:1:left", "flip": flip}])
+        assert res["isError"] is True
+        assert f"Invalid Boolean for 'relationships[1].flip': {ascii(flip)}." in res["message"]
+        assert "Use true or false. Nothing was constrained." in res["message"]
+        assert ac.last_input is None and ac.added == 0
+
     def test_single_pair_still_works(self, constrain):
         # back-compat: snap_one/snap_two shorthand == a one-relationship list
         constrain()

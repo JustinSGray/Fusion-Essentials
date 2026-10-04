@@ -871,7 +871,8 @@ def test_setup_preflight_scene_keeps_owned_source_witness_and_requests_in_full_f
     edits = [args for tool, args in requests(authored) if tool == "cam_edit_setup"]
     assert edits[1] == {"setup": "SetupB", "stock_mode": "relative_box", "expect_document": "scratch"}
     assert edits[-2:] == [
-        {"setup": "SetupB", "parameters": {"job_stockOffsetSides": "2 mm", "job_stockOffsetTop": "2 mm"},
+        {"setup": "SetupB", "parameters": {"job_stockOffsetSides": "2 mm", "job_stockOffsetTop": "2 mm",
+                                           "wcs_origin_boxPoint": "NoSuchProbeBoxPoint"},
          "expect_document": "scratch"},
         {"setup": "SetupB", "parameters": context["setup_stock_before"], "expect_document": "scratch"}]
 

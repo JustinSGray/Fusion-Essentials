@@ -543,7 +543,8 @@ def handler(feature: str = "", action: str = "", profile=None, operation: str = 
         if refusal:
             return error(refusal)
         if counted(lambda: sketch.timelineObject.index) is None:
-            hint = _design_common.collapsed_group_hint(timeline, safe(lambda: sketch.name))
+            hint = _design_common.collapsed_group_hint_for(timeline, sketch,
+                                                           safe(lambda: sketch.name))
             if hint:
                 return error(f"{hint} The profile sketch timeline row does not read; nothing was edited.")
             sketch_name = safe(lambda: sketch.name) or "?"

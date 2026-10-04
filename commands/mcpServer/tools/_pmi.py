@@ -562,22 +562,34 @@ HOLE_FLAGS = {"quantity_note": "isWantQuantityNote", "all_matching": "isWantSele
               "show_imported_geometry": "isShowImportedGeometry"}
 
 
+def hole_flags_error(flags):
+    """The refusal for a flags object with an unknown key or a non-Boolean value, else None."""
+    if not isinstance(flags, dict):
+        return f"'flags' must be an object with any of: {', '.join(sorted(HOLE_FLAGS))}."
+    for key, val in flags.items():
+        if HOLE_FLAGS.get(str(key).strip().lower()) is None:
+            return f"Unknown flag '{key}'. Legal flags: {', '.join(sorted(HOLE_FLAGS))}."
+        if type(val) is not bool:
+            return (f"Invalid Boolean for 'flags.{key}': {_common.short_ref(ascii(val))}. "
+                    "Use true or false.")
+    return None
+
+
 def apply_hole_flags(note, flags):
     """Apply a {wire_key: bool} flags dict to a hole/thread note; every set is re-read and a flag
     that did not take is an error. Returns (applied_dict, error)."""
-    if not isinstance(flags, dict):
-        return None, f"'flags' must be an object with any of: {', '.join(sorted(HOLE_FLAGS))}."
+    refusal = hole_flags_error(flags)
+    if refusal:
+        return None, refusal + " No flag was set."
     applied = {}
     for key, val in flags.items():
-        prop = HOLE_FLAGS.get(str(key).strip().lower())
-        if prop is None:
-            return None, f"Unknown flag '{key}'. Legal flags: {', '.join(sorted(HOLE_FLAGS))}."
+        prop = HOLE_FLAGS[str(key).strip().lower()]
         try:
-            setattr(note, prop, bool(val))
+            setattr(note, prop, val)
         except Exception as e:
             return None, f"Flag '{key}' set failed: {e}"
-        got = bool(safe(lambda p=prop: getattr(note, p), not bool(val)))
-        if got != bool(val):
+        got = bool(safe(lambda p=prop: getattr(note, p), not val))
+        if got != val:
             return None, f"Flag '{key}'={val} did not take (re-read {got})."
         applied[key] = got
     return applied, None

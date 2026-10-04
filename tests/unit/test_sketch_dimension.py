@@ -528,6 +528,49 @@ class _RichLine:
             p.geometry = _Geo(p.geometry.x + dx, p.geometry.y + dy)
 
 
+class _Counted(_NamedCollection):
+    """The shared counted collection, reading a list the test keeps appending to."""
+    def __init__(self, items):
+        super().__init__()
+        self._items = items
+
+
+class _MintedPoint(_SharedSketchPoint):
+    """A point a midpoint anchor added; deleteMe drops it, and with `cascade` its constraints."""
+    def __init__(self, sketch, created):
+        super().__init__(geometry=_Geo(created[1], created[2]))
+        self._sketch = sketch
+
+    def deleteMe(self):
+        if not self._sketch.deletes:
+            return False
+        self._sketch.points.remove(self)
+        if self._sketch.cascade:
+            self._sketch.constraints[:] = [c for c in self._sketch.constraints if c[0] is not self]
+        return True
+
+
+class _CountedDims(FakeDims):
+    @property
+    def count(self):
+        return len(self.calls)
+
+
+class _AnchorSketch(FakeSketch):
+    """A sketch whose four counts a midpoint anchor grows by its point and MidPoint constraint."""
+    def __init__(self, deletes=True, cascade=True):
+        super().__init__()
+        self.deletes, self.cascade, self.points, self.constraints = deletes, cascade, [], []
+        self.sketchCurves = SketchCurves(lines=[_RichLine(0, 0, 2, 0)], circles=[FakeCircle()])
+        self.sketchDimensions = _CountedDims()
+        self.sketchPoints = _Counted(self.points)
+        self.sketchPoints.add = lambda created: self.points.append(
+            _MintedPoint(self, created)) or self.points[-1]
+        self.geometricConstraints = _Counted(self.constraints)
+        self.geometricConstraints.addMidPoint = lambda pt, line: self.constraints.append(
+            (pt, line)) or self.constraints[-1]
+
+
 class _RichCircle:
     def __init__(self, x, y, r):
         self.centerSketchPoint = _MovablePoint(x, y)
@@ -1194,6 +1237,68 @@ class TestBatch:
         assert out["retained"][0]["is_driving"] is True
         assert "1 of 3 dimensions completed" in out["note"]
         assert [c[0] for c in s.sketchDimensions.calls] == ["radius", "radius"]
+
+    def test_a_retained_dimension_without_an_anchor_keeps_the_one_effect_sentence(self, monkeypatch):
+        s = _install(monkeypatch, sketches=[_AnchorSketch()])
+        _reject_radial_expression_at(s, 0)
+        out = _payload(sd.handler(dimensions=[
+            {"dim_type": "radius", "entity_one": "circle:0", "value": "oops"}]))
+        assert ("The failed entry left 1 retained effect in the sketch, identified in "
+                "'retained'; 0 after it were not attempted.") in out["note"]
+
+    def test_a_retained_dimension_on_a_midpoint_anchor_names_the_point_and_constraint(
+            self, monkeypatch):
+        s = _install(monkeypatch, sketches=[_AnchorSketch()])
+        add = s.sketchDimensions.addDistanceDimension
+
+        def rejecting(*args):
+            dim = add(*args)
+            dim.parameter = _RejectingParam(dim.parameter.name)
+            return dim
+        s.sketchDimensions.addDistanceDimension = rejecting
+        out = _payload(sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                               "entity_two": "circle:0:center", "value": "1 mm +"}]))
+        assert ("The failed entry left points=+1, constraints=+1, dimensions=+1 in the sketch; "
+                "'retained' identifies 1 of those effects") in out["note"]
+        assert out["failed_entry_counts"]["change"] == {
+            "curves": 0, "points": 1, "constraints": 1, "dimensions": 1}
+        assert len(s.points) == 1 and len(s.constraints) == 1 and len(out["retained"]) == 1
+
+    @pytest.mark.parametrize("deletes,cascade,clause", [
+        (True, True, "The midpoint anchor(s) it made were deleted: the point and constraint "
+                     "counts read back as before the entry."),
+        (True, False, "Deleting the midpoint anchor(s) it made left constraints=+1 against"),
+        (False, True, "Deleting the midpoint anchor(s) it made left points=+1, constraints=+1 "
+                      "against")])
+    def test_a_failed_add_retires_its_midpoint_anchor_as_the_counts_read_back(
+            self, monkeypatch, deletes, cascade, clause):
+        s = _install(monkeypatch, sketches=[_AnchorSketch(deletes=deletes, cascade=cascade)])
+        s.sketchDimensions.addDistanceDimension = _raiser("points coincide")
+        msg = sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                      "entity_two": "circle:0:center"}])["message"]
+        assert "Could not add the distance dimension: points coincide." in msg and clause in msg
+        assert (len(s.points), len(s.constraints)) == (int(not deletes), int(not (deletes and cascade)))
+        assert f"points=+{len(s.points)}, constraints=+{len(s.constraints)}" in msg
+
+    def test_a_failed_add_retires_both_midpoint_anchors_it_made(self, monkeypatch):
+        s = _install(monkeypatch, sketches=[_AnchorSketch()])
+        s.sketchDimensions.addDistanceDimension = _raiser("points coincide")
+        msg = sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                      "entity_two": "line:0:mid"}])["message"]
+        assert len(s.points) == 0 and len(s.constraints) == 0
+        assert "The midpoint anchor(s) it made were deleted" in msg
+
+    def test_a_failed_second_midpoint_weld_retires_the_first_anchor(self, monkeypatch):
+        s = _install(monkeypatch, sketches=[_AnchorSketch()])
+        weld, welds = s.geometricConstraints.addMidPoint, []
+        s.geometricConstraints.addMidPoint = lambda pt, line: (
+            welds.append(pt) or (weld(pt, line) if len(welds) == 1 else None))
+        msg = sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                      "entity_two": "line:0:mid"}])["message"]
+        assert (len(s.points), len(s.constraints)) == (0, 0)
+        assert "entity_two: the midpoint weld (addMidPoint) failed" in msg
+        assert "The midpoint anchor(s) it made were deleted" in msg
+        assert s.sketchDimensions.calls == []
 
     def test_an_unknown_field_is_refused_naming_it_and_the_legal_fields(self, monkeypatch):
         s = _install(monkeypatch)

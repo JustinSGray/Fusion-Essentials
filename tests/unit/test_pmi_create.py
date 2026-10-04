@@ -126,6 +126,14 @@ class TestHoleNoteGuards:
                                        flags={"bogus_flag": True}))
         assert "bogus_flag" in msg and "quantity_note" in msg
 
+    def test_a_string_flag_value_is_refused_before_the_note_is_created(self, rig):
+        rig.stub_geometry([_face(rig.comp)])
+        msg = error_message(pc.handler(kind="hole_note", geometry=["a"],
+                                       flags={"threaded": "false"}))
+        assert "Invalid Boolean for 'flags.threaded': 'false'." in msg
+        assert "No annotation was created." in msg
+        assert rig.hole_notes._added is None and not hasattr(rig.hole_ann, "isThreaded")
+
     def test_unknown_value_key_is_refused(self, rig):
         rig.stub_geometry([_face(rig.comp)])
         msg = error_message(pc.handler(kind="hole_note", geometry=["a"],

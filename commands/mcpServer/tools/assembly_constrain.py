@@ -55,8 +55,12 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
         for i, r in enumerate(relationships):
             if not isinstance(r, dict) or not r.get("snap_one") or not r.get("snap_two"):
                 return error(f"relationships[{i}] needs both 'snap_one' and 'snap_two'.")
+            if type(r.get("flip", False)) is not bool:
+                return error(f"Invalid Boolean for 'relationships[{i}].flip': "
+                             f"{_common.short_ref(ascii(r['flip']))}. Use true or false. "
+                             "Nothing was constrained.")
             specs.append({"snap_one": r["snap_one"], "snap_two": r["snap_two"],
-        "flip": bool(r.get("flip", False)),
+        "flip": r.get("flip", False),
         "offset": float(r.get("offset", 0.0)),
         "angle_deg": float(r.get("angle_deg", 0.0))})
     elif (snap_one or "").strip() or (snap_two or "").strip():

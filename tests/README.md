@@ -44,12 +44,15 @@ are not additive; `cleanup-total` covers teardown and home restoration as one sp
 | `sketch` | none | owned design document -> parametric bracket sketches | none | Skeleton and BracketBody |
 | `solids` | bracket-parameters-profiles | PartLen, PartWid, PartHt -> Bracket:1 solid, StockCenter | none | Bracket:1 |
 | `details` | bracket-parameters-profiles, finished-bracket, datum-details | Bracket:1 -> DatumBench, db_bore | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break, db_top, db_top2, db_bore | Bracket:1 and DatumBench |
-| `resize` | bracket-parameters-profiles, finished-bracket, datum-resize | Bracket:1, StockCenter -> Bracket:1, DatumBench | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break | Bracket:1 and DatumBench |
+| `resize` | bracket-parameters-profiles, finished-bracket, datum-resize, root-design-context | Bracket:1, StockCenter -> Bracket:1, DatumBench | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break | Bracket:1 and DatumBench |
 | `vise` | bracket-parameters-profiles, finished-bracket | Bracket:1 -> clamped stock and vise | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break | ViseBase:1 and STOCK:1 |
-| `showcase` | bracket-parameters-profiles, finished-bracket, stock-vise, showcase-pose | Bracket:1, captured vise pose -> showcase fixtures and cameos | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break | ViseBase:1 and STOCK:1 |
+| `showcase` | bracket-parameters-profiles, finished-bracket, stock-vise, showcase-pose, showcase-shapes | Bracket:1, captured vise pose -> showcase fixtures and cameos | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break | ViseBase:1 and STOCK:1 |
 | `part_cam` | bracket-parameters-profiles, finished-bracket, stock-vise, recognition | Bracket:1, STOCK:1, StockCenter -> part CAM models and recognition inputs | pk_c1, pk_c2, pk_c3, pk_c4, low_top, step_top, step_lead, step_out, boss_top, edge_break, pocket_floor, recognized_cbore_walls | Bracket:1 and CAM setup |
 | `swarf_cam` | cam-tool-library | owned family document -> SwarfFrustum:1, SwarfSetup | none | SwarfFrustum:1 and setup |
 | `hub_cam` | cam-tool-library | owned family document -> hub CAM setup state | none | hub and CAM setup |
+| `small_edits` | small-edits-box | owned family document -> EditTarget | none | EditTarget |
+| `lookup` | lookup-box | owned family document -> LookupGuard | none | LookupGuard |
+| `finale` | finale-state | owned family document -> manufacture workspace with sketches hidden | none | authored final scene |
 | `surfaces` | none | owned family document -> family-local act state | none | authored act frames |
 | `mesh` | none | owned family document -> family-local act state | none | authored act frames |
 | `nesting` | none | owned family document -> family-local act state | none | authored act frames |
@@ -59,9 +62,6 @@ are not additive; `cleanup-total` covers teardown and home restoration as one sp
 | `sheet_selected` | none | owned family document -> family-local act state | none | authored act frames |
 | `sheet_positions` | none | owned family document -> family-local act state | none | authored act frames |
 | `sheet_flange` | none | owned family document -> family-local act state | none | authored act frames |
-| `small_edits` | none | owned family document -> family-local act state | none | authored act frames |
-| `lookup` | none | owned family document -> family-local act state | none | authored act frames |
-| `finale` | none | owned family document -> family-local act state | none | authored act frames |
 
 ### Act policy readbacks
 
@@ -106,9 +106,9 @@ Producer additions list late act-local setup beyond the family default. Entitlem
 | `ACT 10c12 - CAM: THE EXTENSION FAMILIES READ` | `hub_cam` | family default | inherited | `none` | `machining_extension` | `null` |
 | `ACT 10c13 - CAM: THE ROTARY FAMILIES` | `hub_cam` | family default | inherited | `none` | `machining_extension` | `{"narrative":"HubRotary","fallback":[],"max_polls":70}` |
 | `ACT 10c14 - CAM: THE ROTARY FAMILIES READ` | `hub_cam` | family default | inherited | `none` | `machining_extension` | `null` |
-| `ACT 10c15 - CAM: THE ADDITIVE BUILD` | `hub_cam` | swarf-frustum, cam-extension | inherited | `none` | `machining_extension` | `{"narrative":"MultiAxisSetup","fallback":[],"max_polls":70}` |
+| `ACT 10c15 - CAM: THE ADDITIVE BUILD` | `hub_cam` | when machining_extension: swarf-frustum, cam-extension | inherited | `none` | `machining_extension` | `{"narrative":"MultiAxisSetup","fallback":[],"max_polls":70}` |
 | `ACT 10d - CAM: THE SECOND SETUP` | `part_cam` | family default | design -> manufacture | `cam_get` | `always` | `{"narrative":"FlipSetup","fallback":[]}` |
-| `ACT 10e - CAM: MULTI-SETUP POST` | `part_cam` | swarf-frustum, cam-scope, cam-extension | inherited | `cam_get` | `always` | `{"narrative":"document","fallback":[],"max_polls":160}` |
+| `ACT 10e - CAM: MULTI-SETUP POST` | `part_cam` | swarf-frustum, cam-scope; when machining_extension: cam-extension | inherited | `cam_get` | `always` | `{"narrative":"document","fallback":[],"max_polls":160}` |
 | `ACT 10f - CAM: THE TREE LEFT BEHIND` | `part_cam` | family default | inherited | `cam_get` | `always` | `null` |
 | `ACT 11a - CLOUD: THE DATA MODEL` | `cloud` | family default | inherited | `none` | `cloud_tier` | `null` |
 | `ACT 11b - CLOUD: THE SAVED DOCUMENT` | `cloud` | family default | inherited | `none` | `cloud_tier` | `null` |

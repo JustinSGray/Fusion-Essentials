@@ -11,6 +11,8 @@ tables are shrink-only in spirit (scripting a tool moves it PENDING -> STEPS); s
 name in a table that no longer registers) also fail, so the tables can't rot the other way.
 """
 
+import sys
+
 from conftest import load_tool_verify as _load_verify, register_all_tools
 
 
@@ -26,6 +28,16 @@ class TestToolVerifyComplete:
 
         unknown = sorted({producer for row in verify.ACT_DEPENDENCIES.values()
                           for producer in row["producers"]} - set(verify.PRODUCER_ROWS))
+        families = sys.modules["verify_families"]
+        assert set(families.ACT_PRODUCER_CONDITIONAL_OVERRIDES) <= acts
+        known_gates = set(verify.ACT_NEEDS.values())
+        unknown_gates = sorted({gate for rows in
+                                families.ACT_PRODUCER_CONDITIONAL_OVERRIDES.values()
+                                for gate in rows} - known_gates)
+        assert not unknown_gates
+        unknown.extend(sorted({producer for row in families.ACT_PRODUCER_CONDITIONAL_OVERRIDES.values()
+                               for producers in row.values() for producer in producers}
+                              - set(verify.PRODUCER_ROWS)))
         assert not unknown
         missing_saves = {}
         for producer, slots in verify.PRODUCER_SLOTS.items():
@@ -37,8 +49,46 @@ class TestToolVerifyComplete:
                 missing_saves[producer] = absent
         assert not missing_saves
         for name, row in verify.ACT_DEPENDENCIES.items():
+            assert row["conditional_producers"] == \
+                families.ACT_PRODUCER_CONDITIONAL_OVERRIDES.get(name, {})
             assert row["entitlement"] == verify.ACT_NEEDS.get(name)
             assert row["generation"] == verify.POLL_AFTER.get(name)
+
+    def test_family_producer_rows_match_local_fixture_steps(self):
+        verify = _load_verify()
+        families = sys.modules["verify_families"]
+        drift = {}
+        for family, dependency in verify.FAMILY_DEPENDENCIES.items():
+            expected = [step for producer in dependency["producers"]
+                        for step in verify.PRODUCER_ROWS[producer]]
+            actual = families.fixture_steps(family, raw=True)
+            if actual != expected:
+                drift[family] = {"expected": [row[0] for row in expected],
+                                 "actual": [row[0] for row in actual]}
+        assert not drift, f"family producer declarations differ from fixture steps: {drift}"
+
+    def test_conditional_act_producers_match_entitled_fixture_steps(self):
+        verify = _load_verify()
+        families = sys.modules["verify_families"]
+        drift = {}
+        for act, gates in families.ACT_PRODUCER_CONDITIONAL_OVERRIDES.items():
+            family = verify.FAMILY_PROGRAM[act]
+            if len(gates) != 1:
+                drift[(act, "gate-count")] = sorted(gates)
+                continue
+            for entitled in (False, True):
+                expected_producers = list(families.ACT_PRODUCER_OVERRIDES.get(act, ()))
+                if entitled:
+                    expected_producers.extend(next(iter(gates.values())))
+                expected = [row for producer in expected_producers
+                            for row in verify.PRODUCER_ROWS[producer]]
+                actual = [row for row in families.fixture_steps(
+                    family, before_act=act, entitled=entitled, raw=True)
+                          if row[0] != "view_switch_workspace"]
+                if actual != expected:
+                    drift[(act, entitled)] = {"expected": [row[0] for row in expected],
+                                              "actual": [row[0] for row in actual]}
+        assert not drift, f"conditional producer declarations differ from fixture steps: {drift}"
 
     def test_every_tool_is_covered_excluded_or_pending(self):
         verify = _load_verify()

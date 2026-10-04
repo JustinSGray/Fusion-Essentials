@@ -65,6 +65,13 @@ def ordered_acts(acts):
 STOCK_VISE = list(_STOCK_VISE)
 RECOGNITION = [step for step in _DETAILS
                if step[0] in ("cam_find_holes", "cam_find_pockets")]
+SHOWCASE_POSE = [row for row in _VISE_SHOWCASE_POSE
+                 if row[0] not in (_DWELL, "view_set", "view_screenshot")]
+ROOT_DESIGN_CONTEXT = [("design_activate_component", {"occurrence": "root"}, "ok", None)]
+FINALE_STATE = [
+    ("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
+    ("view_set", {"action": "display", "categories": ["sketches"],
+                   "visible": False}, "ok", None)]
 _MANUFACTURE = ("view_switch_workspace", {"workspace": "manufacture"}, "ok", None)
 _DESIGN = ("view_switch_workspace", {"workspace": "design"}, "ok", None)
 _CAM_TOOL_LIBRARY = [
@@ -79,13 +86,17 @@ PRODUCER_ROWS = {
     "finished-bracket": FINISHED_BRACKET,
     "datum-details": DATUM_BENCH_DETAILS,
     "datum-resize": DATUM_BENCH_RESIZE,
+    "root-design-context": ROOT_DESIGN_CONTEXT,
     "stock-vise": STOCK_VISE,
-    "showcase-pose": _VISE_SHOWCASE_POSE,
+    "showcase-pose": SHOWCASE_POSE,
     "swarf-frustum": _SWARF_FRUSTUM,
     "cam-scope": _CAM_SCOPE,
     "cam-extension": _CAM_EXTENSION,
     "cam-tool-library": _CAM_TOOL_LIBRARY,
     "recognition": RECOGNITION,
+    "small-edits-box": _box("EditTarget"),
+    "lookup-box": _box("LookupGuard"),
+    "finale-state": FINALE_STATE,
 }
 
 PRODUCER_SLOTS = {
@@ -94,6 +105,7 @@ PRODUCER_SLOTS = {
                           "step_lead", "step_out", "boss_top", "edge_break"),
     "datum-details": ("db_top", "db_top2", "db_bore"),
     "datum-resize": (),
+    "root-design-context": (),
     "stock-vise": (),
     "showcase-pose": (),
     "swarf-frustum": (),
@@ -104,6 +116,9 @@ PRODUCER_SLOTS = {
                        "swarf_op"),
     "cam-tool-library": (),
     "recognition": ("pocket_floor", "recognized_cbore_walls"),
+    "small-edits-box": (),
+    "lookup-box": (),
+    "finale-state": (),
 }
 
 FAMILY_DEPENDENCIES = {
@@ -120,7 +135,7 @@ FAMILY_DEPENDENCIES = {
                 "provides": ("DatumBench", "db_bore"), "workspace": "Design",
                 "camera": "Bracket:1 and DatumBench"},
     "resize": {"producers": ("bracket-parameters-profiles", "finished-bracket",
-                              "datum-resize"),
+                              "datum-resize", "root-design-context"),
                "requires": ("Bracket:1", "StockCenter"),
                "provides": ("Bracket:1", "DatumBench"), "workspace": "Design",
                "camera": "Bracket:1 and DatumBench"},
@@ -128,7 +143,7 @@ FAMILY_DEPENDENCIES = {
              "requires": ("Bracket:1",), "provides": ("clamped stock and vise"),
              "workspace": "Design", "camera": "ViseBase:1 and STOCK:1"},
     "showcase": {"producers": ("bracket-parameters-profiles", "finished-bracket", "stock-vise",
-                                 "showcase-pose"),
+                                 "showcase-pose", "showcase-shapes"),
                  "requires": ("Bracket:1", "captured vise pose"),
                  "provides": ("showcase fixtures and cameos"), "workspace": "Design",
                  "camera": "ViseBase:1 and STOCK:1"},
@@ -143,6 +158,15 @@ FAMILY_DEPENDENCIES = {
     "hub_cam": {"producers": ("cam-tool-library",), "requires": ("owned family document",),
                 "provides": ("hub CAM setup state",), "workspace": "varies by act",
                 "camera": "hub and CAM setup"},
+    "small_edits": {"producers": ("small-edits-box",), "requires": ("owned family document",),
+                    "provides": ("EditTarget",), "workspace": "Design",
+                    "camera": "EditTarget"},
+    "lookup": {"producers": ("lookup-box",), "requires": ("owned family document",),
+               "provides": ("LookupGuard",), "workspace": "Design",
+               "camera": "LookupGuard"},
+    "finale": {"producers": ("finale-state",), "requires": ("owned family document",),
+               "provides": ("manufacture workspace with sketches hidden",),
+               "workspace": "Manufacture", "camera": "authored final scene"},
 }
 
 for _family, _prefixes in FAMILY_GROUPS:
@@ -152,8 +176,14 @@ for _family, _prefixes in FAMILY_GROUPS:
         "camera": "authored act frames"})
 
 ACT_PRODUCER_OVERRIDES = {
-    "ACT 10e - CAM: MULTI-SETUP POST": ("swarf-frustum", "cam-scope", "cam-extension"),
-    "ACT 10c15 - CAM: THE ADDITIVE BUILD": ("swarf-frustum", "cam-extension"),
+    "ACT 10e - CAM: MULTI-SETUP POST": ("swarf-frustum", "cam-scope"),
+}
+
+ACT_PRODUCER_CONDITIONAL_OVERRIDES = {
+    "ACT 10e - CAM: MULTI-SETUP POST": {
+        "machining_extension": ("cam-extension",)},
+    "ACT 10c15 - CAM: THE ADDITIVE BUILD": {
+        "machining_extension": ("swarf-frustum", "cam-extension")},
 }
 
 
@@ -182,7 +212,7 @@ def fixture_steps(family, before_act=None, entitled=True, raw=False, slots=None)
             rows += place(DATUM_BENCH_DETAILS)
         if family == "resize":
             rows += place(DATUM_BENCH_RESIZE)
-            rows.append(("design_activate_component", {"occurrence": "root"}, "ok", None))
+            rows += PRODUCER_ROWS["root-design-context"]
         if family in ("part_cam", "showcase"):
             rows += STOCK_VISE
         if family == "part_cam":
@@ -195,13 +225,11 @@ def fixture_steps(family, before_act=None, entitled=True, raw=False, slots=None)
     if family in ("swarf_cam", "hub_cam"):
         return list(_CAM_TOOL_LIBRARY)
     if family == "finale":
-        return [("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
-                ("view_set", {"action": "display", "categories": ["sketches"],
-                              "visible": False}, "ok", None)]
+        return list(PRODUCER_ROWS["finale-state"])
     if family == "small_edits":
-        return _box("EditTarget")
+        return list(PRODUCER_ROWS["small-edits-box"])
     if family == "lookup":
-        return _box("LookupGuard")
+        return list(PRODUCER_ROWS["lookup-box"])
     return []
 
 
@@ -221,3 +249,7 @@ def showcase_shapes(raw=False, slots=None):
             + _solids_component_block(_SOLIDS, "FeatureCameo", "model_draft")
             + list(_SOLIDS[face:orbit + 1]))
     return list(rows) if raw else _placed(rows, FAMILY_SLOTS["showcase"] if slots is None else slots)
+
+
+PRODUCER_ROWS["showcase-shapes"] = showcase_shapes(raw=True)
+PRODUCER_SLOTS["showcase-shapes"] = ()

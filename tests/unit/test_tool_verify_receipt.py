@@ -30,6 +30,7 @@ import verify_acts_cam  # noqa: E402
 import verify_acts_model_solids  # noqa: E402
 import verify_acts_motion  # noqa: E402
 import verify_acts_sketch  # noqa: E402
+import verify_acts_model_sweep  # noqa: E402
 from verify_families import (  # noqa: E402
     BRACKET_PARAMETERS_PROFILES, FINISHED_BRACKET, DATUM_BENCH_DETAILS,
     DATUM_BENCH_RESIZE, STOCK_VISE, _VISE_SHOWCASE_POSE, _SWARF_FRUSTUM,
@@ -88,6 +89,16 @@ def _tree(tmp_path, files):
 
 
 class TestSourceHash:
+    def test_served_guidance_change_or_removal_invalidates_hash(self, tmp_path):
+        rel = "guidance/parametric_cad_design.json"
+        root = _tree(tmp_path, {"a.py": b"x = 1\n", rel: b'{"rules": []}\n'})
+        before = tool_verify.source_hash(root)
+        (tmp_path / rel).write_bytes(b'{"rules": ["changed"]}\n')
+        changed = tool_verify.source_hash(root)
+        assert changed != before
+        (tmp_path / rel).unlink()
+        assert tool_verify.source_hash(root) not in (before, changed)
+
     def test_same_tree_hashes_identically(self, tmp_path):
         root = _tree(tmp_path, {"a.py": b"x = 1\n", "sub/b.py": b"y = 2\n"})
         assert tool_verify.source_hash(root) == tool_verify.source_hash(root)
@@ -125,6 +136,96 @@ class TestSourceHash:
         assert tool_verify.source_hash(root) == expected
 
 
+class TestFilletRadiusWitness:
+    @pytest.mark.parametrize("make_rows,key", [
+        (verify_acts_sketch._fillet_radius_rows, "fillet_reported_radius"),
+        (verify_acts_model_sweep._tangent_path_rows, "tp_fillet_reported_radius")])
+    def test_authored_fillet_rows_require_numeric_radius(self, monkeypatch, make_rows, key):
+        monkeypatch.setitem(verify_core._RECALL, key, None)
+        checks = []
+        for tool, args, check, _save in make_rows():
+            if tool != "sketch_edit_curve":
+                continue
+            args = args({"fillet_doc": "session:test", "tp_doc": "session:test"}) if callable(args) else args
+            if args.get("action") == "fillet" and args.get("radius") == 20:
+                checks.append(check)
+        assert len(checks) == 1
+        check = checks[0]
+        assert isinstance(check, verify_acts_model_sweep._FilletRadiusRefusal)
+        assert check.missing("requested 20 mm, solved None mm. REMAINS arc:0 line:0 line:1 sketch_get")
+        assert not check.missing("requested 20 mm, solved 18.7766 mm. REMAINS arc:0 line:0 line:1 sketch_get")
+        assert verify_core._RECALL[key] == 18.7766
+
+    @pytest.mark.parametrize("reported", ["None", "nan", "inf", "-1", "0"])
+    def test_unread_radius_refusal_cannot_reuse_a_prior_report(self, monkeypatch, reported):
+        monkeypatch.setitem(verify_core._RECALL, "fillet_reported_radius", 18.7766)
+        check = verify_acts_model_sweep._FilletRadiusRefusal("fillet_reported_radius")
+        text = f"requested 20 mm, solved {reported} mm. REMAINS arc:0 line:0 line:1 sketch_get"
+        assert check.missing(text)
+        assert "fillet_reported_radius" not in verify_core._RECALL
+
+    @pytest.mark.parametrize("reported", [18.7766, 12.0])
+    def test_independent_sketch_read_rejects_wrong_numeric_report(self, monkeypatch, reported):
+        monkeypatch.setitem(verify_core._RECALL, "fillet_reported_radius", None)
+        monkeypatch.setitem(verify_core._RECALL, "fillet_before", {"entities": []})
+        check = verify_acts_model_sweep._FilletRadiusRefusal("fillet_reported_radius")
+        assert not check.missing(
+            f"requested 20 mm, solved {reported} mm. REMAINS arc:0 line:0 line:1 sketch_get")
+        payload = {
+            "units": "mm", "truncated": False, "frame": {}, "is_fully_constrained": False,
+            "counts": {"lines": 2, "arcs": 1}, "constraint_count": 2,
+            "dimension_count": 0, "dimensions": [], "profile_count": 0, "profiles": [],
+            "constraints": [{"type": "tangent", "entities": ["arc:0", "line:" + str(i)]}
+                            for i in (0, 1)],
+            "entities": [
+                {"id": "line:0", "type": "line", "start": {"x": 10, "y": -30},
+                 "end": {"x": 214.6263, "y": -30}},
+                {"id": "line:1", "type": "line", "start": {"x": 224.5797, "y": -32.8623},
+                 "end": {"x": 260, "y": -55}},
+                {"id": "arc:0", "type": "arc", "center": {"x": 214.6263, "y": -48.7766},
+                 "radius": 18.7766}]}
+        if reported == 18.7766:
+            assert verify_acts_sketch._solved_fillet_effect()(payload)
+        else:
+            with pytest.raises(AssertionError, match="solved fillet radius"):
+                verify_acts_sketch._solved_fillet_effect()(payload)
+
+    @pytest.mark.parametrize("reported", [4.0, 5.0])
+    def test_tangent_path_read_checks_the_report_before_deriving_volume(self, monkeypatch, reported):
+        monkeypatch.setitem(verify_core._RECALL, "tp_fillet_reported_radius", None)
+        check = verify_acts_model_sweep._FilletRadiusRefusal("tp_fillet_reported_radius")
+        assert not check.missing(
+            f"requested 20 mm, solved {reported} mm. REMAINS arc:0 line:0 line:1 sketch_get")
+        payload = {"units": "mm", "counts": {"lines": 2, "arcs": 1}, "entities": [
+            {"id": "line:0", "start": {"x": -5, "y": -4}, "end": {"x": 0, "y": -4}},
+            {"id": "line:1", "start": {"x": 4, "y": 0}, "end": {"x": 4, "y": 5}},
+            {"id": "arc:0", "center": {"x": 0, "y": 0}, "radius": 4}]}
+        if reported == 4.0:
+            assert verify_acts_model_sweep._tangent_path_expected(payload)["end"] == [4, 5, 0]
+        else:
+            with pytest.raises(AssertionError, match="reported fillet radius"):
+                verify_acts_model_sweep._tangent_path_expected(payload)
+
+
+@pytest.mark.parametrize("kind", ["tool", "post"])
+@pytest.mark.parametrize("message,expected", [
+    ("Search was capped; absence is unknown", True),
+    ("Post not found. Search was capped", False),
+    ("Unknown post name", False)])
+def test_capped_miss_diagnostic_requires_unknown_absence(kind, message, expected):
+    script = ast.parse(verify_acts_cam._lookup_library_args({})["script"])
+    assignments = [node for node in ast.walk(script) if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Subscript)
+                           and isinstance(target.slice, ast.Constant)
+                           and target.slice.value == kind + "_missing_name_unknown"
+                           for target in node.targets)]
+    assert len(assignments) == 1
+    expression = compile(ast.Expression(assignments[0].value), "cap diagnostic", "eval")
+    result = eval(expression, {kind + "_unknown": {"is_error": True, "payload": message},
+                               "after_unknown": {}, "before_post": {}})
+    assert result is expected
+
+
 class TestHarnessSideOfTheHash:
     """Which tests/live modules the receipt binds: the SWEEP's, and only those."""
 
@@ -137,7 +238,8 @@ class TestHarnessSideOfTheHash:
         (live / "verify_core.py").write_bytes(b"EXCLUDED = {}\n")
         repo = tmp_path / "repo"
         _tree(repo, {"Fusion-Essentials.py": b"from . import commands\n",
-                     "lib/loaded_attestation.py": b"def begin(): pass\n"})
+                     "lib/loaded_attestation.py": b"def begin(): pass\n",
+                     "commands/updateTools/entry.py": b"def replace_with_library_tool(): pass\n"})
         monkeypatch.setattr(verify_runner, "SRC_ROOT", src)
         monkeypatch.setattr(verify_runner, "REPO_ROOT", str(repo))
         monkeypatch.setattr(verify_runner, "_HERE", str(live))
@@ -149,6 +251,13 @@ class TestHarnessSideOfTheHash:
         before = tool_verify.source_hash(src)
         helper = Path(verify_runner.REPO_ROOT) / "lib/loaded_attestation.py"
         helper.write_bytes(b"def begin(): return False\n")
+        assert tool_verify.source_hash(src) != before
+
+    def test_judged_gui_command_edit_invalidates_the_receipt(self, tmp_path, monkeypatch):
+        src, _live = self._rig(tmp_path, monkeypatch)
+        before = tool_verify.source_hash(src)
+        command = Path(verify_runner.REPO_ROOT) / "commands/updateTools/entry.py"
+        command.write_bytes(b"def replace_with_library_tool(): return False\n")
         assert tool_verify.source_hash(src) != before
 
     def test_a_facts_harness_edit_leaves_the_hash_where_a_predicate_edit_moves_it(

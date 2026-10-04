@@ -501,17 +501,93 @@ def test_an_unreadable_profile_sketch_row_is_refused_before_roll(scene, monkeypa
     assert scene.timeline._moves == []
 
 
-def test_an_unreadable_collapsed_member_names_the_ungroup_remedy(scene, monkeypatch):
-    monkeypatch.setattr(scene.profiles[1].parentSketch, "timelineObject", _RaisingRow())
-    monkeypatch.setattr(mod._design_common, "collapsed_group_hint",
-                        lambda _timeline, _name: "'Replacement' is inside collapsed group 'Profiles'. "
-                        "Run design_edit_timeline(action='ungroup', feature='Profiles') and retry.")
-    result = edit()
-    message = error_message(result)
-    assert "action='ungroup'" in message and "feature='Profiles'" in message
-    assert "The profile sketch timeline row does not read" in message
-    assert scene.feature.assignments == 0
-    assert scene.timeline._moves == []
+def _collapsed(name, sketch):
+    """A collapsed timeline group whose one member row wraps `sketch`."""
+    member = FakeTimelineObject(name=sketch.name, entity=sketch)
+    group = FakeTimelineObject(name=name, is_group=True)
+    group.isCollapsed, group.count, group.item = True, 1, lambda _i: member
+    return group
+
+
+@pytest.mark.parametrize("tokens,named", [
+    (True, "'Replacement' is inside the collapsed timeline group 'AGroup'"),
+    (False, "collapsed timeline groups 'BGroup', 'AGroup', and which one holds it could not be "
+            "told apart"),
+])
+def test_a_grouped_profile_sketch_is_placed_by_identity_not_by_its_shared_name(
+        scene, monkeypatch, tokens, named):
+    own = scene.profiles[1].parentSketch
+    namesake = Sketch(name="Replacement", parent_component=MakeComp(name="Other"))
+    if tokens:
+        monkeypatch.setattr(own, "entityToken", "own-sketch", raising=False)
+        monkeypatch.setattr(namesake, "entityToken", "namesake-sketch", raising=False)
+    monkeypatch.setattr(own, "timelineObject", _RaisingRow())
+    scene.timeline.timelineGroups = _NamedCollection([_collapsed_unread("Imports", True, "Other"),
+                                                      _collapsed("BGroup", namesake),
+                                                      _collapsed("AGroup", own)])
+    message = error_message(edit())
+    assert named in message and "The profile sketch timeline row does not read" in message
+    assert ("feature='BGroup'" in message) is False and "Imports" not in message
+    assert scene.feature.assignments == 0 and scene.timeline._moves == []
+
+
+class _UnreadEntityRow(FakeTimelineObject):
+    """A timeline row whose entity read raises."""
+    @property
+    def entity(self):
+        raise RuntimeError("3 : entity unavailable")
+
+    @entity.setter
+    def entity(self, _value):
+        pass
+
+
+def _collapsed_unread(name, raising, member_name="Replacement"):
+    """A collapsed timeline group whose one member's entity does not read."""
+    member = (_UnreadEntityRow(name=member_name) if raising
+              else FakeTimelineObject(name=member_name, entity=None))
+    group = FakeTimelineObject(name=name, is_group=True)
+    group.isCollapsed, group.count, group.item = True, 1, lambda _i: member
+    return group
+
+
+@pytest.mark.parametrize("groups,named", [
+    (("AGroup",), "'Replacement' names an item inside the collapsed timeline group 'AGroup', which "
+                  "the timeline lists as one item. Run design_edit_timeline(action='ungroup', "
+                  "feature='AGroup')"),
+    (("BGroup", "AGroup"), "collapsed timeline groups 'BGroup', 'AGroup', and which one holds it "
+                           "could not be told apart"),
+])
+def test_a_grouped_profile_sketch_whose_group_members_do_not_read_names_each_namesake_group(
+        scene, monkeypatch, groups, named):
+    own = scene.profiles[1].parentSketch
+    monkeypatch.setattr(own, "entityToken", "own-sketch", raising=False)
+    monkeypatch.setattr(own, "timelineObject", _RaisingRow())
+    scene.timeline.timelineGroups = _NamedCollection(
+        [_collapsed_unread("Imports", True, "Other")]
+        + [_collapsed_unread(g, raising=i == 0) for i, g in enumerate(groups)])
+    message = error_message(edit())
+    assert named in message and "The profile sketch timeline row does not read" in message
+    assert "Imports" not in message
+    assert scene.feature.assignments == 0 and scene.timeline._moves == []
+
+
+@pytest.mark.parametrize("state", [False, None])
+def test_a_namesake_group_not_read_as_collapsed_is_not_named(state):
+    own = Sketch(name="Replacement", parent_component=MakeComp(name="Own"))
+    own.entityToken = "own-sketch"
+    group = _collapsed_unread("Expanded", True)
+    group.isCollapsed = state
+    timeline = SimpleNamespace(timelineGroups=_NamedCollection([group]))
+    assert mod._design_common.collapsed_group_hint_for(timeline, own, "Replacement") is None
+
+
+def test_an_unnamed_item_found_by_identity_is_not_quoted_as_a_name():
+    own = Sketch(name="Replacement", parent_component=MakeComp(name="Own"))
+    own.entityToken = "own-sketch"
+    timeline = SimpleNamespace(timelineGroups=_NamedCollection([_collapsed("AGroup", own)]))
+    hint = mod._design_common.collapsed_group_hint_for(timeline, own, None)
+    assert hint.startswith("The item is inside the collapsed timeline group 'AGroup'")
 
 
 def test_same_count_replacement_is_not_same_feature(scene, monkeypatch):
