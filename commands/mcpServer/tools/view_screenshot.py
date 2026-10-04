@@ -14,6 +14,7 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import error, safe
 from . import _common
+from . import _drawing_common
 from . import _export
 from . import _inputs
 from . import _view_common
@@ -125,6 +126,9 @@ def handler(view: str = "current", width: int = _WIDTH_DEFAULT, height: int = _H
 
     vp = app.activeViewport
     if not vp:
+        if _drawing_common.active_drawing() is not None:
+            return error("No viewport is available for this drawing. Export it with "
+                         "drawing_export(format='pdf', file_path=...) to inspect its sheets.")
         return error("No active viewport (is a document open?).")
 
     # The output path is prepared BEFORE the camera moves, so an unusable destination refuses

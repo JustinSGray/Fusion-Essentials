@@ -1214,16 +1214,13 @@ class TestOperationsSummaryErrorGate:
         assert "operation_error" in drill["blocked_by"]
 
     def test_the_errored_op_is_not_counted_among_the_valid_toolpaths(self, monkeypatch):
-        # The COUNT the verdict quotes, not just its wording. The errored op reads toolpath_valid
-        # True, so a tally taken off that flag alone says "2 of 2 active ops have valid toolpaths"
-        # in the very sentence that sends the reader to resolve an exception - the two halves of
-        # one string disagreeing about the same job. Pinned as the whole sentence: the demoted
-        # wording is identical either way, so only the number separates them.
+        # A raw toolpath_valid tally includes errored rows, but the validity-check count excludes them.
+        # Pin the whole sentence and active count so wording and counts agree.
         monkeypatch.setattr(cr, "validity_basis", lambda: "manufacture_verified")
         summary = cr._operations_summary([self._rec("Face1"),
                                           self._rec("Drill1", has_error=True)])
         assert summary["readiness"] == (
-            "1 of 2 active ops have valid toolpaths - resolve the exceptions "
+            "1 of 2 active operations pass the validity check - resolve the exceptions "
             "(cam_get(include=['operations']) has the error text) before posting.")
         assert summary["active_count"] == 2          # the errored op is still ACTIVE, just not valid
 
@@ -1232,7 +1229,7 @@ class TestOperationsSummaryErrorGate:
         summary = cr._operations_summary([self._rec("Face1"), self._rec("Adaptive1")])
         # the whole sentence, not a substring: every demoted verdict CONTAINS "ready to post"
         # inside "'ready to post' is NOT established", so a substring check asserts nothing.
-        assert summary["readiness"] == "2 of 2 active ops have valid toolpaths - ready to post."
+        assert summary["readiness"] == "2 of 2 active operations pass the validity check - ready to post."
         assert summary["scan_complete"] is True and summary["observed_operation_count"] == 2
         assert summary["exceptions"] == []
 
@@ -1243,7 +1240,7 @@ class TestOperationsSummaryErrorGate:
         summary = cr._operations_summary([self._rec("Face1"),
                                           self._rec("Groove1", state="nonfinite",
                                                     blocked_by=["toolpath_nonfinite"])])
-        assert summary["readiness"].startswith("1 of 2 active ops have valid toolpaths")
+        assert summary["readiness"].startswith("1 of 2 active operations pass the validity check")
         assert "will not post" in summary["readiness"]
         assert summary["states"] == {"valid": 1, "nonfinite": 1}
 
@@ -1299,7 +1296,7 @@ class TestReadinessRemedyIsWordedFromTheExceptionKinds:
         # a remedy nobody measured is not invented: the sentence still names the exceptions.
         line = self._readiness(monkeypatch, [
             self._rec("Odd", toolpath_valid=False, blocked_by=["something_new"])])
-        assert line == "0 of 1 active ops have valid toolpaths - resolve the exceptions before posting."
+        assert line == "0 of 1 active operations pass the validity check - resolve the exceptions before posting."
 
 
 # ── _hms: seconds -> h:m:s ─────────────────────────────────────────────────────────────────────
@@ -3499,7 +3496,7 @@ class TestOperationsSummaryWarningVerdict:
 
     def test_zero_warnings_keeps_the_plain_ready_verdict(self):
         summary = cr._operations_summary([self._rec("Face1"), self._rec("Adaptive1")])
-        assert summary["readiness"] == "2 of 2 active ops have valid toolpaths - ready to post."
+        assert summary["readiness"] == "2 of 2 active operations pass the validity check - ready to post."
 
     def test_one_warning_demotes_the_verdict_and_names_the_op_and_its_first_line(self):
         # the exact boundary: 1 counted warning, everything else valid and unblocked.
@@ -3523,7 +3520,7 @@ class TestOperationsSummaryWarningVerdict:
             self._rec("Face1"),
             self._rec("Off1", state="suppressed", is_suppressed=True, toolpath_valid=False,
                       has_warning=True, warning="empty toolpath")])
-        assert summary["readiness"] == "1 of 1 active ops have valid toolpaths - ready to post."
+        assert summary["readiness"] == "1 of 1 active operations pass the validity check - ready to post."
 
     def test_an_errored_ops_warning_does_not_displace_the_exception_verdict(self):
         summary = cr._operations_summary([
@@ -3766,7 +3763,7 @@ class TestOperationsSummaryConsumesSetupBlockers:
 
     def test_no_blockers_keeps_the_plain_summary_verdict(self):
         summary = cr._operations_summary([self._rec("Face1")], [])
-        assert summary["readiness"] == "1 of 1 active ops have valid toolpaths - ready to post."
+        assert summary["readiness"] == "1 of 1 active operations pass the validity check - ready to post."
 
     def _postable_op(self, name):
         """An op row the summary counts as good to post - tool selected, toolpath valid, no fault -
@@ -3787,7 +3784,7 @@ class TestOperationsSummaryConsumesSetupBlockers:
         install(FakeCAM([machined, blocked]))
         out = _payload(cr.get_cam_operations_handler())
         by_name = {s["setup"]: s["summary"]["readiness"] for s in out["setups"]}
-        assert by_name["Top"] == "1 of 1 active ops have valid toolpaths - ready to post."
+        assert by_name["Top"] == "1 of 1 active operations pass the validity check - ready to post."
         assert "- ready to post." not in by_name["Bottom"]
         assert "no_machine_selected" in by_name["Bottom"]
 
@@ -4039,7 +4036,7 @@ class TestOperationsSummarySuppressed:
         assert summary["states"] == {"valid": 1, "suppressed": 1}
         assert summary["active_count"] == 1          # the suppressed op is excluded from posting
         assert summary["exceptions"] == []
-        assert summary["readiness"] == ("1 of 1 active ops have valid toolpaths - ready to post.")
+        assert summary["readiness"] == ("1 of 1 active operations pass the validity check - ready to post.")
 
 
 class TestOperationsPayloadAgreesOnOneParkedOp:

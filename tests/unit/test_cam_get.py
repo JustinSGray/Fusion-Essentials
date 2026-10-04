@@ -787,6 +787,39 @@ class TestBounding:
         prog = out["nc_programs"][0]
         assert prog["post_parameter_count"] == 65 and "post_parameters" not in prog
 
+    def test_nc_programs_reads_the_stored_emitted_number(self, monkeypatch):
+        crd = load_tool("_cam_read")
+        number = FakeCAMParameter("nc_program_name")
+        number.expression = "'C3_BAD_NUMBER'"
+        params = FakeCAMParameters([number])
+        program = SimpleNamespace(name="C3_NONNUMERIC_PROBE", machine=None,
+                                  postConfiguration=None, operations=[], filteredOperations=[],
+                                  parameters=params, postParameters=[])
+        programs = SimpleNamespace(count=1, item=lambda index: program if index == 0 else None)
+        monkeypatch.setattr(crd, "get_cam", lambda **_kwargs:
+                            (SimpleNamespace(ncPrograms=programs), None))
+
+        out = _payload(crd.get_nc_programs_handler())
+
+        assert out["nc_programs"][0]["name"] == "C3_NONNUMERIC_PROBE"
+        assert out["nc_programs"][0]["program_number"] == "C3_BAD_NUMBER"
+        assert out["nc_programs"][0]["program_number_readable"] is True
+
+    def test_nc_programs_marks_an_unread_emitted_number_as_unknown(self, monkeypatch):
+        crd = load_tool("_cam_read")
+        program = SimpleNamespace(name="NoNumber", machine=None, postConfiguration=None,
+                                  operations=[], filteredOperations=[],
+                                  parameters=FakeCAMParameters([]), postParameters=[])
+        programs = SimpleNamespace(count=1, item=lambda index: program if index == 0 else None)
+        monkeypatch.setattr(crd, "get_cam", lambda **_kwargs:
+                            (SimpleNamespace(ncPrograms=programs), None))
+
+        out = _payload(crd.get_nc_programs_handler())
+
+        assert out["nc_programs"][0]["program_number"] is None
+        assert out["nc_programs"][0]["program_number_readable"] is False
+        assert len(out["note"]) <= 400
+
 
 class TestAdditiveOperationRows:
     """An ADDITIVE setup's operations never carry tool_unselected or a spindle_check key, and are
@@ -876,6 +909,18 @@ class TestAdditiveOperationRows:
         summary = _payload(cg._cr.get_cam_operations_handler())["setups"][0]["summary"]
         assert "ready to post" not in summary["readiness"]
         assert "1 operation(s) still generating" in summary["readiness"]
+
+    def test_readiness_describes_valid_manual_operation_without_claiming_a_toolpath(self):
+        manual = FakeOperation("OperatorNote", has_toolpath=False, valid=True,
+                               operation_state=0, tool=None, strategy="manual")
+        self._install(FakeSetup("ManualSetup", [manual]))
+        summary = _payload(cg._cr.get_cam_operations_handler())["setups"][0]["summary"]
+        readiness = summary["readiness"]
+        assert "1 of 1 active operations pass the validity check" in readiness
+        assert "valid toolpaths" not in readiness
+        assert summary["setups_blocked"] == [
+            {"name": "ManualSetup", "blocked_by": ["no_machine_selected"]}]
+        assert "ready to post" in readiness and "NOT established" in readiness
 
 
 class TestLibrarySlice:

@@ -345,10 +345,10 @@ def _is_failure_marker(path):
     return path.lower().endswith(".failed")
 
 
-def _post_log_errors(program_name, since):
+def _post_log_errors(program_number, since):
     """Best-effort Error/Warning lines from THIS post's log, so a failure is actionable, not a guess.
-    Finds the newest <program>.log under the Fusion CAM temp tree touched since the post started."""
-    base = os.path.basename(str(program_name).strip())
+    Finds the newest <emitted number>.log under Fusion's CAM temp tree touched since the post started."""
+    base = os.path.basename(str(program_number).strip())
     if not base:
         return []
     try:
@@ -379,15 +379,19 @@ def _post_log_errors(program_name, since):
 _PROGRAM_NUMBER_MARK = "program number"
 
 
-def _program_number_clause(log_errors, prog_name):
-    """The clause a post-log line naming the PROGRAM NUMBER earns when the name passed was not a
-    number; '' otherwise."""
-    if prog_name.isdigit():
-        return ""
+def _program_number_clause(log_errors, prog_name, program_number, retained):
+    """Give a number remedy only when this post's log identifies a program-number error."""
     if not any(_PROGRAM_NUMBER_MARK in (line or "").lower() for line in log_errors):
         return ""
-    return (f" The post's message names the PROGRAM NUMBER, and program_name '{prog_name}' is not a "
-            "number - retry with a numeric program_name such as '1001'.")
+    shown = f"'{program_number}'" if program_number else "the stored emitted number"
+    if retained:
+        return (f" The post log rejected emitted number {shown}; this NC Program remains. Correct it "
+                f"with cam_set_nc_comment(program='{prog_name}', "
+                f"set_number='<number accepted by this post>'), then retry "
+                f"cam_post(program_name='{prog_name}').")
+    return (f" The post log rejected emitted number {shown}. Retry creation with a program_name that "
+            "is a number accepted by this post. If rollback says the failed program remains, remove "
+            "it with cam_delete first.")
 
 
 def _operations_collection(cam, targets):
@@ -841,6 +845,8 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
                          f"set to '{out_dir}'. Unresolved parameters: {', '.join(unresolved)}."
                          + _rollback_program(cam, program, prog_name, reused))
 
+    program_number = safe(lambda: _stored_str_param(program.parameters, _P_NUMBER))
+    post_log_key = program_number or prog_name
     before = _dir_snapshot(out_dir)
     started = time.time()
 
@@ -881,12 +887,13 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         # (a reused program pre-existed, leave it). Surface the post LOG's error lines - the real,
         # actionable reason (a '.failed' stub in the folder only says "see log").
         rolled = _rollback_program(cam, program, prog_name, reused)
-        log_errors = _post_log_errors(prog_name, started)
+        log_errors = _post_log_errors(post_log_key, started)
         msg = (f"NC Program '{prog_name}' did not post a usable NC file to '{out_dir}' "
                f"(postProcess={bool(posted)}, failed_stub={bool(failed_markers)})."
                + rolled + " ")
         if log_errors:
-            msg += "Post log: " + " | ".join(log_errors) + _program_number_clause(log_errors, prog_name)
+            msg += ("Post log: " + " | ".join(log_errors)
+                    + _program_number_clause(log_errors, prog_name, program_number, reused))
         else:
             msg += "Check the output folder path, the program number/name, and that the post matches the ops."
         return error(msg)
@@ -902,6 +909,7 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         "mode": "as_is" if as_is else "configured",
         "scope": "as_is" if as_is else kind,
         "program_name": prog_name,
+        "program_number": program_number,
         "program_reused": reused,
         "nc_program": program_verb,
         "post_config": post_label,
@@ -924,11 +932,6 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
             "post_scope": post_scope_key,
             "units": units_key,
             "params_applied": applied,
-            # What the post will EMIT as the program number, read off the parameter either way -
-            # written here only on a create seeded from an all-digit program_name, so a caller
-            # meets the remedy on the 'program_name' input rather than in every post's note.
-            "program_number": (applied[_P_NUMBER] if _P_NUMBER in applied
-                               else _stored_str_param(program.parameters, _P_NUMBER)),
         })
         result.update(membership)
         if kind == "setups":
@@ -942,7 +945,7 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         # the post log's error lines so the caller sees the real reason, not just "review the output".
         result["partial"] = True
         result["program_error"] = safe(lambda: program.error) if program_error else None
-        log_errors = _post_log_errors(prog_name, started)
+        log_errors = _post_log_errors(post_log_key, started)
         if log_errors:
             result["post_log"] = log_errors
         if failed_markers:
@@ -950,6 +953,10 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         reason = (" ".join(log_errors) if log_errors
                   else f"postProcess={bool(posted)}, program_error={program_error}")
         result["note"] = (f"Post did not report clean success - review before running. {reason}")
+        if log_errors:
+            result["note"] += _program_number_clause(log_errors, prog_name, program_number, True)
+        if program_number is None:
+            result["note"] += " The stored emitted program number is unavailable; verify it before retrying."
         return ok(result)
 
     if as_is:
@@ -963,6 +970,9 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
             # The program's own membership read disagreed with the scope, or could not be compared -
             # stated beside the file rather than left in a key the note never mentions.
             result["note"] += " Membership: " + membership["membership_note"]
+    if program_number is None:
+        result["partial"] = True
+        result["note"] += " Stored emitted program number is unavailable; verify it before relying on numbering."
     return ok(result)
 
 

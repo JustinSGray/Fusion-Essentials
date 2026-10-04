@@ -1060,5 +1060,18 @@ class TestHandlerInputGuards:
 
     def test_no_active_viewport_is_an_error(self, monkeypatch):
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=None))
+        monkeypatch.setattr(gs._drawing_common, "active_drawing", lambda: None)
         result = gs.handler()
-        assert result["isError"] is True and "viewport" in result["message"]
+        assert result["isError"] is True
+        assert result["message"] == "No active viewport (is a document open?)."
+        assert "drawing_export" not in result["message"]
+
+    def test_a_drawing_without_a_viewport_points_to_pdf_export(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=None))
+        monkeypatch.setattr(gs._drawing_common, "active_drawing", lambda: object())
+        path = tmp_path / "drawing.png"
+        result = gs.handler(file_path=str(path))
+        assert result["isError"] is True
+        assert "No viewport is available for this drawing" in result["message"]
+        assert "drawing_export(format='pdf', file_path=...)" in result["message"]
+        assert not path.exists()

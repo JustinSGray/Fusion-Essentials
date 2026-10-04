@@ -1208,10 +1208,8 @@ class TestPostLog:
         assert any("requires a machine configuration" in e
                    for e in cp._post_log_errors("1002", 0.0))
 
-    def test_a_program_number_refusal_names_the_non_numeric_name_that_was_sent(self, monkeypatch,
-                                                                                tmp_path):
-        # the post's own line is the only thing that says a number was wanted here; the clause
-        # relays it and names the value that was not one.
+    def test_a_new_program_number_refusal_recommends_recreating_with_an_accepted_number(
+            self, monkeypatch, tmp_path):
         root = tmp_path / "Fusion360CAM"
         self._make_log(root, "FinishPass",
                        "Error: Program number 'NaN' is out of range. Please enter 1-99999.\n")
@@ -1220,12 +1218,12 @@ class TestPostLog:
         res = cp.handler(post=str(_write_cps(tmp_path)), output_folder=str(tmp_path),
                          program_name="FinishPass")
         assert res["isError"] is True
-        assert "PROGRAM NUMBER" in res["message"] and "'FinishPass'" in res["message"]
-        assert "numeric program_name" in res["message"]
+        assert "program number" in res["message"].lower()
+        assert "program_name that is a number accepted by this post" in res["message"]
+        assert "cam_set_nc_comment(program='FinishPass'" not in res["message"]
 
-    def test_a_numeric_name_earns_no_number_clause(self, monkeypatch, tmp_path):
-        # the boundary: the same log line against a name that IS a number - telling that caller to
-        # pass a number names a remedy they already took.
+    def test_a_numeric_name_still_gets_a_remedy_when_the_post_log_rejects_its_number(
+            self, monkeypatch, tmp_path):
         root = tmp_path / "Fusion360CAM"
         self._make_log(root, "1001", "Error: Program number '1001' is out of range.\n")
         monkeypatch.setattr(cp, "_CAM_LOG_ROOT", str(root))
@@ -1233,7 +1231,71 @@ class TestPostLog:
         res = cp.handler(post=str(_write_cps(tmp_path)), output_folder=str(tmp_path),
                          program_name="1001")
         assert res["isError"] is True and "out of range" in res["message"]
-        assert "numeric program_name" not in res["message"]
+        assert "number accepted by this post" in res["message"]
+
+    def test_reused_program_looks_up_log_and_recommends_set_number_by_listing(
+            self, monkeypatch, tmp_path):
+        root = tmp_path / "Fusion360CAM"
+        self._make_log(root, "C3_BAD_NUMBER", "Error: Program number is out of range.\n")
+        monkeypatch.setattr(cp, "_CAM_LOG_ROOT", str(root))
+        setup = _Setup("S1", [_Op("Face1")])
+        cam = _install(monkeypatch, _CAM([setup], writes="failed", existing=["FinishPass"]))
+        program = cam.ncPrograms.itemByName("FinishPass")
+        program.operations = [setup]
+        program.postConfiguration = types.SimpleNamespace(description="Test post")
+        program.parameters.itemByName(cp._P_FOLDER).expression = cp._quote(str(tmp_path))
+        program.parameters.itemByName(cp._P_NUMBER).expression = cp._quote("C3_BAD_NUMBER")
+
+        res = cp.handler(program_name="FinishPass")
+
+        assert res["isError"] is True
+        assert "Program number is out of range" in res["message"]
+        assert "cam_set_nc_comment(program='FinishPass', " in res["message"]
+        assert "set_number='<number accepted by this post>'" in res["message"]
+        assert "cam_post(program_name='FinishPass')" in res["message"]
+        assert cam.ncPrograms.count == 1
+        assert cam.ncPrograms.itemByName("FinishPass") is program
+        assert _unq(program.parameters.itemByName(cp._P_NUMBER).expression) == "C3_BAD_NUMBER"
+
+    def test_partial_post_keeps_program_number_remedy_in_final_note(self, monkeypatch, tmp_path):
+        root = tmp_path / "Fusion360CAM"
+        self._make_log(root, "C3_BAD_NUMBER", "Error: Program number is out of range.\n")
+        monkeypatch.setattr(cp, "_CAM_LOG_ROOT", str(root))
+        setup = _Setup("S1", [_Op("Face1")])
+        cam = _install(monkeypatch, _CAM([setup], writes=True, returns=False,
+                                         existing=["FinishPass"]))
+        program = cam.ncPrograms.itemByName("FinishPass")
+        program.operations = [setup]
+        program.postConfiguration = types.SimpleNamespace(description="Test post")
+        program.parameters.itemByName(cp._P_FOLDER).expression = cp._quote(str(tmp_path))
+        program.parameters.itemByName(cp._P_NUMBER).expression = cp._quote("C3_BAD_NUMBER")
+
+        data = _payload(cp.handler(program_name="FinishPass"))
+
+        assert data["partial"] is True
+        assert "Program number is out of range" in data["note"]
+        assert "cam_set_nc_comment(program='FinishPass'" in data["note"]
+        assert "cam_post(program_name='FinishPass')" in data["note"]
+
+    def test_as_is_post_keeps_file_but_marks_unread_program_number_partial(
+            self, monkeypatch, tmp_path):
+        setup = _Setup("S1", [_Op("Face1")])
+        cam = _install(monkeypatch, _CAM([setup], existing=["FinishPass"],
+                                         missing=(cp._P_NUMBER,)))
+        program = cam.ncPrograms.itemByName("FinishPass")
+        program.operations = [setup]
+        program.postConfiguration = types.SimpleNamespace(description="Test post")
+        program.parameters.itemByName(cp._P_FOLDER).expression = cp._quote(str(tmp_path))
+        def _post_without_number(program):
+            (tmp_path / "FinishPass.nc").write_text("valid mock output")
+            return True
+        cam._do_post = _post_without_number
+
+        data = _payload(cp.handler(program_name="FinishPass"))
+
+        assert data["posted"] is True and data["file_count"] == 1
+        assert data["program_number"] is None and data["partial"] is True
+        assert "Stored emitted program number is unavailable" in data["note"]
 
     def test_failed_stub_is_error_with_the_log_reason_not_listed_as_a_deliverable(self, monkeypatch, tmp_path):
         # A '.failed' stub is the ONLY thing the post wrote -> no deliverable NC file -> error that

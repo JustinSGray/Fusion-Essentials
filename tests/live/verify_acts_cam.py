@@ -793,17 +793,20 @@ def _setup_absent(setup):
 
 
 def _manual_nc_valid_without_path(setup):
-    """Independently read a valid Manual NC row without a toolpath or empty-path warning."""
+    """Read a pathless valid Manual NC row and its operation-validity wording."""
     def check(p):
         rec, rows = _setup_operation_rows(p, setup)
         row = rows[0] if len(rows) == 1 else None
-        return _measured(f"'{setup}' holds one valid pathless Manual NC operation",
-                         {"row": row},
+        readiness = ((rec or {}).get("summary") or {}).get("readiness") or ""
+        return _measured(f"'{setup}' validity does not claim a generated path",
+                         {"row": row, "readiness": readiness},
                          bool(rec) and row is not None and bool(row.get("name"))
                          and row.get("strategy") == "manual"
                          and row.get("state") == "valid" and row.get("has_toolpath") is False
                          and "empty_toolpath" not in row
-                         and "tool_unselected" not in (row.get("blocked_by") or []))
+                         and "tool_unselected" not in (row.get("blocked_by") or [])
+                         and "1 of 1 active operations pass the validity check" in readiness
+                         and "valid toolpaths" not in readiness)
     return check
 
 
@@ -2428,6 +2431,20 @@ def _nc_listing(holds=None, gone=None):
     return check
 
 
+def _nc_program_number(program, number):
+    """cam_get(include=['nc_programs']): independently read the listing name and emitted number."""
+    def check(p):
+        rows = (p.get("nc_programs") or {}).get("nc_programs") or []
+        row = next((item for item in rows if item.get("name") == program), None)
+        return _measured(f"NC program {program!r} still lists emitted number {number!r}",
+                         {"name": (row or {}).get("name"),
+                          "program_number": (row or {}).get("program_number"),
+                          "program_number_readable": (row or {}).get("program_number_readable")},
+                         bool(row) and row.get("program_number") == number
+                         and row.get("program_number_readable") is True)
+    return check
+
+
 def _nc_program_deleted(name):
     """cam_delete on an NC PROGRAM: programs hang off cam.ncPrograms, outside the setup tree, and
     'entity_type' is the resolved node's kind - which is what says a program went rather than a
@@ -2601,6 +2618,19 @@ _CAM_DELIVER = [
     ("cam_get", {"include": ["nc_programs"]}, _nc_listing(holds="1001"), None),
     ("cam_set_nc_comment", {"program": "1001", "set_number": "1001"},
      _nc_numbered("1001", "1101", "1001"), None),
+    # A post can reject the emitted number even though it is valid as an NCProgram parameter.
+    # The post log is keyed by that parameter, not the listing name; after the actionable refusal,
+    # independently set the number back and prove the same listing posts as-is.
+    ("cam_set_nc_comment", {"program": "1001", "set_number": "C3_BAD_NUMBER"},
+     _nc_numbered("1001", "1001", "C3_BAD_NUMBER"), None),
+    ("cam_post", {"program_name": "1001"},
+     _refused("Program number", "is out of range", "cam_set_nc_comment(program='1001'",
+              "set_number='<number accepted by this post>'"), None),
+    ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "C3_BAD_NUMBER"), None),
+    ("cam_set_nc_comment", {"program": "1001", "set_number": "1001"},
+     _nc_numbered("1001", "C3_BAD_NUMBER", "1001"), None),
+    ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "1001"), None),
+    ("cam_post", {"program_name": "1001"}, _posted_as_is("1001"), None),
     # REFUSED: a post path whose DIRECTORY does not exist. Its basename resolves in the installed
     # post folder, so a basename fallback would post a .cps nothing asked for; the listing read
     # after it is what says the refusal fired before any program was built.
@@ -3658,6 +3688,16 @@ _CAM_FB_DELIVER = [
     ("cam_get", {"include": ["nc_programs"]}, _nc_listing(holds="1001"), None),
     ("cam_set_nc_comment", {"program": "1001", "set_number": "1001"},
      _nc_numbered("1001", "1101", "1001"), None),
+    ("cam_set_nc_comment", {"program": "1001", "set_number": "C3_BAD_NUMBER"},
+     _nc_numbered("1001", "1001", "C3_BAD_NUMBER"), None),
+    ("cam_post", {"program_name": "1001"},
+     _refused("Program number", "is out of range", "cam_set_nc_comment(program='1001'",
+              "set_number='<number accepted by this post>'"), None),
+    ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "C3_BAD_NUMBER"), None),
+    ("cam_set_nc_comment", {"program": "1001", "set_number": "1001"},
+     _nc_numbered("1001", "C3_BAD_NUMBER", "1001"), None),
+    ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "1001"), None),
+    ("cam_post", {"program_name": "1001"}, _posted_as_is("1001"), None),
     ("cam_post", {"scope": "Setup1", "post": EXPORT_DIR + "/no-such-folder/haas.cps",
                   "post_scope": "local", "output_folder": EXPORT_DIR + "/nc",
                   "program_name": "1004"},

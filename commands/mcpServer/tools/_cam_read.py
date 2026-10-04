@@ -16,7 +16,8 @@ from ._cam_common import (EMPTY_TOOLPATH_REMEDY, _MANUAL_NC_STRATEGY, _SETUP_BLO
                           is_empty_toolpath, machine_label, machine_limits, machine_spindle_max,
                           op_is_suppressed, op_primary_state, op_state_facts, operations_under,
                           ready_verdict, resolve_cam_node, setup_blockers, setups, spindle_check,
-                          stock_mode_name, time_reading, toolpath_present_tally, validity_basis,
+                          stock_mode_name, time_reading, toolpath_present_tally, unquote_expression,
+                          validity_basis,
                           validity_sync_miss, validity_synced, with_validity_clause)
 
 MAP_BLURB = (
@@ -472,16 +473,16 @@ def _operations_summary(op_records, setup_blocked=None, scan_complete=True) -> d
             "Any setup blockers are in 'setups_blocked'.")
     elif basis == "manufacture_verified":
         if generating:
-            summary["readiness"] = (f"{valid_active} of {active_total} active ops have valid "
-                                    f"toolpaths - {generating} operation(s) still generating; poll "
+            summary["readiness"] = (f"{valid_active} of {active_total} active operations pass "
+                                    f"the validity check - {generating} operation(s) still generating; poll "
                                     "cam_get_status before posting.")
         elif active_total and valid_active == active_total and not exceptions:
             summary["readiness"] = ready_verdict(
-                f"{active_total} of {active_total} active ops have valid toolpaths",
+                f"{active_total} of {active_total} active operations pass the validity check",
                 warned, warning_sample, setup_blocked)
         else:
-            summary["readiness"] = (f"{valid_active} of {active_total} active ops have valid "
-                                    "toolpaths - resolve the exceptions"
+            summary["readiness"] = (f"{valid_active} of {active_total} active operations pass "
+                                    "the validity check - resolve the exceptions"
                                     + _exception_remedies(exceptions, setup_blocked)
                                     + " before posting.")
     else:
@@ -1118,6 +1119,8 @@ def get_nc_programs_handler() -> dict:
             nc = ncs.item(i)
             entry = {
             "name": safe(lambda: nc.name),
+            "program_number": None,
+            "program_number_readable": False,
             "operation_count": None,
             "machine": machine_label(safe(lambda: nc.machine)),
             "post": safe(lambda: nc.postConfiguration.description) if safe(lambda: nc.postConfiguration) else None,
@@ -1133,6 +1136,9 @@ def get_nc_programs_handler() -> dict:
             unit_record = _nc_program_unit_record(safe(lambda: nc.parameters))
             if unit_record is not None:
                 entry["nc_program_unit"] = unit_record
+            number_param = safe(lambda: nc.parameters.itemByName("nc_program_name"))
+            entry["program_number"] = unquote_expression(safe(lambda: number_param.expression))
+            entry["program_number_readable"] = entry["program_number"] is not None
             params = safe(lambda: nc.postParameters)
             if params is not None:
                 try:

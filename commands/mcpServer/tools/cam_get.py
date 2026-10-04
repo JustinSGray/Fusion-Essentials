@@ -193,7 +193,7 @@ def _slice_references(cam, setup):
 
 
 def _slice_nc_programs(cam):
-    """The NC/post programs - SUMMARY only (name, machine, post, op count + post_parameter_count). The
+    """NC/post summary: listing name, emitted number, machine, post, counts and parameter count. The
     full post_parameters are the post's static schema (often 60+ rows, identical across programs), a
     deeper level not dumped here - point at it rather than flooding (CLAUDE.md 'point, don't inline')."""
     payload, err = _unwrap(_cr.get_nc_programs_handler())

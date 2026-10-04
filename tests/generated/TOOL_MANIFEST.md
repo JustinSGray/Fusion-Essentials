@@ -268,7 +268,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ⚠ | `drawing_delete_sketch` | Delete a drawing sketch by exact name from a sheet of the active drawing |
 | ✎ | `drawing_dimension` | Dimension one view of the active drawing: auto, or one dimension on curves from drawing_get(include=['curves'], view=N) |
 | ⚠ | `drawing_edit_revisions` | Add, update, delete, hide or show rows of a sheet's one revision table |
-| ⚠ | `drawing_edit_sheet` | Manage the active 2D drawing's sheets; tidy_up lays a sheet's views out again. |
+| ⚠ | `drawing_edit_sheet` | Manage drawing sheets |
 | ✎ | `drawing_export` | Export the active 2D drawing to PDF, DXF or DWG on local disk - open the drawing first (doc_open by file_id) |
 | · | `drawing_get` | Read the ACTIVE 2D drawing: standard, units and per-sheet facts. |
 | · | `drawing_get_status` | Poll deferred drawing_create, drawing_update or drawing_export by request_key; it reads stored state and does not replay work. |

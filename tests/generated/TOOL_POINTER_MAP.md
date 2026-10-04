@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 322  |  **note/error breadcrumbs:** 698
+**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 700
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -887,7 +887,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Post config not found for ''. Tried: . Provide a full .cps path, or a post name in the personal () or installed () post folder. post_scope=fusion resolves the same name against the posts this insta...
 - Cannot resolve  post '' by name: the search was capped, so uniqueness or absence is unknown. Pass an exact post asset url from this library, or retry a complete listing.
 - Provide 'post' - the post processor: for post_scope=local a full .cps path or a name in the personal/installed post folder; for cloud/hub/fusion the NAME of a post in that library.
-- The post's message names the PROGRAM NUMBER, and program_name '' is not a number - retry with a numeric program_name such as '1001'.
+- The post log rejected emitted number ; this NC Program remains. Correct it with cam_set_nc_comment(program='', set_number='<number accepted by this post>'), then retry cam_post(program_name='').
+- The post log rejected emitted number . Retry creation with a program_name that is a number accepted by this post. If rollback says the failed program remains, remove it with cam_delete first.
 - program_operation_count: unsuppressed operations in scope; posted_operations: valid toolpaths in scope (hasToolpath and not errored). Suppressed operations are excluded from both counts and NC output.
 - NC Program '' re-read ZERO operations after the requested scope was assigned, while that scope resolves to  - the assignment did not take, so nothing was posted.
 - stored and  requested operation(s) have no readable operationId, so the program's membership was not compared with the scope.
@@ -2240,21 +2241,21 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' is not valid for this drawing: its standard reads
 - , and Fusion rejects a size that does not belong to the active drawing standard. Choose one of the
 - The size did not take - sheet '
-- Sheet size set and read back - width and height follow the size and cannot be set directly. action='tidy_up' lays the sheet's views out again.
+- Sheet size set and read back - width and height follow the size and cannot be set directly. action='tidy_up' requests a view-layout adjustment; use drawing_export to inspect its visual effect.
 - Fusion refused sheet size '
 - This Fusion build has no sheet orientation '
 - Fusion does not support portrait orientation on the
 - ' keeps its current orientation ('
 - '). Set a smaller size first (action='set_size').
 - The orientation did not take - sheet '
-- Orientation set and read back - the sheet's width and height swap with it. action='tidy_up' lays the sheet's views out again.
+- Orientation set and read back - the sheet's width and height swap with it. action='tidy_up' requests a view-layout adjustment; use drawing_export to inspect its visual effect.
 - Fusion refused orientation '
-- Sheet tidied (tidyUp returned true); the view COUNT does not change. The drawing is modified in-session but NOT saved - doc_save persists it, drawing_export shows the result.
+- Fusion accepted the tidy-up request (tidyUp returned true); the view count does not change. The drawing is modified in-session but NOT saved - doc_save persists it, drawing_export lets you inspect ...
 - The document was already modified before this call, so the modified flag cannot confirm this tidy on its own - drawing_export is the check.
 - Sheet.tidyUp returned false for '
 - ' - Fusion did not tidy the sheet.
 - Tidy up reported success for '
-- ' but the document is still unmodified - nothing on the sheet changed.
+- ' but the document is still unmodified - the visual effect is unverified. Use drawing_export(format='pdf', file_path=...) to inspect the sheet.
 - It is the ACTIVE sheet now and no API activates a sheet, so this server cannot switch back. A DXF export holds the active sheet only - export a sheet's DXF before the next add.
 - Sheet.copy returned nothing for ''; its effect is unverified. The drawing may still be updating asynchronously. Re-read drawing_get before retrying, to avoid a duplicate copy.
 - Sheet.copy returned '' but the sheet count still reads  (before ); its effect is unverified. Nothing was rolled back. Re-read drawing_get before retrying.
@@ -2262,6 +2263,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - The rename did not take - the sheet still reads '' after being set to ''. Sheet names are case-insensitively unique in a drawing: a name another sheet holds, or a case variant of it, is ignored. Pi...
 - The  sheet size '' is not valid for this drawing: its standard reads , and Fusion rejects a size that does not belong to the active drawing standard. Choose one of the  sizes.
 - Fusion does not support portrait orientation on the   sheet size, so '' keeps its current orientation (''). Set a smaller size first (action='set_size').
+- Tidy up reported success for '' but the document is still unmodified - the visual effect is unverified. Use drawing_export(format='pdf', file_path=...) to inspect the sheet.
 
 ### `drawing_export`
 - Active drawing exported to local disk as
@@ -4731,6 +4733,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `view_screenshot`
 - No active viewport (is a document open?).
+- No viewport is available for this drawing. Export it with drawing_export(format='pdf', file_path=...) to inspect its sheets.
 - fit_to: nothing matched '
 - '. Use design_get(include=['tree']) for occurrences, find_geometry for a body.
 - The camera could NOT be put back where it was before this shot: . The viewport is left at the capture camera - view_set(orient) re-aims it.

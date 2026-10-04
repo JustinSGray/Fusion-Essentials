@@ -44,6 +44,7 @@ _DXF = EXPORT_DIR + "/sm_sweep_flat.dxf"
 _CUT_DXF = EXPORT_DIR + "/sm_sweep_cut.dxf"
 _PDF = EXPORT_DIR + "/sm_sweep_drawing.pdf"
 _PDF_KEY = "sm-sweep-pdf-" + _STAMP
+_DRAWING_PNG = EXPORT_DIR + "/sm_sweep_drawing_" + _STAMP + ".png"
 
 
 def _ruled_component(p):
@@ -924,13 +925,29 @@ def _drawing_sheets(p):
                      and any("flat_pattern" in types for types in view_types))
 
 
+def _drawing_before_screenshot(p):
+    """Require readable drawing sheets and an unused path before the no-viewport probe."""
+    _drawing_sheets(p)
+    exists = Path(_DRAWING_PNG).exists()
+    return _measured("drawing reads before screenshot refusal; PNG path starts absent",
+                     {"file_path": _DRAWING_PNG, "exists": exists}, not exists)
+
+
+def _drawing_after_screenshot(p):
+    """Require the drawing still reads and the refused screenshot wrote no PNG."""
+    _drawing_sheets(p)
+    exists = Path(_DRAWING_PNG).exists()
+    return _measured("drawing remains readable and screenshot refusal wrote no PNG",
+                     {"file_path": _DRAWING_PNG, "exists": exists}, not exists)
+
+
 
 
 def _drawing_layout_saved(p):
     """Require the tidy edit saved in the exact opened drawing session."""
     drawing = _RECALL.get("sm_drawing") or [None, None]
     acted = p.get("acted_on") or {}
-    return _measured("tidied drawing saved in its own session", {"save": p,
+    return _measured("accepted tidy-up request saved in its own session", {"save": p,
                      "expected_lineage": drawing[0]},
                      _versioned(drawing[1])(p)
                      and acted.get("document_id") == drawing[0]
@@ -2040,15 +2057,27 @@ _SHEET_DRAWING = [
      ("sm_drawing_initial_session", _recall("sm_drawing_initial_session",
                                             lambda p: p["document_handle"]))),
     _dwell(4.0),
-    ("drawing_get", {"include": ["views"]}, _drawing_sheets, None),
+    ("drawing_get", {"include": ["views"]}, _drawing_before_screenshot, None),
+    ("view_screenshot", lambda c: {"file_path": _DRAWING_PNG,
+                                     "expect_document": _ctx_get(c, "sm_drawing_initial_session",
+                                                                  "coupon drawing session")},
+     _refused("No viewport is available for this drawing.",
+              "drawing_export(format='pdf', file_path=...)"), None),
+    ("drawing_get", {"include": ["views"]}, _drawing_after_screenshot, None),
     ("data_get", lambda c: _version_args("sm_drawing_before")(
         {"source_urn": _ctx_get(c, "sm_drawing", "coupon drawing")[0]}),
      _version_snapshot("sm_drawing_before"),
      ("sm_drawing_before", _recall("sm_drawing_before", _version_record))),
     ("drawing_edit_sheet", {"action": "tidy_up", "sheet": _PART + "_2"},
-     lambda p: _measured("flat sheet layout refreshed", p,
-                         p.get("tidied") is True and p.get("sheet") == _PART + "_2"), None),
-    ("doc_save", lambda c: {"description": "Persist the flat sheet layout",
+     lambda p: _measured("flat-sheet tidy-up accepted and document modified; confirmation can be "
+                         "false if source was already dirty; visual effect unverified",
+                         p, p.get("tidied") is True and p.get("sheet") == _PART + "_2"
+                         and p.get("document_modified") is True
+                         and (p.get("modified_confirmed") is True
+                              or (p.get("modified_confirmed") is False
+                                  and "already modified before this call" in (p.get("note") or "")
+                                  and "drawing_export is the check" in (p.get("note") or "")))), None),
+    ("doc_save", lambda c: {"description": "Persist the accepted tidy-up request",
                             "expect_document": _ctx_get(c, "sm_drawing_initial_session",
                                                         "coupon drawing session")},
      _drawing_layout_saved, None),
@@ -2074,7 +2103,14 @@ _SHEET_DRAWING = [
      ("sm_sheet_names", _recall("sm_sheet_names", lambda p: sorted(
          row.get("name") for row in (p.get("sheets") or []) if isinstance(row, dict))))),
     ("drawing_edit_sheet", {"action": "tidy_up", "sheet": _PART + "_2"},
-     lambda p: p.get("tidied") is True and p.get("views") == 4, None),
+     lambda p: _measured("flat-sheet tidy-up accepted; false confirmation requires the "
+                         "already-modified explanation; visual effect unverified",
+                         p, p.get("tidied") is True and p.get("views") == 4
+                         and p.get("document_modified") is True
+                         and (p.get("modified_confirmed") is True
+                              or (p.get("modified_confirmed") is False
+                                  and "already modified before this call" in (p.get("note") or "")
+                                  and "drawing_export is the check" in (p.get("note") or "")))), None),
     ("drawing_export", lambda c: {"format": "pdf", "file_path": _PDF,
                                   "deferred": True, "request_key": _PDF_KEY,
                                   "expect_document": _ctx_get(c, "sm_drawing_session", "coupon drawing")},
