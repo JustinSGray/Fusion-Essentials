@@ -629,25 +629,26 @@ def handler(geometry=None, sketch_name: str = "", component: str = "", units: st
 def _one(sketch, entry, k, units, include_summary=True):
     """(result, error) for ONE geometry entry drawn on `sketch`; required params per 'kind' are in
     _REQUIRED."""
+    refuse = _sketch_batch.refuse
     kind = (entry.get("kind") or "").strip().lower()
     if kind not in _KINDS:
-        return None, f"Unknown kind '{kind}'. Valid: {', '.join(_KINDS)}."
+        return refuse(f"Unknown kind '{kind}'. Valid: {', '.join(_KINDS)}.")
     is_construction = bool(entry.get("is_construction"))
     if is_construction and kind == "point":
-        return None, ("is_construction does not apply to kind='point' - it is set on sketch "
+        return refuse("is_construction does not apply to kind='point' - it is set on sketch "
                       "curves only, so the point would land as a normal point. Omit it.")
 
     # polyline / closed_path / spline / cv_spline: a chain/curve from a 'points' list.
     if kind in _POINT_LIST_KINDS:
         pts, perr = _parse_points(entry.get("points"))
         if perr:
-            return None, perr
+            return refuse(perr)
         p = {"points": pts, "_points": pts}
         if kind == "cv_spline":
             degree = entry.get("degree")
             d = 3 if degree is None else int(degree)
             if d not in _SPLINE_DEGREES:
-                return None, (f"cv_spline 'degree' must be "
+                return refuse(f"cv_spline 'degree' must be "
                               f"{' or '.join(str(n) for n in sorted(_SPLINE_DEGREES))} - the only "
                               f"degrees the API accepts when creating a spline. Got {degree}.")
             p["degree"] = d
@@ -666,7 +667,7 @@ def _one(sketch, entry, k, units, include_summary=True):
             else:
                 p[key] = supplied[key]
         if missing:
-            return None, (f"'{kind}' needs: {', '.join(_REQUIRED[kind])}. "
+            return refuse(f"'{kind}' needs: {', '.join(_REQUIRED[kind])}. "
                           f"Missing: {', '.join(missing)}.")
         p["minor"] = entry.get("minor")   # optional, passed through for ellipse / elliptical_arc
         p["start_deg"] = entry.get("start_deg")  # optional, elliptical_arc (default 0 = major axis)
@@ -679,16 +680,16 @@ def _one(sketch, entry, k, units, include_summary=True):
         if kind in _SLOT_KINDS:
             slot_err = _slot_error(kind, p)
             if slot_err:
-                return None, slot_err
+                return refuse(slot_err)
         if kind in ("circle", "ellipse", "elliptical_arc") and p["radius"] <= 0:
-            return None, "radius must be > 0."
+            return refuse("radius must be > 0.")
         if kind == "elliptical_arc" and p["minor"] is not None and p["minor"] <= 0:
-            return None, f"minor must be > 0 (got {p['minor']}); omit it for major/2."
+            return refuse(f"minor must be > 0 (got {p['minor']}); omit it for major/2.")
         # the conic binding states rhoValue must be greater than zero and less than one.
         if kind == "conic" and not 0.0 < float(p["rho"]) < 1.0:
-            return None, f"conic 'rho' must be greater than 0 and less than 1. Got {p['rho']}."
+            return refuse(f"conic 'rho' must be greater than 0 and less than 1. Got {p['rho']}.")
         if kind == "polygon" and int(p["sides"]) < 3:
-            return None, "polygon needs sides >= 3."
+            return refuse("polygon needs sides >= 3.")
 
     # Draw (defer compute so the single add is efficient and consistent).
     before_kind = _kind_curve_count(sketch, kind)

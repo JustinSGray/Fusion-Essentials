@@ -11,8 +11,8 @@ import json
 import pytest
 
 from conftest import (BRepBody, BRepEdge, BRepFace, FakeExportManager, FakeOccurrence, MakeComp,
-                      MakeDesign, Sketch, SketchCurves, _ExportOptions, _NamedCollection, install,
-                      load_tool)
+                      MakeDesign, Sketch, SketchCurves, _ExportOptions, _NamedCollection,
+                      assert_names_retained, install, load_tool)
 
 dx = load_tool("design_export")
 
@@ -1046,7 +1046,7 @@ class TestDxfWriterGuards:
         res = dx.handler(format="dxf", dxf_face="H" * 40, file_path=str(tmp_path / "p.dxf"))
         assert res["isError"] is True
         assert "nothing was written" in res["message"].lower()
-        assert "Scratch7" in res["message"] and "delete it manually" in res["message"]
+        assert "The scratch sketch was not removed" in assert_names_retained(res, "Scratch7")
 
     def test_a_written_dxf_whose_scratch_sketch_survives_says_so_in_the_note(self, tmp_path,
                                                                             monkeypatch):
@@ -1058,7 +1058,8 @@ class TestDxfWriterGuards:
         out = _payload(dx.handler(format="dxf", dxf_face="H" * 40,
                                   file_path=str(tmp_path / "p.dxf")))
         assert out["exported"] is True
-        assert "Scratch7" in out["note"] and "could not be removed" in out["note"]
+        assert "was not removed" in out["note"]
+        assert "design_delete_feature(feature='Scratch7')" in out["note"]
         assert "the design is unchanged" not in out["note"]
 
 

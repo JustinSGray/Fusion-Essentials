@@ -485,7 +485,8 @@ def _folded(p):
                      and _near(p.get("angle_deg"), 90, 1e-5)
                      and isinstance(p.get("faces_before"), int)
                      and isinstance(p.get("faces_after"), int)
-                     and p["faces_after"] > p["faces_before"])
+                     and p["faces_after"] > p["faces_before"]
+                     and "development remains unverified" in p.get("note", ""))
 
 
 def _formed_extent(p):
@@ -554,6 +555,8 @@ def _dxf(p, slotted=False):
                      "closed": bool(flags & 1), "bends": len(bends),
                      "bend_extents": len(extents), "slot_verified": slot_ok},
                      p.get("exported") is True and p.get("size_bytes", 0) > 1000
+                     and p.get("development") == "unverified"
+                     and "sheet_get(include=['features'])" in p.get("note", "")
                      and unit == "4" and len(outer) == 1 and bool(flags & 1)
                      and len(xs) == len(ys) == 4
                      and _near(max(xs) - min(xs), 80, 0.01)
@@ -2335,6 +2338,12 @@ _SHEET_DRAWING = [
 ]
 
 _SHEET_CLEANUP = [
+    ("sys_get_guidance", {"section": "model"},
+     lambda p: _measured("sheet guidance qualifies native flat development", p,
+         len([r for r in p.get("rules", []) if r.get("id") == "sheet-metal-by-intent"
+              and "not verified development" in r.get("do", "")
+              and "sheet_get(include=['features'])" in r.get("do", "")
+              and "design_export" in r.get("do", "")]) == 1), None),
     ("doc_close", lambda c: {"name": _ctx_get(c, "sm_coupon", "coupon session"),
                              "save_changes": False}, _closed_one, None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "sm_home", "original story session")}, "ok", None),

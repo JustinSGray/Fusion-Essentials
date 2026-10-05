@@ -860,6 +860,7 @@ class TestTangentChainTargeting:
         res = fl.handler(edges=["E1", "E2"], radius=1, tangent_chain=False)
         assert res["isError"] is True and "PARTIALLY applied" in res["message"]
         assert "resolved to 1" in res["message"] and ff.result.deleted is True
+        assert "retry. Deleting it returned True." in res["message"]
 
     def test_repeated_resolved_root_edge_is_one_request_at_both_partial_gates(self):
         one, alias = _edge_ent(token="physical"), _edge_ent(token="physical")
@@ -888,6 +889,17 @@ class TestTangentChainTargeting:
         assert ff.last.edge_set[0].count == out["edges_cut"] == 2 and out["edges_requested"] == 3
         assert ("The 3 handles named 2 distinct edge(s), so each was sent once." in out["note"]
                 and ff.result.deleted is False)
+
+    def test_native_subcomponent_aliases_are_sent_once(self):
+        one, alias = (_edge_ent(token="physical") for _ in range(2))
+        ff, _ = _install_edge_handles({"E1": one, "Alias": alias})
+        owner = MakeComp("Child", entity_token="child-token")
+        for edge in (one, alias):
+            edge.assemblyContext = None
+            edge.body.parentComponent = owner
+        out = _payload(fl.handler(edges=["E1", "Alias"], radius=.5, tangent_chain=False))
+        assert ff.last.edge_set[0].count == 1 and out["edges_requested"] == 2
+        assert "2 handles named 1 distinct edge(s)" in out["note"]
 
     def test_proxy_aliases_use_native_identity_with_the_same_actual_placement(self):
         native = _edge_ent(token="physical")

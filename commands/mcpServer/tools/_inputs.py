@@ -266,16 +266,29 @@ class EdgeLoopRef(GeometryHandleList):
 
     MAP_HINT = "a closed/open edge-loop boundary from edge handles"
 
-    def __init__(self, name, closed=True, **kw):
+    def __init__(self, name, closed=True, allow_sketch=False, **kw):
         super().__init__(name, require="edge", **kw)
         self.closed = closed
+        self.allow_sketch = allow_sketch and closed
+
+    def schema(self, brief=False):
+        """The boundary schema, including a profile selector when sketch boundaries are enabled."""
+        if self.allow_sketch:
+            return {"type": ["string", "array", "object"], **self._desc(brief)}
+        return super().schema(brief)
 
     def contract_note(self) -> str:
         if self.closed:
+            if self.allow_sketch:
+                return "Closed edge loop, profile handle/{sketch,profile_index}, or four sketch-line handles in loop order."
             return "Edge 'handle's forming a CLOSED loop (one edge suffices)."
         return "Edge 'handle's forming an OPEN chain on one surface body."
 
     def resolve(self, raw):
+        if self.allow_sketch and raw not in (None, "", []):
+            value, err, recognized = self._sketch_boundary(raw)
+            if recognized:
+                return value, err
         ents, err = super().resolve(raw)        # reuse handle resolution + staleness + edge-kind check
         if err:
             return None, err
@@ -305,6 +318,58 @@ class EdgeLoopRef(GeometryHandleList):
         for e in ents:
             coll.add(e)
         return (coll, {"entities": ents, "body_count": body_count, "loop_checked": checked}), None
+
+    def _sketch_boundary(self, raw):
+        """Resolve a root sketch profile or four closed sketch lines without altering edge handling."""
+        design = _common.design()
+        if design is None:
+            return None, "No active design to resolve the boundary against.", True
+        items = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+        ents = []
+        for value in items:
+            if isinstance(value, dict):
+                ent, err = ProfileRef(self.name, required=True).resolve(value)
+                if err:
+                    return None, err, True
+            elif sketch_entity_ref(value):
+                ent, err = resolve_sketch_entity(design, value, scope_input=None)
+                if err:
+                    return None, err, True
+            else:
+                ent = _resolve_token_entity(design, value)
+            ents.append(ent)
+        sketch_types = (adsk.fusion.Profile, adsk.fusion.SketchLine)
+        if not any(_isinstance(ent, kind) for ent in ents for kind in sketch_types):
+            return None, None, False
+        profile = len(ents) == 1 and _isinstance(ents[0], adsk.fusion.Profile)
+        if not profile and (len(ents) != 4 or not all(_isinstance(ent, adsk.fusion.SketchLine) for ent in ents)):
+            return None, (f"'{self.name}' needs one sketch profile or four sketch lines forming a closed loop; "
+                          "do not mix sketch entities and body edges."), True
+        sketches = [_common.safe(lambda ent=ent: ent.parentSketch) for ent in ents]
+        keys = [_common.native_identity(sketch) for sketch in sketches]
+        if None in keys or len(set(keys)) != 1 or any(
+                _common.safe(lambda ent=ent: ent.assemblyContext) is not None for ent in ents) or any(
+                _common.same_component(_common.safe(lambda sketch=sketch: sketch.parentComponent),
+                                       design.rootComponent) is not True for sketch in sketches):
+            return None, f"'{self.name}' sketch boundary must belong to one root-component sketch.", True
+        if not profile:
+            ends = []
+            try:
+                for ent in ents:
+                    pair = [getattr(ent, key).geometry for key in ("startSketchPoint", "endSketchPoint")]
+                    ends.append(tuple((float(p.x), float(p.y), float(p.z)) for p in pair))
+                if any(not all(math.isfinite(v) for v in point) for pair in ends for point in pair):
+                    raise ValueError("non-finite endpoint")
+            except Exception as exc:
+                return None, f"'{self.name}' sketch endpoints did not read: {exc}.", True
+            if not _in_loop_order(ends):
+                return None, (f"'{self.name}' sketch lines have a gap or are not in loop order. "
+                              "Pass all four connected lines in order, closing the last line to the first."), True
+        coll = adsk.core.ObjectCollection.create()
+        for ent in ents:
+            coll.add(ent)
+        return (coll, {"entities": ents, "body_count": 0, "loop_checked": True,
+                       "boundary_kind": "profile" if profile else "sketch_lines"}), None, True
 
 
 # ── body reference (name OR handle - bodies have auto-names, so a handle is the precise path) ───

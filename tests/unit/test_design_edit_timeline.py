@@ -476,6 +476,7 @@ def test_hidden_unfold_unread_type_owner_or_slot_never_recommends_ungroup(unfold
         setattr(member.entity, field, None)
         message = error_message(et.handler(action='suppress', feature='Unfold1'))
         assert 'could not be read completely' in message and 'design_get' in message
+        assert "group='Group1'" in message and '<group name>' not in message
         assert "action='ungroup'" not in message
         setattr(member.entity, field, prior)
     group._members.append(None)
@@ -1464,7 +1465,9 @@ class TestReorder:
         res = et.handler(action="reorder", feature="E", end_feature="B")
         assert self._order(tl) == ["A", "E", "B", "D", "C"]
         assert error_message(res) == ("reorder returned true, but the re-read has 'E' at index 1, "
-                                      "and other items changed order. Undo it in Fusion.")
+                                      "and other items changed order. No verified tool sequence restores this order. "
+                                      "design_get(include=['timeline']) reads the order. "
+                                      "Inspect and restore the order manually in Fusion.")
         assert res["isError"] is True and "reordered" not in str(res)
 
     @pytest.mark.parametrize("to,anchor", [("before", "B"), ("after", "A")])
@@ -1504,18 +1507,25 @@ class TestReorder:
         assert self._order(tl) == ["A", "B", "D", "C", "E"]
         assert msg == ("reorder returned true, but the re-read has 'D' at index 2, not immediately "
                        "before 'B' (index 1). Move it back with design_edit_timeline("
-                       "action='reorder', feature='D@2', to='before', end_feature='E@4').")
+                       "action='reorder', feature='D@2', to='before', end_feature='E@4'); "
+                       "design_get(include=['timeline']) reads the order.")
 
-    def test_a_move_back_for_an_item_that_was_last_is_not_offered(self, wire):
-        tl = self._wired(wire, lands=2)
+    def test_an_item_that_was_last_requires_a_read_and_manual_restoration(self, wire):
+        tl = wire(FakeTimeline([_Movable(n, i, lands=2 if n == "E" else None)
+                                for i, n in enumerate("ABCDE")]))
         msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
         assert self._order(tl) == ["A", "B", "E", "C", "D"]
-        assert msg.endswith("not immediately before 'B' (index 1). Undo it in Fusion.")
+        assert "No verified tool sequence restores this order" in msg
+        assert "design_get(include=['timeline'])" in msg
+        assert "restore the order manually in Fusion" in msg
+        assert "Move it back with" not in msg
 
-    def test_a_move_back_whose_index_does_not_read_is_not_offered(self, wire):
+    def test_a_move_back_whose_index_does_not_read_names_the_read(self, wire):
         tl = self._wired(wire, at=3, lands=2, after=lambda: setattr(tl._items[4], "index", None))
         msg = error_message(et.handler(action="reorder", feature="D", end_feature="B"))
-        assert msg.endswith("not immediately before 'B' (index 1). Undo it in Fusion.")
+        assert "No verified tool sequence restores this order" in msg
+        assert "design_get(include=['timeline'])" in msg
+        assert "Undo it in Fusion" not in msg
 
     def test_new_errors_after_the_move_are_reported_as_kept(self, wire):
         tl = self._wired(wire, at=3, after=lambda: setattr(tl._items[3], "healthState", 2))
@@ -1523,7 +1533,7 @@ class TestReorder:
         assert msg == ("Moving 'D' before 'B' left new timeline errors or warnings: C. This STAYED "
                        "APPLIED (not rolled back): 'D' timeline index now reads 1 (was 3). Move it "
                        "back with design_edit_timeline(action='reorder', feature='D@1', to='before', "
-                       "end_feature='E@4').")
+                       "end_feature='E@4'); design_get(include=['timeline']) reads the order.")
 
     @pytest.mark.parametrize("to,anchor,why", [
         ("before", "E", "is the anchor itself"),
@@ -1604,3 +1614,23 @@ class TestVerificationPathsBite:
         wire(FakeTimeline(self._items(), marker=1, delete_removes=False))
         res = et.handler(action="delete_after_marker", confirm_delete_after_marker=True)
         assert res["isError"] is True and "still holds" in res["message"]
+
+
+def test_hidden_unfold_uncertain_hint_keeps_all_readable_group_names():
+    common = load_tool("_design_common")
+    groups = [FakeTimelineGroup("First", 0, collapsed=False),
+              FakeTimelineGroup("Second", 1, collapsed=False),
+              types.SimpleNamespace(name="Unread", isCollapsed=None)]
+    message = common._collapsed_unfold_hint(FakeTimeline([], groups=groups), "Missing")
+    assert all("group=" + repr(name) in message for name in ("First", "Second", "Unread"))
+    assert "<group name>" not in message
+
+
+def test_hidden_unfold_uncertain_hint_bounds_readable_group_commands():
+    common = load_tool("_design_common")
+    groups = [FakeTimelineGroup("Group" + str(i), i, collapsed=False) for i in range(7)]
+    groups.append(types.SimpleNamespace(name="Unread", isCollapsed=None))
+    message = common._collapsed_unfold_hint(FakeTimeline([], groups=groups), "Missing")
+    assert message.count("design_get(") == 5
+    assert all("group=" + repr("Group" + str(i)) in message for i in range(5))
+    assert "3 more groups not listed" in message and "group='Unread'" not in message

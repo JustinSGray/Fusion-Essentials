@@ -18,7 +18,7 @@ from verify_layout import (
 
 
 from verify_acts_model_combine_revolve import (
-    _COMBINE_COMPLETE, _COMBINE_NONE, _COMBINE_NONROOT_PARTIAL, _COMBINE_PARTIAL, _REVOLVE_PARTICIPANTS, _combine_body, _combine_inspect, _combine_pin, _combine_story_address)
+    _COMBINE_COMPLETE, _COMBINE_CUT_NONE, _COMBINE_NONE, _COMBINE_NONROOT_PARTIAL, _COMBINE_PARTIAL, _REVOLVE_PARTICIPANTS, _combine_body, _combine_inspect, _combine_pin, _combine_story_address)
 from verify_acts_model_extrude_organization import (
     _extrude_edit_dependent)
 from verify_acts_model_precision import (
@@ -1101,7 +1101,7 @@ _SOLIDS = [
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
     ("doc_get", {}, _home_document,
      ("combine_story", _recall("combine_story", _combine_story_address))),
-] + _COMBINE_COMPLETE + _COMBINE_PARTIAL + _COMBINE_NONE + _COMBINE_NONROOT_PARTIAL + _REVOLVE_PARTICIPANTS + [
+] + _COMBINE_COMPLETE + _COMBINE_PARTIAL + _COMBINE_NONE + _COMBINE_CUT_NONE + _COMBINE_NONROOT_PARTIAL + _REVOLVE_PARTICIPANTS + [
     ("design_activate_component", {"occurrence": "root"}, "ok", None),    # the revolve axis as a CYLINDRICAL FACE, off the origin - the case a world key cannot express.
     # A face mapped to a direction VECTOR keeps the direction and DROPS the location, so the ring is
     # turned about the world axis through the ORIGIN and reported as success: the label is checked

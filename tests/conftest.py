@@ -711,6 +711,14 @@ def assert_no_active_design(mod, handler, **valid_kwargs):
     assert "design" in msg or "document" in msg, res
 
 
+def assert_names_retained(result, address):
+    """A failed write's error names the retained `address` and the design_delete_feature call."""
+    msg = error_message(result)
+    assert (f"'{address}' remains in the timeline; remove it with "
+            f"design_delete_feature(feature='{address}')") in msg, msg
+    return msg
+
+
 def assert_unknown_units(handler, units_param="units", **valid_kwargs):
     """A tool taking a unit must reject an unknown one with a clear error (naming the unit), not
     silently scale by a bogus factor. Pass the other valid args; this sets units='furlong'."""

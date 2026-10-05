@@ -603,7 +603,8 @@ class TestGuardsAndFailurePathsBite:
              feature_offset=0.9)
         msg = error_message(mr.handler(mesh="H", repair_type="rebuild",
                                        rebuild_method="accurate", offset=10, units="mm"))
-        assert "created with offset = 0.9" in msg and "requested" in msg
+        # both values in the caller's units: the feature's 0.9 cm against the 10 mm requested
+        assert "created with offset = 9.0 mm, but 10.0 mm was requested" in msg
 
     def test_an_unreadable_density_is_reported_as_unverified_not_as_the_request(self, monkeypatch):
         mesh = _mesh(tri=1000, nodes=502, is_closed=False)

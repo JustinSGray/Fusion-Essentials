@@ -67,7 +67,7 @@ NAMEPLATE_SKETCH     = "File_Name"    # sketch whose text gets the model name (m
 
 # Template wiring - the shop's naming convention inside its templates. "" = infer from the
 # document; Phase 6 verifies every entry.
-SETUP                = ""                            # "" = active milling setup, else first
+SETUP                = ""                            # "" = only unambiguous milling setup; else ask
 PLACEHOLDER          = "Placeholder model"           # the slot occurrence the part replaces
 ATTACH_JO            = "Attach Center of Workpiece"  # root JO the part joins to
 
@@ -107,15 +107,21 @@ another.
 one face from measured geometry and the operator confirms it in the conversation. Every exit from
 this phase other than a confirmed proposal runs Phase 2 as written; that pick stays the fallback.
 
-1. `workspace_orient` + `design_get(include=['tree'], tree_bodies=true)` - the part's bodies. From
+1. `workspace_orient` + `design_get(include=['tree'], tree_bodies=true, tree_handles=true)` - the
+   part's bodies. From
    `root_bodies` plus each tree node's `bodies`, keep the rows with `is_solid` true and `visible`
-   true. EXPECT exactly one - it is the part, and `body_name` is its `name`. Zero, several, or any
-   `bodies_truncated` / `root_bodies_truncated` flag set: this phase cannot name the part without
-   guessing - report the body names and run Phase 2 (the operator's click names the body too).
-2. `model_inspect(target=<body_name>, units="mm")` - the world-axis bounding box. `BBOX_FACE_MM2` =
+   true, retaining each owning occurrence path. EXPECT exactly one - it is the part. Record its
+   `name` for display and its body `handle` as `body_ref`; if no handle reads, use the name only
+   when it uniquely identifies that body. Zero, several, or any
+   `bodies_truncated` / `root_bodies_truncated`
+   flag set: this phase cannot name the part without guessing - report the body names and run
+   Phase 2 (the operator's click names the body too). If a same-name body makes a later target read
+   ambiguous, do not choose the first row; use the confirmed face handle to keep the owner scoped
+   where accepted, or stop if the target still cannot be resolved uniquely.
+2. `model_inspect(target=<body_ref or uniquely resolved body name>, units="mm")` - the world-axis bounding box. `BBOX_FACE_MM2` =
    the product of the two largest of `x` / `y` / `z`. Any of the three null -> run Phase 2.
-3. `find_geometry(target=<body_name>, kind="planar_face", units="mm", max_results=100)` and
-   `find_geometry(target=<body_name>, kind="cylinder_face", units="mm", max_results=100)`. In
+3. `find_geometry(target=<body_ref or uniquely resolved body name>, kind="planar_face", units="mm", max_results=100)` and
+   `find_geometry(target=<body_ref or uniquely resolved body name>, kind="cylinder_face", units="mm", max_results=100)`. In
    either response, `match_count` > `returned` means the rows are a subset of the part: record
    `truncated=true` and treat `AUTO_PICK="auto"` as `"propose"` for this run.
 4. Candidates, from the planar_face rows. A row carrying no `normal` key is dropped: find_geometry
@@ -172,14 +178,13 @@ this phase other than a confirmed proposal runs Phase 2 as written; that pick st
    `"Cancel"` (stop the skill). Any answer outside these three = stop and report it.
 10. On a yes, re-acquire the handle before anything consumes it: find_geometry handles are
     short-lived, and the operator may have taken a while to answer.
-    `find_geometry(target=<body_name>, kind="planar_face", nearest_to=<the proposal's position>,
+    `find_geometry(target=<body_ref or uniquely resolved body name>, kind="planar_face", nearest_to=<the proposal's position>,
     units="mm", max_results=5)`, then take the row whose `position` is within 0.01 mm on each axis
     of the proposed one and whose `normal` matches it within 0.001 per component. No such row =
     STOP and report both records.
 
--> Record: `zdir` (= the re-acquired row's `normal`), `body_name`, face `handle` (= the re-acquired
-row's `handle`). These are the same three values Phase 2 records, so continue at Phase 2 step 4 and
-skip Phase 2 steps 1-3.
+-> Record: `zdir` (= the re-acquired row's `normal`), `body_name`, `body_ref`, face `handle` (= the
+re-acquired row's `handle`). These values continue at Phase 2 step 4; skip Phase 2 steps 1-3.
 
 ## Phase 2 - Machining face + orientation (READ)
 
@@ -214,7 +219,10 @@ holds; both end with step 3's three recorded values and continue at step 4.
      (re-run step 1 and re-ask) / `"Cancel"` (stop).
    Any free-text answer outside these options = stop and report it.
 3. From the confirmed record: `zdir` (= `direction`), `body_name`, and the face `handle`
-   (selection reads return find_geometry-style handles).
+   (selection reads return find_geometry-style handles). Resolve the body name to one body row in
+   `design_get(include=['tree'], tree_bodies=true, tree_handles=true)` and record its body handle
+   as `body_ref`; if the name matches multiple rows, use an accepted scoped handle or stop instead
+   of choosing the first. If no body handle reads, use the name only when unique.
 4. `workspace_orient` + `doc_get` - record model name, units, and identity:
    - unsaved (`has_data_file` false): derive the model name (operator's name for the part,
      else the dominant body's name, else ask once - never "Untitled"); destination =
@@ -222,16 +230,17 @@ holds; both end with step 3's three recorded values and continue at step 4.
    - saved: destination = the part's own folder (`data_get` on its `document_id` ->
      `folder_path`); record the existing URN.
 
--> Record: `zdir`, `body_name`, face `handle`, model name, units, URN or null, destination.
+-> Record: `zdir`, `body_name`, `body_ref`, face `handle`, model name, units, URN or null,
+destination.
 
 ## Phase 3 - "Center of Model" part-space origin (WRITE)
 
-1. `joint_create_origin(anchor="bbox_center", bbox_target=<body_name>, orient_axis=<face
+1. `joint_create_origin(anchor="bbox_center", bbox_target=<body_ref or uniquely resolved body name>, orient_axis=<face
    handle>, name="Center of Model")` - builds the frame at the part's bbox center with Z along
    the picked face's normal, and verifies its own placement (it rolls back and errors if the
    origin lands off its computed center). EXPECT: the response's `frame_axes.primary_axis_Z`
    is parallel to `zdir` - a negation means the selection went stale; redo Phase 2 step 2.
-2. `model_inspect(target=<body_name>, frame="Center of Model", units="mm")` - the part-space
+2. `model_inspect(target=<body_ref or uniquely resolved body name>, frame="Center of Model", units="mm")` - the part-space
    extents (Z = machining axis). EXPECT: non-zero x/y/z; `center` matches step 1's center.
 
 -> Record: `extents_mm` (x/y/z; z feeds the Phase 7 stock-top offset).
@@ -267,22 +276,31 @@ that were found. Only a blank ("") config entry is inferred from the read, and a
 inference is settled with an `AskUserQuestion` listing the read names as options, never by picking
 one silently.
 
-1. `cam_get` - EXPECT `SETUP` among the setups (blank: the active milling setup, else the
-   first milling setup). Record the setup, its model component occurrence
-   (`selected_models[0]` - the slot component the part swaps into), and its stock/fixture
-   names. `selected_models` null (the setup names it in `model_lists_unreadable`) means the
-   list was not read, which is not the same as empty; `[]` means the setup selects no model.
-   Either way there is no slot component to record = STOP, reporting which of the two it was
-   - never index a null or empty list.
-2. `design_get(include=['tree'], component=<model component occurrence>)` - EXPECT
-   `PLACEHOLDER` among its child occurrences (blank: the one child occurrence with bodies
+1. `cam_get` - EXPECT `SETUP` among the setups. When `SETUP` is blank, use the active milling
+   setup only if exactly one is active; otherwise use the sole milling setup only if exactly one
+   exists. If several milling setups remain, ask which named setup to use - never choose the first
+   by list order. Record the setup, its selected model names, and its stock/fixture names.
+   `selected_models` null (the setup names it in `model_lists_unreadable`) means the list was not
+   read; `[]` means the setup selects no model. `model_lists_truncated` true means the combined
+   model/fixture/stock listing is incomplete. An unreadable or empty model list, or any truncated
+   listing, prevents slot selection: report which state applies and STOP.
+2. Resolve the selected model slot without assuming the first row is the placeholder. If one model
+   is selected, locate its exact occurrence in `design_get(include=['tree'], tree_handles=true)`;
+   if several are selected, ask which one is the replaceable slot. The CAM setup row contains names,
+   so match them against the tree and present each candidate's `full_path`/handle when names repeat. If the
+   list cannot be mapped to exactly one occurrence, ask among the tree paths or STOP; never select
+   `[0]`. Then call `design_get(include=['tree'], tree_handles=true,
+   component=<resolved model component occurrence>)`.
+   EXPECT `PLACEHOLDER` among its child occurrences (blank: the one child occurrence with bodies
    whose name is not WCS/zero-like - a lone cube named like "WCS"/"zero" is the setup's WCS
-   cube, never delete it; several candidates = AskUserQuestion, one option per child plus "No
-   placeholder - insert alongside" and "Cancel"). `children_truncated` true on the model
-   component's node means the children listed are a subset (the level was cut by
-   `max_results`), so re-read it with `max_results` above that node's `child_count` before
-   naming a placeholder - picking one out of a partial level guesses. Bodies sitting directly
-   in the model component itself (no occurrence to remove) = STOP and report the listing.
+   cube, never delete it). If the pinned name matches several children, or blank inference yields
+   several candidates, ask with each child's `full_path`/handle plus "No placeholder - insert
+   alongside" and "Cancel". Pass the chosen exact path/handle to `remove_existing`, not a repeated
+   bare name. `children_truncated` true on the model component's node means the children listed
+   are a subset (the level was cut by `max_results`), so re-read it with `max_results` above that
+   node's `child_count` before naming a placeholder - picking one out of a partial level guesses.
+   Bodies sitting directly in the model component itself (no occurrence to remove) = STOP and
+   report the listing.
 3. `assembly_get(include=['joint_origins'])` - EXPECT `ATTACH_JO` among the joint origins
    whose `component` is the root component (blank: the root JO matching Attach / Center of
    Model / Workpiece; several = AskUserQuestion with the read names; none = record none and
@@ -308,15 +326,22 @@ one silently.
      part; nothing to measure.
    - No root JO: `joint_create(occurrence_one="Center of Model",
      occurrence_two="<stock occurrence>:top", joint_type="rigid",
-     offset=-(0.5 * <extents_mm.z> + 1), units="mm")` - seats the part's top 1 mm below the
-     stock top (the skim allowance).
+     offset=-(0.5 * <extents_mm.z> + 1), units="mm")` - offsets the part's CENTER from the
+     stock-top snap by half its machining-axis thickness plus the 1 mm skim allowance. Treat this
+     as a candidate translation; the negative input alone does not prove which side the solved
+     joint places the part on.
    Each side is a Joint Origin name (bare, or `<occurrence>:<JO name>`) or a snap; on a
    resolve error the tool lists the design's JOs - correct the name and retry once.
 4. Verify from numbers: `assembly_get` - EXPECT the new joint is not in `broken_joints`
    (pre-existing template warnings are not yours to fix). `model_inspect(target=<inserted
-   occurrence full path>, units="mm")` - a world-frame read (`frame=` takes a body target
-   only, not an occurrence) - EXPECT `center` at the placeholder's recorded JO position from
-   Phase 6 (the seat), or on the stock-top path at the stock top minus the skim allowance.
+   occurrence full path>, units="mm")` - a world-frame read with no `frame=` argument. When the
+   root JO path was used and a placeholder seat was recorded, EXPECT `center` at that JO position.
+   On the stock-top path, independently read the stock top and inserted-part
+   world bounds in mm. The `:top` snap is the +Z extreme planar face; verify the signed gap
+   `stock_top_Z - part_max_Z` is +1 mm (within read precision), and that the part center is half
+   its measured world Z thickness below its top. If either bound, sign, or gap cannot be read or
+   does not match, placement is unverified/failed; do not report it seated or blindly flip the
+   offset.
 5. Stock (only if Phase 6 found PART_PARAMS): `model_inspect(target=<inserted occurrence full
    path>, units="mm")` - measure after the join, in world axes (the join reorients the part, so
    Phase 3's pre-join extents land on the wrong axes) - then `param_set` each parameter from
@@ -336,11 +361,17 @@ they regenerate.
    stale operations.
 2. `cam_generate()` (whole document) - returns a handle immediately; generation runs in the
    background at its own pace (often minutes).
-3. `cam_get_status(handle=<handle>)` - a plain progress read; check it about once a minute until
-   `completed` is true, doing nothing in between. An errored operation will never finish: stop
-   waiting and report it from `cam_get`'s error text.
-4. `cam_get` - EXPECT no out_of_date or errored operations among the unsuppressed ones.
-   Failures = report each by name; do not silently accept a partial job.
+3. `cam_get_status(handle=<handle>)` - check it about once a minute until `completed` is true,
+   or the status explicitly reports BLOCKED/error while incomplete; do nothing in between.
+   `completed=true` means generation settled, not that it succeeded or that the job is ready to
+   post; read `readiness` separately. For example, one valid operation can be `completed=true`
+   while `readiness` says the setup has no machine selected. If incomplete status reports
+   BLOCKED/error, stop polling and report its error; do not launch overlapping generation. An
+   errored operation can also be settled: when `completed=true`, stop polling and report its error
+   from the status/CAM reads rather than treating completion as success.
+4. `cam_get` - EXPECT no out_of_date or errored operations among the unsuppressed ones, and compare
+   `cam_get_status.readiness` for setup/program blockers. Failures or unknown readiness = report
+   each by name/reason; do not silently accept a partial or not-ready job.
 5. `doc_save()` - capture the generated job.
 
 ## Phase 9 - Machine-limit check (READ)

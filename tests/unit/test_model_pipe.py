@@ -15,8 +15,9 @@ import adsk.core
 import adsk.fusion
 import pytest
 
-from conftest import (BRepBody, MakeComp, assert_no_active_design, body_proxy, error_message,
-                      install, load_tool, make_design, make_sketch_curve,
+from conftest import (BRepBody, MakeComp, assert_names_retained, assert_no_active_design,
+                      body_proxy, error_message,
+                      install, load_tool, make_design, make_sketch, make_sketch_curve,
                       make_source_document, payload, _NamedCollection, FakePoint,
                       FakeTimeline, FakeTimelineObject, make_bbox)
 
@@ -244,8 +245,32 @@ class TestEmptyScopedCutRetirement:
         assert res["isError"] is True and "EmptyPipe@1' was retained" in error_message(res)
         assert calls == [] and timeline.count == 2
 
+    def test_the_retained_feature_address_resolves_through_feature_ref(self, empty_pipe_create):
+        _timeline, _calls, feature = empty_pipe_create("new_body")
+        message = error_message(mp.handler(path="sketch:Spine", section_size=6, operation="cut",
+                                           target_bodies=["Stock"]))
+        assert "Feature 'Root/EmptyPipe@1' was retained" in message
+        address = message.split("Feature '", 1)[1].split("'", 1)[0]
+        resolved, err = mp._inputs.FeatureRef("feature").resolve(address)
+        assert err is None and resolved[0] is feature
+
 
 class TestSolidPipe:
+    @pytest.mark.parametrize("unread", [False, True])
+    def test_a_pipe_without_a_result_body_names_the_feature_left(self, unread):
+        pf = _wire(body_names=())
+        add = pf.add
+
+        def landed(inp):
+            feature = add(inp)
+            if unread:
+                feature.bodies = None
+            return feature
+        pf.add = landed
+        msg = assert_names_retained(mp.handler(path="sketch:Spine", section_size=20), "Pipe1")
+        assert ("result bodies did not read" in msg) is unread
+        assert ("created no body" in msg) is not unread
+
     def test_circular_pipe_on_a_path_sketch(self):
         pf = _wire()
         out = payload(mp.handler(path="sketch:Spine", section_size=20))
@@ -727,6 +752,17 @@ class TestPathCurves:
         assert out["path_curves"] == 1 and out["path_sketch_curves"] == 5
         assert "chained 1 of the sketch's 5 curves" in out["note"]
         assert "sketch_get" in out["note"] and "sharp corner" not in out["note"]
+
+    def test_a_two_of_three_chain_names_the_left_out_curve_beside_a_bare_label(self):
+        pf = _wire(sketch_curves=3)
+        curves = [make_sketch_curve(f"spine-{i}") for i in range(3)]
+        pf.comp.sketches = _NamedCollection([make_sketch("Spine", lines=curves)])
+        chain = _Path(False, 2)
+        chain.item = lambda i: types.SimpleNamespace(entity=(curves[0], curves[2])[i])
+        pf.comp.features.createPath = lambda seed, is_chain=True: chain
+        out = payload(mp.handler(path="sketch:Spine", section_size=20))
+        assert out["path"] == "sketch:Spine" and out["path_curves"] == 2
+        assert "Not in the path: line:1." in out["note"]
 
     def test_a_construction_curve_is_not_counted(self):
         pf = _wire(sketch_curves=3)

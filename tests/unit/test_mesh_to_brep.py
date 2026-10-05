@@ -6,8 +6,8 @@ import adsk.fusion
 import pytest
 
 from conftest import (BRepBody, FakeBaseFeature, FakeBaseFeatures, FakeFeatures, MakeComp,
-                      MeshBody, _NamedCollection, body_proxy, install, load_tool, make_design,
-                      payload)
+                      MeshBody, _NamedCollection, body_proxy, error_message, install, load_tool,
+                      make_design, payload)
 
 mo = load_tool("mesh_to_brep")
 
@@ -326,6 +326,18 @@ class TestMeshToBrep:
         assert "design_get(include=['timeline']) and mesh_get" in message
         assert "design_delete_feature" in message
         assert bf._starts == 1 and bf._finishes == 1
+
+    @pytest.mark.parametrize("raise_on_add", [False, True])
+    def test_a_false_finishEdit_is_an_error_that_keeps_the_scope_disclosure(self, raise_on_add):
+        # The consumer's scope_err branch: a converted body inside a scope that did not finish is
+        # still an error, and a failed add's retained-scope sentence survives in front of it.
+        bf = FakeBaseFeature(finish_ok=False)
+        self._setup(is_closed=True, raise_on_add=raise_on_add, parametric=True, base_feature=bf)
+        message = error_message(mo.handler(mesh="H", method="prismatic"))
+        assert message.endswith("finishEdit on base feature 'BaseFeature1' returned false; the "
+                                "edit scope was left as it is. Read design_get(include=['timeline']) "
+                                "before continuing.")
+        assert ("may leave base feature 'BaseFeature1' in the timeline" in message) is raise_on_add
 
     def test_failed_parametric_add_still_discloses_an_unread_scope_name(self):
         bf = FakeBaseFeature()

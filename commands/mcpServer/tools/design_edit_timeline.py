@@ -238,28 +238,43 @@ def _order(design):
     return rows if len({key for key, _i in rows}) == len(rows) else None
 
 
+_REORDER_CALL = ("design_edit_timeline(action='reorder', feature='{}@{}', to='before', "
+                 "end_feature='{}@{}')")
+_ORDER_READ = "design_get(include=['timeline']) reads the order."
+
+
+def _to_last(name, i, last_name, last):
+    """The two measured moves making item `i` last: before the last row, then that row before it."""
+    return ([] if i == last - 1 else [_REORDER_CALL.format(name, i, last_name, last)]
+            ) + [_REORDER_CALL.format(last_name, last, name, last - 1)]
+
+
 def _move_back(before, after, item):
-    """The reorder call, by 'name@index' in `after`, putting `item` back in front of the item that
-    followed it in `before`; None when it was last or an index does not read."""
+    """The reorder calls, by 'name@index' in `after`, putting `item` back where `before` held it;
+    None when an index does not read."""
     keys, now = [key for key, _i in before], dict(after)
     at = keys.index(item)
-    if at + 1 >= len(keys):
-        return None
-    anchor = keys[at + 1]
-    if not isinstance(now.get(item), int) or not isinstance(now.get(anchor), int):
-        return None
-    return (f"design_edit_timeline(action='reorder', feature='{item[1]}@{now[item]}', to='before', "
-            f"end_feature='{anchor[1]}@{now[anchor]}')")
+    if at + 1 < len(keys):
+        anchor = keys[at + 1]
+        if not isinstance(now.get(item), int) or not isinstance(now.get(anchor), int):
+            return None
+        return [_REORDER_CALL.format(item[1], now[item], anchor[1], now[anchor])]
+    return None
+
+
+def _restore_text(moves):
+    """The way back to the prior order: the computed moves and the read, or the read alone."""
+    if moves is None:
+        return ("No verified tool sequence restores this order. " + _ORDER_READ
+                + " Inspect and restore the order manually in Fusion.")
+    return f"Move it back with {', then '.join(moves)}; " + _ORDER_READ
 
 
 def _last_refusal(name, i, last_name, last):
     """The refusal for a move after the last row, with the two measured moves that make it last."""
-    call = "design_edit_timeline(action='reorder', feature='{}@{}', to='before', end_feature='{}@{}')"
-    steps = ([] if i == last - 1 else [call.format(name, i, last_name, last)]
-             ) + [call.format(last_name, last, name, last - 1)]
     return error(f"Fusion cannot place an item after the last timeline row, so '{name}' cannot go "
                  f"after '{last_name}'. Nothing moved. To make '{name}' last, run "
-                 + ", then ".join(steps) + ".")
+                 + ", then ".join(_to_last(name, i, last_name, last)) + ".")
 
 
 def _do_reorder(design, timeline, feature, anchor, to):
@@ -320,13 +335,12 @@ def _do_reorder(design, timeline, feature, anchor, to):
                      "design_get(include=['timeline']).")
     j, k = keys_after.index(item), keys_after.index(near)
     now = after[j][1]
-    back = _move_back(before, after, item)
-    undo = f"Move it back with {back}." if back else "Undo it in Fusion."
+    undo = _restore_text(_move_back(before, after, item))
     kept_order = [x for x in keys_after if x != item] == [x for x in keys_before if x != item]
     if j != (k - 1 if to == "before" else k + 1) or not kept_order:
         return error(f"reorder returned true, but the re-read has '{name}' at index {now}, "
                      + (f"not immediately {to} '{target}' (index {after[k][1]}). {undo}"
-                        if kept_order else "and other items changed order. Undo it in Fusion."))
+                        if kept_order else "and other items changed order. " + _restore_text(None)))
     errors_after, warnings_after, _total = timeline_health(design)
     new = ([n for n in errors_after if n not in health_before[0]]
            + [n for n in warnings_after if n not in health_before[1]])

@@ -1,13 +1,15 @@
 """Handler checks for body ownership edits and fresh placement references."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 import adsk.core
 import adsk.fusion
 
-from conftest import (BRepBody, MeshBody, FakeMatrix3D, FakeOccurrence, FakePoint, MakeComp, MakeDesign,
-                      body_proxy, install, load_tool, make_bbox)
+from conftest import (BRepBody, BRepFace, BRepEdge, Plane, FakeVector3D, Line3D,
+                      MeshBody, FakeMatrix3D, FakeOccurrence, FakePoint, MakeComp, MakeDesign,
+                      body_proxy, install, load_tool, make_bbox, payload)
 
 
 mod = load_tool("model_edit_body")
@@ -407,3 +409,70 @@ def test_changed_destination_placement_is_partial_error(scene):
     result = mod.handler(action="copy", body="OLD", destination="Dest:1")
     assert result["isError"] is True and state["called"] == 1
     assert "occurrence placement changed" in result["message"]
+
+
+@pytest.fixture
+def merge_pair(monkeypatch):
+    monkeypatch.setattr(adsk.fusion, "BRepFace", BRepFace)
+    root = MakeComp(name="Root", entity_token="Root")
+    body = BRepBody("Cube", bbox=make_bbox((4, 0, 0), (6, 2, 2)), area=24, volume=8,
+                    entity_token="cube", face_count=7, parent_component=root)
+    edge = BRepEdge(Line3D(), entity_token="shared")
+    faces = [BRepFace(Plane(FakeVector3D(0, 0, 1), FakePoint(4, 0, 2)),
+                      entity_token=f"face{i}", body=body, edges=[edge]) for i in range(2)]
+    state = SimpleNamespace(returned=True, drop=1, volume_delta=0, calls=[])
+
+    def create(selected, chain):
+        state.calls.append((selected, chain))
+        return selected
+
+    def add(_input):
+        for _ in range(state.drop):
+            body.faces._items.pop()
+        body.volume += state.volume_delta
+        return state.returned
+
+    root.features = SimpleNamespace(mergeFacesFeatures=SimpleNamespace(createInput=create, add=add))
+    design = MakeDesign(comp=root, tokens={"f0": faces[0], "f1": faces[1]}, design_type=0)
+    install(mod, design)
+    return body, faces, state, design
+
+
+def test_merge_faces_returns_body_and_preserves_material(merge_pair):
+    body, faces, state, _design = merge_pair
+    result = payload(mod.handler(action="merge_faces", faces=["f0", "f1"]))
+    assert state.calls == [(faces, False)]
+    assert (result["faces_before"], result["faces_after"], result["handle"]) == (7, 6, "cube")
+    assert result["material_kept"] is True and result["bounds_cm"] == [[4, 0, 0], [6, 2, 2]]
+
+
+@pytest.mark.parametrize("returned,drop,volume", [(False, 1, 0), (True, 0, 0), (True, 1, .1)])
+def test_merge_faces_false_return_no_effect_or_material_change_is_error(merge_pair, returned, drop, volume):
+    _body, _faces, state, _design = merge_pair
+    state.returned, state.drop, state.volume_delta = returned, drop, volume
+    result = mod.handler(action="merge_faces", faces=["f0", "f1"])
+    assert result["isError"] is True
+    assert "faces 7 ->" in result["message"] and "recovery is manual" in result["message"]
+
+
+def test_merge_faces_parametric_refusal_preserves_history(merge_pair):
+    body, _faces, state, design = merge_pair
+    design.designType = adsk.fusion.DesignTypes.ParametricDesignType
+    result = mod.handler(action="merge_faces", faces=["f0", "f1"])
+    assert result["isError"] is True and "history is unchanged" in result["message"]
+    assert state.calls == [] and body.faces.count == 7
+
+
+@pytest.mark.parametrize("change,reason", [("other_body", "same solid"), ("plane", "different planes"),
+                                           ("disconnect", "share no edge")])
+def test_merge_faces_refuses_wrong_pair_before_write(merge_pair, change, reason):
+    body, faces, state, _design = merge_pair
+    if change == "other_body":
+        faces[1].body = BRepBody(entity_token="other")
+    elif change == "plane":
+        faces[1].geometry = Plane(FakeVector3D(0, 0, 1), FakePoint(4, 0, 1))
+    else:
+        faces[1].edges._items.clear()
+    result = mod.handler(action="merge_faces", faces=["f0", "f1"])
+    assert result["isError"] is True and reason in result["message"]
+    assert state.calls == [] and body.faces.count == 7

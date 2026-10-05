@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 697
+**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 699
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -23,12 +23,15 @@ close orphans, factor duplicated guards into shared helpers.
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
 - **55x** across 54 module(s): "No active design. Create or open a document first (see doc_new)."
 - **24x** across 24 module(s): "No active design. Open or create a document first (see doc_new)."
-- **9x** across 3 module(s): "' with design_delete_feature."
 - **8x** across 8 module(s): "No active design with components."
+- **7x** across 2 module(s): "' with design_delete_feature."
 - **6x** across 3 module(s): "Could not create output directory '"
 - **5x** across 5 module(s): "'. Use: new, join, cut, intersect."
 - **5x** across 5 module(s): "Fusion declined to delete '"
+- **4x** across 3 module(s): "' has unreadable timeline identity; nothing was edited."
 - **4x** across 4 module(s): "'. Use sketch_get or sketch_create."
+- **4x** across 3 module(s): "'s evaluated-health census is unreadable; nothing was edited."
+- **4x** across 3 module(s): "; roll after it with design_edit_timeline."
 - **4x** across 1 module(s): "Edits already applied before the failure:"
 - **4x** across 4 module(s): "No active design (open a document with design geometry)."
 - **4x** across 4 module(s): "deleteMe() reported success for '"
@@ -37,12 +40,12 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
-- `design_get`  <- 58  (desc 12, note 46)
+- `design_get`  <- 60  (desc 12, note 48)
 - `find_geometry`  <- 55  (desc 14, note 41)
-- `design_delete_feature`  <- 42  (desc 16, note 26)
+- `design_delete_feature`  <- 39  (desc 16, note 23)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 34  (desc 15, note 19)
-- `model_inspect`  <- 29  (desc 5, note 24)
+- `model_inspect`  <- 30  (desc 5, note 25)
 - `sketch_get`  <- 26  (desc 7, note 19)
 - `doc_open`  <- 25  (desc 5, note 20)
 - `sketch_create`  <- 25  (desc 7, note 18)
@@ -879,7 +882,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Reconfiguration may be partial.
 - Flat paths were generated, but fail-on-post behavior did not read back; no NC file was posted.
 - Post config not found for ''. Tried: . Provide a full .cps path, or a post name in the personal () or installed () post folder. post_scope=fusion resolves the same name against the posts this insta...
-- Cannot resolve  post '': the search was capped, so uniqueness or absence is unknown. Choose an enumerated post URL instead; URLs outside this walk cannot be resolved.
 - Provide 'post' - the post processor: for post_scope=local a full .cps path or a name in the personal/installed post folder; for cloud/hub/fusion the NAME of a post in that library.
 - The post log rejected emitted number ; this NC Program remains. Correct it with cam_set_nc_comment(program='', set_number='<number accepted by this post>'), then retry cam_post(program_name='').
 - The post log rejected emitted number . Retry creation with a program_name that is a number accepted by this post. If rollback says the failed program remains, remove it with cam_delete first.
@@ -1485,7 +1487,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - reorder returned true, but the timeline did not re-read with every item told apart, so where '
 - ' sits is UNCONFIRMED. Read design_get(include=['timeline']).
 - reorder returned true, but the re-read has '
-- and other items changed order. Undo it in Fusion.
+- and other items changed order.
 - ' left new timeline errors or warnings:
 - . Nothing moved (the timeline re-reads unchanged).
 - A suppressed item is skipped when the model rebuilds; its geometry is absent until it is unsuppressed with suppressed=false.
@@ -1593,7 +1595,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - dxf_flat_pattern has no readable flat pattern. Use sheet_create_flat_pattern first.
 - dxf_flat_pattern is not the component's flattened body. Select its folded source body.
 - Provide file_path for the flat-pattern DXF.
-- Developed blank exported. Coordinates use the flat export frame; bend layers are separate from cutting contours.
+- Native flat DXF exported; development is unverified. Inspect sheet_get(include=['features']) and the cutting contours before fabrication. Coordinates use the flat export frame.
 - Flat-pattern DXF export failed:
 - , but its unit header could not be read:
 - did not land; no export was attempted.
@@ -1696,6 +1698,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Provide EITHER 'body' ('') OR 'occurrence' ('') - one Remove feature takes one item. Call the tool twice to remove two things.
 - Refusing to remove:  - the collection this tool re-scans to confirm a removal - could not be read, so the effect could not be verified. Nothing was changed.
 - Refusing to remove: the  '' is not visible in the collection this tool re-scans to confirm a removal, so the effect could not be verified. Re-read the target with design_get(include=['tree'], tree_...
+- removeFeatures.add returned no feature object; not measured whether a Remove feature was added - re-read with design_get(include=['timeline']).
 - removeFeatures.add ran for '', but the collection re-scan that confirms it could not be read - the removal may or may not have taken. Check with design_get(include=['tree']) before acting on this r...  **[hedge]**
 - removeFeatures.add returned no feature object, so the Remove feature could not be named - but the  is gone from its collection, which is the measured effect. Find the feature in design_get(include=...
 - The Remove feature reports the name '' but does not resolve back out of its own collection - name it from design_get(include=['timeline']) instead.
@@ -1835,22 +1838,22 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - (deriveFeatures.add returned nothing.)
 - Derive was created but FAILED to compute:
 - Derive was created but its documentReference reads isOutOfDate=true immediately at creation - the link did not land against the resolved version.
+- Derive created a feature, but whether bodies appeared is unknown: a body count did not read, and no new derived occurrence appeared.
 - Derive created a feature but nothing landed - no bodies appeared and no new derived occurrence. The link may not have resolved; check the source scope.
 - Derive created a feature and geometry appeared, but nothing reports isDerived=true - the one-way link may not have formed correctly.
 - ' has no component to derive into.
 - Could not configure the derive:
 - ' to receive the derive (Occurrence.activate() returned false). Nothing was derived.
-- . Inspect design_get(include=['tree','timeline'], tree_bodies=true); use design_delete_feature with its current feature address if unwanted.
+- . Inspect design_get(include=['tree','timeline'], tree_bodies=true).
 - Derive landed at the ROOT component (
-- - the target activation did not take, so the nesting failed. The derive EXISTS at root: delete its feature (design_delete_feature) and retry, or keep it and move on.
+- - the target activation did not take, so the nesting failed. Retry after removing it, or keep it and move on.
 - Source component name '' is ambiguous -  distinct components share it; refusing rather than deriving the wrong one. Available: .
 - Source body '' not found. Use a SOURCE body name or 'Component/Body', not a handle; doc_activate the source, then design_get(include=['tree'], tree_bodies=true).
 - Whether source component '' is the source design's ROOT could not be read, and the root derives as itself while any other component derives through its occurrences - so which entities to derive is ...
 - Could not resolve '' to a saved document. Tried: . Pass a lineage URN or web URL (from data_get). The document must be SAVED to the cloud.
 - The source document '' is not open. This tool derives from an ALREADY-OPEN source (Fusion loads documents asynchronously - it cannot load one within a single call). Open it first: doc_open(file_id=...
-- Derive feature '' remains, but . Inspect design_get(include=['tree','timeline'], tree_bodies=true); use design_delete_feature with its current feature address if unwanted.
 - Whether the derive's target component is this design's root could not be read, so the check for a derive that landed at ROOT instead of nested was not run - the bodies reported below landed, but WH...
-- Derive landed at the ROOT component (), not in  - the target activation did not take, so the nesting failed. The derive EXISTS at root: delete its feature (design_delete_feature) and retry, or keep...
+- Derive landed at the ROOT component (), not in  - the target activation did not take, so the nesting failed. Retry after removing it, or keep it and move on.
 - include_parameters/include_favorite_parameters was requested but 0 new user parameters landed - this Fusion API flag is reported flaky; confirm with param_get (the source design may also simply def...
 - nesting activated  and the restore to root ran, but  - the return to ROOT is not confirmed. Set the edit target with design_activate_component(occurrence='root').
 - the active edit target was '' before this call and reads ROOT now (nesting activates the target, then returns to root). Re-activate with design_activate_component if needed.
@@ -2172,9 +2175,14 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - already reads visible=
 - setRevisionVisibility raised on row
 - action='add' needs 'rows' as one or more '
-- The revision table's rows did not read back after the add (table_created=
+- The revision table rows did not read back after add (table_created=
+- , revision_count_before=
+- ); landed rows are unknown and may be retained. Read drawing_get(include=['revisions']) before retrying.
 - The revision table (table_created=
-- before) - the requested row(s) do not read back as asked:
+- before); landed_requested_rows=
+- ; unconfirmed_request_indexes=
+- ; row_count_mismatch=
+- . Earlier additions may remain. Read drawing_get(include=['revisions']) before retrying.
 - The existing revision table's rows did not read - refusing to add without a reliable census.
 - Sheet.revisionTableInput() did not read on '
 - ' - nothing was added.
@@ -2183,18 +2191,29 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ] - nothing was added.
 - Could not configure the revision table input:
 - Sheet.addRevisionTable raised:
-- ] - the table now reads
+- ] - the table revision_count_before=
+- ; revision_count_after=
+- ; later additions are unconfirmed. Read drawing_get(include=['revisions']) before retrying.
 - addRevision refused rows[
-- ); the table now reads
+- ); revision_count_before=
+- ; earlier additions may remain and later additions are unconfirmed. Read drawing_get(include=['revisions']) before retrying.
 - addRevision raised on rows[
-- . The table now reads
+- . revision_count_before=
 - action='update' needs 'row' - a '
 - : Fusion leaves empty updates unchanged. Nothing changed. Omit trailing fields to keep them, or supply non-empty text.
 - RevisionTableRow.create() returned nothing - nothing was updated.
 - updateRevisionRow returned false for row
-- The revision table's rows did not read back after the update - unverified.
-- Fusion accepted the update but row
+- updateRevisionRow returned
+- ; the post-update row census is unreadable (before=
+- ; landed fields are unknown). Read drawing_get(include=['revisions']) before retrying or reconciling this row.
+- Fusion accepted the update for row
+- , but the result is partial: before=
+- ; fields_different_from_expected=
+- ; unconfirmed_fields=
+- . Read drawing_get(include=['revisions']) and reconcile the returned row before retrying; omitted sibling fields may have changed.
 - updateRevisionRow raised on row
+- updateRevisionRow returned true, but row
+- . Read drawing_get(include=['revisions']) before retrying.
 - deleteRow returned false for row
 - The revision table's rows did not read back after deleting row
 - Fusion accepted the delete but the table reads
@@ -2202,7 +2221,15 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - deleteRow raised on row
 - Fusion accepted the delete but row
 - The table sits in the sheet's top-right corner; no API moves or deletes it. drawing_export's PDF shows it, doc_save persists the drawing.
+- addRevision raised on rows[]: . revision_count_before=; revision_count_after=; retained_rows=; later additions are unconfirmed. Read drawing_get(include=['revisions']) before retrying.
+- RevisionTableRow.create() returned nothing for rows[] - the table revision_count_before=; revision_count_after=; retained_rows=; later additions are unconfirmed. Read drawing_get(include=['revision...
+- addRevision refused rows[] (); revision_count_before=; revision_count_after=; retained_rows=; earlier additions may remain and later additions are unconfirmed. Read drawing_get(include=['revisions'...
+- The revision table rows did not read back after add (table_created=, revision_count_before=); landed rows are unknown and may be retained. Read drawing_get(include=['revisions']) before retrying.
+- The revision table (table_created=) reads  row(s) ( before); landed_requested_rows=; unconfirmed_request_indexes=; row_count_mismatch=; census=. Earlier additions may remain. Read drawing_get(inclu...
 - Cannot clear row  field(s) : Fusion leaves empty updates unchanged. Nothing changed. Omit trailing fields to keep them, or supply non-empty text.
+- updateRevisionRow returned  for row ; the post-update row census is unreadable (before=; requested=; landed fields are unknown). Read drawing_get(include=['revisions']) before retrying or reconcili...
+- updateRevisionRow returned true, but row  still reads  before=; requested=; landed_fields=; fields_different_from_expected=. Read drawing_get(include=['revisions']) before retrying.
+- Fusion accepted the update for row , but the result is partial: before=; requested=; actual=; landed_fields=; fields_different_from_expected=; unconfirmed_fields=. Read drawing_get(include=['revisi...
 
 ### `drawing_edit_sheet`
 - The active document is not a drawing, so it has no sheets. Open the drawing (doc_open by file_id) and make it active, then retry.
@@ -2422,7 +2449,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - As-built joint creation returned nothing.
 - The as-built joint was created as '
 - ', not the requested '
-- '. It remains in the design - remove it with design_delete_feature and retry.
 - The as-built joint was created but its motion could not be read back, so '
 - ' is unconfirmed. Check it with assembly_get before relying on the degree of freedom.
 - 'geometry' resolved to the Joint Origin '
@@ -2443,7 +2469,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - joint_type '' needs 'geometry' - the anchor its motion runs on (a find_geometry handle, or '<occurrence>:<snap>' with snap = origin/center/top/bottom/left/right/front/back/cylinder). Fusion refuses...
 - joint_type 'rigid' takes no 'geometry' - a rigid as-built joint locks the two occurrences with no anchor to move along, so '' would be ignored. Drop 'geometry', or set joint_type to the motion you ...
 - 'geometry' resolved to the Joint Origin ''. An as-built joint anchors on a JointGeometry - real geometry (a face/edge/vertex handle, or an '<occurrence>:<snap>'). To joint AT a Joint Origin use joi...
-- The as-built joint was created as '', not the requested ''. It remains in the design - remove it with design_delete_feature and retry.
 - The as-built joint was created but its motion could not be read back, so '' is unconfirmed. Check it with assembly_get before relying on the degree of freedom.
 - The as-built joint WAS created (Fusion named it '') but renaming it to '' raised: . Rename it in the browser, or remove it with design_delete_feature and retry with a different name.
 - The as-built joint WAS created but renaming it to '' did not take - AsBuiltJoint.name still reads ''. Rename it in the browser, or remove it with design_delete_feature and retry with a different name.
@@ -2458,7 +2483,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - jointOrigins.add returned nothing.
 - Joint origin landed on component '
 - ', not the requested '
-- '. Rolled it back; nothing changed.
 - 'component': occurrence '
 - ' has no readable component to receive the joint origin.
 - Could not create joint-origin input:
@@ -2466,11 +2490,10 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Could not set the coordinate offsets on the joint origin:
 - Coordinate offsets did not take: asked
 - cm but the joint origin reports
-- cm. Rolled the origin back; nothing changed.
 - Joint origin landed at
 - but the computed anchor was
-- cm). Rolled the origin back; nothing changed.
 - 'component': anchor='' places the frame from WORLD coordinates, but a joint origin inside a component is positioned in THAT component's own space, and the placement transform of '' . Anchor on geom...
+- The hidden helper sketch this call drew for the bbox_center anchor was not removed; design_get(include=['timeline']) lists it.
 - The origin's own parentComponent , so which component it belongs to is UNVERIFIED - a joint origin on another component cannot serve as this one's side of a joint. Confirm with assembly_get(include...
 - This origin lives in component '' - its offsets are measured from THAT component's origin, so it can serve as that component's side of a joint.
 - Landed on the root component '' while component '' is the active edit target - this tool does not follow the active component; pass 'component' to land the origin inside one.
@@ -2771,11 +2794,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Could not configure the mesh-repair input:
 - Mesh repair failed (meshRepairFeatures.add raised):
 - The rebuild was created with
-- was requested - Fusion did not take the value. The mesh has been rebuilt at
-- the API accepts, or undo in Fusion.
+- was requested - Fusion did not take the value. Re-run with a
 - The  repair raised no error, but nothing could be read back off the mesh afterwards (triangle/vertex counts, is_closed and volume are all unreadable) - the repair is UNVERIFIED, so it is reported a...
 - The  repair reported success but the mesh is unchanged ( triangles,  vertices) and is STILL not watertight - the holes it was asked to close are still there. Try repair_type='rebuild', or check the...
-- The rebuild was created with  = , but  was requested - Fusion did not take the value. The mesh has been rebuilt at ; re-run with a  the API accepts, or undo in Fusion.
 - Nothing changed: the mesh reads the same before and after ( triangles,  vertices, is_closed=), so  found nothing of its kind to fix. A MeshBody exposes no defect count beyond is_closed, so this is ...
 
 ### `mesh_reverse_normal`
@@ -2874,10 +2895,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - This design does not expose Arrange features.
 - Arrange reported success but NOTHING happened - no input occurrence moved and no occurrence was added.
 - holds the shapes at this spacing.
-- The empty arrange feature was rolled back.
-- The empty arrange feature could not be rolled back - remove it with design_delete_feature.
 - component(s) UNPLACED - its statistics read arranged
-- ' IS in the model with the rest placed: enlarge the envelope, lower 'spacing', or pass partial=true, then retry - design_delete_feature removes this one.
+- , with the rest placed. Enlarge the envelope, lower 'spacing', or pass partial=true, then retry.
 - 'envelope_plane': that handle is a planar FACE - this envelope takes a CONSTRUCTION plane. Pass xy/xz/yz or a construction-plane name.
 - 'envelope_plane' needs
 - ' for the boundary. Use sketch_get.
@@ -2886,8 +2905,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Could not create the arrange input (solver may be unavailable).
 - Could not set the arrange envelope from the inputs given.
 - The arrange input exposes no 'definition' on this Fusion version, so move_originals, rotation, quantity and part_in_part cannot be set.
-- ) hit an extension-only setting on this account:
-- . The solvers run on the base licence with a boundary or an envelope and a spacing; drop the setting the call added (rotation, margin, quantity, part_in_part) or enable the Manufacturing Extension.
+- Not measured whether this raise leaves an arrange feature; re-read with design_get(include=['timeline']).
 - No face of these shapes reads a plane, which solver='{label}' needs: {names}. Nothing was created. Drop them from 'shapes' to nest the rest, or pass solver='3d', which packed a body with no planar ...
 - Arrange (solver='{label}') failed with '{code}': a shape it holds carries no planar face and the platform names none of them. The feature is gone from the timeline, so nothing was created. Arrange ...
 - {names} read isGroundToParent True - the platform refuses to arrange a pinned component with move_originals=true. Nothing was created. Release each with assembly_ground(ground_to_parent=false), or ...
@@ -2900,7 +2918,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'envelope_origin' offsets a SIZED envelope from its plane's origin, and the profile envelope this call takes from sketch '' carries no origin offsets. Drop it, or pass 'envelope_plane' with its sizes.
 - Arrange () hit an extension-only setting on this account: . The solvers run on the base licence with a boundary or an envelope and a spacing; drop the setting the call added (rotation, margin, quan...
 - Arrange reported success but NOTHING happened - no input occurrence moved and no occurrence was added.  Check the  holds the shapes at this spacing.
-- Arrange left  component(s) UNPLACED - its statistics read arranged , unarranged . The feature '' IS in the model with the rest placed: enlarge the envelope, lower 'spacing', or pass partial=true, t...
+- Arrange left  component(s) UNPLACED - its statistics read arranged , unarranged , with the rest placed. Enlarge the envelope, lower 'spacing', or pass partial=true, then retry.
 - new_occurrences holds the copies; moved reads empty - re-arranging stacks another set, design_delete_feature removes it.
 
 ### `model_base_feature`
@@ -2913,7 +2931,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Base-feature edit OPEN - geometry from subsequent tool calls lands in this scope. While it is open the design READS as 'direct' and the timeline is inaccessible; that reverts on finish. ALWAYS pair...
 - This component has no baseFeatures collection - cannot create a base feature here.
 - BaseFeatures.add() returned nothing - could not create a base feature.
-- Could not enter base-feature edit (startEdit returned false).
 - No captured or existing base feature named '{name}' in the active document. Open captured scope names here: {available}. Retry with the exact base_feature returned by start, omit base_feature to cl...
 - The active document identity is unreadable, so this call cannot safely own a new base-feature scope. Refresh the active document and retry.
 - The active document identity is unreadable, so this call refused before finishEdit. All captured handles were kept; refresh the active document and retry.
@@ -2938,13 +2955,13 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Combine reported no error but nothing it could measure changed -
 - ' measures the same volume (
 - cm3) after the combine, which is what a tool that does not overlap the target produces. Tools:
-- . Move the tool into the target (model_move) and combine again.
+- Move the tool into the target (model_move) and combine again.
 - Nothing was combined.
 - WARNING: this join fused NOTHING - it left  separate bodies (), which is what a join of pieces that do not touch produces.
 - WARNING:  of the  tool bodies did not fuse into the target - it is still standing after the join, so those pieces do not touch.
 - Combine ran in a DIRECT design, which returns no feature object, and neither '' body count nor the target's volume could be read back - so whether the bodies were combined is UNVERIFIED. Check with...
 - Combine reported no error but nothing it could measure changed - . For cut/intersect the bodies must overlap; confirm with design_get(include=['tree']) / model_inspect.
-- This  changed NOTHING - '' measures the same volume ( cm3) after the combine, which is what a tool that does not overlap the target produces. Tools: ; . Move the tool into the target (model_move) a...
+- This  changed NOTHING - '' measures the same volume ( cm3) after the combine, which is what a tool that does not overlap the target produces. Tools: .  Move the tool into the target (model_move) an...
 - A cut/intersect that DISCONNECTED the target cannot be detected here (that check reads the feature's own result bodies) - check with design_get(include=['tree']).
 - Read the independent body/lump census with model_inspect(include=['mass'], per_body=true); require mass.per_body_truncated=false and a readable lump_count for every returned body before deciding wh...
 - WARNING: this  DISCONNECTED the target into  separate bodies () - reference each piece by name; a later op assuming one body may hit the wrong piece.
@@ -3028,8 +3045,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - . Try a smaller angle, 'flip', or a different pull direction.
 - Draft computed but tapered nothing - on
 - deg taper changed no geometry. Check 'pull_direction' is the plane the faces taper relative to, and try 'flip' or a face that is not already parallel to it.
-- The feature has been rolled back.
-- (The inert feature could not be auto-removed.)
 - 'angle_deg' must be a number (draft angle in degrees).
 - deg (setSingleAngle returned false), so nothing was drafted.
 - . (The pull direction may not suit these faces, or the angle undercuts the geometry - try a smaller angle or 'flip'.)
@@ -3040,12 +3055,14 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'faces_drafted' is null - the count could not be read off the feature, so how many faces the draft took is UNKNOWN here;  face(s) were requested.
 
 ### `model_edit_body`
+- 'faces' is unused for action='
 - action='create_component' does not use 'destination'; omit it.
 - ' requires explicit 'destination' (occurrence or root).
 - No active design. Open a design document first.
 - 'body' did not resolve to a BRep or mesh body.
 - returned no body. The operation may have partially landed; inspect source and destination with design_get(include=['tree']). Partial state:
 - Body ownership changes the component definition in every placement. Use the fresh handle promptly; old move/create handles may be stale.
+- action='merge_faces' takes 'faces', not 'body' or 'destination'.
 - Could not read selected body owner or placement:
 - ' does not contain exactly one selected body.
 - ' refused: component '
@@ -3058,7 +3075,16 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - create_component for '
 - source placements have nonidentity transforms
 - . Use a mesh in root or an identity-placed component, or use a parametric design. An available BRep source also supports this action.
+- Face merge requires a direct design; the current design history is unchanged. Use a separate direct-design copy. Parametric BaseFeature copying is not supported.
+- action='merge_faces' needs exactly two connected coplanar faces; got
+- The selected faces must belong to the same solid body.
+- ' must be a solid in the root component.
+- ' face count or material did not read; nothing was merged.
+- . The edit may remain on the body; inspect model_inspect before further edits. No timeline feature is available to delete; recovery is manual.
+- ', but its body handle did not read. Inspect model_inspect.
+- Merged the selected planar pair in place. No timeline feature is available to delete; inspect model_inspect before further edits.
 - New child has  matching placements; cannot mint one body handle. Inspect design_get(include=['tree']) and choose the intended instance.
+- Face merge on '' is unverified: ; faces  -> . The edit may remain on the body; inspect model_inspect before further edits. No timeline feature is available to delete; recovery is manual.
 - create_component for '' in component '' refused:  of  source placements have nonidentity transforms . Use a mesh in root or an identity-placed component, or use a parametric design. An available BR...
 - Body  raised after the mutation was attempted: . Inspect source and destination with design_get(include=['tree']). Partial state:
 - Body  returned no body. The operation may have partially landed; inspect source and destination with design_get(include=['tree']). Partial state:
@@ -3091,12 +3117,15 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `model_edit_loft`
 - Loft section changed on the same feature. Inspect model_inspect.
 - 'section_index' must be a nonnegative integer (got
+- 'new_index' is unused for action='
 - action='retarget' requires 'profile'.
 - 'profile' is unused for action='remove'; remove it.
 - ' has unreadable timeline identity; nothing was edited.
 - ; roll after it with design_edit_timeline.
 - ': 'section_index'=0 is an endpoint, not an interior section. Choose an interior section index. Nothing was edited.
 - 's evaluated-health census is unreadable; nothing was edited.
+- action='reorder' takes a nonnegative integer 'new_index' (got
+- Loft sections reordered on the same feature. Inspect model_inspect.
 - Editing '': 'section_index'=0 is an endpoint, not an interior section. Choose an interior section index. Nothing was edited.
 - Restore it with model_edit_loft(feature='', action='retarget', section_index=, profile={'sketch': '', 'profile_index': }).
 
@@ -3211,10 +3240,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - No active design. Create or open a document first (see doc_new).
 - Provide a positive radius: the expression '
 - Rule fillet reported success but rounded nothing. topology '
-- ' may exclude every edge of the selected faces ('rounds_only' takes convex edges, 'fillets_only' concave ones), or the faces meet smoothly and have no corner to round. The feature has been rolled b...
-- (The inert fillet feature could not be auto-removed.)
+- ' may exclude every edge of the selected faces ('rounds_only' takes convex edges, 'fillets_only' concave ones), or the faces meet smoothly and have no corner to round.
 - The rule fillet was created but its radius reads back
-- ' with design_delete_feature.
 - The rule fillet was created but its topology is not the requested '
 - Provide a positive radius.
 - The rule fillet refused the given faces, so nothing was created. Re-run find_geometry for fresh face handles.
@@ -3224,8 +3251,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - A full round fillet needs 'faces' and 'second_faces' - the face handles on either side of 'center_face'. The API refuses an empty side set ('invalid argument sideOneFaces'), so both must be given.
 - Full round fillet reported success but did not build one: the created feature answers
 - full-round face set(s) (any other fillet answers none) and the body's measured volume changed by
-- cm3. The feature has been rolled back.
-- (It could not be auto-removed.)
 - The full round face set was refused, so nothing was created. Re-run find_geometry for fresh face handles.
 - Full round fillet failed:
 - . The three faces must be adjacent - each side face sharing an edge with 'center_face'.
@@ -3233,7 +3258,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'positions' and 'radii' must be the same length - got  position(s) and  radius(es). Each position places the radius paired with it at the same index.
 - 'positions'[] is  - a position is the fraction along the edge chain where its radius applies, and must be between 0 and 1 exclusive. The chain's two ends take their radii from 'radius' and 'end_rad...
 - Rule fillet reported success but rounded nothing. topology '' may exclude every edge of the selected faces ('rounds_only' takes convex edges, 'fillets_only' concave ones), or the faces meet smoothl...
-- Full round fillet reported success but did not build one: the created feature answers  full-round face set(s) (any other fillet answers none) and the body's measured volume changed by  cm3. The fea...
+- Full round fillet reported success but did not build one: the created feature answers  full-round face set(s) (any other fillet answers none) and the body's measured volume changed by  cm3.
 - A  fillet selects FACES, so 'edges' cannot be passed with fillet_type=''. Drop 'edges', or use fillet_type='constant' to round exactly those edge handles.
 
 ### `model_hole`
@@ -3508,7 +3533,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - . (The path must form one connected chain of edges or sketch curves.)
 - Could not set section_size:
 - . (A 'cut'/'intersect' needs existing geometry to act on; the section must fit around the path's corners.)
-- Pipe reported success but created no body. Check that the path is one connected chain and the section size fits around its corners.
+- Check that the path is one connected chain and the section size fits around its corners.
+- Pipe reported success but created no body.
+- Pipe reported success but its result bodies did not read.
 - Pipe created a body with no volume, so nothing usable was built.
 - Setting 'wall_thickness' switched the pipe input back to SOLID, so a hollow pipe cannot be built from these inputs. No pipe was created.
 - Could not scope to target_bodies:
@@ -3607,12 +3634,27 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `model_split`
 - No active design. Create or open a document first (see doc_new).
+- 'view_direction' is used only by split='silhouette' (got split='
+- split='silhouette' takes 'target' and 'view_direction', not 'faces', 'split_plane' or 'split_tool_body'.
 - Faces split; result_count is the net face-count increase. Pair with view_screenshot.
 - 'faces' is required for split=face (the faces to split).
 - Split produced no new faces - the cutter did not cross the
 - target face(s). It must intersect them; try extend_tool=true or a larger cutter.
 - . (The cutter must cross the faces - try extend_tool=true or a larger cutter.)
 - Split face ran in a DIRECT design, which returns no feature object, and the owning bodies' face count could not be read back - so whether the faces were split is UNVERIFIED. Check with model_inspec...
+- split='silhouette' needs 'target' (the solid to split).
+- ' is not a root-component body; split='silhouette' takes a solid in the root component.
+- The faces, volume or edges of '
+- ' did not read; nothing was split.
+- ' was created but failed to compute:
+- ' was created, but the faces or volume of '
+- ' did not re-read, so the split is unverified.
+- ): no face was split.
+- ' changed the volume of '
+- cm3; a faces-only split keeps it.
+- ' was created, but its straight edges did not re-read, so the boundary positions are unverified.
+- Faces split along the silhouette; volume kept. new_line_edges_mm are the straight edges the split added (world mm). Retire it with design_delete_feature.
+- Silhouette split of '
 - Body split into pieces. Pair with design_get(include=['tree']) / view_screenshot.
 - 'target' is required for split=body (the body to split).
 - body - the cutter did not divide '
@@ -3644,7 +3686,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Unknown orientation '
 - '. Use: perpendicular, parallel.
 - No active design. Create or open a document first (see doc_new).
-- Sweep reported success but created no body. Check that the profile sits on the path and the path forms a valid, connected sweep.
+- Check that the profile sits on the path and the path forms a valid, connected sweep.
+- Sweep reported success but created no body.
+- Sweep reported success but its result bodies did not read.
 - Choose 'profile' or 'solid_body', not both.
 - Could not start sweep:
 - . (The path must geometrically connect and the profile should sit on/near the path start.)
@@ -3656,8 +3700,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' measures the volume it had before and none was consumed, so the swept profile does not overlap any of them. Check the path runs through the target body (an 'intersect' whose target lies entirely ...
 - Could not scope to target_bodies:
 - measure the volumes they had before and none was consumed, so the profile does not sweep through any of them. A cut/intersect can only affect bodies named in 'target_bodies' - check the path runs t...
-- The sweep feature was rolled back.
-- Remove the empty feature with design_delete_feature.
 - Solid body swept into a new result; its source tool body retains its geometry.
 - 'solid_body' supports operation='new' only.
 - 'solid_body' uses perpendicular orientation; omit 'orientation'.
@@ -3998,7 +4040,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' remains, but its angle did not read back as
 - deg. Inspect or remove it with design_delete_feature.
 - ' remains, but changed body topology was not verified. Inspect it before retrying.
-- Fold created. Inspect the stationary side with view_screenshot; create the developed blank with sheet_create_flat_pattern.
+- Fold created. Inspect the stationary side with view_screenshot; sheet_create_flat_pattern creates a native flat whose development remains unverified.
 - bend_line was not accepted; choose a line across the sheet face.
 - Fold failed for bend_line=
 
@@ -4471,6 +4513,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The face count ROSE by %d - unexpected for a delete, which normally lowers it. The edit did land (the count moved), but the requested face(s) may not be what was removed: inspect the body with desi...
 - No active design. Create or open a document first (see doc_new).
 - 'faces' resolved to no faces. Pass find_geometry face handles.
+- Delete-face reported no error, but its result bodies did not all read back, so how many input bodies it consumed is unknown. Check the bodies with design_get(include=['tree']).
 - Delete-face reported no error, but the face count of %d result body(ies) (%s) would not read back, so whether any face was deleted is UNVERIFIED - a count that will not read is not a count of zero....
 - Delete-face reported no error but no input body's face count changed (%d -> %d) - nothing was deleted.
 - The body could not be healed - retry with heal=false to remove the faces without healing.
@@ -4515,9 +4558,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - boundaryFillFeatures.createInput returned nothing - no boundary could be calculated from the tools given.
 - The selected cell(s) produced nothing.
 - The open transaction was cancelled.
-- Boundary fill reported success but produced no body, consumed no tool, and left every solid in the design at its old volume - nothing was sealed.
-- The empty feature was rolled back.
-- The empty feature could NOT be deleted - remove it with design_delete_feature.
+- Boundary fill reported success but produced no body, consumed no tool, and
 - Boundary fill failed:
 - . (The tools must enclose a volume between them.)
 - The boundary-fill input's bRepCells could not be read, so which volumes the tools enclose is unknown - nothing was created.
@@ -4548,6 +4589,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Pass 'boundary' (one loop) or 'boundaries' (a list of loops, each an edge handle Fusion auto-completes - the way to patch every hole in one call).
 - interior_rails did not take - PatchFeatureInput.interiorRailsAndPoints reads back  entity(ies) after assigning , so the patch would run without them.
 - Closed boundary filled, but no result body's isSolid flag could be read back - whether the patch is an open surface is UNVERIFIED.
+- Sketch boundaries take continuity='connected', operation='new' and no interior_rails. Use a body-edge boundary for the other patch options.
 - Patch failed: .  Candidate causes, not a complete list: (1) a degenerate TANGENT saddle opening whose rim is two half-edges - pass both as the boundary list; (2) an edge loop SPLIT by a later featu...
 - Patch failed: . With interior_rails there are two candidate causes and this message asserts neither: the boundary does not form a CLOSED loop, or a rail edge does not lie on the surface the boundar...
 
@@ -4597,13 +4639,12 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - (The tool may not intersect the surface.)
 - The open transaction was cancelled.
 - Trim committed but the surface area did not decrease (
-- cm2 before and after) - no cell was actually removed.
+- after) - no cell was actually removed.
 - Trim committed but a body the target does not own changed area:
-- . Undo in Fusion before continuing.
 - Trim aborted: the kept cells measure
 - mm2, more than the target's own
 - mm2. Other cell owners read:
-- . The transaction was cancelled.
+- The transaction was cancelled.
 - . (The trim tool must INTERSECT the surface and divide it.)
 - Trim refused:  did not read, so how many times the target's component is placed is unknown - and a trim of a component placed twice trims every placement. Re-read the design with assembly_get and r...
 - Trim refused: the target's component is placed  times (). A trim is a feature of the COMPONENT, so every placement is trimmed, and the cells the call reports then describe neither placement nor the...
@@ -4611,7 +4652,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Trim failed: the trim tool does not divide the surface (no cells). (The trim tool must INTERSECT the surface and divide it.)
 - Trim refused: none of the  cell(s) named an owning body, so this trim cannot be scoped to the target. Re-read the surface with find_geometry and retry.
 - Trim failed: none of the  cell(s) computed belong to the target surface - they belong to . (The trim tool must INTERSECT the TARGET and divide it.)
-- Trim aborted: the kept cells measure  mm2, more than the target's own  mm2. Other cell owners read: . The transaction was cancelled.
 
 ### `surface_untrim`
 - Faces untrimmed - extent restored (area %.6f -> %.6f cm^2).

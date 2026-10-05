@@ -14,7 +14,7 @@ import adsk.fusion
 
 MAP_BLURB = (
     "response+resolve: ok/error/safe (per-FIELD, never a MUTATION), "
-    "measured/read_flag/counted (None, not 0), design/target_component, "
+    "measured/read_flag/counted/finite_number, design/target_component, "
     "find_sketch/resolve_sketch (shared name REFUSED), timeline_health/timeline_message/"
     "set_verified/rolled_to (effect reads; ONE roll-restore), same_component/native_identity/occurrence_walk/"
     "broken_reference (TRI-STATE), scale/iter_collection/named_with_remainder/told_apart")
@@ -29,9 +29,10 @@ def ok(payload: dict) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}], "isError": False}
 
 
-def error(text: str) -> dict:
-    """A failed tool result. ``message`` mirrors the text so callers can read either field."""
-    return {"content": [{"type": "text", "text": text}], "isError": True, "message": text}
+def error(text: str, payload=None) -> dict:
+    """A failed tool result with its message and optional structured partial-effect payload."""
+    content = text if payload is None else json.dumps(payload, indent=2)
+    return {"content": [{"type": "text", "text": content}], "isError": True, "message": text}
 
 
 # ── safe getter ─────────────────────────────────────────────────────────────
@@ -73,6 +74,17 @@ def counted(getter):
     an unreadable read is neither 0 nor 1. A bool or a non-int reads as unknown."""
     n = safe(getter)
     return int(n) if isinstance(n, int) and not isinstance(n, bool) else None
+
+
+def finite_number(value, text=False):
+    """float(value) for a finite non-bool number (and numeric text when `text`), else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str) if text else (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 # ── design / component resolution ───────────────────────────────────────────
@@ -921,14 +933,45 @@ def body_count(host):
     return safe(lambda: host.bRepBodies.count)
 
 
-def failed_effect_remedy(design, feature) -> str:
-    """The remediation sentence a wrong-effect error ends with - the timeline entry to delete, or
-    Fusion's own undo where direct mode leaves neither a feature nor a timeline to name."""
-    if direct_feature_absence(design, feature):
+def feature_address(entity):
+    """The address design_delete_feature takes for `entity`'s timeline row, else its name, else None."""
+    from . import _inputs
+    if not entity:
+        return None
+    return (_inputs.candidate_address(safe(lambda: entity.timelineObject))
+            or safe(lambda: entity.name) or None)
+
+
+def left_in_timeline(design, address):
+    """The retained item's design_delete_feature sentence, or the undo one in DIRECT mode."""
+    # _inputs imports _common, so the ONE mode reader is bound at call time, not at import.
+    from . import _inputs
+    # A direct design's timeline read raises (measured), so design_delete_feature has no row to take.
+    if _inputs.current_design_type(design) == _inputs.MODE_DIRECT:
         return ("This design is in DIRECT mode: there is no timeline feature to remove, so whatever "
                 "did change is already in the model - undo in Fusion, or re-run with corrected "
                 "inputs.")
-    return "The feature remains in the timeline; remove it with design_delete_feature."
+    if not address:
+        return "The feature remains in the timeline; remove it with design_delete_feature."
+    return (f"'{address}' remains in the timeline; remove it with "
+            f"design_delete_feature(feature='{address}').")
+
+
+def failed_effect_remedy(design, feature) -> str:
+    """The remediation sentence a wrong-effect error ends with, naming `feature`'s timeline row."""
+    return left_in_timeline(design, feature_address(feature))
+
+
+def delete_failed_feature(design, feature):
+    """(deleted, sentence): run the deleteMe a failed write already applies to its own `feature`."""
+    remedy = failed_effect_remedy(design, feature)
+    try:
+        removed = feature.deleteMe()
+    except Exception as exc:
+        return False, f"Deleting it raised ({str(exc)[:120]}). {remedy}"
+    if removed is True:
+        return True, "Deleting it returned True."
+    return False, f"Deleting it returned {removed!r}. {remedy}"
 
 
 def no_feature_error(design, what, hint="") -> str:
@@ -1341,8 +1384,8 @@ OPERATIONS = {
 
 # ── the ONE path resolver (sweep / pipe / path pattern / on-path datum) ──────
 
-def build_path(comp, path_raw):
-    """Return (path, label, error): sketch curves, one tangent edge seed, or an exact edge list."""
+def build_path(comp, path_raw, left_out=None):
+    """Return (path, label, error); a `left_out` list receives the sketch curve ids the path omits."""
     # _inputs and _sketch_detail import _common, so both are bound at call time, not at import.
     from . import _inputs, _sketch_detail
     if isinstance(path_raw, str) and path_raw.strip().lower().startswith("sketch:"):
@@ -1395,14 +1438,14 @@ def build_path(comp, path_raw):
                 p = candidate
         if not p:
             return None, None, f"createPath returned nothing for sketch '{nm}'."
-        label = f"sketch:{nm}"
-        got = members(p) if (counted(lambda: p.count) or 0) < len(selected) and known else None
+        got = (members(p) if left_out is not None and known
+               and (counted(lambda: p.count) or 0) < len(selected) else None)
         if got is not None:
             left = [_sketch_detail.curve_id(sk, c) for c, key in zip(selected, intended)
                     if key not in got]
-            if left and None not in left:
-                label += f" (not in the path: {named_with_remainder(left)})"
-        return p, label, None
+            if None not in left:
+                left_out.extend(left)
+        return p, f"sketch:{nm}", None
 
     # A single handle is kept whole - a composite handle carries commas in its locator, so it must
     # NOT be comma-split; several must arrive as a JSON list.
@@ -1452,14 +1495,15 @@ def path_sketch_curve_count(comp, path_raw):
     return sum(1 for c in iter_collection(curves) if not bool(safe(lambda c=c: c.isConstruction, False)))
 
 
-def path_chain_warning(path_curves, sketch_curves, action):
-    """The WARNING clause for a path that chained fewer curves than its sketch holds - '' when it
-    covers all of them or either count is unreadable. `action` names the geometric verb (sweep/pipe)."""
+def path_chain_warning(path_curves, sketch_curves, action, left=()):
+    """The WARNING for a path short of its sketch's curves, naming the `left` ids; '' when none is."""
     if path_curves is None or sketch_curves is None or path_curves >= sketch_curves:
         return ""
+    named = f" Not in the path: {named_with_remainder(list(left))}." if left else ""
     return (f"WARNING: the path chained {path_curves} of the sketch's {sketch_curves} curves, so "
-           f"the {action} covers only that run. Inspect the path with sketch_get; put each intended "
-           "run in a separate path sketch if the full sketch does not connect.")
+            f"the {action} covers only that run.{named} sketch_get lists the curves; one connected "
+            "run drawn out of order is redrawn in chain order; several runs go in separate path "
+            "sketches.")
 
 
 def iter_collection(coll):

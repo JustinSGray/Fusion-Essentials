@@ -626,6 +626,7 @@ class TestFusionPostScope:
         result = cp.handler(post=name, post_scope="fusion", output_folder=str(tmp_path),
                             program_name="1001")
         assert result["isError"] is True and "absence is unknown" in result["message"]
+        assert "Enumerated post URLs: fusion://root/fanuc turning.cps" in result["message"]
         assert "Choose an enumerated post URL instead" in result["message"]
         assert "URLs outside this walk cannot be resolved" in result["message"]
         assert "Pass an exact post asset url" not in result["message"]

@@ -137,11 +137,16 @@ def _resolve_library_post(post, post_scope):
         matches = [a for a in assets if _norm_post_name(leaf(a)) == want]
         if truncated:
             urls = [str(safe(lambda a=a: a.toString())) for a in matches]
+            available = sorted({str(safe(lambda a=a: a.toString())) for a in assets
+                                if safe(lambda a=a: a.toString())})
+            hint = (f"Enumerated post URLs: {named_with_remainder(available, cap=_NAMES_LISTED)}. "
+                    if available else "No post URLs were enumerated; use post_scope='local' with a full .cps path. ")
             return None, None, (f"Cannot resolve {post_scope} post '{post}': the search "
                                 "was capped, so uniqueness or absence is unknown. "
                                 + (f"Known matching urls: {', '.join(urls)}. " if urls else "")
-                                + "Choose an enumerated post URL instead; URLs outside this walk "
-                                  "cannot be resolved.")
+                                + hint
+                                + ("Choose an enumerated post URL instead; URLs outside this walk "
+                                   "cannot be resolved." if available else ""))
     if not matches:
         # The shipped library answers with hundreds of names, so what the listing cannot carry is
         # COUNTED by the shared renderer rather than dropped.

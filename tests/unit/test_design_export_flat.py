@@ -1,7 +1,7 @@
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import pytest
-from conftest import load_tool
+from conftest import load_tool, payload
 
 
 @pytest.fixture
@@ -29,6 +29,17 @@ def test_native_success_without_file_is_error(exporter, tmp_path):
     result = mod.handler(format="dxf", dxf_flat_pattern="body", file_path=str(tmp_path / "blank.dxf"))
     assert result["isError"] is True
     assert "no fresh file" in str(result)
+
+
+def test_written_flat_reports_export_without_claiming_verified_development(exporter, monkeypatch, tmp_path):
+    mod, design, flat, opts = exporter
+    path = tmp_path / "blank.dxf"
+    path.write_text("9\n$INSUNITS\n70\n4\n", encoding="ascii")
+    monkeypatch.setattr(mod._export, "verify_written", lambda p, before: (path.stat().st_size, None))
+    result = payload(mod.handler(format="dxf", dxf_flat_pattern="body", file_path=str(path)))
+    assert result["exported"] is True and result["development"] == "unverified"
+    assert result["file_exists"] is True and result["dxf_flat_units"] == "mm"
+    assert "sheet_get(include=['features'])" in result["note"]
 
 
 @pytest.mark.parametrize("extra", [{"dxf_face": "face"}, {"dxf_sketch": "Sketch1"},

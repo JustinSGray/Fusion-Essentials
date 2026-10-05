@@ -203,11 +203,20 @@ def _collapsed_unfold_hint(timeline, want):
     groups = safe(lambda: timeline.timelineGroups)
     count = _common.counted(lambda: groups.count)
     uncertain = ("Hidden feature/group identity could not be read completely. Read "
-                 "design_get(include=['timeline'], group='<group name>'); keep an unfold group intact.")
+                 "design_get(include=['timeline']) to list groups; keep an unfold group intact.")
     if count is None or count < 0:
         return uncertain
+    readable_groups = []
     for i in range(count):
         group = safe(lambda i=i: groups.item(i))
+        group_name = safe(lambda: group.name)
+        if isinstance(group_name, str) and group_name:
+            readable_groups.append(group_name)
+            reads = "; ".join(f"design_get(include=['timeline'], group={name!r})"
+                              for name in readable_groups[:5])
+            more = f"; {len(readable_groups) - 5} more groups not listed" if len(readable_groups) > 5 else ""
+            uncertain = ("Hidden feature/group identity could not be read completely. Read "
+                         + reads + more + "; keep an unfold group intact.")
         collapsed = _common.read_flag(lambda: group.isCollapsed)
         if group is None or collapsed is None:
             return uncertain
@@ -341,16 +350,35 @@ def base_feature_run_wrapper(open_scope, inner_op):
     bf, err = open_scope()
     if err is not None:
         return None, err
-    started = bf.startEdit()
-    if started is False:
-        return bf, error("Could not enter base-feature edit (startEdit returned false).")
+    name = safe(lambda: bf.name)
+    try:
+        started = bf.startEdit()
+    except Exception as exc:
+        started = f"raised: {str(exc)[:120]}"
+    if started is False or isinstance(started, str):
+        return bf, error(scope_left_clause(name, "startEdit", started))
     try:
         result = inner_op(bf)
     finally:
         # ALWAYS finish - a leaked open base-feature edit corrupts every later call this session -
         # and on the CAPTURED bf, since a lookup cannot find a scope while designType reads direct.
-        safe(lambda: bf.finishEdit())
+        try:
+            done = bf.finishEdit()
+        except Exception as exc:
+            done = f"raised: {str(exc)[:120]}"
+    if done is False or isinstance(done, str):
+        text = scope_left_clause(name, "finishEdit", done)
+        if isinstance(result, dict) and result.get("isError") is True:
+            text = f"{result.get('message') or ''} {text}".strip()
+        return bf, error(text)
     return bf, result
+
+
+def scope_left_clause(name, call, outcome):
+    """The error for a base-feature startEdit/finishEdit that returned false or raised."""
+    what = "returned false" if outcome is False else outcome
+    return (f"{call} on base feature '{name or '(name unreadable)'}' {what}; the edit scope was "
+            "left as it is. Read design_get(include=['timeline']) before continuing.")
 
 
 def run_in_base_feature(design, comp, inner_op):

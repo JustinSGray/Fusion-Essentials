@@ -401,11 +401,11 @@ def _name_hint(names):
     return ", ".join(kept) + (f", and {more} more" if more > 0 else "")
 
 
-def resolve_file_reference(raw, project="", project_id="", folder=""):
+def resolve_file_reference(raw, project="", project_id="", folder="", id_input="project_id"):
     """Resolve ONE DataFile from `raw` - a lineage URN / Fusion web URL, or a file NAME scoped to a
     project (optionally a folder path in it): (data_file, meta, err), exactly one of data_file/err
     set. A NAME is not unique across a project's folders, so a name matching several files is
-    REFUSED with each candidate's folder path and URN; matching is case-insensitive EXACT."""
+    REFUSED with each candidate's folder path and URN; `id_input` is the caller's project-id input."""
     from . import _data_read              # deferred: _data_read imports this module
 
     ident = (raw or "").strip()
@@ -423,18 +423,19 @@ def resolve_file_reference(raw, project="", project_id="", folder=""):
 
     if not (project or project_id):
         return None, None, (f"'{ident}' is a file NAME, which is only unique within a project - pass "
-                            "'project' (or 'project_id') to scope it, or pass the file's lineage URN "
-                            "instead (data_get(project=<name>) lists both).")
+                            "'project'" + (f" (or '{id_input}')" if id_input else "")
+                            + " to scope it, or pass the file's lineage URN as 'file' "
+                            "(data_get(project=<name>) lists it).")
 
     data = safe(lambda: app.data)
     if not data:
         return None, None, "Data not available (not signed in?)."
     try:
         proj, available = _find_project(data, name=project or None,
-                                        project_id=project_id or None)
+                                        project_id=project_id or None, id_input=id_input)
     except Exception as exc:
-        return None, None, (f"{exc} Get the file's lineage id with "
-                            "data_get(project_id=<id>), then pass that id as 'file'.")
+        return None, None, (f"{exc} Get the file's lineage URN with "
+                            "data_get(project_id=<id>), then pass it as 'file'.")
     if not proj:
         return None, None, (f"Project not found: {project_id or project}. Available: "
                             f"{', '.join(available) or '(none)'}")

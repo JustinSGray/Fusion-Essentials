@@ -19,6 +19,7 @@ from verify_core import (
     _same_face_area, _shelled, _split_bodies, _stitched, _trim_scoped_to_target, _unless,
     _unstitched, _watch)
 from verify_acts_cam import MACHINING_EXTENSION
+from verify_acts_model_combine_revolve import _combine_pin
 from verify_layout import _px, _py
 from verify_acts_model_sweep import (
     _retire_compare, _retire_design_state, _retire_material_state, _retire_reads, _retire_sketch_state,
@@ -814,7 +815,10 @@ def _tiny_surface_rows():
                   _refused('"postcondition": "surface_area_added"', '"handler_reported_unverified_result"',
                            '"feature": "Extrude2"', '"result_bodies"', '"Body2"', '"source": "K2Tiny"',
                            '"features_verified": 1', '"area_change_cm2"', '"area_increase_threshold_cm2": 1e-06',
-                           "not confirmation", "Re-read with model_inspect"))
+                           "not confirmation", "Re-read with model_inspect",
+                           "Its result bodies: 'Body2'.",
+                           "'Extrude2' remains in the timeline; remove it with "
+                           "design_delete_feature(feature='Extrude2')."))
         rows.append(("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
                                      "tree_handles": True, "max_results": 200}, _tiny_surface_history(after), None))
         rows.append(("model_inspect", {"target": "K2Witness:1", "include": ["default", "mass"], "per_body": True,
@@ -841,6 +845,18 @@ def _tiny_surface_rows():
          lambda p: _measured("retained sheet independently spans 0.01 by 0.005 mm",
                               _tiny_surface_bounds(p, "face"), _tiny_surface_bounds(p, "face")
                               == [0.01, 0.0, 0.005, 40.0, 0.0, 0.0, 40.01, 0.0, 0.005]), None),
+        ("design_delete_feature", lambda c: {"feature": "Extrude2",
+                                             "expect_document": _ctx_get(c, "tiny_doc", "owned scratch")},
+         lambda p: _measured("the named call removes exactly the retained tiny sheet",
+                             {k: p.get(k) for k in ("deleted", "feature", "index", "entity_type")},
+                             p.get("deleted") is True and p.get("feature") == "Extrude2"
+                             and p.get("index") == 7 and p.get("entity_type") == "ExtrudeFeature"), None),
+        ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                        "max_results": 200},
+         lambda p: _measured("tree and history read as before the refused write",
+                             _retire_design_state(p),
+                             _retire_design_state(p) is not None
+                             and _retire_design_state(p) == _RECALL.get("tiny_surface_design")), None),
         ("doc_activate", lambda c: {"name": _ctx_get(c, "tiny_home", "story"),
                                      "expect_document": _ctx_get(c, "tiny_doc", "owned scratch")}, "ok", None),
         ("doc_close", lambda c: {"name": _ctx_get(c, "tiny_doc", "owned scratch"), "save_changes": False,
@@ -1819,6 +1835,258 @@ def _holder_taper_rows():
 
 
 _MACHINING += _holder_taper_rows()
+_DESIGN_D_STATE = """import adsk.core, adsk.fusion, json
+
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    d = adsk.fusion.Design.cast(app.activeProduct)
+    def pt(p): return [round(getattr(p, a)*10, 9) for a in ('x', 'y', 'z')]
+    def body(b):
+        vertical = []
+        for e in b.edges:
+            if isinstance(e.geometry, adsk.core.Line3D):
+                a, z = e.startVertex.geometry, e.endVertex.geometry
+                if abs(a.x-z.x) < 1e-9 and abs(a.y-z.y) < 1e-9 and abs(a.z-z.z) > .1:
+                    vertical.append(pt(a)[:2])
+        return {'name': b.name, 'solid': b.isSolid, 'volume_cm3': b.volume,
+            'area_cm2': b.physicalProperties.area, 'face_count': b.faces.count,
+            'bbox_mm': [pt(b.boundingBox.minPoint), pt(b.boundingBox.maxPoint)],
+            'vertices_mm': sorted(pt(v.geometry) for v in b.vertices),
+            'vertical_edge_xy_mm': sorted(vertical),
+            'face_types': sorted(f.geometry.objectType for f in b.faces),
+            'face_areas_cm2': sorted(round(f.area, 12) for f in b.faces)}
+    result = {'bodies': [body(b) for b in d.rootComponent.bRepBodies],
+        'timeline': [{'name': t.name, 'type': t.entity.objectType, 'health': int(t.healthState)}
+                     for t in d.timeline], 'marker': d.timeline.markerPosition,
+        'sketches': [{'name': s.name, 'bulb': s.isLightBulbOn, 'visible': s.isVisible,
+            'lines': s.sketchCurves.sketchLines.count, 'points': sorted(pt(p.geometry) for p in s.sketchPoints)}
+                    for s in d.rootComponent.sketches]}
+    patch_name = PATCH_NAME
+    if patch_name is not None:
+        found = [b for b in d.rootComponent.bRepBodies if b.name == patch_name]
+        assert len(found) == 1 and found[0].faces.count == 1
+        face = found[0].faces.item(0)
+        good, uv = face.evaluator.getParameterAtPoint(adsk.core.Point3D.create(.5, .5, .2))
+        assert good
+        good, sample = face.evaluator.getPointAtParameter(uv)
+        assert good
+        result['patch_sample_mm'] = pt(sample)
+    print(json.dumps(result))
+"""
+
+
+def _design_d_read(key, patch=False):
+    """Read complete owned scratch material/history and optionally sample the returned patch."""
+    def args(c):
+        name = _ctx_get(c, key + "_patch", "new patch")["body"] if patch else None
+        return {"script": _DESIGN_D_STATE.replace("PATCH_NAME", repr(name)), "read_only": True,
+                "expect_document": _ctx_get(c, key + "_doc", "owned Design D scratch")}
+    return args
+
+
+def _design_d_begin(key):
+    """Open one disposable root fixture with a typed independent witness cube."""
+    return [("doc_get", {}, _home_document, (key + "_home", _recall(key + "_home", _home_address))),
+            ("doc_new", {}, _new_document, (key + "_doc", _recall(key + "_doc", lambda p: p["document_handle"]))),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("sketch_create", lambda c: _combine_pin(c, key + "_doc",
+                {"name": key + "Witness", "plane": "xy"}),
+             "ok", None),
+            ("sketch_add_geometry", lambda c: _combine_pin(c, key + "_doc", {
+                "sketch_name": key + "Witness", "units": "mm", "geometry": [
+                {"kind": "rectangle", "x1": 100, "y1": 0, "x2": 120, "y2": 20}]}), "ok", None),
+            ("model_extrude", {"sketch_name": key + "Witness", "distance": 20, "units": "mm", "operation": "new"},
+             _extruded, (key + "_witness", _recall(key + "_witness", lambda p: p["result_bodies"][0])))]
+
+
+def _design_d_close(key):
+    """Close only the owned disposable document and return to the captured home session."""
+    return [("doc_close", lambda c: {"name": _ctx_get(c, key + "_doc", "owned Design D scratch"),
+                  "save_changes": False, "expect_document": _ctx_get(c, key + "_doc", "owned Design D scratch")},
+             _document_closed, None),
+            ("doc_activate", lambda c: {"name": _ctx_get(c, key + "_home", "home session")}, _activated(), None),
+            ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get(key + "_home"), None)]
+
+
+def _design_d_same(key):
+    """Require complete independent geometry, history and sketch state to equal the baseline."""
+    return lambda p: _measured("Design D native state restored", p,
+                               bool(p.get("bodies")) and p == _RECALL.get(key + "_before"))
+
+
+def _silhouette_reply(axis):
+    """Require the public split to disclose the direction-specific measured generator edges."""
+    xy = ((40, -10), (40, 10)) if axis == "x" else ((30, 0), (50, 0))
+    expected = {((x, y, 0), (x, y, 20)) for x, y in xy}
+    return lambda p: _measured("silhouette topology and generator positions", p,
+        p.get("split") == "silhouette" and p.get("faces_before") == 3 and p.get("faces_after") == 6
+        and p.get("result_count") == 3 and abs(p.get("volume_change_cm3", 1)) <= 1e-9
+        and expected <= {tuple(tuple(v) for v in e) for e in p.get("new_line_edges_mm", [])}
+        and bool(p.get("feature")))
+
+
+def _silhouette_native(p, axis):
+    """Compare actual cylinder topology/material, split caps and the independent witness."""
+    baseline = _RECALL["DSil_before"]
+    target = _RECALL["DSil_body"]
+    before = {b["name"]: b for b in baseline["bodies"]}
+    after = {b["name"]: b for b in p.get("bodies", [])}
+    cylinder = after.get(target, {})
+    xy = [[40, -10], [40, 10]] if axis == "x" else [[30, 0], [50, 0]]
+    return _measured("native cylinder silhouette and unchanged witness", p,
+        len(after) == 2 and set(after) == set(before) and cylinder.get("face_count") == 6
+        and cylinder.get("solid") is True and cylinder.get("bbox_mm") == [[30, -10, 0], [50, 10, 20]]
+        and _near(cylinder.get("volume_cm3"), before[target]["volume_cm3"], 1e-9)
+        and _near(cylinder.get("area_cm2"), 18.84955592153876, 1e-8)
+        and all(v in cylinder.get("vertical_edge_xy_mm", []) for v in xy)
+        and cylinder.get("face_types", []).count("adsk::core::Plane") == 4
+        and cylinder.get("face_types", []).count("adsk::core::Cylinder") == 2
+        and all(after[name] == before[name] for name in before if name != target)
+        and p.get("sketches") == baseline["sketches"]
+        and len(p.get("timeline", [])) == len(baseline["timeline"]) + 1
+        and p["timeline"][:-1] == baseline["timeline"] and p["timeline"][-1]["health"] == 0
+        and p["timeline"][-1]["type"] == "adsk::fusion::SilhouetteSplitFeature"
+        and p.get("marker") == baseline["marker"] + 1)
+
+
+def _design_d_silhouette_rows():
+    """Run independent X/Y silhouette cases from the same restored cylinder baseline."""
+    key = "DSil"
+    rows = _design_d_begin(key) + [
+        ("sketch_create", lambda c: _combine_pin(c, key + "_doc",
+            {"name": "DSilCylinder", "plane": "xy"}),
+         "ok", None),
+        ("sketch_add_geometry", lambda c: _combine_pin(c, key + "_doc", {
+            "sketch_name": "DSilCylinder", "units": "mm",
+            "geometry": [{"kind": "circle", "cx": 40, "cy": 0, "radius": 10}]}), "ok", None),
+        ("model_extrude", {"sketch_name": "DSilCylinder", "distance": 20, "units": "mm", "operation": "new"},
+         _extruded, ("DSil_body", _recall("DSil_body", lambda p: p["result_bodies"][0]))),
+        ("sys_execute_script", _design_d_read(key),
+         lambda p: len(p.get("bodies", [])) == 2 and all(t["health"] == 0 for t in p.get("timeline", []))
+         and any(b["name"] == _RECALL["DSil_body"] and b["face_count"] == 3
+                 and b["bbox_mm"] == [[30, -10, 0], [50, 10, 20]]
+                 and _near(b["volume_cm3"], 6.283185307179316, 1e-9) for b in p["bodies"]),
+         ("DSil_before", _recall("DSil_before", lambda p: p))),
+    ]
+    for axis in ("x", "y"):
+        rows += [("find_geometry", lambda c: {"target": _ctx_get(c, "DSil_body", "cylinder"),
+                    "kind": "cylinder_face", "max_results": 10}, _matched(1, "cylinder_face"), _fg("DSil_handle")),
+                 ("model_split", lambda c, axis=axis: {"split": "silhouette", "view_direction": axis,
+                    "target": _ctx_get(c, "DSil_handle", "current cylinder face")}, _silhouette_reply(axis),
+                  ("DSil_feature", lambda p: p["feature"])),
+                 ("sys_execute_script", _design_d_read(key), lambda p, axis=axis: bool(p.get("bodies")) and _silhouette_native(p, axis), None),
+                 ("design_delete_feature", lambda c: {"feature": _ctx_get(c, "DSil_feature", "silhouette")},
+                  lambda p: p.get("deleted") is True and p.get("also_deleted") == [], None),
+                 ("sys_execute_script", _design_d_read(key), _design_d_same(key), None)]
+    return rows + _design_d_close(key)
+
+
+def _patch_boundary_handles(p):
+    """Acquire one square profile and its four current line handles in drawn loop order."""
+    profiles = p.get("profiles") or []
+    lines = sorted((r for r in p.get("entities", []) if r.get("type") == "line"), key=lambda r: r["id"])
+    valid = (len(profiles) == 1 and _near(profiles[0].get("area"), 100, 1e-6)
+             and bool(profiles[0].get("handle")) and len(lines) == 4
+             and [r["id"] for r in lines] == ["line:" + str(i) for i in range(4)]
+             and all(r.get("handle") for r in lines))
+    if valid:
+        _RECALL["DPatch_profile"] = profiles[0]["handle"]
+        _RECALL["DPatch_lines"] = [r["handle"] for r in lines]
+    return _measured("current square profile and four line handles", p, valid)
+
+
+def _patch_native(p):
+    """Require one new healthy square sheet with its center sampled independently."""
+    baseline = _RECALL["DPatch_before"]
+    name = _RECALL["DPatch_patch"]["body"]
+    bodies = p.get("bodies") or []
+    patches = [b for b in bodies if b.get("name") == name]
+    patch = patches[0] if len(patches) == 1 else {}
+    return _measured("native sketch-boundary patch material and sample", p,
+        len(bodies) == len(baseline["bodies"]) + 1
+        and [b for b in bodies if b.get("name") != name] == baseline["bodies"]
+        and patch.get("solid") is False and patch.get("face_count") == 1
+        and _near(patch.get("area_cm2"), 1, 1e-9)
+        and patch.get("bbox_mm") == [[0, 0, 0], [10, 10, 0]] and p.get("patch_sample_mm") == [5, 5, 0]
+        and p.get("timeline", [])[:-1] == baseline["timeline"]
+        and len(p.get("timeline", [])) == len(baseline["timeline"]) + 1
+        and p["timeline"][-1]["type"] == "adsk::fusion::PatchFeature" and p["timeline"][-1]["health"] == 0
+        and p.get("marker") == baseline["marker"] + 1)
+
+
+def _patch_bulb_reset(c):
+    """Restore only this owned fixture's consumed sketch bulb, separately from feature retirement."""
+    return {"expect_document": _ctx_get(c, "DPatch_doc", "owned patch scratch"), "read_only": False,
+        "script": """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    d = adsk.fusion.Design.cast(app.activeProduct)
+    s = d.rootComponent.sketches.itemByName('DPatchBoundary')
+    assert s is not None and s.sketchCurves.sketchLines.count == 4
+    before = s.isLightBulbOn
+    s.isLightBulbOn = True
+    print(json.dumps({'sketch': s.name, 'bulb_before': before, 'bulb_after': s.isLightBulbOn,
+                      'fixture_visibility_reset': True}))
+"""}
+
+
+def _design_d_patch_rows():
+    """Patch one root square by profile and lines, then refuse a separately drawn gapped boundary."""
+    key = "DPatch"
+    rows = _design_d_begin(key) + [
+        ("sketch_create", lambda c: _combine_pin(c, key + "_doc",
+            {"name": "DPatchBoundary", "plane": "xy"}),
+         "ok", None),
+        ("sketch_add_geometry", lambda c: _combine_pin(c, key + "_doc", {
+            "sketch_name": "DPatchBoundary", "units": "mm",
+            "geometry": [{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]}), "ok", None),
+        ("sys_execute_script", _design_d_read(key), lambda p: len(p.get("bodies", [])) == 1
+         and all(t["health"] == 0 for t in p.get("timeline", []))
+         and any(s["name"] == "DPatchBoundary" and s["bulb"] is True for s in p.get("sketches", [])),
+         ("DPatch_before", _recall("DPatch_before", lambda p: p))),
+    ]
+    for kind in ("profile", "sketch_lines"):
+        rows += [("sketch_get", {"sketch_name": "DPatchBoundary", "include_entities": True,
+                     "max_results": 100, "units": "mm"}, _patch_boundary_handles, None),
+                 ("surface_patch", lambda c, kind=kind: {"boundary": _RECALL[
+                     "DPatch_profile" if kind == "profile" else "DPatch_lines"]},
+                  lambda p, kind=kind: p.get("patched") is True and p.get("boundary_kind") == kind
+                  and p.get("boundary_edge_count") is None and p.get("is_solid") is False,
+                  ("DPatch_patch", _recall("DPatch_patch", lambda p: {"body": p["result_body"], "feature": p["feature"]}))),
+                 ("sys_execute_script", _design_d_read(key, patch=True), _patch_native, None),
+                 ("design_delete_feature", lambda c: {"feature": _ctx_get(c, "DPatch_patch", "patch")["feature"]},
+                  lambda p: p.get("deleted") is True and p.get("also_deleted") == [], None),
+                 ("sys_execute_script", _design_d_read(key),
+                  lambda p: _measured("retired patch preserves native material/history before bulb reset", p,
+                      p.get("bodies") == _RECALL["DPatch_before"]["bodies"]
+                      and p.get("timeline") == _RECALL["DPatch_before"]["timeline"]
+                      and p.get("marker") == _RECALL["DPatch_before"]["marker"]), None),
+                 ("sys_execute_script", _patch_bulb_reset,
+                  lambda p: p.get("sketch") == "DPatchBoundary" and p.get("bulb_after") is True
+                  and p.get("fixture_visibility_reset") is True, None),
+                 ("sys_execute_script", _design_d_read(key), _design_d_same(key), None)]
+    rows += [("sketch_create", lambda c: _combine_pin(c, key + "_doc",
+              {"name": "DPatchGap", "plane": "xy"}),
+              "ok", None),
+             ("sketch_add_geometry", lambda c: _combine_pin(c, key + "_doc", {
+                 "sketch_name": "DPatchGap", "units": "mm", "geometry": [
+                 {"kind": "line", "x1": 0, "y1": 0, "x2": 10, "y2": 0},
+                 {"kind": "line", "x1": 10, "y1": 0, "x2": 10, "y2": 10},
+                 {"kind": "line", "x1": 10, "y1": 10, "x2": 0, "y2": 10},
+                 {"kind": "line", "x1": 0, "y1": 10, "x2": 0, "y2": 1}]}), "ok", None),
+             ("find_geometry", {"kind": "sketch_line", "sketch": "DPatchGap", "max_results": 10},
+              _matched(4, "sketch_line"), _fgn("DPatch_gap_handles")),
+             ("sys_execute_script", _design_d_read(key), lambda p: len(p.get("bodies", [])) == 1,
+              ("DPatch_gap_before", _recall("DPatch_gap_before", lambda p: p))),
+             ("surface_patch", lambda c: {"boundary": _ctx_get(c, "DPatch_gap_handles", "gapped lines")},
+              _refused("gap", "closing the last line to the first"), None),
+             ("sys_execute_script", _design_d_read(key), _design_d_same("DPatch_gap"), None)]
+    return rows + _design_d_close(key)
+
+
+_MACHINING += _design_d_silhouette_rows() + _design_d_patch_rows()
 
 
 def _thicken_source_geometry(p):

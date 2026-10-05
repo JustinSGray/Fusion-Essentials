@@ -239,14 +239,14 @@ def all_shapes(design, allow_empty_solids=False, components=None):
 def retire_failed_create(design, feature, before_timeline, before_shapes, components, before_marker,
                          restore_input_visibility=None):
     """Remove only a new last feature with unchanged material, reporting verified timeline restoration."""
-    name = safe(lambda: feature.name)
-    owner = safe(lambda: feature.parentComponent.name)
     index = counted(lambda: feature.timelineObject.index)
-    address = f"{owner}/{name}@{index}" if owner and name and index is not None else name
+    address = (_inputs.candidate_address(safe(lambda: feature.timelineObject))
+               or safe(lambda: feature.name))
     visibility_check = (" Path sketch visibility may have changed; re-read with sketch_get."
                         if restore_input_visibility is not None else "")
     remedy = (f"Feature '{address}' was retained; inspect it with design_get and remove it with "
               "design_delete_feature.") if address else _common.failed_effect_remedy(design, feature)
+    address = address or "(name unreadable)"
     if _inputs.current_design_type(design) != _inputs.MODE_PARAMETRIC:
         return (f"Automatic cleanup of '{address}' was not attempted outside a readable PARAMETRIC "
                 "design; inspect with design_get or undo in Fusion." + visibility_check)

@@ -1364,7 +1364,17 @@ class TestBatch:
         assert s.sketchCircles.count == 1
         assert counts["before"]["curves"] == counts["after"]["curves"] == 1
         assert counts["change"]["curves"] == counts["change"]["points"] == 0
-        assert "Counts do not establish unchanged geometry" in out["note"]
+        # Refused before its draw: the counts stand, with no read-back guidance.
+        assert "Failed-entry count changes: curves=+0" in out["note"]
+        assert "Counts do not establish" not in out["note"]
+
+    def test_a_draw_that_returned_nothing_keeps_the_read_back_guidance(self, monkeypatch):
+        s = FakeSketch(); _install_draw(monkeypatch, s)
+        monkeypatch.setattr(s.sketchCircles, "addByCenterRadius", lambda c, r: None)
+        res = sk.handler(geometry=[{"kind": "circle", "cx": 0, "cy": 0, "radius": 5}])
+        assert "returned no entity" in res["message"]
+        assert "Failed-entry count changes:" in res["message"]
+        assert "Counts do not establish unchanged geometry" in res["message"]
 
     def test_two_entries_land_each_carrying_its_index(self, monkeypatch):
         s = FakeSketch(); _install_draw(monkeypatch, s)

@@ -122,7 +122,8 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
     if len(named) != 1:
         return error(f"'path' sketch '{path_name}' must name exactly one sketch in the "
                      f"solid body's component; found {len(named)}.")
-    sweep_path, path_label, patherr = build_path(host, path)
+    left = []
+    sweep_path, path_label, patherr = build_path(host, path, left_out=left)
     if patherr:
         return error(patherr)
     path_curves = _common.counted(lambda: sweep_path.count)
@@ -191,7 +192,7 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
     note = "Solid body swept into a new result; its source tool body retains its geometry."
     if health == states.WarningFeatureHealthState:
         note += " Feature warning: " + str(safe(lambda: feature.errorOrWarningMessage) or "details unreadable") + "."
-    warning = _common.path_chain_warning(path_curves, sketch_curves, "sweep")
+    warning = _common.path_chain_warning(path_curves, sketch_curves, "sweep", left)
     if warning:
         note += " " + warning
     return ok({"swept": True, "feature": safe(lambda: feature.name),
@@ -231,7 +232,8 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
 
     # Build the path AND the feature on the profile's OWNING component (host) - a profile-consuming
     # feature created on the active component raises bSet when the profile is owned elsewhere.
-    sweep_path, path_label, patherr = build_path(host, path)
+    left = []
+    sweep_path, path_label, patherr = build_path(host, path, left_out=left)
     if patherr:
         return error(patherr)
     # What the built Path HOLDS, beside what the request named: the profile is driven over these
@@ -290,8 +292,11 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
 
     # An operation that reports success but produced no body is a silent no-op - fail it honestly.
     if op_key == "new" and not body_names:
-        return error("Sweep reported success but created no body. Check that the profile sits on the "
-                     "path and the path forms a valid, connected sweep.")
+        made = _common.counted(lambda: feature.bodies.count)
+        return error(("Sweep reported success but created no body." if made == 0 else
+                      "Sweep reported success but its result bodies did not read.")
+                     + " Check that the profile sits on the path and the path forms a valid, "
+                     "connected sweep. " + _common.failed_effect_remedy(design, feature))
 
     volume_delta_cm3 = None
     if check_bodies:
@@ -307,14 +312,11 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
                 # SCOPED: only a participant body can be affected, and every one of them measures
                 # what it did before - nothing landed anywhere, so the feature is safe to remove.
                 named = ", ".join(n for n in scoped_to if n) or "the scoped bodies"
-                rolled = bool(safe(lambda: feature.deleteMe(), False))
                 return error(f"Sweep reported success but this {op_key} changed nothing - "
                              f"{named} measure the volumes they had before and none was consumed, so "
                              "the profile does not sweep through any of them. A cut/intersect can "
                              "only affect bodies named in 'target_bodies' - check the path runs "
-                             "through them. "
-                             + ("The sweep feature was rolled back." if rolled else
-                                "Remove the empty feature with design_delete_feature."))
+                             "through them. " + _common.delete_failed_feature(design, feature)[1])
             where = safe(lambda: host.name) or "the host component"
             return error(f"Sweep reported success but this {op_key} changed nothing - every solid "
                          f"body in '{where}' measures the volume it had before and none was "
@@ -337,7 +339,7 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
     join_clause = _common.join_new_body_clause(op_key, bodies_before, body_names)
     if join_clause:
         note += " " + join_clause
-    warning = _common.path_chain_warning(path_curves, sketch_curves, "sweep")
+    warning = _common.path_chain_warning(path_curves, sketch_curves, "sweep", left)
     if warning:
         note += " " + warning
 

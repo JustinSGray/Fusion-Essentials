@@ -12,7 +12,8 @@ import types
 import adsk.fusion
 import pytest
 
-from conftest import (load_tool, make_design, install, make_sketch, payload as _payload,
+from conftest import (load_tool, make_design, install, make_sketch, make_sketch_curve,
+                      payload as _payload, assert_names_retained,
                       error_message, assert_no_active_design, BRepBody, BRepEdge,
                       FakeFeatures as _SharedFeatures, Line3D, Profile, _NamedCollection,
                       MakeComp, FakePoint, FakeTimeline, FakeTimelineObject, make_bbox, body_proxy)
@@ -293,6 +294,12 @@ class TestSolidTool:
         out = _payload(sw.handler(solid_body="PX", path="sketch:ToolPath"))
         assert "chained 1 of the sketch's 2 curves" in out["note"]
 
+    def test_a_two_of_three_solid_path_names_the_left_out_curve(self):
+        _, host, _, _ = _solid_tool_world()
+        _two_of_three(host, "ToolPath")
+        out = _payload(sw.handler(solid_body="PX", path="sketch:ToolPath"))
+        assert out["path"] == "sketch:ToolPath" and "Not in the path: line:1." in out["note"]
+
 
 # ── small sweep-shaped fakes ────────────────────────────────────────────────
 
@@ -353,6 +360,16 @@ def _built_path(count):
     """A built adsk.fusion.Path: `count` is the number of edges the path ACTUALLY holds, which is
     not derivable from how many handles were passed in."""
     return types.SimpleNamespace(count=count)
+
+
+def _two_of_three(comp, name):
+    """Give `comp` a three-line path sketch whose every createPath holds line:0 and line:2."""
+    curves = [make_sketch_curve(f"{name}-{i}") for i in range(3)]
+    sketch = make_sketch(name, lines=curves)
+    sketch.parentComponent = comp
+    comp.sketches = _NamedCollection([s for s in comp.sketches if s.name != name] + [sketch])
+    comp.features.path_returns = types.SimpleNamespace(
+        count=2, item=lambda i: types.SimpleNamespace(entity=(curves[0], curves[2])[i]))
 
 
 class FakeFeatures(_SharedFeatures):
@@ -619,6 +636,26 @@ def _add_moving_volume(sf, *changes, rolled_back=None):
     sf.add = _add
 
 
+class TestRetainedFeatureDisclosure:
+    def test_a_sweep_that_made_no_body_names_the_feature_and_its_delete_call(self):
+        _install(body_names=())
+        res = sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch")
+        assert "created no body" in assert_names_retained(res, "Sweep1")
+
+    def test_an_unread_result_body_count_is_unknown_not_zero(self):
+        sf, _ = _install(body_names=())
+        add = sf.add
+
+        def unread(inp):
+            feature = add(inp)
+            feature.bodies = None
+            return feature
+        sf.add = unread
+        msg = assert_names_retained(sw.handler(profile={"sketch": "Prof"},
+                                               path="sketch:PathSketch"), "Sweep1")
+        assert "result bodies did not read" in msg and "created no body" not in msg
+
+
 class TestCutMovesMaterial:
     def test_unscoped_cut_that_moves_no_volume_is_an_error(self):
         _install(bodies=[BRepBody("Bar", volume=12.0)])
@@ -639,7 +676,7 @@ class TestCutMovesMaterial:
         assert res["isError"] is True
         assert "changed nothing" in res["message"] and "Bar" in res["message"]
         # only a participant can be affected, so nothing landed anywhere - safe to remove
-        assert rolled == [True] and "rolled back" in res["message"]
+        assert rolled == [True] and "Deleting it returned True." in res["message"]
 
     def test_scoped_cut_samples_only_the_participants(self):
         # A volume that moved on a body OUTSIDE 'target_bodies' is not this cut's effect - sampling
@@ -850,6 +887,14 @@ class TestPathCurves:
         design.rootComponent.features.path_returns = _built_path(3)
         out = _payload(sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch"))
         assert "WARNING" not in out["note"]
+
+    def test_a_two_of_three_chain_names_the_left_out_curve_beside_a_bare_label(self):
+        sf, design = _install()
+        _two_of_three(design.rootComponent, "PathSketch")
+        out = _payload(sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch"))
+        assert out["path"] == "sketch:PathSketch" and out["path_curves"] == 2
+        assert "chained 2 of the sketch's 3 curves" in out["note"]
+        assert "Not in the path: line:1." in out["note"]
 
     def test_an_edge_path_publishes_the_count_with_no_sketch_to_compare(self):
         adsk.fusion.BRepEdge = BRepEdge

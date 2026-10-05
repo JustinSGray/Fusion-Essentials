@@ -133,7 +133,7 @@ class TestProjectIdPrecedence:
         got, meta, err = dm.resolve_file_reference("part.f3d", project="Twin")
         assert got is None and meta is None
         assert cause in err
-        assert ("Get the file's lineage id with data_get(project_id=<id>), then pass that id "
+        assert ("Get the file's lineage URN with data_get(project_id=<id>), then pass it "
                 "as 'file'.") in err
 
 
@@ -591,3 +591,26 @@ class TestResolveFileReferenceWithUnreadableFolders:
         assert f"{cap + 1} folder(s) could not be read" in err        # the COUNT is complete
         assert err.count("Dead") == cap                              # the NAMES are capped
         assert "Dead%02d" % cap not in err
+
+
+@pytest.mark.parametrize("module_name", ["data_download_file", "data_move_file"])
+def test_file_tool_name_refusal_uses_only_supported_scope_inputs(module_name):
+    tool = load_tool(module_name)
+    args = ({"destination_folder": "C:/unused"} if module_name == "data_download_file"
+            else {"target_folder": "/"})
+    result = tool.handler(file="part.f3d", **args)
+    assert result["isError"] is True
+    assert "'project'" in result["message"] and "lineage URN as 'file'" in result["message"]
+    assert "project_id" not in result["message"]
+
+
+@pytest.mark.parametrize("id_input", [None, "project_id"])
+def test_duplicate_project_file_remedy_respects_caller_id_input(monkeypatch, id_input):
+    data = FakeData(projects=[FakeDataProject("Twin", project_id="p1"),
+                              FakeDataProject("Twin", project_id="p2")])
+    monkeypatch.setattr(dm, "app", FakeApplication(data=data))
+    got, meta, message = dm.resolve_file_reference("part.f3d", project="Twin", id_input=id_input)
+    assert got is None and meta is None
+    assert "p1" in message and "p2" in message
+    assert ("pass an exact project_id" in message) is (id_input is not None)
+    assert "then pass it as 'file'" in message

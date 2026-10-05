@@ -180,7 +180,7 @@ class TestRemeshDensityReadBack:
         assert src.displayMesh.triangleCount == 2000 and src.area == 50.0 and src.volume == 10.0
 
     @pytest.mark.parametrize("bad,shown", [("abc", "density='abc'"), (float("nan"), "density=nan"),
-                                           (True, "density=True")])
+                                           (True, "density=True"), (float("inf"), "density=inf")])
     def test_a_non_numeric_density_is_refused_before_any_write(self, negative_density_mesh, bad,
                                                                shown):
         src, feats, bf = negative_density_mesh

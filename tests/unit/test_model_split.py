@@ -6,9 +6,15 @@ yields a SINGLE body is reported as an error (no silent ok), a face split that c
 an error, and the resulting body count / net face-count increase are read back and reported.
 """
 
-from conftest import (load_tool, make_design, install, MakeComp, BRepBody, BRepFace, entity_proxy,
-                      go_stale, payload, error_message, assert_no_active_design,
-                      _NamedCollection)
+import math
+from types import SimpleNamespace
+
+import adsk.fusion
+import pytest
+
+from conftest import (load_tool, make_design, install, MakeComp, BRepBody, BRepFace, BRepEdge,
+                      entity_proxy, go_stale, payload, error_message, assert_no_active_design,
+                      _NamedCollection, Circle3D, FakePoint, FakeVector3D, Line3D)
 
 sp = load_tool("model_split")
 
@@ -351,3 +357,124 @@ class TestSplitFace:
         _wire_face(monkeypatch, feats, faces)
         payload(sp.handler(split="face", faces=["a"], split_plane="xy"))
         assert feats.last[0].count == 1        # the ObjectCollection carries the one face
+
+
+# ── silhouette: SilhouetteSplitFeatures, faces only, a root solid and a construction axis ──────
+
+class _Axis:
+    """A construction axis owned by `component`."""
+
+    def __init__(self, component):
+        self.component = component
+        self.assemblyContext = None
+
+
+class SketchLine:
+    """A sketch line a view direction resolved to."""
+
+
+class _SilhouetteSplits:
+    """Splits adding `faces` faces, the `lines` straight edges (cm ends) and `volume` cm3 to `body`."""
+
+    def __init__(self, body):
+        self.body, self.faces, self.lines, self.volume, self.calls = body, 3, [], 0.0, []
+
+    def createInput(self, direction, body, operation):
+        self.calls.append((direction, body, operation))
+        return "input"
+
+    def add(self, _input):
+        self.body.faces._items.extend([None] * self.faces)
+        self.body.edges._items.extend(BRepEdge(Line3D(), start=FakePoint(*a), end=FakePoint(*b))
+                                      for a, b in self.lines)
+        self.body.volume += self.volume
+        return SimpleNamespace(name="SilhouetteSplit1", healthState=0, errorOrWarningMessage="")
+
+
+@pytest.fixture
+def silhouette(monkeypatch):
+    """A three-face root cylinder at x=4 cm, its root X axis, and the split collection."""
+    root = MakeComp(name="Root")
+    rim = lambda z: BRepEdge(Circle3D(FakeVector3D(0, 0, 1)), start=FakePoint(3, 0, z),
+                             end=FakePoint(3, 0, z))
+    body = BRepBody(name="Cyl", volume=6.283185307179316, face_count=3, parent_component=root,
+                    edges=[rim(0), rim(2)])
+    root.xConstructionAxis = axis = _Axis(root)
+    root.features = SimpleNamespace(silhouetteSplitFeatures=_SilhouetteSplits(body))
+    install(sp, make_design(comp=root))
+    monkeypatch.setattr(adsk.fusion, "ConstructionAxis", _Axis, raising=False)
+    monkeypatch.setattr(sp._SOLID, "resolve", lambda raw: (body, None))
+    return body, axis, root.features.silhouetteSplitFeatures
+
+
+def test_a_silhouette_split_lands_with_counts_and_the_new_straight_edges(silhouette):
+    body, axis, splits = silhouette
+    splits.lines = [((4, -1, 0), (4, -1, 2)), ((4, 1, 0), (4, 1, 2)),
+                    ((4, -1, 0), (4, 1, 0)), ((4, -1, 2), (4, 1, 2))]
+    out = payload(sp.handler(split="silhouette", target="Cyl", view_direction="x"))
+    assert splits.calls == [(axis, body, adsk.fusion.SilhouetteSplitOperations
+                             .SilhouetteSplitFacesOnlyOperation)]
+    assert (out["feature"], out["faces_before"], out["faces_after"], out["result_count"]) == (
+        "SilhouetteSplit1", 3, 6, 3)
+    assert out["new_line_edges_mm"] == [
+        [[40.0, -10.0, 0.0], [40.0, -10.0, 20.0]], [[40.0, -10.0, 0.0], [40.0, 10.0, 0.0]],
+        [[40.0, -10.0, 20.0], [40.0, 10.0, 20.0]], [[40.0, 10.0, 0.0], [40.0, 10.0, 20.0]]]
+    for o in sp.RETURNS:
+        assert o.assert_present(out) == "", o.key
+
+
+def test_a_silhouette_feature_that_split_no_face_is_an_error_naming_it(silhouette):
+    _body, _axis, splits = silhouette
+    splits.faces = 0
+    assert error_message(sp.handler(split="silhouette", target="Cyl", view_direction="x")) == (
+        "Silhouette split 'SilhouetteSplit1' was created, but 'Cyl' reads 3 faces (was 3): no face "
+        "was split. 'SilhouetteSplit1' remains in the timeline; remove it with "
+        "design_delete_feature(feature='SilhouetteSplit1').")
+
+
+@pytest.mark.parametrize("change,landed", [(1e-9, True), (math.nextafter(1e-9, 1), False)])
+def test_a_silhouette_split_keeps_the_volume_within_the_no_change_band(silhouette, change, landed):
+    body, _axis, splits = silhouette
+    body.volume, splits.volume = 0.0, change
+    result = sp.handler(split="silhouette", target="Cyl", view_direction="x")
+    if landed:
+        assert payload(result)["volume_change_cm3"] == change
+    else:
+        assert "Silhouette split 'SilhouetteSplit1' changed the volume of 'Cyl'" in error_message(result)
+
+
+def test_a_sketch_line_view_direction_is_refused_before_any_split(silhouette, monkeypatch):
+    _body, _axis, splits = silhouette
+    monkeypatch.setattr(sp._VIEW, "resolve", lambda raw: (("edge", SketchLine()), None))
+    assert error_message(sp.handler(split="silhouette", target="Cyl", view_direction="S/line:0")) == (
+        "'view_direction' resolved to a SketchLine; split='silhouette' takes a construction axis "
+        "only: x/y/z or an axis name/handle.")
+    assert splits.calls == []
+
+
+def test_a_placed_silhouette_target_is_refused_before_any_split(silhouette):
+    body, _axis, splits = silhouette
+    body.assemblyContext = SimpleNamespace(fullPathName="Holder:1")
+    assert error_message(sp.handler(split="silhouette", target="Cyl", view_direction="x")) == (
+        "'target' 'Cyl' is not a root-component body; split='silhouette' takes a solid in the root "
+        "component.")
+    assert splits.calls == []
+
+
+@pytest.mark.parametrize("args,text", [
+    ({"split": "silhouette", "target": "Cyl", "view_direction": "x", "faces": ["f"]},
+     "split='silhouette' takes 'target' and 'view_direction', not 'faces', 'split_plane' or "
+     "'split_tool_body'."),
+    ({"split": "body", "target": "Cyl", "view_direction": "x", "split_plane": "xy"},
+     "'view_direction' is used only by split='silhouette' (got split='body').")])
+def test_view_direction_belongs_to_the_silhouette_split_alone(silhouette, args, text):
+    assert error_message(sp.handler(**args)) == text
+    assert silhouette[2].calls == []
+
+
+def test_silhouette_unreadable_boundary_after_write_is_error(silhouette, monkeypatch):
+    reads = iter([set(), None])
+    monkeypatch.setattr(sp, "_line_ends", lambda body: next(reads))
+    result = sp.handler(split="silhouette", target="Cyl", view_direction="x")
+    assert result["isError"] is True
+    assert "SilhouetteSplit1" in result["message"] and "boundary positions are unverified" in result["message"]

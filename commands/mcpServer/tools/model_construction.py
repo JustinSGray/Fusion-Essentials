@@ -423,11 +423,16 @@ def _on_path_distance(comp, design, k, path_raw, at_raw, dtype_raw, m):
             return None, None, None, None, aerr
         member = adsk.fusion.PathDistanceTypes.ProportionalPathDistanceType
         val, extra = adsk.core.ValueInput.createByReal(v), {"at_ratio": v}
-    path, label, perr = _common.build_path(comp, path_raw)
+    left_out = []
+    path, label, perr = _common.build_path(comp, path_raw, left_out=left_out)
     if perr:
         return None, None, None, None, perr
     extra["path"] = label
     extra["distance_type"] = dtype
+    warning = _common.path_chain_warning(
+        safe(lambda: path.count), _common.path_sketch_curve_count(comp, path_raw), "datum", left_out)
+    if warning:
+        extra["path_warning"] = warning
     return path, member, val, extra, None
 
 
@@ -750,7 +755,8 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
             val, _offset_cm, verr = _inputs.length_value_input(offset, k, design, "offset")
             if verr:
                 return None, None, verr
-            path, label, perr = _common.build_path(comp, path_raw)
+            left_out = []
+            path, label, perr = _common.build_path(comp, path_raw, left_out=left_out)
             if perr:
                 return None, None, perr
             cpi = comp.constructionPlanes.createInput()
@@ -765,6 +771,11 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
             # reading and the same off-path disclosure.
             extra = {"path": label, "to_object": True, "offset": _inputs.expression_report(offset),
                      "path_extrapolates": True}
+            warning = _common.path_chain_warning(
+                safe(lambda: path.count), _common.path_sketch_curve_count(comp, path_raw),
+                "datum", left_out)
+            if warning:
+                extra["path_warning"] = warning
             extra.update(_landed_path_report(obj))
             extra.update(_path_extent_report(obj, path, 1.0 / k, with_offset=True))
             return obj, extra, None
@@ -1196,6 +1207,8 @@ def handler(kind: str = "point", mode: str = "", x: float = 0.0, y: float = 0.0,
     if knd == "plane":
         out["note"] += _SKETCH_ORIGIN_NOTE
     out.update(extra or {})
+    if out.pop("path_warning", ""):
+        out["note"] += " " + extra["path_warning"]
     # One disclosure for every null the active occurrence's space cost us - the mode's own claim
     # (flagged by the builder) and/or the geometry read-back, which comes back empty for the same
     # reason.

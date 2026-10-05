@@ -513,13 +513,13 @@ class SimpleMCPServer:
         for name, property_schema in properties.items():
             if name in arguments and isinstance(property_schema, dict):
                 boolean_error = self._validate_boolean(tool_name, property_schema,
-                                                       arguments[name], name)
+                                                       arguments[name], name, optional=name not in required)
                 if boolean_error is not None:
                     return boolean_error
         return None
 
     def _validate_boolean(self, tool_name: str, schema: Dict[str, Any],
-                          value: Any, path: str) -> Optional[Dict[str, Any]]:
+                          value: Any, path: str, optional: bool = False) -> Optional[Dict[str, Any]]:
         """Reject non-Booleans at declared Boolean leaves, following properties and array items."""
         declared_types = schema.get("type", [])
         if isinstance(declared_types, str):
@@ -527,14 +527,16 @@ class SimpleMCPServer:
         if ("boolean" in declared_types
                 and all(kind in ("boolean", "null") for kind in declared_types)):
             if type(value) is not bool and not (value is None and "null" in declared_types):
+                remedy = ("Omit this optional key to use its default, or use true or false."
+                          if value is None and optional else "Use true or false.")
                 return self._tool_error_result(
-                    f"Invalid Boolean for {path!a} in tool {tool_name!a}: {value!a}. "
-                    "Use true or false.")
+                    f"Invalid Boolean for {path!a} in tool {tool_name!a}: {value!a}. " + remedy)
         if isinstance(value, dict):
             for name, property_schema in (schema.get("properties") or {}).items():
                 if name in value and isinstance(property_schema, dict):
                     failure = self._validate_boolean(tool_name, property_schema, value[name],
-                                                     f"{path}.{name}")
+                                                     f"{path}.{name}",
+                                                     optional=name not in (schema.get("required") or []))
                     if failure is not None:
                         return failure
         elif isinstance(value, list) and isinstance(schema.get("items"), dict):

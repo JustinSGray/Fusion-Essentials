@@ -149,20 +149,29 @@ class TestBaseFeatureWrapper:
         out_bf, result = dm.base_feature_run_wrapper(open_scope, inner)
         assert out_bf is None and result is err and ran["inner"] is False
 
-    def test_startEdit_false_in_wrapper_errors_without_running_inner(self, monkeypatch):
+    @pytest.mark.parametrize("call,how", [("startEdit", "false"), ("startEdit", "raise"),
+                                          ("finishEdit", "false"), ("finishEdit", "raise")])
+    def test_a_false_or_raising_edit_call_is_an_error_leaving_the_scope(self, monkeypatch, call,
+                                                                       how):
         _wire(monkeypatch, _design())
-        bf = FakeBaseFeature("W", start_ok=False)
-        ran = {"inner": False}
+        bf = FakeBaseFeature("W")
+        real = getattr(bf, call)
 
-        def open_scope():
-            return bf, None
-
-        def inner(b):
-            ran["inner"] = True
-
-        out_bf, result = dm.base_feature_run_wrapper(open_scope, lambda b: inner(b))
-        assert result["isError"] is True and "startEdit returned false" in result["message"]
-        assert ran["inner"] is False
+        def failing():
+            real()
+            if how == "raise":
+                raise RuntimeError("stuck")
+            return False
+        setattr(bf, call, failing)
+        ran = []
+        out_bf, result = dm.base_feature_run_wrapper(lambda: (bf, None),
+                                                     lambda b: ran.append(b) or "result")
+        said = "returned false" if how == "false" else "raised: stuck"
+        assert result["isError"] is True and out_bf is bf
+        assert result["message"] == (f"{call} on base feature 'W' {said}; the edit scope was left "
+                                     "as it is. Read design_get(include=['timeline']) before "
+                                     "continuing.")
+        assert ran == ([] if call == "startEdit" else [bf])
 
 
 # ── run_in_base_feature: the BLESSED mode-aware helper mesh write tools import ────────────────────

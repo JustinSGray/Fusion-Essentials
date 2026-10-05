@@ -71,10 +71,14 @@ def _distinct_placed_edges(edges, root):
         path = safe(lambda: context.fullPathName) if context is not None and context is not unread else None
         if not isinstance(path, str) or not path:
             path = None
-        if context is None and _common.same_component(
-                safe(lambda: edge.body.parentComponent), root) is True:
-            path = ""
-        key = (native, path) if native is not None and isinstance(path, str) else None
+        if context is None:
+            owner = safe(lambda: edge.body.parentComponent)
+            identity = _common.native_identity(owner)
+            if identity is not None:
+                path = ("native", identity)
+            elif _common.same_component(owner, root) is True:
+                path = ""
+        key = (native, path) if native is not None and isinstance(path, (str, tuple)) else None
         if key is None or key not in seen:
             out.append(edge)
             if key is not None:
@@ -530,42 +534,38 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
     health = safe(lambda: feature.healthState)
     if health == adsk.fusion.FeatureHealthStates.ErrorFeatureHealthState:
         detail = safe(lambda: feature.errorOrWarningMessage) or ""
-        removed = safe(lambda: feature.deleteMe())
+        _removed, fate = _common.delete_failed_feature(design, feature)
         return error(
             f"{kind.capitalize()} created a feature Fusion reports as FAILED"
             + (f": {detail}" if detail else " (it reports no message)")
             + f". No {kind} was applied. For a variable-radius chain, the edges must be "
               "tangentially connected AND listed from one end of the chain to the other; otherwise "
               "check the edges really are corners at this radius, and re-run find_geometry for "
-              "fresh handles."
-            + ("" if removed else " (The failed feature could not be auto-removed.)"))
+              "fresh handles. " + fate)
 
     # Fillet NO-OP guard: a fillet on a TANGENT edge - two faces meeting smoothly - creates the
     # feature but rounds nothing, reading 0 faces with the body volume unchanged. Scoped to fillet,
     # where the 0-face read-back is proven to mean no-op.
     if kind == "fillet" and faces_created == 0:
-        removed = safe(lambda: feature.deleteMe())
+        _removed, fate = _common.delete_failed_feature(design, feature)
         return error(
             "Fillet reported success but rounded nothing - the created feature holds 0 faces. A "
             "TANGENT edge does this: its two faces meet smoothly (zero dihedral), e.g. a hole "
             "drilled tangent to a face with its diameter equal to the wall thickness. Make the "
-            "corner non-tangent (a smaller hole diameter), or fillet a convex/concave edge."
-            + ("" if removed else " (The inert fillet feature could not be auto-removed.)"))
+            "corner non-tangent (a smaller hole diameter), or fillet a convex/concave edge. " + fate)
 
     # Partial-application guard (both kinds): a stale handle can resolve to SOME live entity through
     # the locator fallback yet not participate in the feature. A fully-applied fillet creates one
     # face per requested edge, even on a tangent LOOP, so a shortfall means an edge was dropped.
     applied = faces_created
     if applied is not None and applied < edges.count:
-        removed = safe(lambda: feature.deleteMe())
+        _removed, fate = _common.delete_failed_feature(design, feature)
         return error(
-            f"{kind.capitalize()} reported success but only PARTIALLY applied: {edges.count} edge(s) "
-            f"requested, but the created feature holds only {applied} "
+            f"{kind.capitalize()} reported success but only PARTIALLY applied: {edges.count} distinct edge(s) "
+            f"sent, but the created feature holds only {applied} "
             f"face(s) - at least one requested edge was "
             "dropped (a stale handle recovered the wrong/dead geometry, or an edge the operation could "
-            "not reach). The feature has been rolled back; re-run find_geometry for fresh handles and "
-            "retry."
-            + ("" if removed else " (The partial feature could not be auto-removed.)"))
+            f"not reach). {fate} Re-run find_geometry for fresh handles and retry.")
 
     # What the FEATURE says it built - never the request echoed back. A corner type or an angle the
     # platform declined leaves no other trace, so a mismatch rolls the feature back.
@@ -574,21 +574,17 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
         verified, unverified, rerr = _chamfer_readback(feature, size_cm, k, angle, corner_key,
                                                        as_expression)
         if rerr:
-            removed = safe(lambda: feature.deleteMe())
-            return error(rerr + (" The feature has been rolled back."
-                                 if removed else " (The feature could not be auto-removed.)"))
+            return error(rerr + " " + _common.delete_failed_feature(design, feature)[1])
 
     # The tangent-chain flag the FEATURE reports. A variable-radius set is given no such argument,
     # so nothing was requested for it and there is nothing to compare its reading against.
     chain_requested = kind == "chamfer" or vtype in ("constant", "chord_length")
     got_chain = _tangent_chain_read(kind, feature)
     if chain_requested and got_chain is not None and got_chain != bool(tangent_chain):
-        removed = safe(lambda: feature.deleteMe())
         return error(
             f"The {kind} was created but its tangent-chain setting reads back {got_chain}, not the "
-            f"requested {bool(tangent_chain)} - the edge set Fusion built is not the one asked for."
-            + (" The feature has been rolled back." if removed
-               else " (The feature could not be auto-removed.)"))
+            f"requested {bool(tangent_chain)} - the edge set Fusion built is not the one asked for. "
+            + _common.delete_failed_feature(design, feature)[1])
 
     # One convex or concave edge alone always moves the volume, but a set holding BOTH cancels to
     # the last bit and only the surface area still moves (measured: a convex and a concave edge of
@@ -598,17 +594,15 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
     moved = ((vol_readable and abs(vol_delta) >= _common.NO_VOLUME_CHANGE_CM3)
              or (area_readable and abs(area_delta_cm2) >= _common.NO_AREA_CHANGE_CM2))
     if (vol_readable or area_readable) and not moved:
-        removed = safe(lambda: feature.deleteMe())
+        _removed, fate = _common.delete_failed_feature(design, feature)
         size_desc = f"{vtype} fillet" if kind == "fillet" else "chamfer"
         measured = " and ".join(
             [s for s in ("volume" if vol_readable else "", "surface area" if area_readable else "")
              if s])
         return error(
             f"{kind.capitalize()} reported success but changed no geometry - the body's measured "
-            f"{measured} is unchanged after the {size_desc}. The feature has been rolled back; "
-            "check that the requested edges really are corners at this size, and re-run "
-            "find_geometry for fresh handles."
-            + ("" if removed else f" (The inert {kind} feature could not be auto-removed.)"))
+            f"{measured} is unchanged after the {size_desc}. {fate} Check that the requested "
+            "edges really are corners at this size, and re-run find_geometry for fresh handles.")
 
     measured_note = ("" if faces_created is None
                      else " faces_created is read from the created feature"
@@ -618,14 +612,12 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
     # A SHORT edge set is the partial application faces_created cannot see: corner patches can lift
     # the face count to the requested number while the set Fusion built holds fewer edges.
     if edges_cut is not None and edges_cut < edges.count:
-        removed = safe(lambda: feature.deleteMe())
         return error(
-            f"{kind.capitalize()} reported success but only PARTIALLY applied: {edges.count} edge(s) "
-            f"were requested and the feature's own edge set resolved to {edges_cut}, so at least one "
+            f"{kind.capitalize()} reported success but only PARTIALLY applied: {edges.count} distinct edge(s) "
+            f"were sent and the feature's own edge set resolved to {edges_cut}, so at least one "
             "requested edge was dropped (a stale handle recovered the wrong/dead geometry, or an "
-            "edge the operation could not reach). Re-run find_geometry for fresh handles and retry."
-            + (" The feature has been rolled back." if removed
-               else " (The partial feature could not be auto-removed.)")
+            "edge the operation could not reach). Re-run find_geometry for fresh handles and retry. "
+            + _common.delete_failed_feature(design, feature)[1]
             + ((" " + marker_clause + ".") if marker_clause else ""))
     if edges_cut is None:
         chain_note = " The feature's own edge set did not read, so edges_cut is not reported."

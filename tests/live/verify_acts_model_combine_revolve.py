@@ -485,6 +485,67 @@ _COMBINE_NONE = _combine_case_rows(
      ("Body5", 2000.0, (60, 0, 0), (80, 10, 10))))
 
 
+def _cut_none_timeline(p):
+    """The bounded timeline holds only the two authored bodies, no combine feature."""
+    timeline = p.get("timeline") or {}
+    rows = timeline.get("timeline") or []
+    got = [(r.get("name"), r.get("type")) for r in rows]
+    wanted = [("CutNone0", "Sketch"), ("Extrude1", "ExtrudeFeature"),
+              ("CutNone1", "Sketch"), ("Extrude2", "ExtrudeFeature")]
+    return _measured("disjoint-cut history without a combine feature",
+                     {"count": timeline.get("count"), "rows": got},
+                     timeline.get("count") == len(rows) == 4 and got == wanted)
+
+
+def _combine_cut_none_rows():
+    """A cut whose tool misses the target: refused, its feature deleted, the body count named."""
+    owned = "combine_cut_none_doc"
+    bodies = (("Body1", 2000.0, (0, 0, 0), (20, 10, 10)),
+              ("Body2", 2000.0, (60, 0, 0), (80, 10, 10)))
+    rows = [
+        ("doc_new",
+         lambda c: {"expect_document": _ctx_get(c, "combine_story", "the story document")},
+         _new_document, (owned, _recall(owned, lambda p: p["document_handle"]))),
+        ("doc_get", {}, _combine_owned_active(owned), None),
+    ]
+    for i, (x1, x2) in enumerate(((0, 20), (60, 80))):
+        rows += [
+            ("sketch_create", lambda c, name=f"CutNone{i}": _combine_pin(
+                c, owned, {"plane": "xy", "name": name}), "ok", None),
+            ("sketch_add_geometry", lambda c, name=f"CutNone{i}", x1=x1, x2=x2: _combine_pin(
+                c, owned, {"geometry": [{"kind": "rectangle", "x1": x1, "y1": 0,
+                                         "x2": x2, "y2": 10}], "sketch_name": name}), "ok", None),
+            ("model_extrude", lambda c, name=f"CutNone{i}": _combine_pin(
+                c, owned, {"sketch_name": name, "profile_index": 0, "distance": 10,
+                           "operation": "new"}), _extruded, None),
+        ]
+    rows += [
+        ("model_inspect", _combine_inspect(),
+         _combine_census("cut-none before", bodies, (0, 0, 0), (80, 10, 10), 4000.0), None),
+        ("model_combine",
+         lambda c: _combine_pin(c, owned, {"target": "Body1", "tools": ["Body2"], "operation": "cut",
+                                           "keep_tools": False, "new_component": False}),
+         _refused("changed NOTHING", "Deleting it returned True.", "bodies (was 2)."), None),
+        ("design_get", {"include": ["timeline"], "max_results": 5}, _cut_none_timeline, None),
+        ("model_inspect", _combine_inspect(),
+         _combine_census("cut-none after", bodies, (0, 0, 0), (80, 10, 10), 4000.0), None),
+        ("doc_activate",
+         lambda c: {"name": _ctx_get(c, "combine_story", "the story document"),
+                    "expect_document": _ctx_get(c, owned, "the combine scratch document")},
+         "ok", None),
+        ("doc_close",
+         lambda c: {"name": _ctx_get(c, owned, "the combine scratch document"),
+                    "save_changes": False,
+                    "expect_document": _ctx_get(c, "combine_story", "the story document")},
+         _document_closed, None),
+        ("doc_get", {}, _combine_story_restored, None),
+    ]
+    return rows
+
+
+_COMBINE_CUT_NONE = _combine_cut_none_rows()
+
+
 def _combine_nonroot_partial_rows():
     """Build one transformed non-root partial join with proxy-face tool handles."""
     owned = "combine_nonroot_partial_doc"

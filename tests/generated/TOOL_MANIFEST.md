@@ -54,9 +54,9 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `model_construction` | Add a construction point, axis or plane; each 'mode' reads its own inputs. |
 | ✎ | `model_create_component` | Create a new EMPTY component occurrence, at root unless 'parent' nests it |
 | ✎ | `model_draft` | Taper (draft) faces relative to a pull plane |
-| ✎ | `model_edit_body` | Copy, move, or make a child component for a BRep or mesh body |
+| ✎ | `model_edit_body` | Copy, move or rehome a body; merge two coplanar faces in direct mode |
 | ✎ | `model_edit_extrude` | Edit solid Extrude; refs from design_get/sketch_get. |
-| ✎ | `model_edit_loft` | Edit interior sections of an open unguided solid NEW Loft |
+| ✎ | `model_edit_loft` | Retarget, remove or reorder one Loft section |
 | ✎ | `model_edit_sweep` | Edit Sweep profile/path |
 | ✎ | `model_emboss` | Stamp sketch profiles or text onto faces; a negative 'depth' engraves |
 | ✎ | `model_extrude` | Extrude profiles/curves to solids/surfaces; sketch_get handles. |
@@ -79,7 +79,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `model_scale` | Resize solid bodies about an anchor point that stays put |
 | ✎ | `model_set_material` | Assign a PHYSICAL material; appearance_set does color |
 | ✎ | `model_shell` | Hollow a solid; 'remove_faces' opens the shell |
-| ✎ | `model_split` | Split a body into pieces, or its faces along a curve |
+| ✎ | `model_split` | Split a body, or its faces by a cutter or silhouette |
 | ✎ | `model_stitch` | Stitch surface bodies into a solid; 'became_solid' reports whether they closed. |
 | ✎ | `model_sweep` | Sweep profile or solid body |
 | ✎ | `model_thread` | Thread an existing cylindrical face; model_hole taps its holes |
@@ -95,7 +95,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `surface_extrude` | Extrude an open profile into a sheet body; model_extrude makes a capped solid. |
 | ✎ | `surface_fill` | Seal the volume enclosed by several surface and/or solid bodies into a solid |
 | ✎ | `surface_offset` | Offset faces into another surface body. |
-| ✎ | `surface_patch` | Fill closed edge loop(s) with surface face(s) - cap a hole, bridge a gap. |
+| ✎ | `surface_patch` | Fill closed edge or sketch boundaries with surface faces. |
 | ✎ | `surface_reverse_normal` | Reverse the normals of open surface bodies; ALL faces of each are flipped |
 | ✎ | `surface_revolve` | Revolve an open profile into a sheet body; model_revolve makes a solid. |
 | ✎ | `surface_thicken` | Thicken faces into a solid wall. |

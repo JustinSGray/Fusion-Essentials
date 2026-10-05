@@ -59,6 +59,14 @@ class Section:
         self.owner.sections.remove(self)
         return True
 
+    def reorder(self, new_index):
+        self.owner.assignments += 1
+        if self.mode in ("false", "ignore"):
+            return self.mode == "ignore"
+        self.owner.sections.remove(self)
+        self.owner.sections.insert(new_index, self)
+        return True
+
 
 class Loft:
     """A Loft whose ordered section list changes in place."""
@@ -453,3 +461,85 @@ def test_restore_failure_is_error(rig):
     assert result["details"]["marker_restored"] is False
     assert ("the timeline marker stood at 5 before the edit and reads 2 after it"
             in error_message(result))
+
+
+@pytest.fixture
+def surface_rig(rig, monkeypatch):
+    """The rig as an open unguided surface Loft in the root component, sections labelled by name."""
+    loft, timeline = rig
+    loft.isSolid, loft.isClosed = False, False
+    loft.centerLineOrRails = SimpleNamespace(count=0)
+    mod._common.design().rootComponent = loft.parentComponent
+    monkeypatch.setattr(mod, "sketch_address", lambda entity: entity)
+    monkeypatch.setattr(mod, "address_text", lambda address: address)
+    return loft, timeline
+
+
+def test_reorder_lands_with_the_order_read_back(surface_rig):
+    loft, timeline = surface_rig
+    result = payload(mod.handler(feature="Loft1", action="reorder", section_index=1, new_index=0))
+    assert (result["order_before"], result["order_after"]) == (["A", "B", "C"], ["B", "A", "C"])
+    assert (result["edited"], result["order_matches"], result["geometry_changed"]) == (True, True, True)
+    assert result["outside_body_changes"] == [] and timeline.markerPosition == 5
+
+
+@pytest.mark.parametrize("mode,first", [
+    ("false", "LoftSection.reorder(0) returned False."),
+    ("ignore", "These checks failed: order_matches, geometry_changed.")])
+def test_a_reorder_that_did_not_move_is_an_error_with_the_order_re_read(surface_rig, mode, first):
+    loft, timeline = surface_rig
+    loft.sections[1].mode = mode
+    result = mod.handler(feature="Loft1", action="reorder", section_index=1, new_index=0)
+    assert error_message(result) == (f"Editing 'Loft1': {first} Nothing changed: the section order "
+                                     "still reads [A, B, C] (re-read).")
+    assert result["details"]["order_after"] == ["A", "B", "C"] and loft.assignments == 1
+    assert timeline.markerPosition == 5
+
+
+def test_a_reorder_whose_marker_did_not_return_names_the_marker_and_the_kept_order(surface_rig):
+    loft, timeline = surface_rig
+    timeline.refuse_restore = True
+    assert error_message(mod.handler(feature="Loft1", action="reorder", section_index=1,
+                                     new_index=0)) == (
+        "Editing 'Loft1': These checks failed: marker_restored, new_timeline_errors, "
+        "new_timeline_warnings. This STAYED APPLIED (not rolled back): the section order now "
+        "reads [B, A, C] (was [A, B, C]). Restore it with model_edit_loft(feature='Loft1', "
+        "action='reorder', section_index=0, new_index=1). Also, the timeline marker stood at 5 "
+        "before the edit and reads 3 after it - roll it back with design_edit_timeline.")
+
+
+@pytest.mark.parametrize("new_index,landed", [(2, ["A", "C", "B"]), (3, None), (1, None)])
+def test_reorder_indexes_must_differ_and_stay_below_the_section_count(surface_rig, new_index,
+                                                                      landed):
+    loft, timeline = surface_rig
+    result = mod.handler(feature="Loft1", action="reorder", section_index=1, new_index=new_index)
+    if landed:
+        assert payload(result)["order_after"] == landed
+    else:
+        assert error_message(result) == (
+            f"Editing 'Loft1': 'section_index'=1 and 'new_index'={new_index} must be two "
+            "different indexes below its 3 sections. Nothing was edited.")
+        assert loft.assignments == 0
+    assert timeline.markerPosition == 5
+
+
+def test_reorder_refuses_a_solid_loft_before_any_move(surface_rig):
+    loft, timeline = surface_rig
+    loft.isSolid = True
+    assert error_message(mod.handler(feature="Loft1", action="reorder", section_index=1,
+                                     new_index=0)) == (
+        "Editing 'Loft1': It reads isSolid=True; action='reorder' takes an open, unguided surface "
+        "Loft in the root component. Nothing was edited.")
+    assert (loft.assignments, timeline.markerPosition) == (0, 5)
+
+
+@pytest.mark.parametrize("args,text", [
+    ({"action": "reorder"}, "action='reorder' takes a nonnegative integer 'new_index' (got None) "
+                            "and no 'profile'."),
+    ({"action": "reorder", "new_index": 0, "profile": "X"},
+     "action='reorder' takes a nonnegative integer 'new_index' (got 0) and no 'profile'."),
+    ({"action": "remove", "new_index": 0}, "'new_index' is unused for action='remove'; remove it.")])
+def test_new_index_belongs_to_reorder_alone(surface_rig, args, text):
+    loft, _timeline = surface_rig
+    assert error_message(mod.handler(feature="Loft1", section_index=1, **args)) == text
+    assert loft.assignments == 0

@@ -111,7 +111,8 @@ def handler(document_id: str = "", name: str = "",
                                       "(name) or 'source_project_id' so the lookup is unambiguous.")
         try:
             sproj, savail = _find_project(data, name=source_project or None,
-                                          project_id=source_project_id or None)
+                                          project_id=source_project_id or None,
+                                          id_input="source_project_id")
         except Exception as e:
             return error(f"Could not resolve source project: {e}")
         if not sproj:

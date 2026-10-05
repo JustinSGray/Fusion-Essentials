@@ -288,7 +288,11 @@ class TestMultiRelationshipConstraint:
         ({"snap_one": "A:1:top", "snap_two": "B:1:top", "offset": "5mm"},
          "'offset' must be a number; received '5mm'."),
         ({"snap_one": "A:1:top", "snap_two": "B:1:top", "angle_deg": "30 deg"},
-         "'angle_deg' must be a number; received '30 deg'.")])
+         "'angle_deg' must be a number; received '30 deg'."),
+        ({"snap_one": "A:1:top", "snap_two": "B:1:top", "offset": float("nan")},
+         "'offset' must be a number; received nan."),
+        ({"snap_one": "A:1:top", "snap_two": "B:1:top", "angle_deg": float("inf")},
+         "'angle_deg' must be a number; received inf.")])
     def test_a_non_numeric_value_is_refused_before_any_input_is_built(self, constrain, args,
                                                                        fragment):
         _design, ac = constrain()

@@ -29,7 +29,7 @@ _CONTINUITY = {
 }
 
 # boundary: the CLOSED loop a patch fills.
-_BOUNDARY = _inputs.EdgeLoopRef("boundary", closed=True, required=True)
+_BOUNDARY = _inputs.EdgeLoopRef("boundary", closed=True, allow_sketch=True, required=True)
 # interior_rails: B-Rep EDGES the patch surface must pass through. The API property also accepts
 # sketch curves/points and construction points, but find_geometry mints handles for BRep faces and
 # edges only, so an edge is the one kind this server can reference.
@@ -91,7 +91,16 @@ def _patch_one_loop(comp, boundary, op, cont, cont_key, rails=()):
     ents = meta["entities"]
     if not ents:
         return None, "boundary resolved to no edges. Pass edge handle(s) forming a closed loop."
-    passed = _boundary_passed(len(ents), meta["loop_checked"])
+    boundary_kind = meta.get("boundary_kind", "edges")
+    if boundary_kind != "edges" and _common.same_component(
+            comp, safe(lambda: _common.design().rootComponent)) is not True:
+        return None, "Sketch boundaries require the root component active; activate it before patching."
+    if boundary_kind != "edges" and (cont_key != "connected" or rails or
+                                     op != adsk.fusion.FeatureOperations.NewBodyFeatureOperation):
+        return None, ("Sketch boundaries take continuity='connected', operation='new' and no "
+                      "interior_rails. Use a body-edge boundary for the other patch options.")
+    passed = (f"The boundary was a sketch {boundary_kind}." if boundary_kind != "edges" else
+              _boundary_passed(len(ents), meta["loop_checked"]))
     # Only a set checked to close has ruled that cause out; one edge or an unchecked set keeps it.
     loop_hint = (passed if meta["loop_checked"] else "(The boundary must form a CLOSED loop - pass "
                  "the loop's edges, or a single edge Fusion can auto-complete.)")
@@ -158,7 +167,8 @@ def _patch_one_loop(comp, boundary, op, cont, cont_key, rails=()):
     "continuity": word,
     "group_weight": (_common.measured(lambda: feature.groupWeight)
                      if cont_key != "connected" else None),
-    "boundary_edge_count": len(ents),
+    "boundary_edge_count": len(ents) if boundary_kind == "edges" else None,
+    "boundary_kind": boundary_kind,
     "interior_rail_count": rail_count,
     }, None
 
@@ -228,6 +238,7 @@ def handler(boundary=None, boundaries=None, continuity: str = "connected",
         "result_bodies": r["result_bodies"],
         "is_solid": r["is_solid"],      # read off the patch body, not the module's expectation
         "boundary_edge_count": r["boundary_edge_count"],
+        "boundary_kind": r["boundary_kind"],
         "note": _patch_note(r["is_solid"]),
         }
         unverified = _unverified(is_solid=r["is_solid"], continuity=r["continuity"])
@@ -269,14 +280,14 @@ def handler(boundary=None, boundaries=None, continuity: str = "connected",
 
 
 TOOL_DESCRIPTION = (
-"Fill closed edge loop(s) with surface face(s) - cap a hole, bridge a gap."
+"Fill closed edge or sketch boundaries with surface faces."
 )
 
 tool = (
     Tool.create_simple(name="surface_patch", description=TOOL_DESCRIPTION)
     .add_input_property("boundary", _BOUNDARY.schema())
-    .add_input_property("boundaries", {"type": "array", "items": {"type": ["string", "array"]},
-            "description": "One entry per loop: an edge handle, or a list of handles."})
+    .add_input_property("boundaries", {"type": "array", "items": {"type": ["string", "array", "object"]},
+            "description": "One boundary per entry."})
     .add_input_property(*_inputs.Choice("continuity", ["connected", "tangent", "curvature"],
         default="connected").as_property())
     .add_input_property("interior_rails", _INTERIOR_RAILS.schema())

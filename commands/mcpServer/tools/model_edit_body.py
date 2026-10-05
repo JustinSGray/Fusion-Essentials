@@ -16,8 +16,10 @@ from . import _common, _geom, _inputs, _outputs
 from ._common import error, ok, safe
 
 
-_ACTION = _inputs.Choice("action", ("copy", "move", "create_component"), required=True)
-_BODY = _inputs.BodyRef("body", kind="any", required=True)
+_ACTION = _inputs.Choice("action", ("copy", "move", "create_component", "merge_faces"), required=True)
+_BODY = _inputs.BodyRef("body", kind="any", required=True, description="Body handle or name.")
+_FACES = _inputs.GeometryHandleList("faces", require="face", json_array=True, required=True,
+                                    description="Face handles to merge.")
 _DESTINATION = _inputs.OccurrenceRef("destination", allow_root=True)
 RETURNS = [
     _outputs.ReturnsHandle("handle", require="body", in_list=False,
@@ -264,11 +266,113 @@ def _partial_state(partial, source_owner, destination_owner, kind):
     return json.dumps(partial)
 
 
-def handler(action: str = "", body: str = "", destination: str = "") -> dict:
+def _merge_material(body):
+    """Finite area, volume and root-frame bounds in internal units, or None."""
+    try:
+        box = body.boundingBox
+        values = (float(body.area), float(body.volume),
+                  *[float(getattr(point, axis)) for point in (box.minPoint, box.maxPoint)
+                    for axis in ("x", "y", "z")])
+        return values if all(math.isfinite(value) for value in values) else None
+    except Exception:
+        return None
+
+
+def _merge_pair_error(faces):
+    """The reason two selected planar faces cannot be merged, or None."""
+    keys = [_common.native_identity(face) for face in faces]
+    if None in keys or len(set(keys)) != 2:
+        return "Pass two distinct readable face handles from find_geometry."
+    planes = [_geom._face_plane(face) for face in faces]
+    if any(origin is None or normal is None for origin, normal in planes):
+        return "Both selected faces must be planar."
+    (origin, normal), (other, other_normal) = planes
+    if (abs(abs(sum(a * b for a, b in zip(normal, other_normal))) - 1) > 1e-9 or
+            abs(sum((a - b) * n for a, b, n in zip(origin, other, normal))) > 1e-7):
+        return "The selected faces are on different planes; choose two coplanar faces."
+    edge_sets = []
+    for face in faces:
+        edges = safe(lambda: face.edges)
+        count = _common.counted(lambda: edges.count)
+        if count is None:
+            return "Selected face edges did not read; their connection is unverified."
+        edge_keys = [_common.native_identity(safe(lambda i=i: edges.item(i))) for i in range(count)]
+        if None in edge_keys:
+            return "Selected edge identities did not read; their connection is unverified."
+        edge_sets.append(set(edge_keys))
+    if not edge_sets[0].intersection(edge_sets[1]):
+        return "The selected faces share no edge; choose two connected coplanar faces."
+    return None
+
+
+def _merge_faces(faces):
+    """Merge an adjacent planar pair and verify face count and material preservation."""
+    design = _common.design()
+    if design is None:
+        return error("No active design. Open a design document first.")
+    if _inputs.current_design_type(design) != "direct":
+        return error("Face merge requires a direct design; the current design history is unchanged. "
+                     "Use a separate direct-design copy. Parametric BaseFeature copying is not supported.")
+    selected, refusal = _FACES.resolve(faces)
+    if refusal:
+        return error(refusal)
+    if len(selected) != 2:
+        return error(f"action='merge_faces' needs exactly two connected coplanar faces; got {len(selected)}.")
+    bodies = [safe(lambda face=face: face.body) for face in selected]
+    keys = [_common.native_identity(body) for body in bodies]
+    if None in keys or len(set(keys)) != 1:
+        return error("The selected faces must belong to the same solid body.")
+    body = bodies[0]
+    name = safe(lambda: body.name)
+    if (safe(lambda: body.isSolid) is not True or
+            any(safe(lambda face=face: face.assemblyContext) is not None for face in selected) or
+            _common.same_component(safe(lambda: body.parentComponent), design.rootComponent) is not True):
+        return error(f"Body '{name}' must be a solid in the root component.")
+    refusal = _merge_pair_error(selected)
+    if refusal:
+        return error(refusal)
+    count_before = _common.counted(lambda: body.faces.count)
+    before = _merge_material(body)
+    if count_before is None or before is None:
+        return error(f"Body '{name}' face count or material did not read; nothing was merged.")
+    returned, failure = None, None
+    try:
+        features = design.rootComponent.features.mergeFacesFeatures
+        merge_input = features.createInput(selected, False)
+        returned = features.add(merge_input)
+    except Exception as exc:
+        failure = str(exc)
+    count_after = _common.counted(lambda: body.faces.count)
+    after = _merge_material(body)
+    kept = (before is not None and after is not None and
+            all(abs(a - b) <= 1e-9 for a, b in zip(before, after)))
+    if failure or returned is not True or count_after != count_before - 1 or not kept:
+        reason = failure or f"native return={returned!r}, material_kept={kept}"
+        return error(f"Face merge on '{name}' is unverified: {reason}; faces {count_before} -> "
+                     f"{count_after}. The edit may remain on the body; inspect model_inspect before "
+                     "further edits. No timeline feature is available to delete; recovery is manual.")
+    handle = safe(lambda: body.entityToken)
+    if not handle:
+        return error(f"Faces merged on '{name}', but its body handle did not read. Inspect model_inspect.")
+    return ok({"action": "merge_faces", "body": name, "handle": handle, "faces_before": count_before,
+               "faces_after": count_after, "material_kept": True,
+               "area_cm2": after[0], "volume_cm3": after[1],
+               "bounds_cm": [list(after[2:5]), list(after[5:8])], "geometry_frame": "root",
+               "note": "Merged the selected planar pair in place. No timeline feature is available "
+                       "to delete; inspect model_inspect before further edits."})
+
+
+def handler(action: str = "", body: str = "", destination: str = "", faces=None) -> dict:
     """See TOOL_DESCRIPTION."""
     chosen, err = _ACTION.resolve(action)
     if err:
         return error(err)
+    if chosen == "merge_faces":
+        if body or destination:
+            return error("action='merge_faces' takes 'faces', not 'body' or 'destination'.")
+        return _merge_faces(faces)
+    if faces not in (None, "", []):
+        return error(f"'faces' is unused for action='{chosen}'; remove it.")
     if chosen == "create_component" and destination not in (None, ""):
         return error("action='create_component' does not use 'destination'; omit it.")
     if chosen != "create_component" and destination in (None, ""):
@@ -467,14 +571,14 @@ def handler(action: str = "", body: str = "", destination: str = "") -> dict:
                      + _partial_state(partial, source_owner, dest_owner, family))
 
 
-TOOL_DESCRIPTION = ("Copy, move, or make a child component for a BRep or mesh body. "
-                    "Owner changes affect every placement; use the fresh body handle.\n"
+TOOL_DESCRIPTION = ("Copy, move or rehome a body; merge two coplanar faces in direct mode.\n"
                     + _outputs.produces_block(RETURNS))
 
 body_tool = (Tool.create_simple(name="model_edit_body", description=TOOL_DESCRIPTION)
              .add_input_property(*_ACTION.as_property())
-             .add_input_property(*_BODY.as_property())
+             .add_input_property(*_BODY.as_property(brief=True))
              .add_input_property(*_DESTINATION.as_property())
+             .add_input_property(*_FACES.as_property(brief=True))
              .strict_schema())
 body_item = Item.create_tool_item(tool=body_tool, write="write", handler=handler,
                                   run_on_main_thread=True, verification=Verification(

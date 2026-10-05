@@ -57,7 +57,7 @@ _STL_UNITS = _inputs.Choice("stl_units", options=list(_export.STL_UNIT_MEMBERS),
 # handle). Exactly one of these is required when format=dxf; both are ignored otherwise.
 _DXF_FACE = _inputs.GeometryHandle("dxf_face", require="planar_face", required=False)
 _DXF_FLAT = _inputs.BodyRef("dxf_flat_pattern", required=False,
-    description="The folded sheet body whose developed blank is exported.")
+    description="Folded sheet body owning the flat pattern to export.")
 _FLAT_UNITS = _inputs.Choice("dxf_flat_units", ["mm", "cm", "in"])
 _FLAT_UNIT_MEMBERS = {"mm": "MillimeterDistanceUnits", "cm": "CentimeterDistanceUnits",
                       "in": "InchDistanceUnits"}
@@ -356,7 +356,7 @@ def _export_dxf_face(design, dxf_face, path, want_construction, want_points, wan
         return error(f"Could not create a projection sketch on the face: {e}")
     if not sk:
         return error("Could not create a projection sketch on the face (sketches.add returned nothing).")
-    sk_name = safe(lambda: sk.name) or "scratch sketch"
+    left = _common.left_in_timeline(design, _common.feature_address(sk))
 
     def _cleanup():
         return bool(safe(lambda: sk.deleteMe(), False))
@@ -371,14 +371,14 @@ def _export_dxf_face(design, dxf_face, path, want_construction, want_points, wan
             cleaned = _cleanup()
             msg = f"Could not project the face's edges into a sketch for DXF: {e}"
             if not cleaned:
-                msg += f" Also failed to remove the scratch sketch '{sk_name}' - delete it manually."
+                msg += " The scratch sketch was not removed: " + left
             return error(msg)
 
     if not _sketch_curve_count(sk):
         cleaned = _cleanup()
         msg = "Face projection produced no sketch geometry - nothing to write to DXF."
         if not cleaned:
-            msg += f" Also failed to remove the scratch sketch '{sk_name}' - delete it manually."
+            msg += " The scratch sketch was not removed: " + left
         return error(msg)
 
     size, werr = _write_dxf(design, sk, path, want_construction, want_points, want_projected)
@@ -386,14 +386,13 @@ def _export_dxf_face(design, dxf_face, path, want_construction, want_points, wan
     if werr:
         msg = werr
         if not cleaned:
-            msg += f" Also failed to remove the scratch sketch '{sk_name}' - delete it manually."
+            msg += " The scratch sketch was not removed: " + left
         return error(msg)
 
     note = ("Face outline projected into a scratch sketch, written to DXF, and the scratch sketch "
             "removed - the design is unchanged.")
     if not cleaned:
-        note = (f"DXF written, but the scratch projection sketch '{sk_name}' could not be removed - "
-                "it remains in the design; delete it manually.")
+        note = "DXF written, but the scratch projection sketch was not removed: " + left
 
     return ok({
         "exported": True,
@@ -463,7 +462,8 @@ def _export_flat_dxf(reference, file_path, units, bend_lines, bend_extents):
     return ok({"exported": True, "format": "dxf", "file_path": path, "file_exists": True,
                "size_bytes": size, "source": body.name, "dxf_flat_units": unit,
                "bend_lines": flags[0][1], "bend_extents": flags[1][1],
-               "note": "Developed blank exported. Coordinates use the flat export frame; bend layers are separate from cutting contours."})
+               "development": "unverified",
+               "note": "Native flat DXF exported; development is unverified. Inspect sheet_get(include=['features']) and the cutting contours before fabrication. Coordinates use the flat export frame."})
 
 
 def handler(format: str = "step", file_path: str = "", target: str = "",

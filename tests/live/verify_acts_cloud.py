@@ -2728,7 +2728,9 @@ def _named_derive_rows():
     write("doc_insert_derive", lambda c: {"document_id": c["named_urn"],
           "source_bodies": [c["named_selected"], c["named_sibling"]],
           "exclude_bodies": [c["named_sibling"]]},
-          _refused("remains", "excluded source body", "exclusion did not take", "design_delete_feature"),
+          _refused("remains", "excluded source body", "exclusion did not take",
+                   "remains in the timeline; remove it with design_delete_feature(feature='",
+                   "@0')."),
           owner="named_host")
     rows.append(("design_get", _SELECTOR_DESIGN_ARGS,
                  lambda p: _named_derive_tree(p, 2, 1) and {b["name"] for b in p["tree"]["root_bodies"]}

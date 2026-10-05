@@ -271,6 +271,15 @@ class TestCopyDocument:
             name="Template", source_project="Ghost", project="CAM")
         assert res["isError"] is True and "Source project not found" in res["message"]
 
+    def test_a_shared_source_project_name_names_the_source_id_input(self, _install):
+        _install([FakeProject("Library", pid="p-lib-a"), FakeProject("Library", pid="p-lib-b"),
+                  FakeProject("CAM", pid="p-cam")])
+        res = dm.handler(name="Template", source_project="Library", project="CAM")
+        message = res["message"]
+        assert res["isError"] is True and "p-lib-a" in message and "p-lib-b" in message
+        assert "pass an exact source_project_id." in message
+        assert "exact project_id" not in message
+
     def test_copy_by_name_missing_file_lists_seen(self, _install):
         lib = FakeProject("Library")
         lib.rootFolder._files.append(FakeFile("OtherFile", fid="urn:other"))

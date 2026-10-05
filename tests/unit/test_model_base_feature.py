@@ -162,6 +162,19 @@ def _payload(result):
     return json.loads(result["content"][0]["text"])
 
 
+def _failed(result):
+    """(note, payload) of an error whose content is the finish payload the agent reads."""
+    assert result["isError"] is True, result
+    out = json.loads(result["content"][0]["text"])
+    return out["note"], out
+
+
+def _left(name, outcome, call="finishEdit"):
+    """The scope-left error sentence for `name` whose `call` returned false or raised."""
+    return (f"{call} on base feature '{name}' {outcome}; the edit scope was left as it is. "
+            "Read design_get(include=['timeline']) before continuing.")
+
+
 @pytest.fixture(autouse=True)
 def _reset_open_scopes():
     """The captured-open-scope list is module state; clear it between tests so cases don't leak
@@ -227,15 +240,20 @@ class TestBaseFeature:
         bf = des.rootComponent.features.baseFeatures.added[-1]
         assert bf.name == "MeshScope" and out["base_feature"] == "MeshScope"
 
-    def test_start_errors_and_cleans_up_when_startEdit_returns_false(self, monkeypatch):
+    @pytest.mark.parametrize("raises", [False, True])
+    def test_a_failed_startEdit_is_an_error_that_leaves_the_scope(self, monkeypatch, raises):
         des = _install(monkeypatch, FakeDesign(design_type=1))
         bf = _FakeBaseFeature()
         bf.start_returns = False
+        if raises:
+            bf.startEdit = lambda: (_ for _ in ()).throw(RuntimeError("no scope"))
         des.rootComponent.features.baseFeatures.add_returns = bf
         res = dm.handler(action="start")
-        assert res["isError"] is True and "startEdit returned false" in res["message"]
-        # the orphan feature is deleted and nothing is captured
-        assert bf.deleted is True
+        outcome = "raised: no scope" if raises else "returned false"
+        assert res["isError"] is True
+        assert res["message"] == _left("BaseFeature1", outcome, "startEdit")
+        # a base feature is a parametric-free pocket by design: it is left, not deleted
+        assert bf.deleted is False
         assert dm._OPEN_BASE_FEATURES == []
 
     def test_start_refuses_before_mutation_when_document_identity_is_unreadable(self, monkeypatch):
@@ -364,7 +382,8 @@ class TestBaseFeature:
             raise RuntimeError("finishEdit blew up")
 
         bf.finishEdit = boom
-        out = _payload(dm.handler(action="finish"))
+        msg, out = _failed(dm.handler(action="finish"))
+        assert msg.startswith(_left(bf.name, "raised: finishEdit blew up") + " ")
         assert out["closed_scopes"] == []
         assert out["unclosed_scopes"] == [{"name": bf.name, "finished": None,
                                            "error": "finishEdit blew up"}]
@@ -395,7 +414,8 @@ class TestBaseFeature:
         dm.handler(action="start")
         bf = des.rootComponent.features.baseFeatures.added[-1]
         bf.finishEdit = lambda: False
-        out = _payload(dm.handler(action="finish"))
+        msg, out = _failed(dm.handler(action="finish"))
+        assert msg.startswith(_left(bf.name, "returned false") + " ")
         assert out["closed_scopes"] == []
         assert out["unclosed_scopes"] == [{"name": bf.name, "finished": False}]
         assert out["editing"] is None
@@ -411,7 +431,8 @@ class TestBaseFeature:
         dm.handler(action="start")
         first, second = des.rootComponent.features.baseFeatures.added[-2:]
         second.finishEdit = lambda: (_ for _ in ()).throw(RuntimeError("inner stuck"))
-        out = _payload(dm.handler(action="finish"))
+        msg, out = _failed(dm.handler(action="finish"))
+        assert msg.startswith(_left(second.name, "raised: inner stuck") + " ")
         assert [c["name"] for c in out["closed_scopes"]] == [first.name]
         assert first.finish_count == 1
         assert _open_handles() == [second]
@@ -423,9 +444,19 @@ class TestBaseFeature:
         bf = _FakeBaseFeature("Scope1")
         _install(monkeypatch, FakeDesign(design_type=1, base_features=_Coll([bf])))
         bf.finishEdit = lambda: (_ for _ in ()).throw(RuntimeError("named finish blew up"))
-        out = _payload(dm.handler(action="finish", base_feature="Scope1"))
+        msg, out = _failed(dm.handler(action="finish", base_feature="Scope1"))
+        assert msg == _left("Scope1", "raised: named finish blew up")
         assert out["named_finished"] is None
-        assert out["named_finish_error"] == "named finish blew up"
+        assert out["named_finish_error"] == "raised: named finish blew up"
+
+    def test_a_false_named_finish_is_an_error_too(self, monkeypatch):
+        bf = _FakeBaseFeature("Scope1")
+        _install(monkeypatch, FakeDesign(design_type=1, base_features=_Coll([bf])))
+        bf.finishEdit = lambda: False
+        msg, out = _failed(dm.handler(action="finish", base_feature="Scope1"))
+        assert msg == _left("Scope1", "returned false")
+        assert out["named_finish_error"] is False
+        assert out["named_finished"] is None
 
     def test_finish_works_while_design_reads_direct(self, monkeypatch):
         # while a scope is open the design READS direct; finish must NOT gate on mode. We simulate the

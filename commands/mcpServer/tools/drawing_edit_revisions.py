@@ -153,31 +153,54 @@ def _do_add(sheet, raw_rows):
                 landed = False if r is None else table.addRevision(r)
             except Exception as ex:
                 now = _drawing_common.revision_rows(table)
-                return error(f"addRevision raised on rows[{i}]: {ex}. The table now reads {now}.")
+                return error(f"addRevision raised on rows[{i}]: {ex}. "
+                             f"revision_count_before={n_before}; revision_count_after="
+                             f"{len(now) if now is not None else 'unknown'}; retained_rows={now}; "
+                             "later additions are unconfirmed. Read "
+                             "drawing_get(include=['revisions']) before retrying.")
             if r is None:
                 now = _drawing_common.revision_rows(table)
                 return error(f"RevisionTableRow.create() returned nothing for rows[{i}] - the "
-                             f"table now reads {now}.")
+                             f"table revision_count_before={n_before}; revision_count_after="
+                             f"{len(now) if now is not None else 'unknown'}; retained_rows="
+                             f"{now}; later additions are unconfirmed. Read "
+                             "drawing_get(include=['revisions']) before retrying.")
             if not landed:
                 now = _drawing_common.revision_rows(table)
-                return error(f"addRevision refused rows[{i}] ({listed[i]!r}); the table now "
-                             f"reads {now}.")
+                return error(f"addRevision refused rows[{i}] ({listed[i]!r}); "
+                             f"revision_count_before={n_before}; revision_count_after="
+                             f"{len(now) if now is not None else 'unknown'}; retained_rows="
+                             f"{now}; earlier additions may remain and later additions are "
+                             "unconfirmed. Read drawing_get(include=['revisions']) before retrying.")
 
     after = _drawing_common.revision_rows(table)
     if after is None:
-        return error(f"The revision table's rows did not read back after the add "
-                     f"(table_created={table_created}) - unverified.")
+        return error(f"The revision table rows did not read back after add "
+                     f"(table_created={table_created}, revision_count_before={n_before}); "
+                     "landed rows are unknown and may be retained. Read "
+                     "drawing_get(include=['revisions']) before retrying.")
     if table_created:
-        bad = len(after) != len(parsed) + _HEADER_ROWS
+        # A newly added table may inherit the document's existing revision history rows.
+        bad_count = len(after) < len(parsed) + _HEADER_ROWS
     else:
-        bad = len(after) - n_before != len(parsed)
-    tail = after[-len(parsed):] if len(after) >= len(parsed) else []
-    bad = bad or len(tail) != len(parsed) or any(
-        not _fields_match(texts, got) for texts, got in zip(parsed, tail))
+        bad_count = len(after) - n_before != len(parsed)
+    if table_created:
+        # The new table can contain inherited rows before this request's appended rows.
+        tail = after[-len(parsed):] if len(after) >= len(parsed) else []
+    else:
+        # Attribute landed requests only to rows appended after the pre-write census.
+        tail = after[n_before:n_before + len(parsed)]
+    landed_rows = [got for texts, got in zip(parsed, tail) if _fields_match(texts, got)]
+    unconfirmed_rows = [i for i, texts in enumerate(parsed)
+                        if i >= len(tail) or not _fields_match(texts, tail[i])]
+    bad = bad_count or len(tail) != len(parsed) or bool(unconfirmed_rows)
     if bad:
         return error(f"The revision table (table_created={table_created}) reads {len(after)} "
-                     f"row(s) ({n_before} before) - the requested row(s) do not read back as "
-                     f"asked: {after}.")
+                     f"row(s) ({n_before} before); landed_requested_rows="
+                     f"{[row.get('index') for row in landed_rows]}; "
+                     f"unconfirmed_request_indexes={unconfirmed_rows}; "
+                     f"row_count_mismatch={bad_count}; census={after}. Earlier additions may "
+                     "remain. Read drawing_get(include=['revisions']) before retrying.")
     return ok({
         "action": "add",
         "sheet": name,
@@ -217,11 +240,35 @@ def _do_update(sheet, table, before, row, index):
         return error(f"updateRevisionRow returned false for row {idx} - nothing changed.")
     after = _drawing_common.revision_rows(table)
     if after is None or not 0 <= idx < len(after):
-        return error("The revision table's rows did not read back after the update - unverified.")
+        return error(f"updateRevisionRow returned {landed} for row {idx}; the post-update row "
+                     f"census is unreadable (before={before[idx]}; requested={texts}; landed "
+                     "fields are unknown). Read drawing_get(include=['revisions']) before "
+                     "retrying or reconciling this row.")
     got = after[idx]
-    if any(got.get(field) != texts.get(field, before[idx].get(field)) for field in _TEXT_FIELDS):
-        return error(f"Fusion accepted the update but row {idx} still reads {got}"
-                     f"{_title_header_clause(idx)}")
+    expected = {field: texts.get(field, before[idx].get(field)) for field in _TEXT_FIELDS}
+    if any(got.get(field) != expected[field] for field in _TEXT_FIELDS):
+        landed_fields = [field for field in texts
+                         if texts[field] != before[idx].get(field)
+                         and got.get(field) == texts[field]]
+        different_fields = [field for field in _TEXT_FIELDS
+                            if got.get(field) is not None
+                            and got.get(field) != expected[field]]
+        unconfirmed_fields = [field for field in _TEXT_FIELDS if got.get(field) is None]
+        changed_fields = [field for field in _TEXT_FIELDS
+                          if got.get(field) is not None
+                          and got.get(field) != before[idx].get(field)]
+        if not changed_fields and not unconfirmed_fields:
+            return error(f"updateRevisionRow returned true, but row {idx} still reads {got}"
+                         f"{_title_header_clause(idx)} before={before[idx]}; requested={texts}; "
+                         f"landed_fields={landed_fields}; fields_different_from_expected="
+                         f"{different_fields}. Read drawing_get(include=['revisions']) before "
+                         "retrying.")
+        return error(f"Fusion accepted the update for row {idx}, but the result is partial: "
+                     f"before={before[idx]}; requested={texts}; actual={got}; "
+                     f"landed_fields={landed_fields}; fields_different_from_expected="
+                     f"{different_fields}; unconfirmed_fields={unconfirmed_fields}. Read "
+                     "drawing_get(include=['revisions']) and reconcile the returned row before "
+                     "retrying; omitted sibling fields may have changed.")
     return ok({
         "action": "update",
         "sheet": safe(lambda: sheet.name),

@@ -715,3 +715,18 @@ def test_strict_definition_rejects_partial_path_read(rig, monkeypatch):
 
     monkeypatch.setattr(Sweep, "path", property(unread_path))
     assert _real_definition(sweep) is None
+
+
+def test_partial_path_edit_discloses_omitted_curve_ids_without_changing_operand(rig, monkeypatch):
+    sweep, timeline = rig
+    def build(owner, raw, left=None):
+        if left is not None:
+            left.append("line:1")
+        return ("arc",), "sketch:Partial", None
+    monkeypatch.setattr(mod._common, "build_path", build)
+    monkeypatch.setattr(mod._common, "path_sketch_curve_count", lambda *_args: 2)
+    result = payload(mod.handler(feature="Sweep1", action="path", path="sketch:Partial"))
+    assert sweep.path == ("arc",) and sweep.assignments == 1
+    assert "Not in the path: line:1" in result["note"]
+    assert (result["path_curves"], result["path_sketch_curves"]) == (1, 2)
+    assert timeline.markerPosition == 3

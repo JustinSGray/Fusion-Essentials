@@ -5386,6 +5386,7 @@ def run(context):
         checks['hidden_post_exact_url_refusal'] = (hidden_post_result['is_error'] is True
             and all(text in str(hidden_post_result['payload']) for text in (
                 'absence is unknown', 'Choose an enumerated post URL',
+                'Enumerated post URLs:', post.toString(),
                 'URLs outside this walk cannot be resolved'))
             and 'Pass an exact post' not in str(hidden_post_result['payload']))
         checks['hidden_post_refusal_no_program_or_output'] = (after_hidden == before_post

@@ -4,8 +4,6 @@
 """Mate two occurrences' geometry via Constrain Components - the relationship type is INFERRED from
 the geometry, and a SET of relationships is solved together in ONE constraint. WRITES."""
 
-import math
-
 import adsk.core
 
 from ..mcp_primitives.tool import Tool
@@ -41,10 +39,11 @@ def _number(label, value):
     """(float, None) for a finite number, 0.0 for an omitted one; (None, refusal) otherwise."""
     if value is None:
         return 0.0, None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    number = _common.finite_number(value)
+    if number is None:
         return None, (f"'{label}' must be a number; received {_common.short_ref(ascii(value))}. "
                       "Nothing was constrained.")
-    return float(value), None
+    return number, None
 
 
 def handler(occurrence_one: str = "", occurrence_two: str = "",

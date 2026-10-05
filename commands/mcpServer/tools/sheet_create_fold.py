@@ -67,7 +67,7 @@ def handler(stationary_face="", bend_line="", angle_deg=90.0, position="center",
         return error(f"Fold '{feature.name}' remains, but changed body topology was not verified. Inspect it before retrying.")
     return ok({"created": True, "feature": feature.name, "body": body.name,
                "angle_deg": math.degrees(angle), "faces_before": before_faces, "faces_after": after_faces,
-               "note": "Fold created. Inspect the stationary side with view_screenshot; create the developed blank with sheet_create_flat_pattern."})
+               "note": "Fold created. Inspect the stationary side with view_screenshot; sheet_create_flat_pattern creates a native flat whose development remains unverified."})
 
 
 TOOL_DESCRIPTION = "Fold a sheet body along one sketch line. The API is preview; inspect the stationary side after creation."

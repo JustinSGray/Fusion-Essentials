@@ -10,6 +10,7 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe, target_component
 from . import _common
+from . import _design_common
 from . import _inputs
 from . import _write_guard
 
@@ -123,10 +124,12 @@ def handler(action: str = "start", base_feature: str = "") -> dict:
         # Name BEFORE startEdit - once the scope is open the feature is invisible to the API, so a
         # rename attempt then would target nothing.
         bf_name, rename_warning = _common.apply_rename(bf, base_feature)
-        started = bf.startEdit()
-        if started is False:
-            safe(lambda: bf.deleteMe())      # the scope will not open - do not leave the orphan
-            return error("Could not enter base-feature edit (startEdit returned false).")
+        try:
+            started = bf.startEdit()
+        except Exception as exc:
+            started = f"raised: {str(exc)[:120]}"
+        if started is False or isinstance(started, str):
+            return error(_design_common.scope_left_clause(bf_name, "startEdit", started))
         # CAPTURE the open scope's object and the active document it belongs to. A document wrapper
         # is not identity-stable, so the shared opaque session handle is the ownership key.
         _OPEN_BASE_FEATURES.append((owner, bf))
@@ -200,11 +203,14 @@ def handler(action: str = "start", base_feature: str = "") -> dict:
     named_error = None
     if named_target is not None:
         try:
-            named_target.finishEdit()
+            finished = named_target.finishEdit()
         except Exception as e:
-            named_error = str(e)
+            named_error = f"raised: {str(e)[:120]}"
         else:
-            named = safe(lambda: named_target.name)
+            if finished is False:
+                named_error = False
+            else:
+                named = safe(lambda: named_target.name)
 
     now_mode = _inputs.current_design_type(design)
     active_retained = any(owner == active_owner for owner, _bf in _OPEN_BASE_FEATURES)
@@ -234,10 +240,19 @@ def handler(action: str = "start", base_feature: str = "") -> dict:
         "open_scope_count": len(_OPEN_BASE_FEATURES),
         "note": note,
     }
+    failed = [(row["name"], "returned false" if row["finished"] is False
+               else f"raised: {str(row.get('error'))[:120]}") for row in unclosed]
+    if named_error is not None:
+        failed.append((safe(lambda: named_target.name), "returned false" if named_error is False
+                       else named_error))
+        out["named_finish_error"] = named_error
     if unclosed:
         out["unclosed_scopes"] = unclosed
-    if named_error:
-        out["named_finish_error"] = named_error
+    if failed:
+        # error() sends only the payload as content, so the agent reads the failure in its note.
+        text = " ".join(_design_common.scope_left_clause(n, "finishEdit", how) for n, how in failed)
+        out["note"] = text + (" " + note if unclosed else "")
+        return error(text, out)
     return ok(out)
 
 
@@ -259,7 +274,7 @@ item = Item.create_tool_item(
         kind="inline",
         rung="exists",
         evidence_test="tests/unit/test_model_base_feature.py::TestBaseFeature"
-                      "::test_start_errors_and_cleans_up_when_startEdit_returns_false"))
+                      "::test_a_failed_startEdit_is_an_error_that_leaves_the_scope"))
 
 
 def register_tool():

@@ -316,24 +316,25 @@ def _one(sketch, entry):
     is_driving = entry.get("is_driving", True)
     tangent_side_one = entry.get("tangent_side_one", True)
     tangent_side_two = entry.get("tangent_side_two", True)
+    refuse = _sketch_batch.refuse
     dt = (dim_type or "distance").strip().lower()
     if dt not in _DIM_TYPES:
-        return None, (f"Unknown dim_type '{dim_type}'. Valid: {', '.join(_DIM_TYPES)}.")
+        return refuse(f"Unknown dim_type '{dim_type}'. Valid: {', '.join(_DIM_TYPES)}.")
     # isDriving=False is the API's DRIVEN (reference) dimension: the geometry controls the
     # dimension, so an expression cannot drive it. Refuse the contradiction naming both inputs.
     if not is_driving and (value or "").strip():
-        return None, (f"is_driving=false creates a DRIVEN (reference) dimension - the geometry "
-                     f"controls it, so value '{value}' cannot drive it. Drop 'value', or leave "
-                     "is_driving true.")
+        return refuse(f"is_driving=false creates a DRIVEN (reference) dimension - the geometry "
+                      f"controls it, so value '{value}' cannot drive it. Drop 'value', or leave "
+                      "is_driving true.")
 
     base1, anchor1, aerr1 = _common.parse_anchor_ref(entity_one)
     if aerr1:
-        return None, (aerr1)
+        return refuse(aerr1)
     e1 = _common.resolve_entity_ref(sketch, base1)
     if e1 is None:
-        return None, (f"entity_one '{entity_one}' did not resolve. Use '<type>:<index>' "
-    f"({'/'.join(_common.ENTITY_REF_KINDS)}), optionally with an anchor "
-    "':start'/':end'/':mid'/':center', e.g. 'line:0:end'.")
+        return refuse(f"entity_one '{entity_one}' did not resolve. Use '<type>:<index>' "
+                      f"({'/'.join(_common.ENTITY_REF_KINDS)}), optionally with an anchor "
+                      "':start'/':end'/':mid'/':center', e.g. 'line:0:end'.")
     need_two = dt in _TWO_ENTITY_TYPES
     e2 = None
     base2 = None
@@ -344,21 +345,21 @@ def _one(sketch, entry):
         # Only a line qualifies: it has two endpoints and no center (an arc's endpoint span is
         # not its length, so an arc/circle still needs an explicit entity_two).
         if anchor1:
-            return None, (f"A single-entity '{dt}' dimensions the whole line's length - drop the "
-                         f"':{anchor1}' anchor, or give entity_two to pin two points.")
+            return refuse(f"A single-entity '{dt}' dimensions the whole line's length - drop the "
+                          f"':{anchor1}' anchor, or give entity_two to pin two points.")
         has_ends = (safe(lambda: e1.startSketchPoint) is not None
                     and safe(lambda: e1.endSketchPoint) is not None)
         if not has_ends or safe(lambda: e1.centerSketchPoint) is not None:
-            return None, (f"'{dt}' with no entity_two dimensions a LINE's own length; "
-                         f"'{entity_one}' is not a line. Give entity_two ('<type>:<index>').")
+            return refuse(f"'{dt}' with no entity_two dimensions a LINE's own length; "
+                          f"'{entity_one}' is not a line. Give entity_two ('<type>:<index>').")
         lone_line = True
     elif need_two:
         base2, anchor2, aerr2 = _common.parse_anchor_ref(entity_two)
         if aerr2:
-            return None, (aerr2)
+            return refuse(aerr2)
         e2 = _common.resolve_entity_ref(sketch, base2)
         if e2 is None:
-            return None, (f"'{dt}' needs entity_two ('<type>:<index>'). '{entity_two}' did not resolve.")
+            return refuse(f"'{dt}' needs entity_two ('<type>:<index>'). '{entity_two}' did not resolve.")
 
     dims = sketch.sketchDimensions
     P = adsk.core.Point3D.create
@@ -369,10 +370,10 @@ def _one(sketch, entry):
     # Anchors pin one point of an entity for a DISTANCE dim (and for point_to_surface, whose binding
     # argument IS a SketchPoint); every other type takes whole entities.
     if anchor1 and dt not in _ANCHOR_TYPES:
-        return None, (f"'{dt}' takes a whole entity, not a point anchor - drop the ':{anchor1}' from entity_one.")
+        return refuse(f"'{dt}' takes a whole entity, not a point anchor - drop the ':{anchor1}' from entity_one.")
     if anchor2 and dt not in _DISTANCE_TYPES:
-        return None, (f"'{dt}' takes a whole entity as entity_two, not a point anchor - drop the "
-                     f"':{anchor2}'.")
+        return refuse(f"'{dt}' takes a whole entity as entity_two, not a point anchor - drop the "
+                      f"':{anchor2}'.")
 
     kinds1, kinds2 = _OPERANDS.get(dt, (None, None))
     # an anchored ref for point_to_surface resolves to a SketchPoint whatever entity it names, so the
@@ -380,28 +381,28 @@ def _one(sketch, entry):
     if kinds1 and not anchor1:
         oerr = _operand_error(dt, "entity_one", entity_one, base1, kinds1)
         if oerr:
-            return None, (oerr)
+            return refuse(oerr)
     if kinds2:
         oerr = _operand_error(dt, "entity_two", entity_two, base2, kinds2)
         if oerr:
-            return None, (oerr)
+            return refuse(oerr)
 
     surf = None
     if dt in _SURFACE_TYPES:
         surf, serr = _SURFACE.resolve(surface, dt)
         if serr:
-            return None, (serr)
+            return refuse(serr)
         if surf is None:
-            return None, (f"'{dt}' needs 'surface' - a plane alias (xy/xz/yz), a construction-plane "
-                         "name, or a face handle from find_geometry"
-                         + (" (curved faces allowed)." if dt in _CURVED_SURFACE_OK
-                            else " (this dimension takes a PLANAR face only)."))
+            return refuse(f"'{dt}' needs 'surface' - a plane alias (xy/xz/yz), a construction-plane "
+                          "name, or a face handle from find_geometry"
+                          + (" (curved faces allowed)." if dt in _CURVED_SURFACE_OK
+                             else " (this dimension takes a PLANAR face only)."))
 
     for slot, entity, anchor in (("entity_one", e1, anchor1), ("entity_two", e2, anchor2)):
         if anchor:
             _point, perr = _common.anchor_preflight(entity, anchor)
             if perr:
-                return None, f"{slot}: {perr}"
+                return refuse(f"{slot}: {perr}")
     # A midpoint anchor MINTS a welded point; the points this entry minted are retired when its
     # second anchor returns an error or its dimension add fails.
     minted = []

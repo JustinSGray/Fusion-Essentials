@@ -148,13 +148,11 @@ def _rule_fillet(radius, units, faces, second_faces, topology):
     vol_delta, vol_readable = _geom.volume_delta(verify_bodies, vol_before)
     moved = abs(vol_delta) >= _common.NO_VOLUME_CHANGE_CM3 if vol_readable else faces_created != 0
     if not moved:
-        removed = safe(lambda: feature.deleteMe())
         return error(
             f"Rule fillet reported success but rounded nothing. topology '{topo}' may exclude every "
             "edge of the selected faces ('rounds_only' takes convex edges, 'fillets_only' concave "
-            "ones), or the faces meet smoothly and have no corner to round. The feature has been "
-            "rolled back."
-            + ("" if removed else " (The inert fillet feature could not be auto-removed.)"))
+            "ones), or the faces meet smoothly and have no corner to round. "
+            + _common.delete_failed_feature(design, feature)[1])
 
     # ruleFilletSettings carries the applied radius (a ModelParameter, in cm) and topology, so
     # both are read off the feature rather than echoed: a setter the API silently ignored would
@@ -171,11 +169,11 @@ def _rule_fillet(radius, units, faces, second_faces, topology):
         if as_expression:
             asked += f" (what the expression '{str(radius).strip()}' evaluates to)"
         return error(f"The rule fillet was created but its radius reads back "
-                     f"{round(got_r_cm / k, 6)} {units}, not the requested {asked}. Remove "
-                     f"'{safe(lambda: feature.name)}' with design_delete_feature.")
+                     f"{round(got_r_cm / k, 6)} {units}, not the requested {asked}. "
+                     + _common.failed_effect_remedy(design, feature))
     if got_topo is not None and want_topo is not None and got_topo != want_topo:
         return error(f"The rule fillet was created but its topology is not the requested "
-                     f"'{topo}'. Remove '{safe(lambda: feature.name)}' with design_delete_feature.")
+                     f"'{topo}'. " + _common.failed_effect_remedy(design, feature))
 
     payload = {
         "filleted": True,
@@ -246,14 +244,13 @@ def _full_round_fillet(center_face, faces, second_faces):
     moved = (abs(vol_delta) >= _common.NO_VOLUME_CHANGE_CM3 if vol_readable
              else face_sets not in (None, 0))
     if face_sets in (None, 0) or not moved:
-        removed = safe(lambda: feature.deleteMe())
+        sets = "an unreadable number of" if face_sets is None else face_sets
         return error(
             "Full round fillet reported success but did not build one: the created feature answers "
-            f"{face_sets} full-round face set(s) (any other fillet answers none) and the body's "
+            f"{sets} full-round face set(s) (any other fillet answers none) and the body's "
             f"measured volume changed by "
-            f"{round(vol_delta, 6) if vol_readable else 'an unreadable amount'} cm3. The feature "
-            "has been rolled back."
-            + ("" if removed else " (It could not be auto-removed.)"))
+            f"{round(vol_delta, 6) if vol_readable else 'an unreadable amount'} cm3. "
+            + _common.delete_failed_feature(design, feature)[1])
 
     payload = {
         "filleted": True,

@@ -7,16 +7,41 @@ Both run before anything is solid - which is the order the work is done in - so 
 sketch geometry and user parameters, never bodies.
 """
 
+import json
 from math import isfinite
 
 from verify_core import (
     EXPORT_DIR, SVG96_PATH, SVG_PATH, _ctx_get, _datum_plane, _dim_measures, _extruded,
     _made_component, _param_added, _param_favorited, _params_listed, _refused, _svg96_extent,
     _watch_all, _measured, _RECALL, _recall, _home_document, _home_address,
-    _new_document, _document_closed, _activated, _near)
+    _new_document, _document_closed, _activated, _near, _Refusal)
 from verify_layout import _px, _py
 from verify_acts_model_combine_revolve import _combine_pin
 from verify_acts_model_sweep import _FilletRadiusRefusal, _retire_compare, _retire_sketch_state, _timeline_names
+
+
+class _SketchBatchRefusal(_Refusal):
+    """Check a structured partial sketch error and optionally retain a landed identity."""
+    def __init__(self, check, remember=None):
+        super().__init__(())
+        self.check, self.remember = check, remember
+
+    def missing(self, text):
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError):
+            return ["structured sketch batch error body"]
+        if not isinstance(payload, dict) or not payload.get("failed"):
+            return ["failed sketch batch"]
+        try:
+            if not self.check(payload):
+                return ["structured batch assertions"]
+            if self.remember:
+                key, extract = self.remember
+                _RECALL[key] = extract(payload)
+        except Exception as exc:
+            return [f"structured batch predicate: {exc}"]
+        return []
 
 
 def _split_public(stage):
@@ -81,6 +106,12 @@ def _radial_state(payload, radii, dimension_values):
             and all(d.get("name") and d.get("driving") is True for d in dimensions))
 
 
+def _retained_dims_create(_ctx):
+    for key in ("radial_first_wire", "radial_mixed"):
+        _RECALL.pop(key, None)
+    return {"plane": "xy", "name": "RetainedDims"}
+
+
 def _mixed_curve_state(fixed):
     """Check projected and authored curves independently, with uncapped state totals."""
     def check(p):
@@ -103,7 +134,7 @@ def _mixed_curve_state(fixed):
 
 def _first_radial_cleanup_args(ctx):
     """Require the first retained identity to match its independent read and deletion."""
-    wire = _ctx_get(ctx, "radial_first_wire", "the first retained identity")
+    wire = _RECALL.get("radial_first_wire")
     read = _ctx_get(ctx, "radial_first_read", "the first retained dimension row")
     deleted = _ctx_get(ctx, "radial_first_deleted", "the first deletion response")
     if not wire or wire != read or wire != deleted:
@@ -113,7 +144,7 @@ def _first_radial_cleanup_args(ctx):
 
 def _mixed_radial_cleanup_args(ctx):
     """Require both mixed identities to match the independent rows and deletion responses."""
-    wire = _ctx_get(ctx, "radial_mixed", "the mixed radial identities")
+    wire = _RECALL.get("radial_mixed")
     read = _ctx_get(ctx, "radial_mixed_read", "the mixed radial dimension rows")
     set_name = _ctx_get(ctx, "radial_mixed_set", "the restored completed dimension")
     retained = _ctx_get(ctx, "radial_mixed_retained_deleted", "the retained deletion")
@@ -730,7 +761,7 @@ _SKETCHWORK = [
      _refused("OVER_CONSTRAINT", "point:1 already stand(s) at the same x", "'vertical_points'"),
      None),
     # A missing first reference is a nonmutation control; the later valid entry stays unattempted.
-    ("sketch_create", {"plane": "xy", "name": "RetainedDims"}, "ok", None),
+    ("sketch_create", _retained_dims_create, "ok", None),
     ("sketch_add_geometry", {"geometry": [
         {"kind": "circle", "cx": 1180, "cy": 560, "radius": 10},
         {"kind": "circle", "cx": 1220, "cy": 560, "radius": 10},
@@ -750,14 +781,14 @@ _SKETCHWORK = [
         {"dim_type": "radius", "entity_one": "circle:0", "value": "1 mm +"},
         {"dim_type": "radius", "entity_one": "circle:2", "value": "8 mm"}],
         "sketch_name": "RetainedDims"},
-     lambda p: p.get("dimensioned") == 0 and p.get("results") == []
+     _SketchBatchRefusal(lambda p: p.get("dimensioned") == 0 and p.get("results") == []
      and p.get("failed", {}).get("index") == 0 and p.get("not_attempted") == 1
      and len(p.get("retained") or []) == 1
      and p["retained"][0].get("index") == 0 and bool(p["retained"][0].get("parameter"))
      and p["retained"][0].get("value_driven") is False
      and p["retained"][0].get("is_driving") is True
      and "Nothing landed" not in (p.get("note") or ""),
-     ("radial_first_wire", lambda p: p["retained"][0]["parameter"])),
+     ("radial_first_wire", lambda p: p["retained"][0]["parameter"])), None),
     ("sketch_get", {"sketch_name": "RetainedDims", "include_entities": True},
      lambda p: p.get("truncated") is False and _radial_state(p, [10, 10, 10], [10]),
      ("radial_first_read", lambda p: p["dimensions"][0]["name"])),
@@ -773,7 +804,7 @@ _SKETCHWORK = [
         {"dim_type": "radius", "entity_one": "circle:1", "value": "1 mm +"},
         {"dim_type": "radius", "entity_one": "circle:2", "value": "8 mm"}],
         "sketch_name": "RetainedDims"},
-     lambda p: p.get("dimensioned") == 1 and len(p.get("results") or []) == 1
+     _SketchBatchRefusal(lambda p: p.get("dimensioned") == 1 and len(p.get("results") or []) == 1
      and p["results"][0].get("index") == 0 and p["results"][0].get("value_driven") is True
      and p["results"][0].get("is_driving") is True
      and len(p.get("retained") or []) == 1 and p["retained"][0].get("index") == 1
@@ -783,13 +814,13 @@ _SKETCHWORK = [
      and p["results"][0].get("parameter") != p["retained"][0].get("parameter")
      and p.get("failed", {}).get("index") == 1 and p.get("not_attempted") == 1,
      ("radial_mixed", lambda p: {"completed": p["results"][0]["parameter"],
-                                 "retained": p["retained"][0]["parameter"]})),
+                                 "retained": p["retained"][0]["parameter"]})), None),
     ("sketch_get", {"sketch_name": "RetainedDims", "include_entities": True},
      lambda p: p.get("truncated") is False and _radial_state(p, [12, 10, 10], [10, 12]),
      ("radial_mixed_read", lambda p: {
          "completed": p["dimensions"][0]["name"], "retained": p["dimensions"][1]["name"]})),
     ("param_set", lambda c: {
-        "name": _ctx_get(c, "radial_mixed", "the mixed radial dimensions")["completed"],
+        "name": _RECALL["radial_mixed"]["completed"],
         "expression": "10 mm"},
      lambda p: p.get("set") is True and p.get("created") is False
      and abs(p.get("before", {}).get("value", 0) - 12) < 1e-4
@@ -1504,10 +1535,10 @@ def _paging_rows():
         {"kind": "point", "cx": 3300, "cy": -300},
         {"kind": "polygon", "cx": 0, "cy": 0, "radius": 5, "sides": 2},
         {"kind": "point", "cx": 3301, "cy": -300}]},
-        lambda p: (p.get("drawn"), p.get("requested")) == (1, 3)
+        _SketchBatchRefusal(lambda p: (p.get("drawn"), p.get("requested")) == (1, 3)
         and p.get("failed", {}).get("index") == 1 and p.get("not_attempted") == 1
         and [r["index"] for r in p["results"]] == [0]
-        and p["sketch_state"]["point_count"] == 195)
+        and p["sketch_state"]["point_count"] == 195))
     read("sketch_get", {"sketch_name": "ReceiptPoints"},
          lambda p: p["counts"]["points"] == 195)
     write("sketch_create", {"plane": "xy", "name": "ReceiptMixed"})
@@ -1790,10 +1821,10 @@ def _anchor_state(key, stage):
                     and len(facts["profiles"]) == 2 and dimensions == [])
         else:
             good = good and len(new) == n and facts["profiles"] == old.get("profiles")
-            if stage in ("success", "dim_mixed"):
-                refs = [circle] if stage == "dim_mixed" else (
+            if stage in ("success", "dim_mixed", "dim_preflight"):
+                refs = [circle] if stage in ("dim_mixed", "dim_preflight") else (
                     [added_points[0]["id"], centers[0]] if len(added_points) == len(centers) == 1 else None)
-                good = (good and len(dimensions) == 1 and dimensions[0].get("value") == (5.0 if stage == "dim_mixed" else 40.0)
+                good = (good and len(dimensions) == 1 and dimensions[0].get("value") == (5.0 if stage in ("dim_mixed", "dim_preflight") else 40.0)
                         and dimensions[0].get("driving") is True and dimensions[0].get("name")
                         and refs is not None and dimensions[0].get("entities") == refs)
             else:
@@ -1817,7 +1848,7 @@ def _anchor_partial(geometry=False, dimension=False):
                          and "retained" not in p and p.get("failed_entry_counts") == {
                              "before": before, "after": {k: before[k] + change[k] for k in before}, "change": change}
                          and ("Counts do not establish unchanged geometry" in p.get("note", ""))
-                         is (geometry or dimension))
+                         is dimension)
     return check
 
 
@@ -1845,6 +1876,7 @@ def _anchor_retention_rows():
     for key, stage in (("AnchorSurface", "unchanged"), ("AnchorConKind", "unchanged"), ("AnchorKind", "unchanged"),
                        ("AnchorConSolver", "unchanged"), ("AnchorDimSolver", "solver"),
                        ("AnchorMixed", "mixed"), ("AnchorDimMixed", "dim_mixed"), ("AnchorGeometry", "geometry"),
+                       ("AnchorDimPreflight", "dim_preflight"),
                        ("AnchorConSuccess", "con_success"), ("AnchorSuccess", "success"),
                        ("AnchorDimRetained", "success")):
         write("sketch_create", {"name": key, "plane": "xy"})
@@ -1859,6 +1891,11 @@ def _anchor_retention_rows():
 
         def arguments(c, key=key):
             line, control, circle = _ctx_get(c, key + "_ids", "current anchor ids")
+            if key == "AnchorDimPreflight":
+                return {"sketch_name": key, "dimensions": [
+                    {"dim_type": "radius", "entity_one": circle, "value": "5 mm"},
+                    {"dim_type": "radius", "entity_one": "circle:99", "value": "6 mm"},
+                    {"dim_type": "radius", "entity_one": circle, "value": "7 mm"}]}
             if key == "AnchorGeometry":
                 return {"sketch_name": key, "geometry": [
                     {"kind": "circle", "cx": 40, "cy": 40, "radius": 3},
@@ -1892,8 +1929,21 @@ def _anchor_retention_rows():
 
         tool = ("sketch_add_geometry" if stage == "geometry" else "sketch_constrain"
                 if key in ("AnchorSurface", "AnchorConKind", "AnchorConSolver", "AnchorMixed", "AnchorConSuccess") else "sketch_dimension")
-        verdict = (_anchor_partial(stage == "geometry", stage == "dim_mixed") if stage in ("mixed", "dim_mixed", "geometry")
-                   else _anchor_retained if key == "AnchorDimRetained"
+        def dim_preflight(p):
+            return _measured("dimension preflight keeps only the completed prefix", p,
+                             p.get("dimensioned") == 1 and p.get("requested") == 3
+                             and [r.get("index") for r in p.get("results", [])] == [0]
+                             and p.get("failed", {}).get("index") == 1 and p.get("not_attempted") == 1
+                             and p.get("failed_entry_counts", {}).get("change") == {
+                                 "curves": 0, "points": 0, "constraints": 0, "dimensions": 0}
+                             and "circle:99" in p["failed"]["error"]
+                             and "Counts do not establish unchanged geometry" not in p.get("note", "")
+                             and "retained" not in p)
+
+        verdict = (_SketchBatchRefusal(_anchor_partial(stage == "geometry", stage == "dim_mixed"))
+                   if stage in ("mixed", "dim_mixed", "geometry")
+                   else _SketchBatchRefusal(dim_preflight) if stage == "dim_preflight"
+                   else _SketchBatchRefusal(_anchor_retained) if key == "AnchorDimRetained"
                    else "ok" if stage in ("success", "con_success")
                    else _refused("The midpoint anchor(s) it made were deleted", "points=+0, constraints=+0")
                    if stage == "solver"
@@ -1976,13 +2026,14 @@ def _failed_entry_evidence_rows():
 
         verdict = {
             # An input refusal decided before any write carries the counts but no guidance.
-            "EvidenceRefusal": partial(key, "Could not resolve entity_one 'line:99'", False),
+            "EvidenceRefusal": _SketchBatchRefusal(partial(key, "Could not resolve entity_one 'line:99'", False)),
             # A write the API refuses (addHorizontal takes a SketchLine) keeps the guidance.
-            "EvidenceWrite": partial(key, "Could not apply horizontal", True),
+            "EvidenceWrite": _SketchBatchRefusal(partial(key, "Could not apply horizontal", True)),
             # A raise inside one entry is that entry's failure, with the landed entry listed.
-            "EvidenceRaise": lambda p, key=key: partial(key, "The entry raised:", True)(p)
-                             and p.get("retained") is None
-                             and "'int' object has no attribute 'strip'" in p["failed"]["error"],
+            "EvidenceRaise": _SketchBatchRefusal(
+                lambda p, key=key: partial(key, "The entry raised:", True)(p)
+                and p.get("retained") is None
+                and "'int' object has no attribute 'strip'" in p["failed"]["error"]),
             # The midpoint anchor the failed entry minted is deleted, proven by the counts.
             "EvidenceRetire": _refused("The midpoint anchor(s) it made were deleted",
                                        "points=+0, constraints=+0"),
@@ -2005,6 +2056,220 @@ def _failed_entry_evidence_rows():
 
 
 _SKETCHWORK += _failed_entry_evidence_rows()
+
+
+def _partial_witness_home(p):
+    """Preserve the complete open-document census and return the active home handle."""
+    active = p.get("active") or {}
+    docs = p.get("open_documents")
+    good = (bool(active.get("name")) and isinstance(active.get("document_handle"), str)
+            and active["document_handle"].startswith("session:")
+            and p.get("truncated") is False and type(p.get("open_count")) is int
+            and isinstance(docs, list) and len(docs) == p.get("open_count")
+            and sum(bool(r.get("is_active")) for r in docs) == 1
+            and next((r.get("document_handle") for r in docs if r.get("is_active")), None)
+            == active["document_handle"])
+    if not good:
+        return _measured("complete home document census", p, False)
+    census = {"active": active["document_handle"], "open_count": p["open_count"],
+              "open_documents": docs}
+    if not _measured("complete home document census", census, True):
+        raise AssertionError("home document census was incomplete")
+    _RECALL["partial_witness_home_census"] = census
+    return active["document_handle"]
+
+
+def _partial_witness_home_restored(p):
+    """Check the complete original home census after closing the scratch document."""
+    active = p.get("active") or {}
+    docs = p.get("open_documents")
+    if not (isinstance(docs, list) and p.get("truncated") is False
+            and type(p.get("open_count")) is int and len(docs) == p.get("open_count")):
+        return _measured("complete home document census", p, False)
+    census = {"active": (active.get("document_handle")), "open_count": p["open_count"],
+              "open_documents": docs}
+    return _measured("complete home document census", census,
+                     census == _RECALL.get("partial_witness_home_census"))
+
+
+def _partial_witness_ids(p):
+    """Acquire line identities from the four requested endpoint pairs."""
+    lines = [e for e in p.get("entities", []) if e.get("type") == "line"]
+    endpoints = {
+        "guides": (([0.0, 30.0], [20.0, 30.0]), ([0.0, 40.0], [20.0, 40.0])),
+        "horizontal": (([25.0, 30.0], [35.0, 32.0]),),
+        "vertical": (([25.0, 40.0], [35.0, 42.0]),)}
+    selected = {}
+    for name, pairs in endpoints.items():
+        for pair in pairs:
+            wanted = sorted(pair)
+            hits = [e for e in lines if sorted([[e.get(k, {}).get(a) for a in "xy"]
+                                                for k in ("start", "end")]) == wanted]
+            if len(hits) != 1:
+                return _measured("unique endpoint-selected witness lines", lines, False)
+            selected.setdefault(name, []).append(hits[0].get("id"))
+    good = (p.get("sketch") == "PartialWitness" and p.get("units") == "mm"
+            and p.get("truncated") is False and p.get("counts", {}).get("lines") == 4
+            and p.get("counts", {}).get("points") == 9 and len(lines) == 4
+            and all(isinstance(i, str) and i for group in selected.values() for i in group)
+            and len({i for group in selected.values() for i in group}) == 4)
+    if good:
+        _RECALL["partial_witness_line_ids"] = {
+            "guide0": selected["guides"][0], "guide1": selected["guides"][1],
+            "horizontal": selected["horizontal"][0], "vertical": selected["vertical"][0]}
+    return _measured("endpoint-selected four-line witness", selected, good)
+
+
+def _partial_witness_state(stage):
+    """Check the construction guides, batch prefix, and independently read sketch state."""
+    def check(p):
+        ids = _RECALL.get("partial_witness_line_ids", {})
+        entities = p.get("entities")
+        counts = p.get("counts") or {}
+        lines = {e.get("id"): e for e in entities or [] if e.get("type") == "line"}
+        wanted_ids = {ids.get(k) for k in ("guide0", "guide1", "horizontal", "vertical")}
+        baseline = _RECALL.get("partial_witness_before")
+        valid = (p.get("sketch") == "PartialWitness" and p.get("units") == "mm"
+                 and p.get("truncated") is False and p.get("compute_deferred") is not True
+                 and p.get("profiles_stale") is not True and p.get("timeline_marker_unrestored") is not True
+                 and counts.get("lines") == 4 and counts.get("points") == 9
+                 and all(counts.get(k) == 0 for k in
+                         ("arcs", "circles", "ellipses", "elliptical_arcs", "conics", "splines",
+                          "cv_splines", "fixed_splines", "texts"))
+                 and len(entities or []) == sum(counts.values()) == 13
+                 and len(lines) == 4 and set(lines) == wanted_ids
+                 and p.get("constraint_count") == len(p.get("constraints") or [])
+                 and p.get("dimension_count") == p.get("profile_count") == 0
+                 and p.get("dimensions") == [] and p.get("profiles") == [])
+        flags = ("construction", "fixed", "reference", "linked")
+        for key in ("guide0", "guide1", "horizontal", "vertical"):
+            line = lines.get(ids.get(key)) or {}
+            if any(type(line.get(f)) is not bool for f in flags):
+                valid = False
+        if stage == "select":
+            valid = (valid and all(lines[ids[k]].get("construction") is True
+                                   for k in ("guide0", "guide1"))
+                     and all(lines[ids[k]].get("fixed") is False
+                             for k in ("guide0", "guide1")))
+            return _measured("construction guide identities before fixing", lines, valid)
+        if stage == "before":
+            valid = (valid and all(lines[ids[k]].get("construction") is True
+                                   and lines[ids[k]].get("fixed") is True
+                                   for k in ("guide0", "guide1"))
+                     and all(lines[ids[k]].get("construction") is False
+                             and lines[ids[k]].get("fixed") is False
+                             for k in ("horizontal", "vertical"))
+                     and p.get("constraints") == [])
+            if valid:
+                facts = {"counts": counts, "frame": p.get("frame"),
+                         "is_fully_constrained": p.get("is_fully_constrained"),
+                         "entities": [{k: v for k, v in e.items() if k != "handle"}
+                                      for e in entities]}
+                _RECALL["partial_witness_before"] = facts
+            return _measured("fixed construction guides before partial batch", lines, valid)
+        old = baseline or {}
+        prior = {e.get("id"): e for e in old.get("entities", [])}
+        constraints = [{"type": "horizontal", "entities": [ids["horizontal"]]}]
+        unchanged_lines = all(
+            lines[ids[k]].get(f) == prior.get(ids[k], {}).get(f)
+            for k in ("guide0", "guide1", "vertical") for f in ("start", "end", *flags))
+        flags_unchanged = all(
+            lines[ids[k]].get(f) == prior.get(ids[k], {}).get(f)
+            for k in ("guide0", "guide1", "horizontal", "vertical") for f in flags)
+        horizontal = lines.get(ids.get("horizontal"), {})
+        start, end = horizontal.get("start") or {}, horizontal.get("end") or {}
+        good = (valid and bool(old) and unchanged_lines and flags_unchanged
+                and p.get("constraint_count") == 1 and p.get("constraints") == constraints
+                and start.get("x") != end.get("x") and _near(start.get("y"), end.get("y"), .001)
+                and all(e.get("id") in prior for e in entities))
+        return _measured("one horizontal prefix and unchanged independent witness", {
+            "counts": counts, "lines": [{k: v for k, v in e.items() if k != "handle"}
+                                         for e in lines.values()],
+            "constraints": p.get("constraints"), "point_count": counts.get("points")}, good)
+    return check
+
+
+def _partial_witness_rows():
+    """Reproduce the cold three-entry partial failure on an owned four-line scratch sketch."""
+    rows = [("doc_get", {}, _home_document, ("partial_witness_home", _partial_witness_home)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "partial_witness_home", "home")},
+             _new_document, ("partial_witness_doc", lambda p: p["document_handle"])),
+            ("sketch_create", lambda c: {"name": "PartialWitness", "plane": "xy",
+                                          "expect_document": _ctx_get(c, "partial_witness_doc", "scratch")},
+             "ok", None),
+            ("sketch_add_geometry", lambda c: {"sketch_name": "PartialWitness", "units": "mm",
+                "geometry": [{"kind": "line", "x1": 0, "y1": 30, "x2": 20, "y2": 30,
+                              "is_construction": True},
+                             {"kind": "line", "x1": 0, "y1": 40, "x2": 20, "y2": 40,
+                              "is_construction": True},
+                             {"kind": "line", "x1": 25, "y1": 30, "x2": 35, "y2": 32},
+                             {"kind": "line", "x1": 25, "y1": 40, "x2": 35, "y2": 42}],
+                "expect_document": _ctx_get(c, "partial_witness_doc", "scratch")}, "ok", None),
+            ("sketch_get", {"sketch_name": "PartialWitness", "include_entities": True,
+                            "max_results": 200, "units": "mm"},
+             _partial_witness_ids, None),
+            ("sketch_get", {"sketch_name": "PartialWitness", "include_entities": True,
+                            "max_results": 200, "units": "mm"},
+             _partial_witness_state("select"), None)]
+
+    def guide_fix(c):
+        ids = _RECALL.get("partial_witness_line_ids", {})
+        return {"sketch_name": "PartialWitness", "units": "mm", "constraints": [
+            {"constraint": "fix", "entity_one": ids.get("guide0")},
+            {"constraint": "fix", "entity_one": ids.get("guide1")}],
+            "expect_document": _ctx_get(c, "partial_witness_doc", "scratch")}
+
+    rows += [("sketch_constrain", guide_fix, "ok", None),
+             ("sketch_get", {"sketch_name": "PartialWitness", "include_entities": True,
+                             "max_results": 200, "units": "mm"},
+              _partial_witness_state("before"), None),
+             ("design_get", {"include": ["default", "timeline"], "max_results": 200},
+              _anchor_history("partial_witness", True), None)]
+
+    def batch_args(c):
+        ids = _RECALL.get("partial_witness_line_ids", {})
+        return {"sketch_name": "PartialWitness", "units": "mm", "constraints": [
+            {"constraint": "horizontal", "entity_one": ids["horizontal"]},
+            {"constraint": "coincident", "entity_one": ids["guide0"] + ":mid",
+             "entity_two": ids["guide1"]},
+            {"constraint": "vertical", "entity_one": ids["vertical"]}],
+            "expect_document": _ctx_get(c, "partial_witness_doc", "scratch")}
+
+    def failed_batch(p):
+        failed = p.get("failed") or {}
+        change = (p.get("failed_entry_counts") or {}).get("change") or {}
+        landed = p.get("results") or []
+        error = str(failed.get("error", ""))
+        note = str(p.get("note", ""))
+        return _measured("cold native partial witness payload", p,
+                         p.get("constrained") == 1 and p.get("requested") == 3
+                         and [r.get("index") for r in landed] == [0]
+                         and landed[0].get("applied") == "horizontal"
+                         and landed[0].get("entity_one") == _RECALL["partial_witness_line_ids"]["horizontal"]
+                         and failed.get("index") == 1 and p.get("not_attempted") == 1
+                         and change == {"curves": 0, "points": 0, "constraints": 0, "dimensions": 0}
+                         and "The midpoint anchor(s) it made were deleted" in note
+                         and "Could not apply coincident" in error
+                         and "retained" not in p)
+
+    rows.append(("sketch_constrain", batch_args, _SketchBatchRefusal(failed_batch), None))
+    rows += [("sketch_get", {"sketch_name": "PartialWitness", "include_entities": True,
+                             "max_results": 200, "units": "mm"},
+              _partial_witness_state("after"), None),
+             ("design_get", {"include": ["default", "timeline"], "max_results": 200},
+              _anchor_history("partial_witness", False), None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "partial_witness_home", "home"),
+                                         "expect_document": _ctx_get(c, "partial_witness_doc", "scratch")},
+              _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "partial_witness_doc", "scratch"),
+                                      "save_changes": False,
+                                      "expect_document": _ctx_get(c, "partial_witness_home", "home")},
+              _document_closed, None),
+             ("doc_get", {}, _partial_witness_home_restored, None)]
+    return rows
+
+
+_SKETCHWORK += _partial_witness_rows()
 
 
 

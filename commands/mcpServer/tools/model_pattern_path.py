@@ -80,7 +80,8 @@ def handler(occurrences: str = "", bodies=None, path=None, quantity: int = 2, di
 
     # The path and the feature must share the component that owns the patterned entities.
     owner = _owning_component(design, coll, bodies)
-    pattern_path, path_label, patherr = build_path(owner, path)
+    left_out = []
+    pattern_path, path_label, patherr = build_path(owner, path, left_out=left_out)
     if patherr:
         return error(patherr)
 
@@ -117,6 +118,11 @@ def handler(occurrences: str = "", bodies=None, path=None, quantity: int = 2, di
     real_total = safe(lambda: feature.patternElements.count)
     note = ("Instances placed along the path. Copies keep the seed's orientation; they do not "
             "rotate to follow the path. Pair with view_screenshot to view.")
+    warning = _common.path_chain_warning(
+        safe(lambda: pattern_path.count), _common.path_sketch_curve_count(owner, path),
+        "pattern", left_out)
+    if warning:
+        note += " " + warning
     if real_total is None:
         note += (" 'quantity' could NOT be read back off the created feature, so it is reported as "
                  "null rather than as the count requested - confirm in Fusion, or with design_get.")

@@ -340,15 +340,6 @@ _TOLERANCE_TYPES = ("symmetric", "deviation", "limits", "limits_linear", "max", 
                     "fits_stacked", "fits_linear", "fits_size_limits", "fits_tolerance")
 
 
-def _finite(v):
-    """float(v) for a finite non-bool number or numeric string; else None."""
-    try:
-        f = None if isinstance(v, bool) else float(v)
-    except (TypeError, ValueError):
-        return None
-    return f if f is not None and math.isfinite(f) else None
-
-
 def _tolerance_spec_error(spec):
     """build_tolerance's refusal for a spec, decided without building anything; else None."""
     if not isinstance(spec, dict) or not spec.get("type"):
@@ -359,7 +350,7 @@ def _tolerance_spec_error(spec):
         return (f"Unknown tolerance type '{t}'. Use symmetric, deviation, limits, "
                 "limits_linear, max, min, or fits_stacked/linear/size_limits/tolerance.")
     for key in ("value", "upper", "lower", "min", "max", "size"):
-        if spec.get(key) is not None and _finite(spec[key]) is None:
+        if spec.get(key) is not None and _common.finite_number(spec[key], text=True) is None:
             return f"Tolerance '{t}' needs a number for '{key}', got {spec[key]!a}."
     return None
 
@@ -667,10 +658,11 @@ def _value_spec(key, spec):
     num = spec.get("value") if isinstance(spec, dict) else spec
     tol_spec = spec.get("tolerance") if isinstance(spec, dict) else None
     if num is not None:
-        if _finite(num) is None:
+        number = _common.finite_number(num, text=True)
+        if number is None:
             return None, (f"'{key}' must be a number (in 'units'"
                           + (", degrees" if angle else "") + f"), got {num!a}.")
-        num = _finite(num)
+        num = number
     # The unit an angle BOUND is stored in is not measured, and the two candidates differ by
     # 57x, so this tool writes no angle tolerance at all rather than a possibly wrong one.
     if tol_spec is not None and angle:

@@ -415,9 +415,19 @@ class TestToolsCallBooleanValidation:
         result = _call(server, "boolean_probe", {"flag": value})["result"]
         assert result["isError"] is True and calls == []
         assert "'flag'" in result["message"] and ascii(value) in result["message"]
-        assert "Use true or false." in result["message"]
+        expected = "Omit this optional key" if value is None else "Use true or false."
+        assert expected in result["message"]
         assert result["message"].isascii()
         assert result["content"][0]["text"] == result["message"]
+
+    @pytest.mark.parametrize("required", [False, True])
+    def test_nested_null_remedy_only_offers_omission_for_optional_key(self, server, boolean_tool, required):
+        calls = boolean_tool({"shape": {"type": "object", "properties": {
+            "enabled": {"type": "boolean"}}, "required": ["enabled"] if required else []}})
+        result = _call(server, "boolean_probe", {"shape": {"enabled": None}})["result"]
+        assert result["isError"] is True and calls == []
+        assert "shape.enabled" in result["message"]
+        assert ("Omit this optional key" in result["message"]) is (not required)
 
     def test_real_booleans_and_omission_reach_handler_unchanged(self, server, boolean_tool):
         calls = boolean_tool({"flag": {"type": "boolean"}})

@@ -308,7 +308,7 @@
           "section": "model",
           "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "machining_job", "parametric_family", "simple_part"],
           "when": "the part is sheet metal",
-          "do": "read sheet_get for rules and sheet state; use sheet_create_flange for a base or edge flange, or sheet_convert for an existing uniform solid. Create the developed blank with sheet_create_flat_pattern and export it with design_export",
+          "do": "read sheet_get for rules and sheet state; use sheet_create_flange for a base or edge flange, or sheet_convert for an existing uniform solid. sheet_create_flat_pattern creates a native flat, not verified development; inspect sheet_get(include=['features']) and the design_export cutting contours before fabrication",
           "except": "a reference envelope with no fabrication claim",
           "prove": [{"tool": "sheet_get", "observe": "the applied rule, sheet bodies and flat-pattern state"}, {"tool": "model_inspect", "observe": "the formed part's intended envelope"}]
         },

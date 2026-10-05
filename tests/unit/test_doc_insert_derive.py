@@ -550,6 +550,40 @@ class TestReadBackHonesty:
         res = io.handler(document_id="urn:x")
         assert res["isError"] is True and "nothing landed" in res["message"]
 
+    def test_an_unread_body_count_is_unknown_not_nothing_landed(self, monkeypatch):
+        derive_features = FakeDeriveFeatures(bodies=())
+        _, comp, *_ = _install(monkeypatch, derive_features=derive_features, occurrences=[])
+        comp.bRepBodies = _NamedCollection(raises="stale")
+        msg = io.handler(document_id="urn:x")["message"]
+        assert "whether bodies appeared is unknown: a body count did not read" in msg
+        assert "nothing landed" not in msg
+
+    @pytest.mark.parametrize("failure", ["collection", "count", "item"])
+    def test_an_unread_component_census_does_not_publish_zero_landed_bodies(self, monkeypatch, failure):
+        design, *_ = _install(monkeypatch)
+        if failure == "collection":
+            def unread_collection(_self):
+                raise RuntimeError("allComponents did not read")
+            monkeypatch.setattr(type(design), "allComponents", property(unread_collection))
+        else:
+            class UnreadCount:
+                @property
+                def count(self):
+                    raise RuntimeError("allComponents.count did not read")
+            class UnreadItem:
+                @property
+                def count(self):
+                    return 1
+                def item(self, _index):
+                    raise RuntimeError("allComponents.item did not read")
+            unread = UnreadCount() if failure == "count" else UnreadItem()
+            monkeypatch.setattr(type(design), "allComponents", property(lambda _self: unread))
+
+        out = _payload(io.handler(document_id="urn:x"))
+
+        assert out["bodies_landed"] is None
+        assert out["derived_bodies"] == [{"name": "Body1", "is_derived": True}]
+
     def test_geometry_without_derived_marker_is_an_error(self, monkeypatch):
         # bodies appear but none report isDerived=true -> the one-way link did not form.
         derive_features = FakeDeriveFeatures(bodies=[("Body1", False)])

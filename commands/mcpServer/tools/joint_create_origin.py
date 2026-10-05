@@ -391,12 +391,15 @@ def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
     "third_axis_Y": _vec(safe(lambda: jo_input.thirdAxisVector)),
     }
 
+    helper_left = (" The hidden helper sketch this call drew for the bbox_center anchor was not "
+                   "removed; design_get(include=['timeline']) lists it."
+                   if anchor == "bbox_center" else "")
     try:
         joint_origin = comp.jointOrigins.add(jo_input)
     except Exception as e:
-        return error(f"Joint origin creation failed: {e}")
+        return error(f"Joint origin creation failed: {e}" + helper_left)
     if not joint_origin:
-        return error("jointOrigins.add returned nothing.")
+        return error("jointOrigins.add returned nothing." + helper_left)
 
     # Set-then-verify the LANDING: which component the origin actually belongs to is read back off the
     # created JO, never assumed from the collection it was added to. A JO on the wrong component cannot
@@ -410,9 +413,9 @@ def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
     landed_here = (_common.same_component(landed_comp, comp) if landed_comp is not None else None)
     if landed_here is False:
         got_name = landed_name or "?"
-        safe(lambda: joint_origin.deleteMe())
         return error(f"Joint origin landed on component '{got_name}', not the requested "
-                     f"'{want_name}'. Rolled it back; nothing changed.")
+                     f"'{want_name}'. " + _common.delete_failed_feature(design, joint_origin)[1]
+                     + helper_left)
 
     jo_name_final, rename_warning = apply_rename(joint_origin, name)
 
@@ -426,11 +429,11 @@ def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
         if None not in got:
             dist = ((got[0] - ox) ** 2 + (got[1] - oy) ** 2 + (got[2] - oz) ** 2) ** 0.5
             if dist > 1e-3:                        # > 0.001 cm: the offsets did not take
-                safe(lambda: joint_origin.deleteMe())
                 return error(
                     f"Coordinate offsets did not take: asked "
                     f"{[round(v, 4) for v in (ox, oy, oz)]} cm but the joint origin reports "
-                    f"{[round(v, 4) for v in got]} cm. Rolled the origin back; nothing changed.")
+                    f"{[round(v, 4) for v in got]} cm. "
+                    + _common.delete_failed_feature(design, joint_origin)[1])
             inv = (1.0 / scale) if scale else 1.0
             offset_params = {"x": round(got[0] * inv, 6), "y": round(got[1] * inv, 6),
                              "z": round(got[2] * inv, 6), "units": units}
@@ -465,10 +468,10 @@ def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
                             "z": round(oz * inv, 6), "units": units}
                 dist = ((ox - cx) ** 2 + (oy - cy) ** 2 + (oz - cz) ** 2) ** 0.5
                 if dist > 1e-3:   # > 0.001 cm (0.01 mm): the origin did NOT land on the computed anchor
-                    safe(lambda: joint_origin.deleteMe())
                     return error(
                         f"Joint origin landed at {readback} but the computed anchor was {computed} "
-                        f"(off by {round(dist, 4)} cm). Rolled the origin back; nothing changed.")
+                        f"(off by {round(dist, 4)} cm). "
+                        + _common.delete_failed_feature(design, joint_origin)[1] + helper_left)
 
     payload = {
     "created": True,

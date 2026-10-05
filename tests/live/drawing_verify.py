@@ -253,14 +253,11 @@ def run():
          lambda p: p.get("added") is True and p.get("sheet_count") == p.get("sheet_count_before") + 1,
          None),
         # the second add runs on a drawing that ALREADY holds two sheets, so this is where the
-        # listing has to be read: 'sheets' comes back 1-based and contiguous - the numbering
-        # drawing_export's sheet_range takes, obtainable nowhere else - with the new sheet directly
-        # after the one that was active (the previous add left that one last, so here the position
-        # after the active is also the last index).
+        # listing has to be read: collection_index is 1-based and contiguous; export order is unknown.
         ("drawing_edit_sheet", {"action": "add", "new_name": "SweepSheetA"},
          lambda p: p.get("sheet") == "SweepSheetA" and p.get("sheet_count_before", 0) >= 2
-         and [s["export_index"] for s in p["sheets"]] == list(range(1, len(p["sheets"]) + 1))
-         and next(s["export_index"] for s in p["sheets"] if s["name"] == "SweepSheetA")
+         and [s["collection_index"] for s in p["sheets"]] == list(range(1, len(p["sheets"]) + 1))
+         and next(s["collection_index"] for s in p["sheets"] if s["name"] == "SweepSheetA")
          == p["sheet_count_before"] + 1, None),
         ("drawing_edit_sheet", {"action": "add", "new_name": "SweepDup"},
          lambda p: p.get("sheet") == "SweepDup", None),
@@ -357,17 +354,17 @@ def run():
 
 def get_only():
     """READ-ONLY drawing_get beats against whatever drawing is ACTIVE - no staging, nothing
-    written. The read tool's live verification: sheets listed by export_index, per-view rows,
+    written. The read tool's live verification: sheets listed by collection_index, per-view rows,
     the one-sheet scope, and the miss refusal naming the available sheets."""
     health_gate()
     ctx = {}
     steps = [
         ("drawing_get", {}, "ok",
          ("sheet_names", lambda p: [s.get("name") for s in (p.get("sheets") or []) if s])),
-        # the payload's own shape claims: contiguous 1-based export indices, exactly one active
+        # the payload's own shape claims: contiguous 1-based collection indices, exactly one active
         ("drawing_get", {}, lambda p: isinstance(p.get("sheet_count"), int), None),
         ("drawing_get", {}, lambda p: (
-            [s.get("export_index") for s in p.get("sheets") or []]
+            [s.get("collection_index") for s in p.get("sheets") or []]
             == list(range(1, len(p.get("sheets") or []) + 1))), None),
         ("drawing_get", {}, lambda p: (
             sum(1 for s in p.get("sheets") or [] if s.get("is_active")) == 1), None),

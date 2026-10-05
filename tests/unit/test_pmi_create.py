@@ -276,7 +276,9 @@ class TestCreate:
         ({"values": {"diameter": {"value": 6, "tolerance": {"type": "deviation", "upper": "nan"}}}},
          "Tolerance 'deviation' needs a number for 'upper', got 'nan'."),
         ({"values": {"depth": "deep"}}, "'depth' must be a number"),
-        ({"values": {"depth": True}}, "'depth' must be a number (in 'units'), got True.")])
+        ({"values": {"depth": True}}, "'depth' must be a number (in 'units'), got True."),
+        ({"values": {"depth": float("nan")}}, "'depth' must be a number (in 'units'), got nan."),
+        ({"values": {"depth": float("inf")}}, "'depth' must be a number (in 'units'), got inf.")])
     def test_a_bad_display_or_value_is_refused_before_the_note_is_created(self, rig, extra,
                                                                           fragment):
         rig.stub_geometry([_face(rig.comp)])

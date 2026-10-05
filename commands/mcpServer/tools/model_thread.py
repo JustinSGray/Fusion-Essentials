@@ -96,10 +96,8 @@ def _radius_after(body, before, internal):
         frame = _cylinder_frame(f)
         if frame is None:
             return None
-        gap = [b - a for a, b in zip(before[2], frame[2])]
-        off = _geom.cross(before[1], gap)
-        if (abs(abs(_geom.dot(before[1], frame[1])) - 1) > 1e-7
-                or _geom.dot(off, off) > 1e-10):
+        if not _geom.coaxial(before[2], before[1], frame[2], frame[1],
+                             axis_dot_tol=1e-7, offset_squared_tol=1e-10):
             continue
         side = _face_is_internal(f)
         if side is None:

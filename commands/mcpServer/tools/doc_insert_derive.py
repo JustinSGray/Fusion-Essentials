@@ -186,6 +186,24 @@ def _collect_source_entities(source_design, component_names, body_names):
 # ── read-back: what ACTUALLY landed. feature.bodies is EMPTY for an occurrence-tree derive (the
 # content lands nested under a derived occurrence), so bodies are counted off those occurrences too ──
 
+def _body_total(design):
+    """Complete design BRep-body total, or None when any census read fails."""
+    components = safe(lambda: design.allComponents)
+    total = _common.counted(lambda: components.count) if components is not None else None
+    if total is None or total < 0:
+        return None
+    body_total = 0
+    for i in range(total):
+        component = safe(lambda i=i: components.item(i))
+        if component is None:
+            return None
+        count = _common.counted(lambda component=component: component.bRepBodies.count)
+        if count is None or count < 0:
+            return None
+        body_total += count
+    return body_total
+
+
 def _occurrence_tokens(comp):
     """entityToken of every occurrence directly in `comp` right now - a before/after snapshot so a
     NEW derived occurrence can be told apart from one that was already there."""
@@ -357,7 +375,7 @@ def handler(document_id: str = "", into_component: str = "",
     # and it lands at DESIGN level rather than on the derived component - so the count that sees it
     # is a design-wide before/after delta.
     before_all_params = _common.counted(lambda: design.allParameters.count)
-    before_bodies, _ = _common.design_wide_counts(design)
+    before_bodies = _body_total(design)
     before_occ_tokens = _occurrence_tokens(comp)
     root = safe(lambda: design.rootComponent)
     # same_component, not `is`: component wrappers are never identity-stable, so `comp is not root`
@@ -401,13 +419,15 @@ def handler(document_id: str = "", into_component: str = "",
     health = safe(lambda: feature.healthState)
     if health == _ERROR_HEALTH:
         msg = safe(lambda: feature.errorOrWarningMessage) or "(no message)"
-        return error(f"Derive was created but FAILED to compute: {msg}")
+        return error(f"Derive was created but FAILED to compute: {msg}. "
+                     + _common.failed_effect_remedy(design, feature))
 
     doc_ref = safe(lambda: feature.documentReference)
     out_of_date = safe(lambda: doc_ref.isOutOfDate) if doc_ref is not None else None
     if out_of_date:
         return error("Derive was created but its documentReference reads isOutOfDate=true "
-                      "immediately at creation - the link did not land against the resolved version.")
+                      "immediately at creation - the link did not land against the resolved version. "
+                     + _common.failed_effect_remedy(design, feature))
 
     # A named-body derive can leave feature.bodies empty; its source mapping identifies the result.
     direct_bodies = [{"name": safe(lambda b=b: b.name),
@@ -421,10 +441,10 @@ def handler(document_id: str = "", into_component: str = "",
                                   or reference_id != source_id):
             mapping_error = "the mapped bodies' current source document reference did not read"
         if mapping_error:
-            feature_name = safe(lambda: feature.name) or "(name unreadable)"
+            feature_name = _common.feature_address(feature) or "(name unreadable)"
             return error(f"Derive feature '{feature_name}' remains, but {mapping_error}. "
-                         "Inspect design_get(include=['tree','timeline'], tree_bodies=true); "
-                         "use design_delete_feature with its current feature address if unwanted.")
+                         "Inspect design_get(include=['tree','timeline'], tree_bodies=true). "
+                         + _common.failed_effect_remedy(design, feature))
     derived_components = _new_derived_occurrences(comp, before_occ_tokens)
     # `is False` only: the net's error says the nesting FAILED, and run against a target that may
     # itself be the root a successful root derive would trip it. An unproven answer skips the net and
@@ -442,19 +462,26 @@ def handler(document_id: str = "", into_component: str = "",
         if strays:
             names = _names([s.get("name") for s in strays])
             return error(f"Derive landed at the ROOT component ({names}), not in {comp_desc} - "
-                         "the target activation did not take, so the nesting failed. The derive "
-                         "EXISTS at root: delete its feature (design_delete_feature) and retry, "
-                         "or keep it and move on.")
-    after_bodies, _ = _common.design_wide_counts(design)
-    bodies_landed = max(0, after_bodies - before_bodies)
+                         "the target activation did not take, so the nesting failed. Retry after "
+                         "removing it, or keep it and move on. "
+                         + _common.failed_effect_remedy(design, feature))
+    after_bodies = _body_total(design)
+    bodies_landed = (None if before_bodies is None or after_bodies is None
+                     else max(0, after_bodies - before_bodies))
     any_derived_marker = (any(b["is_derived"] is True for b in direct_bodies) or bool(derived_components))
 
+    if bodies_landed is None and not direct_bodies and not derived_components:
+        return error("Derive created a feature, but whether bodies appeared is unknown: a body "
+                     "count did not read, and no new derived occurrence appeared. "
+                     + _common.failed_effect_remedy(design, feature))
     if bodies_landed == 0 and not direct_bodies and not derived_components:
         return error("Derive created a feature but nothing landed - no bodies appeared and no new "
-                      "derived occurrence. The link may not have resolved; check the source scope.")
+                      "derived occurrence. The link may not have resolved; check the source scope. "
+                     + _common.failed_effect_remedy(design, feature))
     if not any_derived_marker:
         return error("Derive created a feature and geometry appeared, but nothing reports "
-                      "isDerived=true - the one-way link may not have formed correctly.")
+                      "isDerived=true - the one-way link may not have formed correctly. "
+                     + _common.failed_effect_remedy(design, feature))
 
     after_params = safe(lambda: design.userParameters.count, 0) or 0
     parameters_imported = max(0, after_params - before_params)

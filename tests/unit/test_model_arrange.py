@@ -1007,7 +1007,8 @@ class TestActiveComponentPreflight:
         af.add = _boom
         res = ar.handler(boundary_sketch="Boundary", shapes="A:1")
         assert res["isError"] is True
-        assert res["message"] == "Arrange failed: 3 :"
+        assert res["message"] == ("Arrange failed: 3 : Not measured whether this raise leaves an "
+                                  "arrange feature; re-read with design_get(include=['timeline']).")
 
 
 class TestHonesty:

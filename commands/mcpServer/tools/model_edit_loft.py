@@ -1,7 +1,7 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Retarget or remove one interior profile section of a simple solid Loft."""
+"""Retarget or remove one interior profile section of a simple solid Loft, or reorder a surface Loft's sections."""
 
 import hashlib
 import math
@@ -23,7 +23,7 @@ from ._common import counted, error, ok, outcome_clause, safe
 
 
 _FEATURE = _inputs.FeatureRef("feature", required=True)
-_ACTION = _inputs.Choice("action", ("retarget", "remove"), required=True)
+_ACTION = _inputs.Choice("action", ("retarget", "remove", "reorder"), required=True)
 _PROFILE = _inputs.ProfileRef("profile", scope_input="component")
 _SPEC = [_FEATURE, _ACTION]
 _UNREAD = object()
@@ -179,15 +179,209 @@ def _operand_error(profile, component, index):
     return None
 
 
+def _evaluated(design, entity, where, health_before, census):
+    """Marker, row, health and body evidence read after an edit attempt, the marker restored."""
+    marker, index, token, count = where
+    before_shapes, after_shapes, target_before, target_after = census
+    timeline = safe(lambda: design.timeline)
+    restored = counted(lambda: timeline.markerPosition) == marker
+    state, compute_failure = _assert.compute_state(entity)
+    health_after = _health(design, marker) if restored else None
+    new = {kind: (None if health_after is None else
+                  [name for name in health_after[kind] if name not in health_before[kind]])
+           for kind in ("errors", "warnings")}
+    target_before_shapes = ({key: before_shapes[key]["shape"] for key in target_before}
+                            if before_shapes is not None and target_before is not None
+                            and target_before <= set(before_shapes) else None)
+    target_after_shapes = ({key: after_shapes[key]["shape"] for key in target_after}
+                           if after_shapes is not None and target_after is not None
+                           and target_after <= set(after_shapes) else None)
+    outside = (set(before_shapes) - target_before if before_shapes is not None
+               and target_before is not None else None)
+    return {"restored": restored, "same": _same_feature(design, token, entity, index, count),
+            "state": state, "compute_failure": compute_failure,
+            "new_errors": new["errors"], "new_warnings": new["warnings"],
+            "target_before": target_before_shapes, "target_after": target_after_shapes,
+            "geometry_changed": (None if target_before_shapes is None or target_after_shapes is None
+                                 else sorted(target_before_shapes.values(), key=repr) !=
+                                 sorted(target_after_shapes.values(), key=repr)),
+            "outside_changes": (None if after_shapes is None or target_after is None or outside is None
+                                else [before_shapes[key]["body"] for key in outside
+                                      if key not in after_shapes or after_shapes[key] != before_shapes[key]]
+                                + [after_shapes[key]["body"] for key in set(after_shapes) - set(before_shapes)
+                                   if key not in target_after])}
+
+
+def _missed(ev, matched):
+    """The names of the post-edit checks that did not hold; `matched` is (name, verdict)."""
+    return [name for name, good in (
+        ("marker_restored", ev["restored"]), ("same_feature", ev["same"] is True),
+        (matched[0], matched[1] is True),
+        ("geometry_changed", ev["geometry_changed"] is True),
+        ("outside_body_changes", ev["outside_changes"] == []),
+        ("feature_health", ev["state"] == "healthy"), ("new_timeline_errors", ev["new_errors"] == []),
+        ("new_timeline_warnings", ev["new_warnings"] == [])) if not good]
+
+
+def _reason(failure, ev, missed):
+    """The first sentence of a failed edit: the raised failure, else the first check that failed."""
+    return (failure
+            or ("New evaluated timeline errors or warnings appeared."
+                if ev["new_errors"] or ev["new_warnings"] else "")
+            or ("Material outside the Loft result changed." if ev["outside_changes"] else "")
+            or (sentence(ev["compute_failure"]) if ev["compute_failure"] else "")
+            or f"These checks failed: {', '.join(missed)}.")
+
+
+def _order(feature):
+    """(native section identities, their labels) in Loft order at the current marker, or None."""
+    sections = safe(lambda: feature.loftSections)
+    count = counted(lambda: sections.count)
+    if count is None:
+        return None
+    keys, labels = [], []
+    for i in range(count):
+        entity = safe(lambda i=i: sections.item(i).entity)
+        key = _common.native_identity(entity)
+        if key is None:
+            return None
+        keys.append(key)
+        labels.append(address_text(sketch_address(entity)) or f"section {i}")
+    return tuple(keys), labels
+
+
+def _reorder_scope(design, feature, owner):
+    """The reads that place a Loft outside open, unguided, root-component surface lofts."""
+    root = safe(lambda: design.rootComponent)
+    return [f"{name}={got}" for name, got, want in (
+        ("isSolid", safe(lambda: feature.isSolid), False),
+        ("isClosed", safe(lambda: feature.isClosed), False),
+        ("guide_count", counted(lambda: feature.centerLineOrRails.count), 0),
+        ("in_root_component", _common.same_component(owner, root), True))
+        if (type(got), got) != (type(want), want)]
+
+
+def _reorder(entity, label, section_index, new_index):
+    """Move one Loft section to `new_index` at the Loft's edit position and verify the move."""
+    design = _common.design()
+    timeline = safe(lambda: design.timeline)
+    marker = counted(lambda: timeline.markerPosition)
+    count = counted(lambda: timeline.count)
+    index = counted(lambda: entity.timelineObject.index)
+    token = safe(lambda: entity.entityToken)
+    owner = safe(lambda: entity.parentComponent)
+    if None in (marker, count, index) or not token or owner is None:
+        return error(f"'{label}' has unreadable timeline identity; nothing was edited.")
+    if marker <= index:
+        return error(f"'{label}' is after marker {marker}; roll after it with design_edit_timeline.")
+    health_before = _health(design, marker)
+    if health_before is None:
+        return error(f"'{label}'s evaluated-health census is unreadable; nothing was edited.")
+    failure = returned = before = after = desired = None
+    attempted = False
+    before_shapes = after_shapes = target_before = target_after = None
+    try:
+        if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
+            raise RuntimeError("Fusion refused the Loft edit position.")
+        before = _order(entity)
+        if before is None:
+            raise ValueError("The Loft section order is unreadable at its edit position.")
+        outside = _reorder_scope(design, entity, owner)
+        if outside:
+            raise ValueError(f"It reads {', '.join(outside)}; action='reorder' takes an open, "
+                             "unguided surface Loft in the root component.")
+        total = len(before[0])
+        if section_index >= total or new_index >= total or new_index == section_index:
+            raise ValueError(f"'section_index'={section_index} and 'new_index'={new_index} must be "
+                             f"two different indexes below its {total} sections.")
+        desired = list(before[0])
+        desired.insert(new_index, desired.pop(section_index))
+        timeline.markerPosition = index + 1
+        if counted(lambda: timeline.markerPosition) != index + 1:
+            raise RuntimeError("The original Loft could not be evaluated for a body census.")
+        before_shapes = _all_shapes(design)
+        target_before = _feature_body_keys(entity)
+        if before_shapes is None or not target_before:
+            raise ValueError("The original Loft's body census is unreadable.")
+        if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
+            raise RuntimeError("The Loft could not return to its edit position.")
+        attempted = True
+        returned = entity.loftSections.item(section_index).reorder(new_index)
+        after = _order(entity)
+        if returned is not True:
+            raise RuntimeError(f"LoftSection.reorder({new_index}) returned {returned!r}.")
+        timeline.markerPosition = index + 1
+        if counted(lambda: timeline.markerPosition) != index + 1:
+            raise RuntimeError("The reordered Loft could not be evaluated for a body census.")
+        after_shapes = _all_shapes(design)
+        target_after = _feature_body_keys(entity)
+    except Exception as exc:
+        failure = sentence(exc)
+        if attempted and after is None and counted(lambda: timeline.markerPosition) == index:
+            after = _order(entity)
+    finally:
+        safe(lambda: setattr(timeline, "markerPosition", marker))
+    ev = _evaluated(design, entity, (marker, index, token, count), health_before,
+                    (before_shapes, after_shapes, target_before, target_after))
+    matches = after is not None and desired is not None and list(after[0]) == desired
+    details = {"feature": label, "action": "reorder", "section_index": section_index,
+               "new_index": new_index, "mutation_attempted": attempted, "reorder_returned": returned,
+               "order_before": before[1] if before else None,
+               "order_after": after[1] if after else None, "order_matches": matches,
+               "geometry_changed": ev["geometry_changed"],
+               "target_before": list(ev["target_before"].values()) if ev["target_before"] is not None else None,
+               "target_after": list(ev["target_after"].values()) if ev["target_after"] is not None else None,
+               "outside_body_changes": ev["outside_changes"],
+               "outside_check": "all bodies immediately after the Loft, before downstream features",
+               "same_feature": ev["same"], "marker_before": marker,
+               "marker_after": counted(lambda: timeline.markerPosition),
+               "marker_restored": ev["restored"], "feature_health": ev["state"],
+               "new_timeline_errors": ev["new_errors"], "new_timeline_warnings": ev["new_warnings"],
+               "geometry_frame": "owning_component", "geometry_units": "cm, cm2, cm3"}
+    missed = _missed(ev, ("order_matches", matches))
+    identical = not failure and missed == ["geometry_changed"] and ev["geometry_changed"] is False
+    if not (failure or missed) or identical:
+        details["edited"] = True
+        details["note"] = "Loft sections reordered on the same feature. Inspect model_inspect."
+        return identical_geometry_reply(details) if identical else ok(details)
+    text = _reason(failure, ev, missed)
+    order = lambda read: "unread" if read is None else "[" + ", ".join(read[1]) + "]"
+    if not attempted:
+        text += " Nothing was edited."
+    elif after is None:
+        text += " " + outcome_clause("unconfirmed", f"'{label}'", remedy="model_inspect",
+                                     evidence="the section order did not re-read")
+    elif after[0] == before[0]:
+        text += " " + outcome_clause("unchanged", f"'{label}'", [("the section order", None, order(after))])
+    else:
+        text += " " + outcome_clause(
+            "kept", f"'{label}'", [("the section order", order(after), order(before))],
+            f"Restore it with model_edit_loft(feature='{label}', action='reorder', "
+            f"section_index={new_index}, new_index={section_index})." if matches else "Undo it in Fusion.")
+    now = counted(lambda: timeline.markerPosition)
+    if now != marker:
+        text += f" Also, {_common.marker_clause(marker, now, 'the edit')}."
+    return failed(f"Editing '{label}': {text}", details)
+
+
 def handler(feature: str = "", action: str = "", section_index: int = None,
-            profile=None, component: str = "") -> dict:
-    """Edit one interior Loft section and report definition and evaluated evidence."""
+            profile=None, component: str = "", new_index: int = None) -> dict:
+    """Edit one Loft section and report definition and evaluated evidence."""
     values, refusal = _inputs.resolve_inputs(_SPEC, dict(locals()))
     if refusal:
         return refusal
     action = values["action"]
     if type(section_index) is not int or section_index < 0:
         return error(f"'section_index' must be a nonnegative integer (got {section_index!r}).")
+    if action == "reorder":
+        if type(new_index) is not int or new_index < 0 or profile not in (None, "", []):
+            return error(f"action='reorder' takes a nonnegative integer 'new_index' (got "
+                         f"{new_index!r}) and no 'profile'.")
+        entity, label = values["feature"]
+        refusal = _target_error(entity, label)
+        return error(refusal) if refusal else _reorder(entity, label, section_index, new_index)
+    if new_index is not None:
+        return error(f"'new_index' is unused for action='{action}'; remove it.")
     if action == "retarget" and profile in (None, "", []):
         return error("action='retarget' requires 'profile'.")
     if action == "remove" and profile not in (None, "", []):
@@ -305,54 +499,28 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
                 post_error_read_failure = str(read_exc)
     finally:
         safe(lambda: setattr(timeline, "markerPosition", marker))
-    restored = counted(lambda: timeline.markerPosition) == marker
-    same = _same_feature(design, token, entity, index, count)
-    state, compute_failure = _assert.compute_state(entity)
-    health_after = _health(design, marker) if restored else None
-    new_errors = (None if health_after is None else
-                  [name for name in health_after["errors"] if name not in health_before["errors"]])
-    new_warnings = (None if health_after is None else
-                    [name for name in health_after["warnings"] if name not in health_before["warnings"]])
+    ev = _evaluated(design, entity, (marker, index, token, count), health_before,
+                    (before_shapes, after_shapes, target_before, target_after))
+    geometry_changed, outside_changes = ev["geometry_changed"], ev["outside_changes"]
     definition_matches = (definition_before is not None and definition_after is not None
                           and definition_after["sections"] == desired
                           and all(definition_after[key] == definition_before[key]
                                   for key in definition_before if key != "sections"))
-    target_before_shapes = ({key: before_shapes[key]["shape"] for key in target_before}
-                            if before_shapes is not None and target_before is not None
-                            and target_before <= set(before_shapes) else None)
-    target_after_shapes = ({key: after_shapes[key]["shape"] for key in target_after}
-                           if after_shapes is not None and target_after is not None
-                           and target_after <= set(after_shapes) else None)
-    geometry_changed = (None if target_before_shapes is None or target_after_shapes is None else
-                        sorted(target_before_shapes.values(), key=repr) !=
-                        sorted(target_after_shapes.values(), key=repr))
-    outside = (set(before_shapes) - target_before if before_shapes is not None
-               and target_before is not None else None)
-    outside_changes = (None if after_shapes is None or target_after is None or outside is None else
-                       [before_shapes[key]["body"] for key in outside
-                        if key not in after_shapes or after_shapes[key] != before_shapes[key]]
-                       + [after_shapes[key]["body"] for key in set(after_shapes) - set(before_shapes)
-                          if key not in target_after])
     details = {"feature": label, "action": action, "section_index": section_index,
                "mutation_attempted": attempted, "definition_before": _definition_report(definition_before),
                "definition_after": _definition_report(definition_after),
                "definition_matches": definition_matches, "geometry_changed": geometry_changed,
-               "target_before": list(target_before_shapes.values()) if target_before_shapes is not None else None,
-               "target_after": list(target_after_shapes.values()) if target_after_shapes is not None else None,
+               "target_before": list(ev["target_before"].values()) if ev["target_before"] is not None else None,
+               "target_after": list(ev["target_after"].values()) if ev["target_after"] is not None else None,
                "outside_body_changes": outside_changes,
                "outside_check": "all bodies immediately after the Loft, before downstream features",
-               "same_feature": same, "marker_before": marker,
-               "marker_after": counted(lambda: timeline.markerPosition), "marker_restored": restored,
-               "feature_health": state, "unevaluated_timeline_items": count - marker,
+               "same_feature": ev["same"], "marker_before": marker,
+               "marker_after": counted(lambda: timeline.markerPosition), "marker_restored": ev["restored"],
+               "feature_health": ev["state"], "unevaluated_timeline_items": count - marker,
                "post_error_read_failure": post_error_read_failure,
-               "new_timeline_errors": new_errors, "new_timeline_warnings": new_warnings,
+               "new_timeline_errors": ev["new_errors"], "new_timeline_warnings": ev["new_warnings"],
                "geometry_frame": "owning_component", "geometry_units": "cm, cm2, cm3"}
-    missed = [name for name, good in (
-        ("marker_restored", restored), ("same_feature", same is True),
-        ("definition_matches", definition_matches is True),
-        ("geometry_changed", geometry_changed is True), ("outside_body_changes", outside_changes == []),
-        ("feature_health", state == "healthy"), ("new_timeline_errors", new_errors == []),
-        ("new_timeline_warnings", new_warnings == [])) if not good]
+    missed = _missed(ev, ("definition_matches", definition_matches))
     identical = not failure and missed == ["geometry_changed"] and geometry_changed is False
     if (failure or missed) and not identical:
         counts = [len(d["sections"]) if d else None for d in (definition_after, definition_before)]
@@ -365,11 +533,7 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
                       f"Restore it with model_edit_loft(feature='{label}', action='retarget', "
                       f"section_index={section_index}, profile={{'sketch': "
                       f"'{safe(lambda: address[0].name)}', 'profile_index': {address[2]}}}).")
-        reason = (failure or
-                  ("New evaluated timeline errors or warnings appeared." if new_errors or new_warnings else "")
-                  or ("Material outside the Loft result changed." if outside_changes else "")
-                  or (sentence(compute_failure) if compute_failure else "")
-                  or f"These checks failed: {', '.join(missed)}.")
+        reason = _reason(failure, ev, missed)
         if not attempted:
             text = f"{reason} Nothing was edited."
         elif (definition_after is not None and definition_after == definition_before
@@ -398,14 +562,13 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
 
 tool = _inputs.apply_to_tool(
     Tool.create_simple(name="model_edit_loft", description=(
-        "Edit interior sections of an open unguided solid NEW Loft. "
-        "Read design_get(include=['definition']).")),
+        "Retarget, remove or reorder one Loft section. Read design_get(include=['definition']).")),
     _SPEC)
-tool.add_input_property("section_index", {"type": "integer", "minimum": 0,
-                                          "description": "Zero-based interior section index."})
+tool.add_input_property("section_index", {"type": "integer", "minimum": 0})
 tool.add_required_input("section_index")
 tool.add_input_property("profile", _PROFILE.schema())
 tool.add_input_property(*_sketch_detail.COMPONENT_SCOPE)
+tool.add_input_property("new_index", {"type": "integer", "minimum": 0})
 tool.strict_schema()
 item = Item.create_tool_item(
     tool=tool, write="write", handler=handler, run_on_main_thread=True,

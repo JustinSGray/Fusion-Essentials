@@ -111,6 +111,27 @@ class TestAdd:
         out = payload(_call("add", rows=["A|Initial release"]))
         assert out["rows"][2]["date"] == "9/27/2026"
 
+    def test_new_table_can_include_inherited_history_before_requested_rows(self, env, monkeypatch):
+        original_add = env.sheet.addRevisionTable
+
+        def add_with_inherited_history(table_input):
+            table = original_add(table_input)
+            inherited = [
+                _RevisionRow(rev="P0", description="Existing overview"),
+                _RevisionRow(rev="P1", description="Existing review"),
+            ]
+            table._rows[2:2] = inherited
+            for index, row in enumerate(table._rows):
+                row.index = index
+            return table
+
+        monkeypatch.setattr(env.sheet, "addRevisionTable", add_with_inherited_history)
+        out = payload(_call("add", rows=["A|New release|D1|PM|B2"]))
+        assert out["table_created"] is True
+        assert out["revision_count_before"] == 0
+        assert out["revision_count_after"] == 5
+        assert [row["rev"] for row in out["rows"]] == ["", "Rev", "P0", "P1", "A"]
+
     def test_a_six_field_row_is_refused_before_any_create(self, env):
         message = error_message(_call("add", rows=["A|B|C|D|E|F"]))
         assert "has 6 '|'-separated fields" in message
@@ -133,18 +154,33 @@ class TestAdd:
         message = error_message(_call("add", rows=["B|Slot widened", "C|Third"]))
         assert "addRevision refused rows[1]" in message
         assert "'rev': 'B'" in message
+        assert "revision_count_before=3" in message and "revision_count_after=4" in message
+        assert "earlier additions may remain" in message and "later additions are unconfirmed" in message
+        assert "drawing_get(include=['revisions']) before retrying" in message
 
     def test_an_addrevision_true_that_lands_nothing_is_an_error(self, env):
         base = _table([_RevisionRow(rev="A", description="Initial")])
         env.install(revision_table=_SilentAddTable(list(base._rows)))
         message = error_message(_call("add", rows=["B|Slot widened"]))
-        assert "do not read back as asked" in message
+        assert "landed_requested_rows=[]" in message
+        assert "unconfirmed_request_indexes=[0]" in message
+        assert "drawing_get(include=['revisions']) before retrying" in message
+
+    def test_matching_preexisting_row_is_not_reported_as_a_landed_add(self, env):
+        base = _table([_RevisionRow(rev="B", description="Slot widened")])
+        env.install(revision_table=_SilentAddTable(list(base._rows)))
+        message = error_message(_call("add", rows=["B|Slot widened"]))
+        assert "landed_requested_rows=[]" in message
+        assert "unconfirmed_request_indexes=[0]" in message
+        assert "reads 3 row(s) (3 before)" in message
 
     def test_an_addrevision_that_lands_twice_is_an_error(self, env):
         table = _table([_RevisionRow(rev="A", description="Initial")], cls=_DoubleAddTable)
         env.install(revision_table=table)
         message = error_message(_call("add", rows=["B|Slot widened"]))
-        assert "do not read back as asked" in message
+        assert "row_count_mismatch=True" in message
+        assert "census=" in message
+        assert "drawing_get(include=['revisions']) before retrying" in message
 
     def test_a_create_that_lands_the_wrong_row_count_is_an_error(self, env):
         env.install(revision_omit_title=True)
@@ -212,7 +248,13 @@ class TestUpdate:
             return result
         monkeypatch.setattr(table, "updateRevisionRow", loses_approval)
         message = error_message(_call("update", index=2, row="A|Changed"))
-        assert "row 2 still reads" in message
+        assert "result is partial" in message
+        assert "before=" in message and "requested={'rev': 'A', 'description': 'Changed'}" in message
+        assert "actual=" in message and "approved': ''" in message
+        assert "landed_fields=['description']" in message
+        assert "fields_different_from_expected=['approved']" in message
+        assert "unconfirmed_fields=[]" in message
+        assert "drawing_get(include=['revisions'])" in message and "before retrying" in message
 
     def test_updating_the_header_row_is_a_false_success(self, env):
         env.install(revision_table=_table([_RevisionRow(rev="A", description="Initial")]))

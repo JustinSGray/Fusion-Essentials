@@ -1286,7 +1286,270 @@ def _body_organization_rows():
     return rows
 
 
+def _d_merge_native_script(target, witness):
+    """Return direct native material/vertex and optional history evidence for the two solids."""
+    return f'''import adsk.core, adsk.fusion, json
+def run(context):
+    app=adsk.core.Application.get()
+    d=adsk.fusion.Design.cast(app.activeProduct)
+    c=d.rootComponent
+    def pt(p): return [round(p.x*10,9),round(p.y*10,9),round(p.z*10,9)]
+    def body(name):
+        b=c.bRepBodies.itemByName(name)
+        return {{"name":b.name,"solid":b.isSolid,
+            "face_count":b.faces.count,"volume_cm3":round(b.volume,12),
+            "area_cm2":round(b.physicalProperties.area,12),
+            "bounds_mm":[pt(b.boundingBox.minPoint),pt(b.boundingBox.maxPoint)],
+            "vertices_mm":sorted(pt(v.geometry) for v in b.vertices),
+            "face_areas_cm2":sorted(round(f.area,12) for f in b.faces)}}
+    record={{"design_type":int(d.designType),"body_names":sorted(b.name for b in c.bRepBodies),
+            "target":body({target!r}),
+            "witness":body({witness!r})}}
+    if d.designType==adsk.fusion.DesignTypes.ParametricDesignType:
+        record["timeline"]=[{{"name":o.name,"type":o.entity.objectType,"health":int(o.healthState)}}
+            for o in d.timeline]
+        record["marker"]=d.timeline.markerPosition
+    print(json.dumps(record))
+'''
+
+
+def _d_merge_snapshot(key, stage):
+    """Compare public refusal and direct merge with independent native material and identity reads."""
+    def check(p):
+        old = _RECALL.get(key)
+        valid = isinstance(old, dict) and isinstance(p.get("target"), dict)
+        if stage == "unchanged":
+            valid = valid and p == old
+        elif stage == "direct_baseline":
+            target = p.get("target") or {}
+            prior = _RECALL.get("d_merge_parametric") or {}
+            valid = (valid and p.get("design_type") != old.get("design_type")
+                     and p.get("body_names") == ["Body1", "Body2"]
+                     and target.get("face_count") == 7
+                     and _near(target.get("volume_cm3"), 8, 1e-9)
+                     and _near(target.get("area_cm2"), 24, 1e-9)
+                     and target.get("face_areas_cm2") == [2.0, 2.0, 4.0, 4.0, 4.0, 4.0, 4.0]
+                     and target.get("bounds_mm") == [[40.0, 0.0, 0.0], [60.0, 20.0, 20.0]]
+                     and p.get("witness") == prior.get("witness"))
+        elif stage == "merged":
+            target, witness = p.get("target") or {}, p.get("witness") or {}
+            expected_vertices = sorted([[x, y, z] for x in (40.0, 60.0)
+                                        for y in (0.0, 20.0) for z in (0.0, 20.0)])
+            valid = (valid and p.get("design_type") == old.get("design_type")
+                     and p.get("body_names") == ["Body1", "Body2"]
+                     and target.get("face_count") == 6 and target.get("solid") is True
+                     and _near(target.get("volume_cm3"), 8, 1e-9)
+                     and _near(target.get("area_cm2"), 24, 1e-9)
+                     and target.get("bounds_mm") == [[40.0, 0.0, 0.0], [60.0, 20.0, 20.0]]
+                     and target.get("face_areas_cm2") == [4.0] * 6
+                     and target.get("vertices_mm") == expected_vertices
+                     and witness == old.get("witness"))
+        return _measured("native direct merge " + stage, {"before": old, "after": p}, valid)
+    return check
+
+
+def _d_merge_split_face(p):
+    """Select the single intact top face before the measured split."""
+    matches = p.get("matches") or []
+    top = [m for m in matches if isinstance(m.get("normal"), list)
+           and len(m["normal"]) == 3 and m["normal"][2] > 0.999
+           and isinstance(m.get("position"), list) and len(m["position"]) == 3
+           and abs(m["position"][2] - 20) < 0.001]
+    good = (len(top) == 1 and top[0].get("kind") == "planar_face"
+            and top[0].get("handle") and _near(top[0].get("area"), 400, 0.001)
+            and abs(top[0]["position"][0] - 50) < 0.001)
+    return _measured("one intact top face before split", {
+        "matches": len(matches), "top": [(m.get("position"), m.get("area")) for m in top]}, good)
+
+
+def _d_merge_top_pair(p):
+    """Select only the two measured upper planar faces split at x=50 mm."""
+    matches = p.get("matches") or []
+    top = [m for m in matches if isinstance(m.get("normal"), list)
+           and len(m["normal"]) == 3 and m["normal"][2] > 0.999
+           and isinstance(m.get("position"), list) and len(m["position"]) == 3
+           and abs(m["position"][2] - 20) < 0.001]
+    top.sort(key=lambda m: m["position"][0])
+    good = (len(top) == 2 and all(m.get("kind") == "planar_face" and m.get("handle")
+            and _near(m.get("area"), 200, 0.001) for m in top)
+            and abs(top[0]["position"][0] - 45) < 0.001
+            and abs(top[1]["position"][0] - 55) < 0.001)
+    return _measured("two current top faces on either side of the split", {
+        "matches": len(matches), "selected": [(m.get("position"), m.get("area")) for m in top]}, good)
+
+
+def _d_merge_succeeded(p):
+    """Check the public edit reports a one-face merge and retained material."""
+    return _measured("public direct face merge", p, p.get("action") == "merge_faces"
+        and p.get("faces_before") == 7 and p.get("faces_after") == 6
+        and p.get("material_kept") is True and _near(p.get("volume_cm3"), 8, 1e-9)
+        and _near(p.get("area_cm2"), 24, 1e-9) and bool(p.get("handle")))
+
+
+def _merge_face_rows():
+    """Exercise parametric no-op refusal and measured direct-design merge in a disposable doc."""
+    rows = [
+        ("doc_get", {}, _d_home_capture("d_merge_home_census"),
+         ("d_merge_home", _home_address)),
+        ("doc_new", lambda c: {"expect_document": _ctx_get(c, "d_merge_home", "home")},
+         _new_document, ("d_merge_doc", _d_merge_new_doc)),
+    ]
+
+    def row(name, args, check="ok", save=None, write=True):
+        def arguments(c):
+            values = args(c) if callable(args) else dict(args)
+            if write:
+                values = _combine_pin(c, "d_merge_doc", values)
+            return values
+        rows.append((name, arguments, check, save))
+
+    def native_script(c):
+        return _d_merge_native_script(_ctx_get(c, "d_merge_target", "split cube"),
+                                      _ctx_get(c, "d_merge_witness", "witness solid"))
+
+    for name, x in (("DMergeTarget", 40), ("DMergeWitness", 100)):
+        row("sketch_create", {"name": name, "plane": "xy"})
+        row("sketch_add_geometry", {"sketch_name": name, "units": "mm", "geometry": [
+            {"kind": "rectangle", "x1": x, "y1": 0, "x2": x + 20, "y2": 20}]})
+        row("model_extrude", {"sketch_name": name, "distance": 20, "units": "mm",
+                               "operation": "new"}, _extruded,
+            ("d_merge_target" if name == "DMergeTarget" else "d_merge_witness",
+             lambda p: p["result_bodies"][0]))
+    row("model_construction", {"kind": "plane", "mode": "offset", "plane": "yz",
+        "offset": 50, "units": "mm", "name": "DMergeSplitPlane"})
+    row("find_geometry", lambda c: {"target": _ctx_get(c, "d_merge_target", "target cube"),
+        "kind": "planar_face", "units": "mm", "max_results": 12},
+        _d_merge_split_face, ("d_merge_split_face", _recall("d_merge_split_face",
+            lambda p: next(m["handle"] for m in p["matches"]
+                if m.get("normal", [0, 0, 0])[2] > 0.999
+                and abs(m.get("position", [0, 0, 0])[2] - 20) < 0.001))), write=False)
+    def split_args(c):
+        return {"split": "face", "faces": [_ctx_get(c, "d_merge_split_face", "intact top face")],
+                "split_plane": "DMergeSplitPlane", "extend_tool": True}
+    row("model_split", split_args, lambda p: p.get("split") == "face"
+        and p.get("result_count") == 1 and bool(p.get("feature")))
+    row("find_geometry", lambda c: {"target": _ctx_get(c, "d_merge_target", "target cube"),
+        "kind": "planar_face", "units": "mm", "max_results": 12},
+        _d_merge_top_pair, ("d_merge_top_faces", _recall("d_merge_top_faces",
+            lambda p: [m["handle"] for m in sorted((m for m in p["matches"]
+                if m.get("normal", [0, 0, 0])[2] > 0.999
+                and abs(m.get("position", [0, 0, 0])[2] - 20) < 0.001),
+                key=lambda m: m["position"][0])])), write=False)
+
+    def capture(stage):
+        return ("sys_execute_script", lambda c: _combine_pin(c, "d_merge_doc", {
+            "script": native_script(c), "read_only": True}), _d_merge_capture(stage),
+            ("d_merge_parametric" if stage == "parametric" else "d_merge_direct",
+             _recall("d_merge_parametric" if stage == "parametric" else "d_merge_direct",
+                     lambda p: p)))
+    rows.append(capture("parametric"))
+    row("model_edit_body", lambda c: {"action": "merge_faces",
+        "faces": _ctx_get(c, "d_merge_top_faces", "top face pair")},
+        _refused("Face merge requires a direct design", "current design history is unchanged",
+                 "separate direct-design copy"))
+    rows.append(("sys_execute_script", lambda c: _combine_pin(c, "d_merge_doc", {
+        "script": native_script(c), "read_only": True}),
+        _d_merge_snapshot("d_merge_parametric", "unchanged"), None))
+    convert = '''import adsk.core, adsk.fusion, json
+def run(context):
+    app=adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    d=adsk.fusion.Design.cast(app.activeProduct)
+    d.designType=adsk.fusion.DesignTypes.DirectDesignType
+    print(json.dumps({"direct":d.designType==adsk.fusion.DesignTypes.DirectDesignType}))
+'''
+    row("sys_execute_script", {"script": convert, "read_only": False},
+        lambda p: _measured("owned design entered direct mode", p, p.get("direct") is True))
+    rows.append(("sys_execute_script", lambda c: _combine_pin(c, "d_merge_doc", {
+        "script": native_script(c), "read_only": True}), _d_merge_capture("direct_baseline"),
+        ("d_merge_direct", _recall("d_merge_direct", lambda p: p))))
+    row("find_geometry", lambda c: {"target": _ctx_get(c, "d_merge_target", "target cube"),
+        "kind": "planar_face", "units": "mm", "max_results": 12},
+        _d_merge_top_pair, ("d_merge_direct_faces", _recall("d_merge_direct_faces",
+            lambda p: [m["handle"] for m in sorted((m for m in p["matches"]
+                if m.get("normal", [0, 0, 0])[2] > 0.999
+                and abs(m.get("position", [0, 0, 0])[2] - 20) < 0.001),
+                key=lambda m: m["position"][0])])), write=False)
+    row("model_edit_body", lambda c: {"action": "merge_faces",
+        "faces": _ctx_get(c, "d_merge_direct_faces", "fresh direct top face pair")},
+        _d_merge_succeeded, ("d_merge_reply", _recall("d_merge_reply", lambda p: p)))
+    rows.append(("sys_execute_script", lambda c: _combine_pin(c, "d_merge_doc", {
+        "script": native_script(c), "read_only": True}),
+        _d_merge_snapshot("d_merge_direct", "merged"), None))
+    rows.extend([
+        ("doc_activate", lambda c: {"name": _ctx_get(c, "d_merge_home", "home"),
+            "expect_document": _ctx_get(c, "d_merge_doc", "merge scratch")}, "ok", None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "d_merge_doc", "merge scratch"),
+            "save_changes": False, "expect_document": _ctx_get(c, "d_merge_home", "home")},
+         _document_closed, None),
+        ("doc_get", {}, _d_home_same("d_merge_home_census"), None),
+    ])
+    return rows
+
+
+def _d_merge_capture(stage):
+    """Capture a measured mode baseline before the native state comparisons."""
+    def check(p):
+        target = p.get("target") or {}
+        witness = p.get("witness") or {}
+        valid = (target.get("name") == "Body1" and witness.get("name") == "Body2"
+                 and p.get("body_names") == ["Body1", "Body2"]
+                 and target.get("face_count") == 7 and witness.get("face_count") == 6
+                 and _near(target.get("volume_cm3"), 8, 1e-9)
+                 and _near(target.get("area_cm2"), 24, 1e-9)
+                 and target.get("face_areas_cm2") == [2.0, 2.0, 4.0, 4.0, 4.0, 4.0, 4.0]
+                 and _near(witness.get("volume_cm3"), 8, 1e-9)
+                 and target.get("bounds_mm") == [[40.0, 0.0, 0.0], [60.0, 20.0, 20.0]]
+                 and len(witness.get("vertices_mm") or []) == 8)
+        if stage == "parametric":
+            valid = valid and "timeline" in p and len(p["timeline"]) > 0
+        else:
+            prior = _RECALL.get("d_merge_parametric") or {}
+            valid = (valid and "timeline" not in p
+                     and p.get("design_type") != prior.get("design_type")
+                     and p.get("body_names") == ["Body1", "Body2"]
+                     and p.get("witness") == prior.get("witness"))
+        return _measured("native merge fixture " + stage, p, valid)
+    return check
+
+
+def _d_home_same(key):
+    """Require cleanup to restore the original active document handle."""
+    def check(p):
+        before = _RECALL.get(key) or {}
+        return _measured("original active document restored", {
+            "expected": before, "actual": _d_home_signature(p)},
+            bool(before) and _d_home_signature(p) == before)
+    return check
+
+
+def _d_home_capture(key):
+    """Capture the active document and complete open-document census before scratch creation."""
+    def check(p):
+        valid = _home_document(p)
+        if valid:
+            _RECALL[key] = _d_home_signature(p)
+        return valid
+    return check
+
+
+def _d_home_signature(p):
+    """The active handle and complete open-document identities."""
+    active = p.get("active") or {}
+    return {"active": active.get("document_handle"), "open_count": p.get("open_count"),
+            "documents": sorted(r["document_handle"] for r in p.get("open_documents", []))}
+
+
+def _d_merge_new_doc(p):
+    """Clear cached merge handles and reads before retaining the new scratch document."""
+    for key in ("d_merge_target", "d_merge_witness", "d_merge_split_face", "d_merge_top_faces",
+                "d_merge_direct_faces", "d_merge_parametric", "d_merge_direct", "d_merge_reply"):
+        _RECALL.pop(key, None)
+    return p["document_handle"]
+
+
 _BODY_ORGANIZATION = _body_organization_rows()
+_BODY_ORGANIZATION += _merge_face_rows()
 
 
 _EXTRUDE_EDITS = _extrude_edit_rows()

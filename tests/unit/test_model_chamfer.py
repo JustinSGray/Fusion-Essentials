@@ -617,7 +617,7 @@ class TestChamferReadsBackWhatItBuilt:
         got = adsk.fusion.ChamferCornerTypes.ChamferCornerType
         assert f"reads back {got}" in res["message"]          # what the feature says
         assert f"'blend' ({want})" in res["message"]          # what was asked for
-        assert cf.result.deleted is True and "rolled back" in res["message"]
+        assert cf.result.deleted is True and "Deleting it returned True." in res["message"]
 
     def test_a_feature_reporting_a_different_angle_errors_and_rolls_back(self):
         _, cf = _install([make_body("B", [True])])
@@ -627,7 +627,7 @@ class TestChamferReadsBackWhatItBuilt:
                                   edge_filter="all")
         assert res["isError"] is True
         assert "angle reads back 30.0 deg" in res["message"] and "requested 45.0" in res["message"]
-        assert cf.result.deleted is True and "rolled back" in res["message"]
+        assert cf.result.deleted is True and "Deleting it returned True." in res["message"]
 
     def test_a_feature_reporting_a_different_distance_errors_and_rolls_back(self):
         _, cf = _install([make_body("B", [True])])

@@ -364,5 +364,8 @@ def scoped_installer(mod):
 
 
 def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+    data = json.loads(res["content"][0]["text"])
+    assert res["isError"] is ("failed" in data), res
+    if "failed" in data:
+        assert res["message"] == data["note"]
+    return data

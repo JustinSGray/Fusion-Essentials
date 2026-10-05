@@ -1101,13 +1101,17 @@ class TestPointEdgePlane:
 _DEFAULT_PATH = object()
 
 
-def _stub_path(monkeypatch, path=_DEFAULT_PATH, label="1 edge(s)", err=None):
+def _stub_path(monkeypatch, path=_DEFAULT_PATH, label="1 edge(s)", err=None, omitted=()):
     """Stub the shared path resolver. The default path is an opaque object with no readable curve
     evaluator - the shape a path takes when its length cannot be measured; pass _measurable_path()
     for one that can."""
     if path is _DEFAULT_PATH:
         path = type("Path", (), {})()
-    monkeypatch.setattr(cn._common, "build_path", lambda comp, raw: (path, label, err))
+    def build(comp, raw, left_out=None):
+        if left_out is not None:
+            left_out.extend(omitted)
+        return path, label, err
+    monkeypatch.setattr(cn._common, "build_path", build)
     return path
 
 
@@ -1165,6 +1169,26 @@ def _PDT(name):
 
 
 class TestOnPath:
+    @pytest.mark.parametrize("route", ["point", "plane", "to_object"])
+    def test_partial_sketch_path_names_omitted_curve_on_datum(self, monkeypatch, route):
+        comp = _install()
+        path = type("Path", (), {"count": 2})()
+        _stub_path(monkeypatch, path=path, label="sketch:Spine", omitted=("line:1",))
+        monkeypatch.setattr(cn._common, "path_sketch_curve_count", lambda _comp, _raw: 3)
+        if route == "point":
+            out = _payload(cn.handler(kind="point", mode="on_path", path="sketch:Spine", at=0.5))
+            assert comp.constructionPoints.added == 1
+        elif route == "plane":
+            out = _payload(cn.handler(kind="plane", mode="on_path", path="sketch:Spine", at=0.5))
+            assert comp.constructionPlanes.added == 1
+        else:
+            _stub_resolve(monkeypatch, cn._TO_OBJECT, FakePoint(7, 0, 0))
+            out = _payload(cn.handler(kind="plane", mode="on_path", path="sketch:Spine",
+                                      to_object="<pt>"))
+            assert comp.constructionPlanes.added == 1
+        assert out["path"] == "sketch:Spine"
+        assert "Not in the path: line:1" in out["note"]
+
     def test_plane_proportional_passes_the_ratio_and_the_proportional_type(self, monkeypatch):
         comp = _install()
         path = _stub_path(monkeypatch)

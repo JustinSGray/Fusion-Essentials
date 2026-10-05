@@ -370,6 +370,12 @@ _DENYLIST = {
     "direct_feature_absence": ("_common", "def"),
     "no_feature_error": ("_common", "def"),
     "failed_effect_remedy": ("_common", "def"),
+    # The ONE retained-feature sentence and the deleteMe a failed write already runs, so every
+    # site names the same address and design_delete_feature call.
+    "feature_address": ("_common", "def"),
+    "left_in_timeline": ("_common", "def"),
+    "delete_failed_feature": ("_common", "def"),
+    "scope_left_clause": ("_design_common", "def"),
     # The body census a feature-free effect check counts on: one home so the resolve-ONCE rule and
     # the measured "the pieces land in the TARGET's parentComponent" scoping cannot be right in one
     # tool and stale in the next.
@@ -441,6 +447,9 @@ _DENYLIST = {
     # supplies only its own no-body sentence) - a copy is how one of them stops refusing an
     # ambiguous name.
     "resolve_body_or_recent": ("_common", "def"),
+    # The ONE finite-non-bool-number decision three input guards refuse on; a copy is how one guard
+    # starts taking True as 1 or NaN as a size while its siblings refuse them.
+    "finite_number": ("_common", "def"),
     # The ONE boolean-flag read that answers None for unreadable. A re-roll is written as
     # safe(getter, False), which is exactly the confident-False this exists to stop.
     "read_flag": ("_common", "def"),
@@ -487,6 +496,9 @@ _DENYLIST = {
     # tuple-vs-list return comes to differ quietly between tools comparing the same two vectors.
     "dot": ("_geom", "def"),
     "cross": ("_geom", "def"),
+    # The ONE same-axis-line test: a second copy is how a bend-wall census and a thread's radius
+    # read come to disagree about whether two cylinders share an axis.
+    "coaxial": ("_geom", "def"),
     "body_aabb": ("_geom", "def"),
     # The min/max collapse over several boxes, and the occurrence's own MESH read. One home each:
     # a second union re-rolls which corner wins on an unreadable box, and a second mesh read walks

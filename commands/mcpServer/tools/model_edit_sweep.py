@@ -332,6 +332,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
     desired = before_shapes = after_shapes = target_before = target_after = None
     linked_evaluated = linked_restored = None
     sketch_curve_count = members_before = members_after = None
+    left_out = []
     try:
         if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
             raise RuntimeError("Fusion refused the Sweep edit position.")
@@ -394,7 +395,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
                     raise ValueError("The open profile's source path omits sketch curves.")
             desired = _profile_members(checked_operand)
         else:
-            operand, _label, refusal = _common.build_path(component_owner, path)
+            operand, _label, refusal = _common.build_path(component_owner, path, left_out)
             if refusal:
                 raise ValueError(refusal)
             desired = _path_members(operand)
@@ -557,7 +558,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
     details["note"] = ("Sweep operand changed on the same feature. Boolean edits retain the current "
                        "participants; newly reached bodies are excluded. Inspect model_inspect.")
     if action == "path":
-        details["note"] += " " + _common.path_chain_warning(len(desired), sketch_curve_count, "sweep")
+        details["note"] += " " + _common.path_chain_warning(len(desired), sketch_curve_count, "sweep", left_out)
         details["note"] = details["note"].strip()
     return identical_geometry_reply(details) if identical else ok(details)
 

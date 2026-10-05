@@ -12,6 +12,7 @@ proven to BITE (the failure case goes red through the wrapper).
 """
 
 import json
+import sys
 import types
 
 import pytest
@@ -226,6 +227,18 @@ class TestVersionAdvanced:
         assert res["isError"] is True
         assert "still modified" in res["message"].lower()
         assert "created no version" not in res["message"].lower()
+
+    @pytest.mark.parametrize("fresh,said", [
+        ([_version("urn:part", 1), _version("urn:part", 2)],
+         "A fresh read shows cloud version 2 landed."),
+        ([_version("urn:part", 1), _version("urn:part", 1)], "A fresh read shows no new cloud version."),
+        ([None, _version("urn:part", 2)], "Whether a cloud version landed is unknown")])
+    def test_a_still_modified_save_reports_one_fresh_version_read(self, monkeypatch, fresh, said):
+        app = self._app(True, fresh=fresh)
+        monkeypatch.setattr(kernel, "app", app)
+        res = kernel.wrap(lambda **kw: _ok({"saved": True}), [self._post(monkeypatch)])()
+        assert res["isError"] is True and said in res["message"]
+        assert app.data.calls == 2                 # the capture read and ONE fresh read, no poll
 
     def test_fresh_same_lineage_advance_confirms_separately_from_local_completion(self, monkeypatch):
         app = self._app(False, fresh=[_version("urn:part", 1), _version("urn:part", 2)])
@@ -1079,6 +1092,20 @@ class TestFreeEdgesChanged:
         assert res["isError"] is True
         assert "did not rise" in res["message"]
 
+    @pytest.mark.parametrize("design_type", [1, 0])
+    def test_a_refused_stitch_names_its_feature_or_undo_in_direct_mode(self, monkeypatch,
+                                                                         design_type):
+        common = sys.modules[kernel.__package__ + "._common"]
+        monkeypatch.setattr(common, "design", lambda: types.SimpleNamespace(designType=design_type))
+        census = [_sheet("A", free=4)]
+        self._wire(monkeypatch, census)
+
+        def handler(**kw):
+            return _ok({"stitched": True, "feature": "Stitch1"})
+        msg = kernel.wrap(handler, [kernel.FreeEdgesChanged("sealed")])()["message"]
+        assert ("design_delete_feature(feature='Stitch1')" in msg) is (design_type == 1)
+        assert ("DIRECT mode" in msg) is (design_type == 0)
+
     def test_an_edge_whose_face_count_does_not_read_is_disclosed(self, monkeypatch):
         census = [BRepBody(name="A", is_solid=False, edges=[BRepEdge(curve=None)])]
         self._wire(monkeypatch, census)
@@ -1134,6 +1161,18 @@ class TestSurfaceAreaAdded:
         assert body["verification_evidence"]["area_change_cm2"] == pytest.approx(5e-7)
         assert body["verification_evidence"]["area_increase_threshold_cm2"] == 1e-6
         assert body["handler_reported_unverified_result"]["created"] is True
+
+    def test_a_refused_sheet_names_its_feature_bodies_and_delete_call(self, monkeypatch):
+        census = [_sheet("Old", free=4, area=3.0)]
+        self._wire(monkeypatch, census)
+
+        def handler(**kw):
+            census.append(_sheet("Body2", free=4, area=5e-7))
+            return _ok({"created": True, "feature": "Extrude2", "result_bodies": ["Body2"]})
+        res = kernel.wrap(handler, [kernel.SurfaceAreaAdded()])()
+        assert res["message"].endswith(
+            " Its result bodies: 'Body2'. 'Extrude2' remains in the timeline; remove it with "
+            "design_delete_feature(feature='Extrude2').")
 
     def test_no_growth_beside_an_unread_area_is_disclosed_not_failed(self, monkeypatch):
         # the sheet may be the body whose area did not read - no conviction from a blind census

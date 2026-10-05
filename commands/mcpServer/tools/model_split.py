@@ -1,12 +1,12 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""MCP building block: split a body into pieces, or split its faces, with a cutter.
-
-  model_split -> the SplitBody / SplitFace feature, dispatched by 'split'. The cutter is a plane
-                 (SplitBodyFeatureInput / SplitFaceFeatureInput 'splittingTool') or another body/
-                 surface. WRITES.
+"""MCP building block: split a body into pieces, split its faces with a cutter, or split a
+solid's faces along its silhouette for a view direction (SilhouetteSplitFeatures, faces only).
+SilhouetteSplitFeature.viewDirection is never read: at the end marker the read fails the command.
 """
+
+import math
 
 import adsk.core
 import adsk.fusion
@@ -26,14 +26,17 @@ RETURNS = [
     _outputs.ReturnsName("feature", of="feature", consumers=["design_delete_feature"],
                          absent_when="no_timeline_feature"),
     _outputs.ReturnsValue("result_count",
-                          "split=body: the number of resulting bodies; split=face: the net face-count increase"),
+                          "split=body: the number of resulting bodies; split=face/silhouette: the "
+                          "net face-count increase"),
 ]
 
-_SPLIT = _inputs.Choice("split", ["body", "face"], default="body")
-_TARGET = _inputs.BodyRef("target", kind="brep")
+_SPLIT = _inputs.Choice("split", ["body", "face", "silhouette"], default="body")
+_TARGET = _inputs.BodyRef("target", kind="brep", description="A body 'handle' or name.")
+_SOLID = _inputs.BodyRef("target", kind="solid")
+_VIEW = _inputs.AxisRef("view_direction", entity_only=True, description="x/y/z or a construction axis.")
 _FACES = _inputs.GeometryHandleList("faces", require="face")
 # The cutter, supplied ONE of two ways: a plane (alias/name/planar-face handle) OR a body/surface.
-_PLANE = _inputs.PlaneRef("split_plane")
+_PLANE = _inputs.PlaneRef("split_plane", description="xy/xz/yz, a construction plane or a planar face handle.")
 _TOOLBODY = _inputs.BodyRef("split_tool_body", kind="brep")
 
 app = adsk.core.Application.get()
@@ -192,8 +195,107 @@ def _split_face(design, comp, faces, cutter, extend_tool):
     return ok(payload)
 
 
+def _line_ends(body):
+    """Each straight edge of `body` as a sorted pair of mm end points, or None when one does not read."""
+    edges = safe(lambda: body.edges)
+    count = _common.counted(lambda: edges.count)
+    if count is None:
+        return None
+    mm, ends = _common.CM_TO_UNIT["mm"], set()
+    for i in range(count):
+        edge = safe(lambda i=i: edges.item(i))
+        kind = safe(lambda: edge.geometry.curveType)
+        if kind is None:
+            return None
+        if kind != adsk.core.Curve3DTypes.Line3DCurveType:
+            continue
+        pair = [_common.ptxyz(safe(lambda end=end: getattr(edge, end).geometry), mm)
+                for end in ("startVertex", "endVertex")]
+        if None in pair:
+            return None
+        ends.add(tuple(sorted((p["x"], p["y"], p["z"]) for p in pair)))
+    return ends
+
+
+def _silhouette_axis(raw, root):
+    """(a root-component construction axis for `raw`, error)."""
+    key = raw.strip().lower() if isinstance(raw, str) else raw
+    if key in ("x", "y", "z"):
+        axis = _inputs.world_construction_axis(root, key)
+        return (axis, None) if axis is not None else (None, "The root component's origin axes did not read.")
+    tagged, err = _VIEW.resolve(raw)
+    if err or tagged is None:
+        return None, err or "split='silhouette' needs 'view_direction' (x/y/z or a construction axis)."
+    axis = tagged[1]
+    if not isinstance(axis, adsk.fusion.ConstructionAxis):
+        return None, (f"'view_direction' resolved to a {type(axis).__name__}; split='silhouette' "
+                      "takes a construction axis only: x/y/z or an axis name/handle.")
+    if (safe(lambda: axis.assemblyContext) is not None
+            or _common.same_component(_inputs.entity_component(axis), root) is not True):
+        return None, "'view_direction' must be a construction axis of the root component."
+    return axis, None
+
+
+def _split_silhouette(design, target, view_direction):
+    """Split a root solid's faces along its silhouette for a construction-axis view direction."""
+    body, berr = _SOLID.resolve(target)
+    if berr or body is None:
+        return error(berr or "split='silhouette' needs 'target' (the solid to split).")
+    root = safe(lambda: design.rootComponent)
+    name = safe(lambda: body.name)
+    if (safe(lambda: body.assemblyContext) is not None
+            or _common.same_component(safe(lambda: body.parentComponent), root) is not True):
+        return error(f"'target' '{name}' is not a root-component body; split='silhouette' takes a "
+                     "solid in the root component.")
+    axis, aerr = _silhouette_axis(view_direction, root)
+    if aerr:
+        return error(aerr)
+    faces_before = _common.counted(lambda: body.faces.count)
+    volume_before = _geom.signed_volume(body)
+    lines_before = _line_ends(body)
+    if (faces_before is None or volume_before is None or not math.isfinite(volume_before)
+            or lines_before is None):
+        return error(f"The faces, volume or edges of '{name}' did not read; nothing was split.")
+    try:
+        features = root.features.silhouetteSplitFeatures
+        feature = features.add(features.createInput(
+            axis, body, adsk.fusion.SilhouetteSplitOperations.SilhouetteSplitFacesOnlyOperation))
+    except Exception as e:
+        return error(f"Silhouette split of '{name}' failed: {e}.")
+    if not feature:
+        return error(_common.no_feature_error(design, "Silhouette split"))
+    label = safe(lambda: feature.name)
+    remedy = _common.failed_effect_remedy(design, feature)
+    if safe(lambda: feature.healthState) == adsk.fusion.FeatureHealthStates.ErrorFeatureHealthState:
+        return error(f"Silhouette split '{label}' was created but failed to compute: "
+                     f"{safe(lambda: feature.errorOrWarningMessage) or 'no detail'}. {remedy}")
+    faces_after = _common.counted(lambda: body.faces.count)
+    volume_after = _geom.signed_volume(body)
+    if faces_after is None or volume_after is None or not math.isfinite(volume_after):
+        return error(f"Silhouette split '{label}' was created, but the faces or volume of '{name}' "
+                     f"did not re-read, so the split is unverified. {remedy}")
+    if faces_after <= faces_before:
+        return error(f"Silhouette split '{label}' was created, but '{name}' reads {faces_after} "
+                     f"faces (was {faces_before}): no face was split. {remedy}")
+    change = volume_after - volume_before
+    if abs(change) > _common.NO_VOLUME_CHANGE_CM3:
+        return error(f"Silhouette split '{label}' changed the volume of '{name}' by {change:.3g} "
+                     f"cm3; a faces-only split keeps it. {remedy}")
+    lines_after = _line_ends(body)
+    if lines_after is None:
+        return error(f"Silhouette split '{label}' was created, but its straight edges did not "
+                     f"re-read, so the boundary positions are unverified. {remedy}")
+    return ok({"split": "silhouette", "feature": label, "target": name,
+               "requested_view_direction": view_direction, "faces_before": faces_before,
+               "faces_after": faces_after, "result_count": faces_after - faces_before,
+               "volume_change_cm3": change,
+               "new_line_edges_mm": [[list(a), list(b)] for a, b in sorted(lines_after - lines_before)],
+               "note": "Faces split along the silhouette; volume kept. new_line_edges_mm are the "
+                       "straight edges the split added (world mm). Retire it with design_delete_feature."})
+
+
 def handler(split: str = "body", target: str = "", faces=None, split_plane: str = "",
-            split_tool_body: str = "", extend_tool: bool = True) -> dict:
+            split_tool_body: str = "", extend_tool: bool = True, view_direction: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
     kind, kerr = _SPLIT.resolve(split)
     if kerr:
@@ -203,6 +305,13 @@ def handler(split: str = "body", target: str = "", faces=None, split_plane: str 
     if not design:
         return error("No active design. Create or open a document first (see doc_new).")
     comp = target_component(design)
+    if kind == "silhouette":
+        if faces not in (None, "", []) or split_plane or split_tool_body:
+            return error("split='silhouette' takes 'target' and 'view_direction', not 'faces', "
+                         "'split_plane' or 'split_tool_body'.")
+        return _split_silhouette(design, target, view_direction)
+    if view_direction:
+        return error(f"'view_direction' is used only by split='silhouette' (got split='{kind}').")
 
     cutter, cerr = _resolve_cutter(split_plane, split_tool_body)
     if cerr:
@@ -214,7 +323,7 @@ def handler(split: str = "body", target: str = "", faces=None, split_plane: str 
 
 
 TOOL_DESCRIPTION = (
-    "Split a body into pieces, or its faces along a curve."
+    "Split a body, or its faces by a cutter or silhouette."
 )
 
 FULL_DESCRIPTION = TOOL_DESCRIPTION + "\n" + _outputs.produces_block(RETURNS)
@@ -222,11 +331,12 @@ FULL_DESCRIPTION = TOOL_DESCRIPTION + "\n" + _outputs.produces_block(RETURNS)
 split_tool = (
     Tool.create_simple(name="model_split", description=FULL_DESCRIPTION)
     .add_input_property(*_SPLIT.as_property())
-    .add_input_property(_TARGET.name, _TARGET.schema())
+    .add_input_property(_TARGET.name, _TARGET.schema(brief=True))
     .add_input_property(_FACES.name, _FACES.schema())
-    .add_input_property(_PLANE.name, _PLANE.schema())
-    .add_input_property(_TOOLBODY.name, _TOOLBODY.schema())
+    .add_input_property(_PLANE.name, _PLANE.schema(brief=True))
+    .add_input_property(_TOOLBODY.name, _TOOLBODY.schema(brief=True))
     .add_input_property("extend_tool", {"type": "boolean"})
+    .add_input_property(*_VIEW.as_property(brief=True))
     .strict_schema()
 )
 split_item = Item.create_tool_item(tool=split_tool, write="write", handler=handler, run_on_main_thread=True,

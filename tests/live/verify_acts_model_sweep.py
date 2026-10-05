@@ -7,7 +7,7 @@ import math
 import re
 
 from verify_core import (
-    _RECALL, _Refusal, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _measured, _near, _num, _new_document, _prof, _recall, _refused, _revolved, _swept, _watch)
+    _RECALL, _Refusal, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _matched, _measured, _near, _num, _new_document, _prof, _recall, _refused, _revolved, _swept, _watch)
 
 
 
@@ -1122,6 +1122,292 @@ def _loft_edit_rows():
 
 
 _LOFT_EDITOR = _loft_edit_rows()
+
+
+def _d_loft_definition(sources):
+    """Read the public ordered sections for the measured root surface Loft."""
+    def check(p):
+        definition = p.get("definition") or {}
+        rows = definition.get("sections") or []
+        got = [row.get("source_sketch") for row in rows]
+        return _measured("ordered surface Loft sections", {
+            "sources": got, "count": definition.get("section_count"),
+            "truncated": definition.get("truncated")},
+            got == list(sources) and definition.get("section_count") == len(sources)
+            and definition.get("truncated") is False
+            and [row.get("index") for row in rows] == list(range(len(sources)))
+            and all(row.get("kind") == "SketchLine" for row in rows)
+            and definition.get("is_solid") is False
+            and definition.get("is_closed") is False
+            and definition.get("guide_count") == 0)
+    return check
+
+
+def _d_loft_native_script(loft_name="", offset_name="", loft_body="", offset_body=""):
+    """Return an independent body/feature/history reader for the disposable Loft document."""
+    return f'''import adsk.core, adsk.fusion, json
+def run(context):
+    app=adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    d=adsk.fusion.Design.cast(app.activeProduct)
+    c=d.rootComponent
+    def pt(p): return [round(p.x*10,9),round(p.y*10,9),round(p.z*10,9)]
+    def body(b):
+        return {{"name":b.name,"token":b.entityToken,"solid":b.isSolid,
+            "volume_cm3":round(b.volume,12),"area_cm2":round(b.physicalProperties.area,12),
+            "bounds_mm":[pt(b.boundingBox.minPoint),pt(b.boundingBox.maxPoint)],
+            "vertices_mm":sorted(pt(v.geometry) for v in b.vertices)}}
+    def safe_name(obj):
+        try:return obj.name
+        except:return None
+    def feature(collection,name,old_token):
+        f=collection.itemByName(name) if name else None
+        if f is None:return None
+        hits=d.findEntityByToken(old_token) if old_token else []
+        same=(len(hits)==1 and safe_name(hits[0])==f.name
+            and hits[0].objectType==f.objectType
+            and hits[0].timelineObject.index==f.timelineObject.index) if f is not None else False
+        return None if f is None else {{"name":f.name,"token":f.entityToken,
+            "identity_resolves":same,
+            "health":int(f.healthState)}}
+    tl=[{{"name":o.name,"type":o.entity.objectType,"health":int(o.healthState)}}
+        for o in d.timeline]
+    print(json.dumps({{"bodies":sorted((body(b) for b in c.bRepBodies),key=lambda r:r["name"]),
+        "loft":feature(c.features.loftFeatures,{loft_name!r},{_RECALL.get("d_loft_loft_token", "")!r}),
+        "offset":feature(c.features.offsetFeatures,{offset_name!r},{_RECALL.get("d_loft_offset_token", "")!r}),
+        "loft_body":next((body(b) for b in c.bRepBodies if b.name=={loft_body!r}),None),
+        "offset_body":next((body(b) for b in c.bRepBodies if b.name=={offset_body!r}),None),
+        "timeline":tl,"marker":d.timeline.markerPosition}}))
+'''
+
+
+def _d_loft_snapshot(key, stage):
+    """Compare a fresh native snapshot with the saved stage and measured shape facts."""
+    def check(p):
+        before = _RECALL.get(key)
+        valid = isinstance(before, dict) and isinstance(p.get("bodies"), list)
+        if stage == "fixture":
+            valid = valid and p.get("loft") is None and p.get("offset") is None
+        elif stage == "edited":
+            loft, offset = p.get("loft") or {}, p.get("offset") or {}
+            body, offset_body = p.get("loft_body") or {}, p.get("offset_body") or {}
+            old_body, old_offset = before.get("loft_body") or {}, before.get("offset_body") or {}
+            valid = (valid and loft.get("identity_resolves") is True
+                     and offset.get("identity_resolves") is True
+                     and loft.get("health") == offset.get("health") == 0
+                     and p.get("timeline") == before.get("timeline")
+                     and p.get("marker") == before.get("marker")
+                     and body.get("solid") is False and offset_body.get("solid") is False
+                     and _near(body.get("area_cm2"), 6.2604905683130445, 0.02)
+                     and _near(offset_body.get("area_cm2"), 6.557733794975538, 0.02)
+                     and body.get("vertices_mm") != old_body.get("vertices_mm")
+                     and offset_body.get("vertices_mm") != old_offset.get("vertices_mm")
+                     and body.get("bounds_mm") != old_body.get("bounds_mm")
+                     and offset_body.get("bounds_mm") != old_offset.get("bounds_mm")
+                     and _d_loft_witness_same(before, p))
+        elif stage == "restored":
+            valid = (valid and _d_loft_state(p) == _d_loft_state(before)
+                     and (p.get("loft") or {}).get("identity_resolves") is True
+                     and (p.get("offset") or {}).get("identity_resolves") is True)
+        elif stage == "retired":
+            base = _RECALL.get("d_loft_fixture")
+            valid = (valid and isinstance(base, dict)
+                     and _d_loft_retired_state(p) == _d_loft_retired_state(base))
+        return _measured("native Loft and dependent surface state " + stage,
+                         {"before": before, "after": p}, valid)
+    return check
+
+
+def _d_loft_witness_same(before, after):
+    """Require the separately authored solid witness body to remain exactly unchanged."""
+    def witness(rows):
+        return [row for row in rows if row.get("name", "").startswith("Body")
+                and row.get("solid") is True]
+    left, right = witness(before.get("bodies") or []), witness(after.get("bodies") or [])
+    strip = lambda rows: [{k: v for k, v in row.items() if k != "token"} for row in rows]
+    return bool(left) and strip(left) == strip(right)
+
+
+def _d_loft_state(value):
+    """Compare restored material/history while excluding Fusion's token spellings."""
+    bodies = [{k: v for k, v in row.items() if k != "token"} for row in value.get("bodies", [])]
+    return {"bodies": bodies,
+            "loft": {k: v for k, v in (value.get("loft") or {}).items()
+                     if k not in ("identity_resolves", "token")},
+            "offset": {k: v for k, v in (value.get("offset") or {}).items()
+                       if k not in ("identity_resolves", "token")},
+            "timeline": value.get("timeline"), "marker": value.get("marker")}
+
+
+def _d_loft_retired_state(value):
+    """Compare source sketches, witness geometry and history after feature retirement."""
+    state = _d_loft_state(value)
+    state.pop("marker", None)
+    return state
+
+
+def _d_loft_rows():
+    """Exercise native-measured surface Loft reorder and exact restoration in a disposable doc."""
+    rows = [
+        ("doc_get", {}, _d_loft_home_capture("d_loft_home_census"),
+         ("d_loft_home", _home_address)),
+        ("doc_new", lambda c: {"expect_document": _ctx_get(c, "d_loft_home", "home")},
+         _new_document, ("d_loft_doc", _d_loft_new_doc)),
+    ]
+
+    def write(name, args, check="ok", save=None, write=True):
+        def arguments(c):
+            values = args(c) if callable(args) else dict(args)
+            return _combine_pin(c, "d_loft_doc", values) if write else values
+        rows.append((name, arguments, check, save))
+
+    def native_script(c):
+        loft = _RECALL.get("d_loft_make") or {}
+        offset = _RECALL.get("d_loft_offset_make") or {}
+        return _d_loft_native_script(loft.get("feature", ""), offset.get("feature", ""),
+            (loft.get("result_bodies") or [""])[0],
+            (offset.get("result_bodies") or [""])[0])
+
+    def loft_feature(c):
+        return _ctx_get(c, "d_loft_make", "Loft result")["feature"]
+
+    write("sketch_create", {"name": "DLoftWitness", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "DLoftWitness", "units": "mm",
+        "geometry": [{"kind": "rectangle", "x1": 100, "y1": 100,
+                      "x2": 110, "y2": 110}]})
+    write("model_extrude", {"sketch_name": "DLoftWitness", "distance": 10,
+                            "units": "mm", "operation": "new"}, _extruded)
+    for name, x, z in (("DSectionA", 0, 0), ("DSectionB", 20, 5), ("DSectionC", 40, 0)):
+        if name == "DSectionB":
+            write("model_construction", {"kind": "plane", "mode": "offset", "plane": "xy",
+                "offset": 5, "units": "mm", "name": "DSectionMid"}, _datum_plane("xy"))
+            plane = "DSectionMid"
+        else:
+            plane = "xy"
+        write("sketch_create", {"name": name, "plane": plane})
+        write("sketch_add_geometry", {"sketch_name": name, "units": "mm", "geometry": [
+            {"kind": "line", "x1": x, "y1": 0, "x2": x, "y2": 10}]})
+
+    def fixture_snapshot(p):
+        # The fixture-stage check is repeated after section creation; only the witness body is solid.
+        return _measured("Loft fixture witness and source sketches exist", p,
+            bool(p.get("bodies")) and len([b for b in p["bodies"] if b.get("solid")]) == 1
+            and p.get("loft") is None and p.get("offset") is None)
+    write("sys_execute_script", {"script": _d_loft_native_script(), "read_only": True},
+          fixture_snapshot, ("d_loft_fixture", _recall("d_loft_fixture", lambda p: p)))
+
+    write("model_loft", {"profiles": ["DSectionA/line:0", "DSectionB/line:0", "DSectionC/line:0"],
+                          "as_surface": True, "operation": "new"}, _lofted,
+          ("d_loft_make", _recall("d_loft_make", lambda p: p)))
+    write("find_geometry", lambda c: {"target": _ctx_get(c, "d_loft_make", "surface Loft result")
+        ["result_bodies"][0],
+        "kind": "nurbs_face", "units": "mm", "max_results": 10},
+        _matched(1, "nurbs_face"), ("d_loft_face", lambda p: p["matches"][0]["handle"]), write=False)
+    write("surface_offset", lambda c: {"faces": [_ctx_get(c, "d_loft_face", "Loft face")],
+        "distance": 1, "units": "mm", "chaining": False, "operation": "new"}, "ok",
+        ("d_loft_offset_make", _recall("d_loft_offset_make", lambda p: p)))
+    rows.append(("sys_execute_script", lambda c: _combine_pin(c, "d_loft_doc", {
+        "script": native_script(c), "read_only": True}), "ok", None))
+    rows[-1] = (rows[-1][0], rows[-1][1],
+        _d_loft_capture_before("d_loft_before"),
+        ("d_loft_before", _recall("d_loft_before", lambda p: p)))
+    rows.append(("design_get", lambda c: {
+        "include": ["definition"], "feature": loft_feature(c)},
+        _d_loft_definition(("DSectionA", "DSectionB", "DSectionC")), None))
+    write("model_edit_loft", lambda c: {"feature": loft_feature(c),
+        "action": "reorder", "section_index": 1, "new_index": 0}, _d_loft_edit_reply)
+    rows.append(("sys_execute_script", lambda c: _combine_pin(c, "d_loft_doc", {
+        "script": native_script(c), "read_only": True}),
+        _d_loft_snapshot("d_loft_before", "edited"),
+        ("d_loft_edited", _recall("d_loft_edited", lambda p: p))))
+    rows.append(("design_get", lambda c: {
+        "include": ["definition"], "feature": loft_feature(c)},
+        _d_loft_definition(("DSectionB", "DSectionA", "DSectionC")), None))
+    write("model_edit_loft", lambda c: {"feature": loft_feature(c),
+        "action": "reorder", "section_index": 0, "new_index": 1}, _d_loft_edit_reply)
+    rows.append(("sys_execute_script", lambda c: _combine_pin(c, "d_loft_doc", {
+        "script": native_script(c), "read_only": True}),
+        _d_loft_snapshot("d_loft_before", "restored"), None))
+    write("design_delete_feature", lambda c: {"feature": _ctx_get(
+        c, "d_loft_offset_make", "offset result")["feature"]})
+    write("design_delete_feature", lambda c: {"feature": loft_feature(c)})
+    rows.append(("sys_execute_script", lambda c: _combine_pin(c, "d_loft_doc", {
+        "script": native_script(c), "read_only": True}),
+        _d_loft_snapshot("d_loft_before", "retired"), None))
+    rows.extend([
+        ("doc_activate", lambda c: {"name": _ctx_get(c, "d_loft_home", "home"),
+            "expect_document": _ctx_get(c, "d_loft_doc", "Loft scratch")}, "ok", None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "d_loft_doc", "Loft scratch"),
+            "save_changes": False, "expect_document": _ctx_get(c, "d_loft_home", "home")},
+         _document_closed, None),
+        ("doc_get", {}, _d_loft_home_same("d_loft_home_census"), None),
+    ])
+    return rows
+
+
+def _d_loft_capture_before(key):
+    """Capture all independent Loft/dependent body and feature fields after the offset lands."""
+    def check(p):
+        ok = (isinstance(p.get("bodies"), list) and len(p["bodies"]) == 3
+              and p.get("loft") and p.get("offset")
+              and p["loft"].get("health") == p["offset"].get("health") == 0
+              and p.get("loft_body") and p.get("offset_body")
+              and _near((p.get("loft_body") or {}).get("area_cm2"), 4.160915277738203, 0.02)
+              and _near((p.get("offset_body") or {}).get("area_cm2"), 4.0681857559380425, 0.02)
+              and (p.get("loft_body") or {}).get("bounds_mm") == [[0.0, 0.0, 0.0], [40.0, 10.0, 5.0]]
+              and len(p.get("timeline") or []) >= 1)
+        if ok:
+            _RECALL["d_loft_loft_token"] = (p.get("loft") or {}).get("token")
+            _RECALL["d_loft_offset_token"] = (p.get("offset") or {}).get("token")
+        return _measured("native Loft/dependent pre-edit baseline", p, ok)
+    return check
+
+
+def _d_loft_new_doc(p):
+    """Clear cached Loft fixture values before retaining the new document handle."""
+    for key in ("d_loft_fixture", "d_loft_before", "d_loft_edited", "d_loft_make",
+                "d_loft_offset_make", "d_loft_loft_token", "d_loft_offset_token"):
+        _RECALL.pop(key, None)
+    return p["document_handle"]
+
+
+def _d_loft_home_same(key):
+    """Require cleanup to restore the original active document handle."""
+    def check(p):
+        before = _RECALL.get(key) or {}
+        return _measured("original active document restored", {
+            "expected": before, "actual": _d_home_signature(p)},
+            bool(before) and _d_home_signature(p) == before)
+    return check
+
+
+def _d_loft_home_capture(key):
+    """Capture the active document and full open-document census before creating scratch."""
+    def check(p):
+        valid = _home_document(p)
+        if valid:
+            _RECALL[key] = _d_home_signature(p)
+        return valid
+    return check
+
+
+def _d_home_signature(p):
+    """The active handle and complete open-document identities."""
+    active = p.get("active") or {}
+    return {"active": active.get("document_handle"), "open_count": p.get("open_count"),
+            "documents": sorted(r["document_handle"] for r in p.get("open_documents", []))}
+
+
+def _d_loft_edit_reply(p):
+    """Require the public edit's section, marker, dependent-health and body-scope reports."""
+    return _measured("public Loft reorder result", p,
+        p.get("action") == "reorder" and p.get("order_matches") is True
+        and p.get("marker_restored") is True and p.get("same_feature") is True
+        and p.get("geometry_changed") is True and p.get("outside_body_changes") == []
+        and p.get("new_timeline_errors") == [] and p.get("new_timeline_warnings") == [])
+
+
+_LOFT_EDITOR += _d_loft_rows()
 
 
 def _later_refusal(sketch, row, feature, feature_row):
@@ -2246,6 +2532,88 @@ def _partial_path_shape(length):
     return check
 
 
+def _partial_path_datum(kind, name, plane=False):
+    """Check a named on-path datum through an independent geometry acquisition."""
+    def check(p):
+        row = (p.get("matches") or [{}])[0]
+        pos, normal = row.get("position"), row.get("normal")
+        valid = (p.get("match_count") == p.get("returned") == 1
+                 and row.get("kind") == kind and row.get("name") == name
+                 and isinstance(pos, list) and len(pos) == 3
+                 and _near(pos[0], 10, .001) and _near(pos[1], 0, .001)
+                 and _near(pos[2], 0, .001))
+        if plane:
+            valid = (valid and isinstance(normal, list) and len(normal) == 3
+                     and _near(abs(normal[0]), 1, .000001)
+                     and _near(normal[1], 0, .000001) and _near(normal[2], 0, .000001))
+        return _measured("partial-path datum independent position and orientation", row, valid)
+    return check
+
+
+def _partial_pattern_history(stage):
+    """Compare complete body and feature counts around a partial-path body pattern."""
+    def check(p):
+        state = _retire_design_state(p)
+        if state is None:
+            return _measured("partial-path pattern complete history and body census " + stage, p, False)
+        tree = state["tree"]
+        bodies = tree.get("root_bodies") or []
+        timeline = state["timeline"].get("timeline") or []
+        current = {"bodies": sorted((b.get("name"), b.get("handle")) for b in bodies),
+                   "timeline": [(r.get("name"), r.get("type")) for r in timeline]}
+        before = _RECALL.get("partial_path_pattern_before")
+        if stage == "before":
+            _RECALL["partial_path_pattern_before"] = current
+            return _measured("partial-path pattern protected census before", current,
+                             len(bodies) > 0 and not tree.get("children")
+                             and p.get("contents", {}).get("bodies") == len(bodies)
+                             and all(name and handle for name, handle in current["bodies"]))
+        old_handles = {handle for _name, handle in (before or {}).get("bodies", [])}
+        new_bodies = [(name, handle) for name, handle in current["bodies"]
+                      if handle not in old_handles]
+        old_timeline = (before or {}).get("timeline", [])
+        feature = (_RECALL.get("partial_path_pattern_feature") or "")
+        valid = (before is not None and len(current["bodies"]) == len(before["bodies"]) + 1
+                 and {h for _n, h in current["bodies"]} >= old_handles
+                 and len(current["timeline"]) == len(old_timeline) + 1
+                 and current["timeline"][:len(old_timeline)] == old_timeline
+                 and len(new_bodies) == 1 and bool(new_bodies[0][1])
+                 and any(name == feature for name, _kind in current["timeline"][len(old_timeline):]))
+        if valid:
+            _RECALL["partial_path_pattern_copy"] = new_bodies[0][1]
+        return _measured("partial-path pattern added one body and one feature", current, valid)
+    return check
+
+
+def _partial_pattern_copy(length):
+    """Check the new body has seed-sized material at an independently shifted position."""
+    def check(p):
+        shape = _sweep_mode_shape(p)
+        lo, hi = shape.get("min") or {}, shape.get("max") or {}
+        copied_span = hi.get("x", 0) - lo.get("x", 0)
+        copied_center = (hi.get("x", 0) + lo.get("x", 0)) / 2
+        valid = (p.get("kind") == "body" and p.get("units") == "mm"
+                 and _near(shape.get("volume"), math.pi * length, .001)
+                 and all(_num((lo if side == "min" else hi).get(axis)) for side in ("min", "max")
+                         for axis in "xyz")
+                 and _near(copied_span, length, .001)
+                 and _near(abs(copied_center - length / 2), 10, .001)
+                 and _near(lo.get("y"), -1, .001) and _near(hi.get("y"), 1, .001)
+                 and _near(lo.get("z"), -1, .001) and _near(hi.get("z"), 1, .001))
+        return _measured("partial-path pattern copy material and shifted world bounds", shape, valid)
+    return check
+
+
+def _partial_pattern_created(p):
+    """Check the path warning and retain the returned feature name for the census read."""
+    valid = (p.get("patterned") is True and p.get("type") == "path"
+             and p.get("path") == "sketch:OutOfOrder" and p.get("quantity") == 2
+             and "Not in the path: line:1" in p.get("note", "") and bool(p.get("feature")))
+    if valid:
+        _RECALL["partial_path_pattern_feature"] = p["feature"]
+    return _measured("partial-path body pattern keeps exact sketch path", p, valid)
+
+
 def _partial_path_definition(name, indices, orientation):
     """Read the selected native Path's exact sketch-curve identities at the explicit marker."""
     def check(p):
@@ -2292,7 +2660,8 @@ def _partial_path_rows():
                   "partial path names the curves it left out", p,
                   p.get("swept") is True and p.get("path_curves") == n
                   and p.get("path_sketch_curves") == count and len(p.get("result_bodies") or []) == 1
-                  and p.get("path") == "sketch:" + name + (f" (not in the path: {left})" if left else "")
+                  and p.get("path") == "sketch:" + name
+                  and (not left or f"Not in the path: {left}" in p.get("note", ""))
                   and (("WARNING" in p.get("note", "") and "separate path sketch" in p["note"])
                        if n < count else "WARNING" not in p.get("note", ""))),
               ("pp_result", lambda p: {"feature": p["feature"], "body": p["result_bodies"][0]}))
@@ -2305,6 +2674,51 @@ def _partial_path_rows():
                      "feature": _ctx_get(c, "pp_result", "sweep")["feature"]},
                      _partial_path_definition(name, indices, orientation), None))
         write("design_edit_timeline", {"action": "roll", "to": "end"})
+        if name == "OutOfOrder":
+            write("model_construction", {"kind": "point", "mode": "on_path", "path": "sketch:OutOfOrder",
+                                          "at": 0.5, "name": "OutOfOrderMidpoint"},
+                  lambda p: _measured("partial-path midpoint point created", p,
+                                      p.get("created") is True and p.get("path") == "sketch:OutOfOrder"
+                                      and p.get("at_ratio") == 0.5
+                                      and "Not in the path: line:1" in p.get("note", "")),
+                  ("pp_outoforder_midpoint", lambda p: p["handle"]))
+            rows.append(("find_geometry", {"kind": "construction_point", "name": "OutOfOrderMidpoint"},
+                         _partial_path_datum("construction_point", "OutOfOrderMidpoint"), None))
+            write("model_construction", {"kind": "plane", "mode": "on_path", "path": "sketch:OutOfOrder",
+                                          "at": 0.5, "name": "OutOfOrderMidplane"},
+                  lambda p: _measured("partial-path midpoint plane created", p,
+                                      p.get("created") is True and p.get("path") == "sketch:OutOfOrder"
+                                      and p.get("at_ratio") == 0.5
+                                      and "Not in the path: line:1" in p.get("note", "")))
+            rows.append(("find_geometry", {"kind": "construction_plane", "name": "OutOfOrderMidplane"},
+                         _partial_path_datum("construction_plane", "OutOfOrderMidplane", plane=True), None))
+            write("model_construction", lambda c: {
+                  "kind": "plane", "mode": "on_path", "path": "sketch:OutOfOrder",
+                  "to_object": _ctx_get(c, "pp_outoforder_midpoint", "midpoint datum handle"),
+                  "name": "OutOfOrderObjectPlane"},
+                  lambda p: _measured("partial-path point-anchored plane created", p,
+                                      p.get("created") is True and p.get("path") == "sketch:OutOfOrder"
+                                      and p.get("to_object") is True
+                                      and "Not in the path: line:1" in p.get("note", "")))
+            rows.append(("find_geometry", {"kind": "construction_plane", "name": "OutOfOrderObjectPlane"},
+                         _partial_path_datum("construction_plane", "OutOfOrderObjectPlane", plane=True), None))
+            rows.append(("design_get", {"include": ["default", "tree", "timeline"],
+                                         "tree_bodies": True, "max_results": 200},
+                         _partial_pattern_history("before"), None))
+            write("model_pattern_path", lambda c: {
+                  "bodies": [_ctx_get(c, "pp_result", "sweep")["body"]],
+                  "path": "sketch:OutOfOrder", "quantity": 2, "distance": 10,
+                  "distance_type": "spacing"},
+                  _partial_pattern_created)
+            rows.append(("design_get", {"include": ["default", "tree", "timeline"],
+                                         "tree_bodies": True, "max_results": 200},
+                         _partial_pattern_history("after"), None))
+            rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "pp_result", "sweep")["body"],
+                         "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                         _partial_path_shape(length), None))
+            rows.append(("model_inspect", lambda _c: {"target": _RECALL.get("partial_path_pattern_copy"),
+                         "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                         _partial_pattern_copy(length), None))
     write("doc_activate", lambda c: {"name": _ctx_get(c, "pp_home", "home")})
     rows.append(("doc_close", lambda c: {"name": _ctx_get(c, "pp_doc", "scratch"),
                  "save_changes": False, "expect_document": _ctx_get(c, "pp_home", "home")}, _document_closed, None))

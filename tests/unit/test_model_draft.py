@@ -9,7 +9,8 @@ verifier that a feature which computes with a health ERROR is reported as failur
 import types
 
 from conftest import (BRepBody, BRepFace, load_tool, make_design, install, MakeComp, payload,
-                      error_message, assert_no_active_design, _NamedCollection)
+                      error_message, assert_names_retained, assert_no_active_design,
+                      _NamedCollection)
 
 dr = load_tool("model_draft")
 
@@ -221,7 +222,8 @@ class TestTaperMovesMaterial:
         assert "tapered nothing" in res["message"] and "Bar" in res["message"]
         assert "1 face(s) compared" in res["message"]
         # the inert feature goes, so the refusal must NOT send the caller to delete one
-        assert "rolled back" in res["message"] and "design_delete_feature" not in res["message"]
+        assert ("Deleting it returned True." in res["message"]
+                and "design_delete_feature" not in res["message"])
 
     def test_draft_that_moved_material_publishes_the_delta(self, monkeypatch):
         bar = BRepBody("Bar", volume=20.0)
@@ -299,15 +301,14 @@ class TestTaperMovesMaterial:
         _wire(monkeypatch, feature=feature, faces=[_face_on(bar, area=6.0)])
         res = dr.handler(faces=["a"], pull_direction="xy", angle_deg=5)
         assert res["isError"] is True and feature.deleted is True
-        assert "rolled back" in res["message"]
+        assert "Deleting it returned True." in res["message"]
 
     def test_a_rollback_the_platform_refuses_is_disclosed(self, monkeypatch):
         bar = BRepBody("Bar", volume=20.0, face_count=6)
         feature = FakeDraftFeature(n_faces=1, removable=False)
         _wire(monkeypatch, feature=feature, faces=[_face_on(bar, area=6.0)])
         res = dr.handler(faces=["a"], pull_direction="xy", angle_deg=5)
-        assert res["isError"] is True and "could not be auto-removed" in res["message"]
-        assert "design_delete_feature" in res["message"]
+        assert "Deleting it returned False" in assert_names_retained(res, "Draft1")
 
     def test_faces_with_no_readable_body_neither_error_nor_publish_a_delta(self, monkeypatch):
         # Cannot measure is not "measured the same": no verdict, and no null delta that would read

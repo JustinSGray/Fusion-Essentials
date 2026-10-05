@@ -74,13 +74,22 @@ class VersionAdvanced(Postcondition):
         from . import _doc_common
         doc = safe(lambda: app.activeDocument)
         still = safe(lambda: doc.isModified) if doc is not None else None
+        before_version = before.get("version") if isinstance(before, dict) else None
+        lineage_after = safe(lambda: doc.dataFile.id) if doc is not None else None
         if still is None:
             local_confirmed = False
         elif still:
+            fresh = _doc_common.fresh_version_read(app, lineage_after)
+            landed = _doc_common._version_advanced(before_version, fresh)
+            tip = fresh.get("latest_version_number") or fresh.get("version_number")
+            cloud = (f"A fresh read shows cloud version {tip} landed." if landed
+                     else "A fresh read shows no new cloud version." if landed is False
+                     else "Whether a cloud version landed is unknown: the fresh version reads were "
+                          "not comparable.")
             return ("save reported success but the active document is STILL modified - local save "
-                    "completion was not confirmed. The cloud version state is not decided by this "
-                    "modified flag. Close any referencing or duplicate document, reopen this one "
-                    "top-level, then inspect doc_get/data_get before saving again."), {}
+                    f"completion was not confirmed. {cloud} Close any referencing or duplicate "
+                    "document, reopen this one top-level, then inspect doc_get/data_get before "
+                    "saving again."), {}
         else:
             local_confirmed = True
 
@@ -93,8 +102,6 @@ class VersionAdvanced(Postcondition):
                 evidence["pending"] = True
             return "", evidence
 
-        before_version = before.get("version") if isinstance(before, dict) else None
-        lineage_after = safe(lambda: doc.dataFile.id) if doc is not None else None
         verdict, after = _doc_common.wait_for_version_advance(
             app, lineage_after, before_version, self._DEADLINE_S, self._POLL_SLEEP)
         evidence.update({
@@ -336,7 +343,8 @@ class FeatureHealthy(Postcondition):
             if label == "error":
                 return ((f"'{nm}' was created but FAILED to compute. " + msg).strip()
                         + " It remains in the timeline - fix its inputs or remove it with "
-                          "design_delete_feature."), {}
+                          "design_delete_feature. Not measured whether later items this call "
+                          "added computed; re-read with design_get(include=['timeline'])."), {}
             warnings.append((nm + ": " + msg).strip().rstrip(":"))
         evidence = {"features_verified": count - before}
         if warnings:
@@ -616,6 +624,9 @@ def total_area(bodies):
     return total, unread
 
 
+_NOT_MEASURED_CONSUMED = " Not measured whether its input bodies were consumed."
+
+
 class FreeEdgesChanged(Postcondition):
     """After a stitch or unstitch: the design's FREE-edge count moved the declared way - 'sealed'
     drops it (edge pairs joined), 'opened' raises it (faces set loose)."""
@@ -648,10 +659,12 @@ class FreeEdgesChanged(Postcondition):
                 return "", {"free_edges_confirmed": False}
             if after >= before:
                 return (f"the stitch reported success but the design's free-edge count did not drop "
-                        f"({before} before, {after} after) - no edge pair was sealed."), {}
+                        f"({before} before, {after} after) - no edge pair was sealed."
+                        + _NOT_MEASURED_CONSUMED + _left_by(payload, always=True)), {}
         elif after <= before:
             return (f"the unstitch reported success but the design's free-edge count did not rise "
-                    f"({before} before, {after} after) - no face was set loose."), {}
+                    f"({before} before, {after} after) - no face was set loose."
+                    + _NOT_MEASURED_CONSUMED + _left_by(payload, always=True)), {}
         return "", {"free_edges_before": before, "free_edges_after": after}
 
 
@@ -677,8 +690,20 @@ class SurfaceAreaAdded(Postcondition):
         if before[1] or after[1]:
             return "", {"surface_area_confirmed": False}
         return (f"the surface was reported created, but total body surface area changed by "
-                f"{delta:.12g} cm2; verification requires an increase above {_AREA_TOL_CM2:g} cm2."), {
+                f"{delta:.12g} cm2; verification requires an increase above {_AREA_TOL_CM2:g} cm2."
+                + _left_by(payload)), {
                     "area_change_cm2": delta, "area_increase_threshold_cm2": _AREA_TOL_CM2}
+
+
+def _left_by(payload, always=False):
+    """The removal clause for the payload's feature and bodies ('' with none, unless `always`)."""
+    from ._common import design, left_in_timeline
+    feature = payload.get("feature") or payload.get("form")
+    if not isinstance(feature, str) or not feature:
+        return " " + left_in_timeline(design(), None) if always else ""
+    bodies = [b for b in payload.get("result_bodies") or () if isinstance(b, str)]
+    added = (" Its result bodies: " + ", ".join(f"'{b}'" for b in bodies) + "." if bodies else "")
+    return added + " " + left_in_timeline(design(), feature)
 
 
 class PatternElementsPlaced(Postcondition):

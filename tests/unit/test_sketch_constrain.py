@@ -379,8 +379,11 @@ def install(monkeypatch):
 
 
 def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+    data = json.loads(result["content"][0]["text"])
+    assert result["isError"] is ("failed" in data), result
+    if "failed" in data:
+        assert result["message"] == data["note"]
+    return data
 
 
 def _constrain(sketch_name="S", component="", units="mm", **entry):

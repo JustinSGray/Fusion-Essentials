@@ -220,8 +220,11 @@ def _install(monkeypatch, sketches=None):
 
 
 def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+    data = json.loads(res["content"][0]["text"])
+    assert res["isError"] is ("failed" in data), res
+    if "failed" in data:
+        assert res["message"] == data["note"]
+    return data
 
 
 def _raiser(message):
@@ -1187,6 +1190,19 @@ class TestBatch:
         assert out["not_attempted"] == 1
         assert "Stopped at dimensions[1]" in out["note"]
         assert [c[0] for c in s.sketchDimensions.calls] == ["radius"]
+        # Refused before any add: the counts stand, with no read-back guidance.
+        assert "Failed-entry count changes:" in out["note"]
+        assert "Counts do not establish" not in out["note"]
+
+    def test_an_add_the_api_refused_keeps_the_read_back_guidance(self, monkeypatch):
+        _install(monkeypatch)
+        out = _payload(sd.handler(dimensions=[
+            {"dim_type": "radius", "entity_one": "circle:0"},
+            {"dim_type": "radius", "entity_one": "line:0"},
+            {"dim_type": "diameter", "entity_one": "circle:1"}]))
+        assert out["failed"]["index"] == 1 and "Could not add the radius" in out["failed"]["error"]
+        assert "Failed-entry count changes:" in out["note"]
+        assert "Counts do not establish unchanged geometry" in out["note"]
 
     def test_a_first_entry_failure_is_an_error_and_nothing_landed(self, monkeypatch):
         s = _install(monkeypatch)

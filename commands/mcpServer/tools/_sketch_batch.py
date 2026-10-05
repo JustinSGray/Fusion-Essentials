@@ -161,4 +161,4 @@ def run_batch(entries, one, name, verb, sketch_name, *, sketch, result_note="", 
         payload = {**(result_fields(results) or {}), **payload}
     if result_note:
         payload["result_note"] = result_note
-    return ok(payload)
+    return error(payload["note"], payload=payload) if failed else ok(payload)

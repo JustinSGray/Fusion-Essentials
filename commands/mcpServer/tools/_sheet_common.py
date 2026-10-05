@@ -225,14 +225,6 @@ def _unit(v):
     return None if mag < 1e-12 else [c / mag for c in v]
 
 
-def _coaxial(origin_a, axis_a, origin_b, axis_b):
-    """True when two unit axes are parallel (cross components within 1e-6) and one line (offset within 1e-4 cm)."""
-    if any(abs(c) > 1e-6 for c in _geom.cross(axis_a, axis_b)):
-        return False
-    offset = [origin_b[i] - origin_a[i] for i in range(3)]
-    return all(abs(c) < 1e-4 for c in _geom.cross(offset, axis_a))
-
-
 def bend_wall_groups(body):
     """Return the body's cylinder faces grouped per shared axis line at two or more radii (a hole has one), or None when a face will not read."""
     # Never BRepBody.getBendFaces() here: a call on the body before an unfold makes the later
@@ -254,7 +246,7 @@ def bend_wall_groups(body):
             return None
         origin, axis, radius = shape
         for grp in groups:
-            if _coaxial(grp["origin"], grp["axis"], origin, axis):
+            if _geom.coaxial(grp["origin"], grp["axis"], origin, axis):
                 grp["faces"].append(f)
                 grp["radii"].append(radius)
                 break

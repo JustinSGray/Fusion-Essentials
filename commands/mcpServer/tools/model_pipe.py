@@ -153,7 +153,8 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
         return error("No active design. Create or open a document first (see doc_new).")
     comp = target_component(design)
 
-    pipe_path, path_label, patherr = build_path(comp, path)
+    left = []
+    pipe_path, path_label, patherr = build_path(comp, path, left_out=left)
     if patherr:
         return error(patherr)
     # What the built Path HOLDS, beside what the request named: the pipe follows these curves and
@@ -268,8 +269,11 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
     delta_total = None
     if op_key == "new":
         if feature and not result:
-            return error("Pipe reported success but created no body. Check that the path is one "
-                         "connected chain and the section size fits around its corners.")
+            made = _common.counted(lambda: feature.bodies.count)
+            return error(("Pipe reported success but created no body." if made == 0 else
+                          "Pipe reported success but its result bodies did not read.") + " Check that the path is one connected chain and the "
+                         "section size fits around its corners. "
+                         + _common.failed_effect_remedy(design, feature))
         if not feature:
             count_after = _common.body_count(census)
             if count_before is None or count_after is None or count_after <= count_before:
@@ -326,7 +330,7 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
     }
     if sketch_curves is not None:
         payload["path_sketch_curves"] = sketch_curves
-    warning = _common.path_chain_warning(path_curves, sketch_curves, "pipe")
+    warning = _common.path_chain_warning(path_curves, sketch_curves, "pipe", left)
     if warning:
         payload["note"] += " " + warning
     if op_key in ("cut", "intersect"):

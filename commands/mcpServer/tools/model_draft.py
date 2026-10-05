@@ -129,15 +129,11 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
     effect_unverified = not read_any
     if not moved and read_any:
         named = ", ".join(str(safe(lambda b=b: b.name)) for b in draft_bodies) or "its body"
-        removed = bool(safe(lambda: feature.deleteMe()))
         return error(f"Draft computed but tapered nothing - on {named}, "
                      f"{_unchanged_detail(vol_readable, count_readable, compared_faces)}, so the "
                      f"{angle} deg taper changed no geometry. Check 'pull_direction' is the plane "
                      "the faces taper relative to, and try 'flip' or a face that is not already "
-                     "parallel to it."
-                     + (" The feature has been rolled back." if removed
-                        else " (The inert feature could not be auto-removed.) "
-                             + _common.failed_effect_remedy(design, feature)))
+                     "parallel to it. " + _common.delete_failed_feature(design, feature)[1])
 
     requested = len(face_list)
     # The count the FEATURE reports, never the request echoed back. NOT `inputFaces`: that property

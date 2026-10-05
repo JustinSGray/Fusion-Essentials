@@ -104,7 +104,8 @@ def handler(mesh: str = "", thickness=None, units: str = "mm") -> dict:
     if not comparable and not volume_readable:
         return error("Mesh shell raised no error, but nothing could be read back off the mesh "
                      "afterwards (triangle and vertex counts and volume are all unreadable) - the "
-                     "hollow is UNVERIFIED, so it is reported as a failure.")
+                     "hollow is UNVERIFIED, so it is reported as a failure. "
+                     + _common.failed_effect_remedy(design, feature))
     if not moved:
         # The clause names only what was actually READ: a count that came back None, or a volume
         # neither end could report, must not appear in a sentence claiming it held still.

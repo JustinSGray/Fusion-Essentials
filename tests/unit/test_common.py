@@ -63,6 +63,13 @@ class TestResponseBuilders:
         assert res["message"] == "boom"
         assert res["content"][0]["text"] == "boom"
 
+    def test_error_preserves_structured_partial_effects(self):
+        body = {"failed": {"index": 1}, "retained": None, "note": "One entry failed."}
+        result = common.error(body["note"], payload=body)
+        assert result["isError"] is True
+        assert result["message"] == body["note"]
+        assert json.loads(result["content"][0]["text"]) == body
+
     def test_underscore_aliases_are_gone(self):
         # the migration-era _ok/_error/_safe aliases were removed (single public spelling now).
         # Pin their ABSENCE so they can't silently creep back in.
@@ -233,6 +240,13 @@ class TestMeasured:
         assert common.measured(lambda: float("nan")) is None
         assert common.measured(lambda: float("inf")) is None
         assert common.measured(lambda: 0.0) == 0.0
+
+
+def test_finite_number_refuses_a_bool_and_reads_text_only_when_asked():
+    assert common.finite_number(True) is None and common.finite_number(False, text=True) is None
+    assert common.finite_number(1) == 1.0 and common.finite_number(0) == 0.0
+    assert common.finite_number("2.5") is None and common.finite_number("2.5", text=True) == 2.5
+    assert common.finite_number("nan", text=True) is None and common.finite_number(10 ** 400) is None
 
 
 class TestResultBodies:
@@ -2289,10 +2303,12 @@ class TestBuildPathFromSketch:
         comp = self._comp(sketch, chain, collection_answer=_boom)
         monkeypatch.setattr(adsk.core.ObjectCollection, "create",
                             staticmethod(lambda: _RecordingCollection()))
-        p, label, err = common.build_path(comp, "sketch:PathSketch")
+        left = []
+        p, label, err = common.build_path(comp, "sketch:PathSketch", left_out=left)
         assert err is None
         assert p is chain                          # the seed chain, not the collection
-        assert label == "sketch:PathSketch (not in the path: line:1, line:2, line:3, line:4)"
+        assert label == "sketch:PathSketch"
+        assert left == ["line:1", "line:2", "line:3", "line:4"]
         assert comp.seed_calls and comp.seed_calls[0][1] is True
 
     def test_a_collection_that_answers_zero_falls_back_to_the_seed_chain(self, monkeypatch):
@@ -2315,9 +2331,13 @@ class TestBuildPathFromSketch:
         comp = self._comp(sketch, partial, collection_answer=lambda c: partial)
         monkeypatch.setattr(adsk.core.ObjectCollection, "create",
                             staticmethod(lambda: _RecordingCollection()))
-        p, label, err = common.build_path(comp, "sketch:PathSketch")
+        left = []
+        p, label, err = common.build_path(comp, "sketch:PathSketch", left_out=left)
         assert err is None and p is partial
-        assert label == "sketch:PathSketch (not in the path: line:1)"
+        assert label == "sketch:PathSketch" and left == ["line:1"]
+        warning = common.path_chain_warning(2, 3, "sweep", left)
+        assert "chained 2 of the sketch's 3 curves" in warning
+        assert "Not in the path: line:1." in warning
 
     def test_a_construction_curve_is_not_collected(self, monkeypatch):
         import adsk.core
@@ -2377,6 +2397,13 @@ class TestBuildPathFromSketch:
         warning = common.path_chain_warning(2, 3, 'sweep')
         assert '2 of' in warning and 'sketch_get' in warning
         assert 'sharp' not in warning and 'tangent' not in warning
+        # A connected sketch drawn out of order also chains short, so neither cause is asserted.
+        assert "redrawn in chain order" in warning and "separate path sketches" in warning
+        assert "does not connect" not in warning and "Not in the path" not in warning
+
+    def test_a_full_chain_has_no_warning_whatever_ids_ride_along(self):
+        assert common.path_chain_warning(3, 3, 'sweep', ["line:1"]) == ""
+        assert common.path_chain_warning(2, 3, 'sweep', ["line:1"]).startswith("WARNING")
 
 
 class TestOpenProfileFromSketch:
@@ -2667,3 +2694,60 @@ class TestNullFeatureNoteWording:
         assert note == self._NO_SCOPE
         assert "the remesh result" in note
         assert "BaseFeature" not in note
+
+
+class TestRetainedFeatureRemedy:
+    """A failed write's retained feature is named by the address design_delete_feature takes."""
+
+    @staticmethod
+    def _feature(deleted=True):
+        comp = SimpleNamespace(name="Holder")
+        feature = SimpleNamespace(name="Fillet3", parentComponent=comp)
+        feature.timelineObject = SimpleNamespace(name="Fillet3", index=7, entity=feature)
+        feature.deleteMe = (lambda: deleted) if not isinstance(deleted, Exception) else (
+            lambda: (_ for _ in ()).throw(deleted))
+        return feature
+
+    def test_a_parametric_feature_is_named_with_its_delete_call(self):
+        assert common.failed_effect_remedy(SimpleNamespace(designType=1), self._feature()) == (
+            "'Holder/Fillet3@7' remains in the timeline; remove it with "
+            "design_delete_feature(feature='Holder/Fillet3@7').")
+
+    def test_a_direct_design_gets_undo_even_with_a_feature_object(self):
+        # A direct design's timeline read raises, so no delete call can name a row there.
+        text = common.failed_effect_remedy(SimpleNamespace(designType=0), self._feature())
+        assert "DIRECT mode" in text and "design_delete_feature" not in text
+
+    @pytest.mark.parametrize("deleted,said", [(True, "Deleting it returned True."),
+                                              (False, "Deleting it returned False. "),
+                                              (RuntimeError("busy"), "Deleting it raised (busy). ")])
+    def test_the_delete_a_site_runs_is_reported_as_it_answered(self, deleted, said):
+        removed, text = common.delete_failed_feature(SimpleNamespace(designType=1),
+                                                     self._feature(deleted))
+        assert removed is (deleted is True) and text.startswith(said)
+        assert ("design_delete_feature(feature='Holder/Fillet3@7')" in text) is (deleted is not True)
+
+
+@pytest.mark.parametrize("refusal", [True, False])
+def test_partial_sketch_batch_is_an_error_with_full_body(refusal):
+    batch = load_tool("_sketch_batch")
+    sketch = make_sketch(name="Partial")
+    def one(index, entry):
+        if index == 1:
+            if refusal:
+                return batch.refuse("Invalid entry")
+            raise RuntimeError("Write refused")
+        return {"kind": "line"}, None
+    result = batch.run_batch([{}, {}, {}], one, "geometry", "drawn", "Partial", sketch=sketch,
+                             result_note="Read current entities.",
+                             result_fields=lambda rows: {"units": "mm", "final_count": len(rows)})
+    body = json.loads(result["content"][0]["text"])
+    assert result["isError"] is True and result["message"] == body["note"]
+    assert body["drawn"] == 1 and body["requested"] == 3 and body["sketch"] == "Partial"
+    assert body["results"] == [{"kind": "line", "index": 0}]
+    assert body["failed"]["index"] == 1 and body["not_attempted"] == 1
+    assert body["failed_entry_counts"]["before"] == body["failed_entry_counts"]["after"]
+    assert body["units"] == "mm" and body["final_count"] == 1
+    assert body["result_note"] == "Read current entities."
+    assert ("Counts do not establish unchanged geometry" in body["note"]) is not refusal
+    assert ("retained" not in body) if refusal else body["retained"] is None

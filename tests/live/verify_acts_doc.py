@@ -901,6 +901,12 @@ def _favorite_batch_rows():
 
 
 _BOOLEAN_FLAGS = _target_begin() + _boolean_reads("bool_seed")
+_BOOLEAN_FLAGS += [
+    ("design_get", {"include": ["tree"], "tree_handles": None},
+     _refused("Invalid Boolean for 'tree_handles'", "Omit this optional key to use its default"), None),
+    ("design_get", {"include": ["tree"]},
+     lambda p: _measured("omitted Boolean uses the default", p, isinstance(p.get("tree"), dict)), None),
+] + _boolean_reads("bool_null_omitted", "bool_seed")
 for _bool_tool, _bool_args, _bool_path in [
     ("design_edit_timeline", lambda c: {"action": "suppress", "suppressed": "false",
         "feature": _target_address(c, "bool_seed_design", "Witness", "Extrude1")}, "suppressed"),

@@ -16,7 +16,7 @@ from ._common import counted, safe
 from . import _common
 
 MAP_BLURB = (
-    "math: unit_vector/unit_vector_between/evaluator_normal_at/dot/cross "
+    "math: unit_vector/unit_vector_between/evaluator_normal_at/dot/cross/coaxial "
     "(vectors); body_aabb/occ_world_frame/axis_vec (AABB, placement); volumes/volume_delta/"
     "signed_volume/body_shape/face_counts/face_count_delta/areas/area_delta/face_frames/faces_moved/"
     "lump_count/aabb_gap/parallel_plane_facts (what a write is judged by; area/frames move where "
@@ -612,6 +612,21 @@ def cross(a, b):
     if a is None or b is None:
         return None
     return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def coaxial(origin_a, axis_a, origin_b, axis_b, *, axis_cross_tol=1e-6,
+            offset_cross_tol=1e-4, axis_dot_tol=None, offset_squared_tol=None):
+    """Compare unit axes with the caller's angular and positional threshold metrics."""
+    if axis_dot_tol is not None:
+        if abs(abs(dot(axis_a, axis_b)) - 1) > axis_dot_tol:
+            return False
+    elif any(abs(c) > axis_cross_tol for c in cross(axis_a, axis_b)):
+        return False
+    offset = [origin_b[i] - origin_a[i] for i in range(3)]
+    off = cross(axis_a, offset)
+    if offset_squared_tol is not None:
+        return dot(off, off) <= offset_squared_tol
+    return all(abs(c) < offset_cross_tol for c in off)
 
 
 def unit_vector(v, decimals: int = 6):
