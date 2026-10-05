@@ -77,6 +77,4 @@ Do not silently expand scope with extra products, tools, scripts or evaluations.
 exact executed brief and later steering associated with the run. Evaluate older runs
 against their own instructions; edited video quality is not a CAD quality measurement.
 
-For a surface-heavy product with workholding and CAM, consult the
-[eyewear acceptance example](references/eyewear.md). Adapt its pattern, not its product-specific
-requirements. No new evaluator software or automatic review loop is required.
+No new evaluator software or automatic review loop is required.
