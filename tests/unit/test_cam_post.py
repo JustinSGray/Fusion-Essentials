@@ -617,7 +617,7 @@ class TestFusionPostScope:
     """The lathe and mill-turn posts live in the library this installation ships; post_scope='fusion'
     is the scope that resolves them."""
 
-    @pytest.mark.parametrize("name", ["fanuc turning", "missing"])
+    @pytest.mark.parametrize("name", ["fanuc turning", "missing", "fusion://root/haas turning.cps"])
     def test_capped_name_refuses_before_program_creation(self, monkeypatch, tmp_path, name):
         lib = _fusion_lib(["fanuc turning.cps", "haas turning.cps"])
         cam = _install(monkeypatch, _CAM([_Setup("S1", [_Op("Face1")])]))
@@ -626,6 +626,9 @@ class TestFusionPostScope:
         result = cp.handler(post=name, post_scope="fusion", output_folder=str(tmp_path),
                             program_name="1001")
         assert result["isError"] is True and "absence is unknown" in result["message"]
+        assert "Choose an enumerated post URL instead" in result["message"]
+        assert "URLs outside this walk cannot be resolved" in result["message"]
+        assert "Pass an exact post asset url" not in result["message"]
         assert cam.ncPrograms.count == 0 and cam.posted == []
 
     def test_seen_exact_post_url_works_despite_cap(self, monkeypatch, tmp_path):

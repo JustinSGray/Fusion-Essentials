@@ -672,10 +672,15 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Tool libraries unavailable.
 - Could not resolve the '
 - Could not create an empty tool library.
-- importToolLibrary returned a URL but no library loads back from it - the create did not land.
+- The new tool library's empty count could not be verified; nothing was imported.
+- importToolLibrary returned a URL but no library loads back from it - the create is unconfirmed at '
+- '. Inspect that library before retrying; it was not rolled back.
+- . Seed persistence is unconfirmed; inspect that library before retrying. It was not rolled back.
 - Library created and persisted. List it with action='list'. (Local=disk, Cloud/Hub=your Autodesk account; a duplicate name gets a numeric suffix.)
 - No hub folder to create the library in.
 - Each seed entry must be {library_url, index}; got
+- addition is unconfirmed: library count reads
+- . Nothing was imported.
 - Could not read the sample tool libraries - tool types are unavailable.
 - Pass one of these as add_tools[].from_type to clone a sample of that type.
 - Auto-assigned free tool number(s)
@@ -719,7 +724,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - This tool is not used by any operation.
 - Every parameter's name/expression/value (null where unreadable, or non-scalar - see value_kind). Lengths in 'value' are internal centimetres; 'expression' carries the tool's own unit. 'formula_sour...
 - scope='{scope}' is the libraries this Fusion installation ships, which this tool only READS - '{action}' was refused. Copy the tool out instead: action='list' at this scope for its libraries and th...
-- Cannot resolve  library '' by name: the library walk was capped, so uniqueness or absence is unknown. Pass an exact library url from cam_get(include=['library']).
+- Cannot resolve  library '': the library walk was capped, so uniqueness or absence is unknown. Choose an enumerated library URL instead; URLs outside this walk cannot be resolved. See cam_get(includ...
 - Summary rows only (diameter/flutes/type/description/number/product identity). For a tool's FULL parameter list - every dimension by name/expression/value - call action='parameters' with that tool's...
 - '{diameter}' was not applied and nothing was added: this tool reads {flag} true, and a 'diameter' override writes only the cutting diameter (tool_isMill/tool_isDrill) or the nozzle (tool_isJet). Th...
 - '{diameter}' was not applied and nothing was added: every one of {flags} reads false on this tool and its '{dia}' does not read isEditable true, so no row here reads as the size it cuts at and the ...
@@ -734,6 +739,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - operationsByTool names  operation(s) running this entry - 'invalidated_operations' lists them; regenerate them with cam_generate.
 - , and read back from the document tool library - a document read-back shows the change is present, not that it was stored; doc_save stores the document.
 - operationsByTool did not answer for the tool at index , so which operations run it is UNKNOWN - that is not 'used by none'. Re-read the library with action='list' and retry.
+- importToolLibrary returned a URL but no library loads back from it - the create is unconfirmed at ''. Inspect that library before retrying; it was not rolled back.
+- Created library at '' reads  tools, expected . Seed persistence is unconfirmed; inspect that library before retrying. It was not rolled back.
 
 ### `cam_find_holes`
 - Omitted 'bodies' scans every solid body. Each hole's 'faces' lists handles PER SEGMENT, in the group's 'segments' order - pass handles to cam_select_geometry(selection='holes', handles=[...]), whic...
@@ -872,7 +879,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Reconfiguration may be partial.
 - Flat paths were generated, but fail-on-post behavior did not read back; no NC file was posted.
 - Post config not found for ''. Tried: . Provide a full .cps path, or a post name in the personal () or installed () post folder. post_scope=fusion resolves the same name against the posts this insta...
-- Cannot resolve  post '' by name: the search was capped, so uniqueness or absence is unknown. Pass an exact post asset url from this library, or retry a complete listing.
+- Cannot resolve  post '': the search was capped, so uniqueness or absence is unknown. Choose an enumerated post URL instead; URLs outside this walk cannot be resolved.
 - Provide 'post' - the post processor: for post_scope=local a full .cps path or a name in the personal/installed post folder; for cloud/hub/fusion the NAME of a post in that library.
 - The post log rejected emitted number ; this NC Program remains. Correct it with cam_set_nc_comment(program='', set_number='<number accepted by this post>'), then retry cam_post(program_name='').
 - The post log rejected emitted number . Retry creation with a program_name that is a number accepted by this post. If rollback says the failed program remains, remove it with cam_delete first.

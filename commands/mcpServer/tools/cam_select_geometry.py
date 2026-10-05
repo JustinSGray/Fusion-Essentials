@@ -1610,7 +1610,7 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
                      "for sketch, cylinder faces for holes, the surface set's faces for surfaces).")
                      + refresh_effect)
     if selection == _PROBE and (probing_type is not None
-                                or safe(lambda: op.strategy) == "probe_geometry"):
+                                or safe(lambda: op.strategy) in ("probe", "probe_geometry")):
         if probing_type is not None:
             perr = _apply_probing_type(op, probing_type, extra)
             if perr:

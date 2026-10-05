@@ -202,10 +202,12 @@ def _resolve_target(scope, library):
         if truncated:
             candidates = assets_named(found, {target.lower()})
             urls = [str(safe(lambda a=a: a.toString())) for a in candidates]
-            return None, (f"Cannot resolve {scope} library '{target}' by name: the library walk "
+            return None, (f"Cannot resolve {scope} library '{target}': the library walk "
                           "was capped, so uniqueness or absence is unknown. "
                           + (f"Known matching urls: {', '.join(urls)}. " if urls else "")
-                          + "Pass an exact library url from cam_get(include=['library']).")
+                          + "Choose an enumerated library URL instead; URLs outside this walk "
+                            "cannot be resolved. See cam_get(include=['library'], scope='"
+                          + scope + "').")
         # The leafName-or-stem matcher every library resolve shares - refuses two assets answering
         # one name rather than picking the first the folder walk reached.
         named = assets_named(found, {target.lower()})
@@ -1201,10 +1203,19 @@ def _do_create_library(scope, name, seed_tools):
             return error(terr)
         resolved.append(t)
     lib = safe(lambda: _empty_library())
-    if not lib:
+    if lib is None:
         return error("Could not create an empty tool library.")
-    for t in resolved:
-        safe(lambda t=t: lib.add(t))
+    if safe(lambda: lib.count) != 0:
+        return error("The new tool library's empty count could not be verified; nothing was imported.")
+    for index, t in enumerate(resolved):
+        try:
+            lib.add(t)
+        except Exception as e:
+            return error(f"Seed {index} could not be added: {e}. Nothing was imported.")
+        count = safe(lambda: lib.count)
+        if count != index + 1:
+            return error(f"Seed {index} addition is unconfirmed: library count reads {count}, "
+                         f"expected {index + 1}. Nothing was imported.")
     try:
         new_url = libs.importToolLibrary(lib, root, name)
     except Exception as e:
@@ -1213,11 +1224,18 @@ def _do_create_library(scope, name, seed_tools):
         return error(f"Creating library '{name}' at {scope} failed: {e}.{hint}")
     if not new_url:
         return error(f"Creating library '{name}' at {scope} returned no URL.")
-    if safe(lambda: libs.toolLibraryAtURL(new_url)) is None:
+    stored = safe(lambda: libs.toolLibraryAtURL(new_url))
+    if stored is None:
         return error(f"importToolLibrary returned a URL but no library loads back from it - the "
-                     "create did not land.")
+                     f"create is unconfirmed at '{safe(lambda: new_url.toString())}'. "
+                     "Inspect that library before retrying; it was not rolled back.")
+    stored_count = safe(lambda: stored.count)
+    if stored_count != len(resolved):
+        return error(f"Created library at '{safe(lambda: new_url.toString())}' reads "
+                     f"{stored_count} tools, expected {len(resolved)}. Seed persistence is "
+                     "unconfirmed; inspect that library before retrying. It was not rolled back.")
     return ok({"created_library": name, "scope": scope, "url": safe(lambda: new_url.toString()),
-               "tool_count": safe(lambda: lib.count, len(resolved)),
+               "tool_count": stored_count,
                "note": "Library created and persisted. List it with action='list'. (Local=disk, "
                        "Cloud/Hub=your Autodesk account; a duplicate name gets a numeric suffix.)"})
 

@@ -1556,6 +1556,8 @@ class TestTargetToolListCache:
 class _NewLib:
     def __init__(self):
         self.tools = []
+    def __bool__(self):
+        return bool(self.tools)
     def add(self, t):
         self.tools.append(t)
     @property
@@ -1623,7 +1625,9 @@ class TestCreateLibrary:
         libs._loads_back = False
         res = ct.handler(action="create_library", scope="local", library="Ghost Lib")
         assert res["isError"] is True
-        assert "did not land" in res["message"]
+        assert "create is unconfirmed" in res["message"]
+        assert "toollibraryroot://Local/Ghost Lib" in res["message"]
+        assert "not rolled back" in res["message"]
 
     def test_hub_descends_to_team_folder(self, monkeypatch):
         libs = _install_create(monkeypatch)
@@ -1648,6 +1652,43 @@ class TestCreateLibrary:
                          add_tools=[{"library_url": "u", "index": 99}])
         assert res["isError"] is True and "99" in res["message"]
         assert len(libs.imported) == 0
+
+
+@pytest.fixture
+def seed_creation_failure(monkeypatch):
+    libs = _install_create(monkeypatch)
+    transient = _NewLib()
+    monkeypatch.setattr(ct, "_empty_library", lambda: transient)
+
+    def configure(mode):
+        if mode == "stored_missing_seed":
+            monkeypatch.setattr(libs, "toolLibraryAtURL", lambda url: _NewLib())
+        else:
+            def add(tool):
+                if transient.count == 0:
+                    transient.tools.append(tool)
+                elif mode == "raise":
+                    raise RuntimeError("seed rejected")
+            monkeypatch.setattr(transient, "add", add)
+        return libs
+    return configure
+
+
+@pytest.mark.parametrize("mode", ["raise", "no_op", "stored_missing_seed"])
+def test_seed_failure_never_reports_complete_library(seed_creation_failure, mode):
+    libs = seed_creation_failure(mode)
+    result = ct.handler(action="create_library", scope="local", library="Seed Check",
+                        add_tools=[{"library_url": "u", "index": 0},
+                                   {"library_url": "u", "index": 1}])
+    assert result["isError"] is True
+    if mode == "stored_missing_seed":
+        assert len(libs.imported) == 1
+        assert "reads 0 tools, expected 2" in result["message"]
+        assert "not rolled back" in result["message"]
+    else:
+        assert libs.imported == []
+        assert "Seed 1" in result["message"]
+        assert "Nothing was imported" in result["message"]
 
 
 # ── _preset_param_of: a preset value maps per tool CLASS (a drill preset has no 'tool_feedCutting', ─
@@ -2764,11 +2805,15 @@ class TestResolveTargetShared:
         target, err = ct._resolve_target("cloud", asset.toString())
         assert err is None and target.is_document is False
 
-    def test_capped_miss_does_not_claim_absence(self, monkeypatch):
+    @pytest.mark.parametrize("target_name", ["Ghost", "cloud://Team/Hidden"])
+    def test_capped_miss_does_not_claim_absence_or_repeat_unseen_url(self, monkeypatch, target_name):
         monkeypatch.setattr(ct, "_tool_libraries", lambda: self._libs([]))
         monkeypatch.setattr(ct, "library_assets", lambda libs, root: ([], True))
-        target, err = ct._resolve_target("cloud", "Ghost")
+        target, err = ct._resolve_target("cloud", target_name)
         assert target is None and "absence is unknown" in err
+        assert "Choose an enumerated library URL instead" in err
+        assert "URLs outside this walk cannot be resolved" in err
+        assert "Pass an exact library url" not in err
 
     def test_two_libraries_sharing_a_leaf_name_are_refused_not_the_first(self, monkeypatch):
         # two DISTINCT assets both leafed 'Team Mill' (different folders) - the by-name resolve

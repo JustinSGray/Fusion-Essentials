@@ -291,7 +291,11 @@ def handler(operation_type: str = "milling", models=None, name: str = "",
             inp.printSetting = setting
         setup = cam.setups.add(inp)
     except Exception as e:
-        return error(f"Failed to create the {op_key} setup: {e}")
+        remedy = (" Switch the workspace to Design and back to Manufacture with "
+                  "view_switch_workspace, then retry."
+                  if op_key == "cutting" and
+                  "Used entity could not be matched in manufacturing tree" in str(e) else "")
+        return error(f"Failed to create the {op_key} setup: {e}{remedy}")
     if not setup:
         return error("Setup creation returned nothing.")
     # The setup has landed, so a declined or deduped name is a DISCLOSURE, not a failed create -

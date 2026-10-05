@@ -7,6 +7,7 @@ guards. No live Fusion - fakes mimic adsk.cam.CAM.setups.
 """
 
 import json
+import pytest
 from types import SimpleNamespace
 
 import adsk.cam
@@ -468,3 +469,32 @@ class TestFlatPatternCutting:
         assert result["isError"] is True
         assert "sheet_create_flat_pattern" in result["message"]
         assert cam.setups.count == 0
+
+
+@pytest.fixture
+def flat_setup_refusal(monkeypatch):
+    _, cam, _ = _install(monkeypatch)
+    flat = BRepBody("Flat", entity_token="flat")
+    monkeypatch.setattr(cs, "_flat_models", lambda design, refs: ([flat], [], None))
+
+    def fail(message):
+        def create_input(_kind):
+            raise RuntimeError(message)
+        monkeypatch.setattr(cam.setups, "createInput", create_input)
+
+    return cam, fail
+
+
+@pytest.mark.parametrize("message,has_remedy", [
+    ("3 : Used entity could not be matched in manufacturing tree", True),
+    ("3 : Setup creation failed", False),
+])
+def test_flat_tree_refusal_names_workspace_recovery(flat_setup_refusal, message, has_remedy):
+    cam, fail = flat_setup_refusal
+    fail(message)
+    result = cs.handler(operation_type="cutting", flat_patterns=["Folded"])
+    assert result["isError"] is True
+    assert message in result["message"]
+    assert ("Design and back to Manufacture" in result["message"]) is has_remedy
+    assert ("view_switch_workspace" in result["message"]) is has_remedy
+    assert cam.setups.count == 0

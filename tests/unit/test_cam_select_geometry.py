@@ -1754,12 +1754,13 @@ class TestProbingType:
         assert out["selections"] == 1 and out["probing_type"] == "probing-z"
         assert probe_type.expression == "'probing-z'"
 
-    def test_probe_geometry_without_explicit_type_reports_inferred_face_type(self, monkeypatch):
-        op = _probe_op(name="Probe Geometry1", probing_type="'probing-unknown'",
+    @pytest.mark.parametrize("strategy", ["probe", "probe_geometry"])
+    def test_probe_without_explicit_type_reports_final_inferred_face_type(self, monkeypatch, strategy):
+        op = _probe_op(name="Probe Geometry1", probing_type="'probing-z'",
                        probing_type_choices=self._CHOICES,
-                       strategy="probe_geometry")
+                       strategy=strategy)
         probe_type = op.parameters.itemByName("probingType")
-        probe_value = _ProbeTypeResetOnSelection(probe_type, "'probing-xy-rectangular-boss'")
+        probe_value = _ProbeTypeResetOnSelection(probe_type, "'probing-x'")
         mode = op.parameters.itemByName("probe_mode")
         op.parameters.swap("probe_selection", _ModeGatedParam(probe_value, mode, "selection-model"))
         cam = _CAM([_Setup([op])])
@@ -1769,7 +1770,9 @@ class TestProbingType:
                                   generate=False))
 
         assert out["selections"] == 1
-        assert out["probing_type"] == "probing-xy-rectangular-boss"
+        assert probe_type.expression == "'probing-x'"
+        assert out["probing_type"] == "probing-x"
+        assert cam.generated == []
 
     def test_probe_geometry_refuses_when_face_leaves_type_unknown(self, monkeypatch):
         op = _probe_op(name="Probe Geometry1", probing_type="'probing-unknown'",

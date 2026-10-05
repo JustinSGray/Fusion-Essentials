@@ -1919,7 +1919,16 @@ _CAM_STORY = _setup_preflight_rows() + [
                                        "handles": [_ctx_get(c, "probe_face", "the stepped top")],
                                        "generate": False},
      _needs(MACHINING_EXTENSION, lambda p: _probe_applied(1)(p)
-            and p.get("probe_mode") == "selection-model"), None),
+            and p.get("probe_mode") == "selection-model"
+            and p.get("probing_type") == "probing-z"), None),
+    ("cam_get", {"include": ["parameters"], "operation": _PROBE_OP,
+                 "parameter_names": ["probingType"]},
+     _needs(MACHINING_EXTENSION, lambda p: _measured("omitted probe type reads back from operation", p,
+         (p.get("parameters") or {}).get("operation") == _PROBE_OP
+         and (p.get("parameters") or {}).get("requested_parameter_count") == 1
+         and [(r.get("name"), r.get("expression"))
+              for r in (p.get("parameters") or {}).get("requested_parameters", [])]
+             == [("probingType", "'probing-z'")])), None),
     # the feed edit is read BACK off the parameter: 'after' is the expression the platform stored,
     # which a set that did not take leaves at the tool's default.
     ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
@@ -5264,6 +5273,8 @@ def run(context):
     assets = list(libraries.childAssetURLs(root))
     assert len(assets) > 1
     asset = assets[0]
+    hidden_asset = assets[1]
+    assert hidden_asset.toString() != asset.toString()
     native_tool_lib = libraries.toolLibraryAtURL(asset)
     native_tool_count = native_tool_lib.count
     assert type(native_tool_count) is int and native_tool_count >= 0
@@ -5313,6 +5324,14 @@ def run(context):
         tool_refused = outcome(ct.handler(action='list', scope='fusion', library=asset.leafName))
         tool_unknown = outcome(ct.handler(action='list', scope='fusion', library='SweepLookupMissing'))
         tool_exact = outcome(ct.handler(action='list', scope='fusion', library=asset.toString()))
+        tool_hidden = outcome(ct.handler(action='list', scope='fusion', library=hidden_asset.toString()))
+        checks['hidden_tool_exact_url_refusal'] = (tool_hidden['is_error'] is True
+            and all(text in str(tool_hidden['payload']) for text in (
+                'absence is unknown', 'Choose an enumerated library URL',
+                'URLs outside this walk cannot be resolved'))
+            and 'Pass an exact library' not in str(tool_hidden['payload']))
+        checks['tool_library_census_unchanged'] = ([u.toString() for u in libraries.childAssetURLs(root)]
+            == [u.toString() for u in assets])
         public_first = ((tool_before['payload'].get('tools') or [{}])[0]
                         if isinstance(tool_before['payload'], dict) else {})
         checks['tool_exact_baseline_read'] = (tool_before['is_error'] is False
@@ -5337,6 +5356,8 @@ def run(context):
         post_assets = list(posts.childAssetURLs(post_root))
         assert len(post_assets) > 1
         post = post_assets[0]
+        hidden_post = post_assets[1]
+        assert hidden_post.toString() != post.toString()
         cp._POST_MAX_ASSETS['fusion'] = 1
         before_post = state()
         assert all(setup['name'] and all(setup['operations'])
@@ -5359,6 +5380,18 @@ def run(context):
         exact_post = outcome(cp.handler(scope='LookupGuardOperation', post=post.toString(),
             post_scope='fusion', output_folder=output_folder, program_name=post_name))
         after_exact = state()
+        hidden_post_result = outcome(cp.handler(scope='LookupGuardOperation', post=hidden_post.toString(),
+            post_scope='fusion', output_folder=output_folder, program_name=post_name))
+        after_hidden = state()
+        checks['hidden_post_exact_url_refusal'] = (hidden_post_result['is_error'] is True
+            and all(text in str(hidden_post_result['payload']) for text in (
+                'absence is unknown', 'Choose an enumerated post URL',
+                'URLs outside this walk cannot be resolved'))
+            and 'Pass an exact post' not in str(hidden_post_result['payload']))
+        checks['hidden_post_refusal_no_program_or_output'] = (after_hidden == before_post
+            and not os.path.exists(output_folder))
+        checks['post_library_census_unchanged'] = ([u.toString() for u in posts.childAssetURLs(post_root)]
+            == [u.toString() for u in post_assets])
         checks['post_name_refused_by_public_handler'] = (post_refused['is_error'] is True
             and 'search was capped' in str(post_refused['payload']))
         checks['post_name_refusal_no_program_or_output'] = (after_name == before_post
@@ -5378,6 +5411,9 @@ def run(context):
         'diagnostic_asset_cap': 1, 'tool_url': asset.toString(), 'post_url': post.toString(),
         'tool_public_baseline': tool_before, 'tool_name_refusal': tool_refused,
         'tool_missing_name': tool_unknown, 'tool_exact_recovery': tool_exact,
+        'hidden_tool_url': hidden_asset.toString(), 'hidden_tool_refusal': tool_hidden,
+        'hidden_post_url': hidden_post.toString(), 'hidden_post_refusal': hidden_post_result,
+        'post_after_hidden': after_hidden,
         'post_name_refusal': post_refused, 'post_missing_name': post_unknown,
         'post_exact_readiness': exact_post, 'post_before': before_post,
         'post_after_name': after_name, 'post_after_unknown': after_unknown,
@@ -5498,6 +5534,110 @@ def run(context):
     return lambda _ctx: {"script": script, "read_only": False}
 
 
+
+def _seed_library_before(_ctx):
+    """Read one shipped seed and reserve a unique local name before the single public import."""
+    script = """import adsk.core, adsk.cam, json, uuid
+
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    libs = adsk.cam.CAMManager.get().libraryManager.toolLibraries
+    root = libs.urlByLocation(adsk.cam.LibraryLocations.Fusion360LibraryLocation)
+    source_url = 'systemlibraryroot://Samples/Cutting Tools (Metric)'
+    shipped = list(libs.childAssetURLs(root))
+    assert len(shipped) <= 2048
+    matches = [u for u in shipped if u.toString() == source_url]
+    assert len(matches) == 1
+    source = libs.toolLibraryAtURL(matches[0])
+    assert source is not None and source.count > 0
+    local = libs.urlByLocation(adsk.cam.LibraryLocations.LocalLibraryLocation)
+    assets = list(libs.childAssetURLs(local))
+    assert len(assets) <= 256
+    name = 'CodexSweepSeed-' + uuid.uuid4().hex[:12]
+    assert all(u.leafName != name and u.leafName != name + '.json' for u in assets)
+    empty = adsk.cam.ToolLibrary.createEmpty()
+    assert empty is not None and empty.count == 0
+    print(json.dumps({'owned_name': name, 'source_url': source_url,
+        'source_seed': json.loads(source.item(0).toJson()),
+        'local_urls': [u.toString() for u in assets], 'local_root': local.toString(),
+        'empty_is_none': empty is None, 'empty_bool': bool(empty), 'empty_count': empty.count}))
+"""
+    return {"script": script, "read_only": True}
+
+
+def _seed_library_after(_ctx):
+    """Read the exact returned URL independently and census the retained owned asset."""
+    before = _RECALL["seed_library_before"]
+    reply = _RECALL["seed_library_reply"]
+    script = """import adsk.core, adsk.cam, json
+
+def run(context):
+    libs = adsk.cam.CAMManager.get().libraryManager.toolLibraries
+    url = RETURNED_URL
+    stored = libs.toolLibraryAtURL(adsk.core.URL.create(url))
+    assert stored is not None and stored.count == 1
+    source = libs.toolLibraryAtURL(adsk.core.URL.create(SOURCE_URL))
+    assert source is not None and source.count > 0
+    local = libs.urlByLocation(adsk.cam.LibraryLocations.LocalLibraryLocation)
+    assets = list(libs.childAssetURLs(local))
+    assert len(assets) <= 257
+    before = BEFORE_URLS
+    added = [{'url': u.toString(), 'name': u.leafName} for u in assets if u.toString() not in before]
+    print(json.dumps({'url': url, 'count': stored.count, 'is_none': stored is None,
+        'stored_seed': json.loads(stored.item(0).toJson()),
+        'source_seed': json.loads(source.item(0).toJson()),
+        'local_urls': [u.toString() for u in assets], 'added': added,
+        'retained_url': url, 'cleanup_attempted': False}))
+"""
+    script = (script.replace("RETURNED_URL", repr(reply["url"]))
+              .replace("SOURCE_URL", repr(before["source_url"]))
+              .replace("BEFORE_URLS", repr(before["local_urls"])))
+    return {"script": script, "read_only": True}
+
+
+def _seed_library_equal(source, stored):
+    """Compare complete seed JSON allowing only numeric serialization roundoff."""
+    if type(source) in (int, float) and type(stored) in (int, float):
+        return abs(source - stored) <= max(1e-12, 1e-12 * max(abs(source), abs(stored)))
+    if type(source) is not type(stored):
+        return False
+    if isinstance(source, dict):
+        return source.keys() == stored.keys() and all(_seed_library_equal(source[k], stored[k]) for k in source)
+    if isinstance(source, list):
+        return len(source) == len(stored) and all(_seed_library_equal(a, b) for a, b in zip(source, stored))
+    return source == stored
+
+
+def _seed_library_stored(p):
+    """Require one stored seed, unchanged source and exactly one new owned local asset."""
+    before, reply = _RECALL["seed_library_before"], _RECALL["seed_library_reply"]
+    added = p.get("added") or []
+    return _measured("seeded library exact URL and complete stored content", p,
+        p.get("count") == reply.get("tool_count") == 1 and p.get("is_none") is False
+        and p.get("url") == reply.get("url") == p.get("retained_url")
+        and _seed_library_equal(before["source_seed"], p.get("source_seed"))
+        and _seed_library_equal(before["source_seed"], p.get("stored_seed"))
+        and len(added) == 1 and added[0].get("name") in (before["owned_name"], before["owned_name"] + ".json")
+        and set(p.get("local_urls") or []) == set(before["local_urls"]) | {added[0]["url"]}
+        and p.get("cleanup_attempted") is False)
+
+
+_SEEDED_LIBRARY_ROWS = [
+    ("sys_execute_script", _seed_library_before,
+     lambda p: p.get("empty_is_none") is False and p.get("empty_bool") is False
+     and p.get("empty_count") == 0 and bool(p.get("source_seed")) and bool(p.get("owned_name")),
+     ("seed_library_before", _recall("seed_library_before", lambda p: p))),
+    ("cam_edit_tools", lambda c: {"action": "create_library", "scope": "local",
+      "library": _RECALL["seed_library_before"]["owned_name"],
+      "add_tools": [{"library_url": _RECALL["seed_library_before"]["source_url"], "index": 0}]},
+     lambda p: p.get("created_library") == _RECALL["seed_library_before"]["owned_name"]
+     and p.get("scope") == "local" and p.get("tool_count") == 1 and bool(p.get("url")),
+     ("seed_library_reply", _recall("seed_library_reply", lambda p: p))),
+    ("sys_execute_script", _seed_library_after, _seed_library_stored, None),
+]
+
+
 _CAM_LOOKUP_GUARDS = [
     ("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
     ("cam_create_setup", {"name": "LookupGuardSetup", "models": ["LookupGuard:1"]},
@@ -5518,3 +5658,5 @@ _CAM_LOOKUP_GUARDS = [
      lambda p: _measured("unique GUI match independently reads 9 mm", p.get("tool") or {},
                         ((p.get("tool") or {}).get("dimensions") or {}).get("diameter") == 9), None),
 ]
+
+_CAM_LOOKUP_GUARDS += _SEEDED_LIBRARY_ROWS

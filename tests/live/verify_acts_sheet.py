@@ -1433,6 +1433,67 @@ _SHEET = _SHEET_BUILD + [
 ]
 
 
+_FLAT_TREE_STATE = """import adsk.core, adsk.fusion, adsk.cam, json
+def run(context):
+    doc = adsk.core.Application.get().activeDocument
+    design = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    cam = adsk.cam.CAM.cast(doc.products.itemByProductType('CAMProductType'))
+    flats = [o.component.flatPattern.flatBody for o in design.rootComponent.occurrences if o.component.flatPattern]
+    def native(body):
+        return body.nativeObject or body
+    print(json.dumps({'setups': [{'name': s.name, 'model_count': len(s.models),
+        'flat_matches': [[native(b) == native(f) for f in flats] for b in s.models]} for s in cam.setups],
+        'timeline_count': design.timeline.count, 'marker': design.timeline.markerPosition,
+        'flats': [{'component': o.component.name, 'token': o.component.flatPattern.flatBody.entityToken}
+                  for o in design.rootComponent.occurrences if o.component.flatPattern]}))
+"""
+
+
+def _flat_tree_rows():
+    """Exercise stale manufacturing-tree refusal and recovery in an owned base-flange document."""
+    setup = {"operation_type": "cutting", "name": "FlatTreeCut", "flat_patterns": ["FlatTreeProbe"]}
+    native = {"script": _FLAT_TREE_STATE, "read_only": True}
+    rows = [
+        ("doc_get", {"max_results": 1000}, lambda p: _home_snapshot(p) is not None,
+         ("flat_tree_home", _recall("flat_tree_home", _home_snapshot))),
+        ("doc_new", {}, lambda p: p.get("created") is True and p.get("is_active") is True
+         and bool(p.get("document_handle")) and p["document_handle"] != _RECALL["flat_tree_home"]["active"]["document_handle"],
+         ("flat_tree_doc", _recall("flat_tree_doc", lambda p: p["document_handle"]))),
+        ("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
+        ("model_create_component", {"name": "FlatTreeProbe", "sheet_metal": True, "activate": True}, "ok", None),
+        ("sketch_create", {"name": "FlatTreeBase", "plane": "xy"}, "ok", None),
+        ("sketch_add_geometry", {"sketch_name": "FlatTreeBase", "geometry": [
+            {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 60, "y2": 40}]}, "ok", None),
+        ("sheet_create_flange", {"kind": "base", "profile": {"sketch": "FlatTreeBase", "profile_index": 0},
+         "component": "FlatTreeProbe"}, "ok", None),
+        ("find_geometry", {"target": "FlatTreeProbe", "kind": "planar_face", "max_results": 20},
+         _top_face(2000), ("flat_tree_top", lambda p: _top_match(p, 2000)["handle"])),
+        ("sheet_create_flat_pattern", lambda c: {"stationary_face": _ctx_get(c, "flat_tree_top", "base top")}, "ok", None),
+        ("sys_execute_script", native, lambda p: p.get("setups") == [] and len(p.get("flats", [])) == 1
+         and p["flats"][0].get("component") == "FlatTreeProbe" and bool(p["flats"][0].get("token")),
+         ("flat_tree_before", _recall("flat_tree_before", lambda p: p))),
+        ("cam_create_setup", setup, _refused("Used entity could not be matched in manufacturing tree",
+         "Design and back to Manufacture", "view_switch_workspace"), None),
+        ("sys_execute_script", native, lambda p: _measured("flat tree refusal preserves native state", p,
+         p == _RECALL["flat_tree_before"]), None),
+        ("view_switch_workspace", {"workspace": "design"}, "ok", None),
+        ("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
+        ("cam_create_setup", setup, lambda p: p.get("created") is True and p.get("operation_type") == "cutting"
+         and p.get("model_count") == 1 and p.get("flat_models_verified") is True, None),
+        ("sys_execute_script", native, lambda p: _measured("recovered setup uses native flat body", p,
+         len(p.get("flats", [])) == 1 and p["flats"][0].get("component") == "FlatTreeProbe"
+         and p.get("setups") == [{"name": "FlatTreeCut", "model_count": 1, "flat_matches": [[True]]}]), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "flat_tree_doc", "flat tree scratch"), "save_changes": False}, _closed_one, None),
+        ("doc_activate", lambda c: {"name": _RECALL["flat_tree_home"]["active"]["document_handle"]}, "ok", None),
+        ("doc_get", {"max_results": 1000}, lambda p: _measured("flat tree scratch closed and home restored", p,
+         _home_snapshot(p) == _RECALL["flat_tree_home"]), None),
+    ]
+    return rows
+
+
+_SHEET = _flat_tree_rows() + _SHEET
+
+
 _SHEET_SELECTED = _SHEET_BUILD + [
     ("find_geometry", {"target": _PART, "kind": "planar_face", "max_results": 30},
      _top_face(900), _top_handle(900)),

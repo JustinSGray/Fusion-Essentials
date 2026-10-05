@@ -137,10 +137,11 @@ def _resolve_library_post(post, post_scope):
         matches = [a for a in assets if _norm_post_name(leaf(a)) == want]
         if truncated:
             urls = [str(safe(lambda a=a: a.toString())) for a in matches]
-            return None, None, (f"Cannot resolve {post_scope} post '{post}' by name: the search "
+            return None, None, (f"Cannot resolve {post_scope} post '{post}': the search "
                                 "was capped, so uniqueness or absence is unknown. "
                                 + (f"Known matching urls: {', '.join(urls)}. " if urls else "")
-                                + "Pass an exact post asset url from this library, or retry a complete listing.")
+                                + "Choose an enumerated post URL instead; URLs outside this walk "
+                                  "cannot be resolved.")
     if not matches:
         # The shipped library answers with hundreds of names, so what the listing cannot carry is
         # COUNTED by the shared renderer rather than dropped.

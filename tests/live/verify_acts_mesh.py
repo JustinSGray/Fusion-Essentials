@@ -1728,6 +1728,99 @@ _MACHINING = [
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
 ]
 
+_HOLDER_TAPER_STATE = '''import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    def point(p): return [round(p.x*10, 9), round(p.y*10, 9), round(p.z*10, 9)]
+    def face(f):
+        circles = []
+        for edge in f.edges:
+            c = adsk.core.Circle3D.cast(edge.geometry)
+            if c is not None: circles.append([point(c.center), c.radius*10])
+        return {'type': f.geometry.objectType, 'area': f.area, 'circles': circles}
+    print(json.dumps({'timeline': design.timeline.count, 'marker': design.timeline.markerPosition,
+        'bodies': [{'name': b.name, 'solid': b.isSolid, 'faces': [face(f) for f in b.faces],
+                    'volume': b.physicalProperties.volume,
+                    'box': [point(b.boundingBox.minPoint), point(b.boundingBox.maxPoint)]}
+                   for b in design.rootComponent.bRepBodies]}))
+'''
+
+
+def _holder_taper_native(p, hollow):
+    """Compare the unchanged exterior and measured enclosed cavity independently of the holder export."""
+    bodies = p.get("bodies") or []
+    if len(bodies) != 1:
+        return False
+    body = bodies[0]
+    faces = body.get("faces") or []
+    cones = [f for f in faces if f.get("type") == "adsk::core::Cone"]
+    valid = (body.get("solid") is True and bool(body.get("name"))
+             and body.get("box") == [[-20, 0, -20], [20, 30, 20]]
+             and len(faces) == (6 if hollow else 3) and len(cones) == 1
+             and _near(cones[0].get("area"), 29.8037647973883, 1e-8)
+             and sorted(cones[0].get("circles") or []) == [[[0, 0, 0], 10], [[0, 30, 0], 20]])
+    if hollow:
+        control = _RECALL.get("holder_taper_solid", {}).get("bodies", [])
+        cylinders = [f for f in faces if f.get("type") == "adsk::core::Cylinder"]
+        valid = (valid and len(control) == 1 and len(cylinders) == 1
+                 and sorted(cylinders[0].get("circles") or []) == [[[0, 10, 0], 8], [[0, 20, 0], 8]]
+                 and _near(control[0]["volume"] - body["volume"], math.pi * .8**2, 1e-8))
+    return _measured("holder exterior and enclosed cavity", p, valid)
+
+
+def _holder_taper_reply(p):
+    """Require the exported envelope to describe the measured outer frustum only."""
+    segments = [{"height": 30.0, "lower-diameter": 20.0, "upper-diameter": 40.0}]
+    return _measured("one unchanged tapered holder envelope", p,
+                     p.get("segment_count") == 1 and p.get("segments_mm") == segments
+                     and (p.get("holder_json") or {}).get("segments") == segments)
+
+
+def _holder_taper_rows():
+    """Compare solid and enclosed-void holder envelopes in one disposable document."""
+    rows = [("doc_get", {}, _home_document,
+             ("holder_taper_home", _recall("holder_taper_home", _home_address))),
+            ("doc_new", {}, _new_document,
+             ("holder_taper_doc", _recall("holder_taper_doc", lambda p: p["document_handle"])))]
+    for hollow, sketch in ((False, "HolderOuter"), (True, "HolderCavity")):
+        key = "holder_taper_hollow" if hollow else "holder_taper_solid"
+        geometry = ([{"kind": "rectangle", "x1": 0, "y1": 10, "x2": 8, "y2": 20}] if hollow
+                    else [{"kind": "closed_path", "points": [[0, 0], [10, 0], [20, 30], [0, 30]]}])
+        rows += [("sketch_create", {"plane": "xy", "name": sketch}, "ok", None),
+                 ("sketch_add_geometry", {"sketch_name": sketch, "units": "mm", "geometry": geometry}, "ok", None),
+                 ("model_revolve", lambda c, sketch=sketch, hollow=hollow:
+                  {"sketch_name": sketch, "axis": "y", "operation": "cut" if hollow else "new",
+                   **({"target_bodies": [_RECALL["holder_taper_solid"]["bodies"][0]["name"]]} if hollow else {})}, "ok", None),
+                 ("sys_execute_script", {"script": _HOLDER_TAPER_STATE, "read_only": True},
+                  lambda p, hollow=hollow: bool(p.get("bodies")) and _holder_taper_native(p, hollow),
+                  (key, _recall(key, lambda p: p))),
+                 ("find_geometry", lambda c, key=key: {"target": _RECALL[key]["bodies"][0]["name"],
+                   "kind": "cone_face", "max_results": 10},
+                  lambda p: len(p.get("matches") or []) == 1, _fg("holder_taper_axis")),
+                 ("find_geometry", lambda c, key=key: {"target": _RECALL[key]["bodies"][0]["name"],
+                   "kind": "planar_face", "nearest_to": [5, 0, 0], "max_results": 1},
+                  lambda p: len(p.get("matches") or []) == 1, _fg("holder_taper_end")),
+                 ("model_compute_holder", lambda c, key=key: {"body": _RECALL[key]["bodies"][0]["name"],
+                   "axis": _ctx_get(c, "holder_taper_axis", "outer cone"),
+                   "end_datum": _ctx_get(c, "holder_taper_end", "lower end"), "name": "TaperEnvelope"},
+                  _holder_taper_reply, None),
+                 ("sys_execute_script", {"script": _HOLDER_TAPER_STATE, "read_only": True},
+                  lambda p, key=key: _measured("holder read preserves geometry and history", p,
+                                               len(p.get("bodies") or []) == 1
+                                               and p == _RECALL.get(key)), None)]
+    return rows + [
+        ("doc_close", lambda c: {"name": _ctx_get(c, "holder_taper_doc", "owned holder coupon"),
+                                  "save_changes": False}, _document_closed, None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, "holder_taper_home", "original family document")},
+         _activated(), None),
+        ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("holder_taper_home"), None)]
+
+
+_MACHINING += _holder_taper_rows()
+
+
 def _thicken_source_geometry(p):
     """Read the complete planar sheet geometry apart from its disclosed visibility."""
     rows = _edge_extent_geometry(p)
