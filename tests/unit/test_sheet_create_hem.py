@@ -60,6 +60,33 @@ def test_landed_definition_class_mismatch_is_error(hem):
     assert "verified" in result["message"]
 
 
+_ROPE_RAISE = ("3 : Failed to create Hem: Hem3 / Compute Failed // SM_HEM_ROPE_INVALID_INPUTS - "
+               "Can't generate the Hem.\nThe input values create improper geometry.\n"
+               "Adjust the length, gap, or radius.")
+
+
+def test_native_failure_keeps_the_text_after_compute_failed(hem):
+    mod, body, body_after, inp, factory, feature = hem
+    factory.count = 0
+    factory.add.side_effect = RuntimeError(_ROPE_RAISE)
+    result = mod.handler(edge="e", kind="rope", length=6, gap=.5, radius=1.5)
+    assert result["isError"] is True
+    assert result["message"] == ("Hem failed: " + " ".join(_ROPE_RAISE.split()) + " No hem was added.")
+
+
+@pytest.mark.parametrize("size, cut", [(240, False), (241, True)])
+def test_native_failure_text_is_bounded_at_the_message_limit(hem, size, cut):
+    mod, body, body_after, inp, factory, feature = hem
+    factory.count = 0
+
+    def add_then_raise(_inp):
+        factory.count = 1                 # a hem the raise left behind: no "No hem was added."
+        raise RuntimeError("x" * size)
+    factory.add.side_effect = add_then_raise
+    message = mod.handler(edge="e", kind="flat", length=5)["message"]
+    assert message == "Hem failed: " + "x" * 240 + (" ..." if cut else "")
+
+
 def test_unchanged_body_is_not_success(hem):
     mod, body, body_after, inp, factory, feature = hem
     body_after.faces.count = 6            # unchanged from faces_before

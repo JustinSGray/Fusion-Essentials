@@ -803,15 +803,11 @@ _TIME_NOTE = (
     "operations_time_summed rows.")
 
 
-def _op_time_rows(cam, ops, args, factor, additive=False) -> tuple:
+def _op_time_rows(cam, ops, args, factor) -> tuple:
     """(rows, truncated, held-out ops) - one getMachiningTime call per operation carrying a valid
-    toolpath; EMPTY is named rather than timed, NONFINITE is marked rather than published, and an
-    ADDITIVE setup's ops are held out entirely - has_toolpath reads false by construction and
-    getMachiningTime raises on such an operation."""
+    toolpath; EMPTY is named rather than timed, NONFINITE is marked rather than published."""
     rows = []
     unreadable = []
-    if additive:
-        return rows, False, list(ops)
     for op in ops:
         facts = op_state_facts(op)
         if not (is_empty_toolpath(facts) or safe(lambda op=op: op.isToolpathValid, False)):
@@ -850,13 +846,16 @@ _TOTAL_UNAVAILABLE_NOTE = (
     " setup_total_unavailable is the platform's message from a whole-collection call that RAISED; "
     "that setup is out of total_machining_time_seconds, and total_excludes_setups names it.")
 
+# Said only where a row carries 'additive'.
+_ADDITIVE_TIME_NOTE = (
+    " An additive setup's operations are not timed: getMachiningTime is not called on them.")
 
-def _op_time_block(cam, ops, args, factor, additive=False) -> tuple:
+
+def _op_time_block(cam, ops, args, factor) -> tuple:
     """(the per-operation half of a setup row, the operations held out of the collection): the
     rows, their sum and how many were summed. This sum is NOT the setup total - that is one call
-    over the whole collection - and a nonfinite or additive op carries no figure, so it enters
-    neither."""
-    rows, truncated, unreadable = _op_time_rows(cam, ops, args, factor, additive=additive)
+    over the whole collection - and a nonfinite op carries no figure, so it enters neither."""
+    rows, truncated, unreadable = _op_time_rows(cam, ops, args, factor)
     timed = [r["machining_time_seconds"] for r in rows
              if isinstance(r.get("machining_time_seconds"), (int, float))]
     block = {"operations": rows, "operations_time_sum_seconds": round(sum(timed), 1),
@@ -937,7 +936,14 @@ def get_machining_time_handler(setup: str = "", units: str = "mm", operation=Non
             ops, suppressed = ([], 1) if is_supp else (ops_override, 0)
         else:
             ops, suppressed = _timeable_ops(obj)
-        additive = is_additive_setup(obj)
+        if is_additive_setup(obj):
+            # Classified before the toolpath gate: generating an additive op adds no figure here.
+            results.append(_tag_operation({"setup": label, "excluded_suppressed": suppressed,
+                "machining_time_seconds": None, "additive": True,
+                "total_excludes_operations": [safe(lambda o=o: o.name) for o in ops],
+                "operations": [], "operations_time_sum_seconds": 0,
+                "operations_time_summed": 0}, op_name))
+            continue
         # getMachiningTime needs at least one VALID toolpath in the target. The failure raises
         # catchably here, but through sys_execute_script it takes the whole invocation down, so
         # the precondition is checked before the call.
@@ -948,9 +954,8 @@ def get_machining_time_handler(setup: str = "", units: str = "mm", operation=Non
                          "workspace), then retry."}, op_name))
             continue
         # The per-operation pass runs FIRST: a NaN reading saturates the whole-collection figure
-        # too (measured), so it is held out and named instead - an ADDITIVE setup's ops the same
-        # way, never reaching either getMachiningTime call.
-        block, unreadable = _op_time_block(cam, ops, args, factor, additive=additive)
+        # too (measured), so it is held out and named instead.
+        block, unreadable = _op_time_block(cam, ops, args, factor)
         timed_ops = [op for op in ops if not any(op is bad for bad in unreadable)]
         held_out = [safe(lambda o=o: o.name) for o in unreadable]
         if not timed_ops:
@@ -1007,6 +1012,7 @@ def get_machining_time_handler(setup: str = "", units: str = "mm", operation=Non
     # The clause rides the KEY it describes, never the exclusion list: a setup can be left out of
     # the total for three different reasons, and its own row says which.
     unavailable = any("setup_total_unavailable" in r for r in results)
+    additive_rows = any(r.get("additive") for r in results)
     payload = {
             "setup_count": len(results),
         "total_machining_time_seconds": round(grand, 1),
@@ -1014,7 +1020,8 @@ def get_machining_time_handler(setup: str = "", units: str = "mm", operation=Non
         "setups": results,
         "units": unit,
         "validity_synced": validity_synced(),
-    "note": _TIME_NOTE + (_TOTAL_UNAVAILABLE_NOTE if unavailable else ""),
+    "note": (_TIME_NOTE + (_TOTAL_UNAVAILABLE_NOTE if unavailable else "")
+             + (_ADDITIVE_TIME_NOTE if additive_rows else "")),
     "assumptions": {"feed_scale_percent": feed_scale,
             "rapid_feed_cm_per_s": rapid_feed,
             "tool_change_seconds": tool_change},

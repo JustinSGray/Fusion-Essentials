@@ -112,7 +112,7 @@ def test_component_row_resolves_same_name_assignment_by_native_equality():
     row = sc.component_row(component, [first, second])
 
     assert row["active_rule"] == "Steel (mm)"
-    assert row["active_rule_ref"] == {"scope": "design", "index": 0}
+    assert row["active_rule_ref"] == {"scope": "design", "index": 0, "name": "Steel (mm)"}
     assert row["active_rule_ref_state"] == "matched"
 
 

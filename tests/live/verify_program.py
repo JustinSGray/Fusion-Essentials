@@ -75,8 +75,8 @@ _ACT_PROGRAM = [
     # RE-DRIVE, while the part is still alone: the billet is sized from the part it ENDS UP as, so
     # the resize runs before the fixture rather than inside it.
     ("ACT 6 - RESIZE", ("model_inspect", {"target": "Bracket:1"}), _RESIZE, _RESIZE_FB),
-    # NEST. Away from the acts that recompute the part, because the arrange solver restructures
-    # what it nests under Envelope occurrences.
+    # NEST. Away from the acts that recompute the part: the arrange feature adds Arrange/Envelope
+    # occurrences.
     ("ACT 6b - NESTING", None, _NESTING, []),
     # ASSEMBLE. The billet the part is cut from, and the vise that closes on it - the story's one
     # real mechanism, driven on camera. Its fallback is empty: every tool it drives is also driven

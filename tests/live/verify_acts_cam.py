@@ -1190,7 +1190,9 @@ def _setup_preflight_rows():
                              "parameters": {"wcs_origin_boxPoint": "NoSuchProbeBoxPoint"}},
           _refused("Invalid enumeration", "NoSuchProbeBoxPoint", "Observed setup state",
                    '\"before\": {\"setup\": \"SetupA\", \"stock_mode\": \"fixed_box\"',
-                   '\"now\": {\"setup\": \"SetupA\", \"stock_mode\": \"fixed_cylinder\"'))
+                   '\"now\": {\"setup\": \"SetupA\", \"stock_mode\": \"fixed_cylinder\"',
+                   "Still changed after this failure: stock_mode reads 'fixed_cylinder' "
+                   "(was 'fixed_box')", "job_stockMode reads \"'fixedcylinder'\""))
     snapshot(True, "fixed_cylinder")
     rows.append(("cam_get", {"include": ["parameters"], "setup": "SetupA",
                              "parameter_names": list(_SETUP_PREFLIGHT_PARAMS)},
@@ -1253,7 +1255,8 @@ def _setup_preflight_rows():
               "job_stockOffsetSides": "2 mm", "job_stockOffsetTop": "2 mm",
               "wcs_origin_boxPoint": "NoSuchProbeBoxPoint"}},
           _refused("Invalid enumeration", "NoSuchProbeBoxPoint", "Observed setup state",
-                   '\"job_stockOffsetSides\": \"2 mm\"', '\"job_stockOffsetTop\": \"2 mm\"'))
+                   '\"job_stockOffsetSides\": \"2 mm\"', '\"job_stockOffsetTop\": \"2 mm\"',
+                   "job_stockOffsetSides reads '2 mm'"))
     rows.append(("cam_get", {"include": ["parameters"], "setup": "SetupB",
                              "parameter_names": ["job_stockOffsetSides", "job_stockOffsetTop"]},
                  lambda p: _measured("earlier stock expressions remain after the later enum refusal",
@@ -1364,7 +1367,146 @@ def _selector_conflict_rows():
     return rows
 
 
-_CAM_STORY = _setup_preflight_rows() + [
+_CHAIN_BUILD = """import adsk.core, adsk.fusion, math
+
+def run(context):
+    app = adsk.core.Application.get()
+    doc = app.activeDocument
+    assert doc.dataFile is None
+    des = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    root = des.rootComponent
+    assert root.occurrences.count == 0 and root.bRepBodies.count == 0
+    T = adsk.fusion.DesignIntentTypes
+    if des.designIntent == T.PartDesignIntentType:
+        des.designIntent = T.HybridDesignIntentType
+    m = adsk.core.Matrix3D.create()
+    m.setToRotation(math.radians(90.0), adsk.core.Vector3D.create(0.0, 0.0, 1.0),
+                    adsk.core.Point3D.create(0, 0, 0))
+    m.translation = adsk.core.Vector3D.create(3.0, 2.0, 0.5)
+    occ = root.occurrences.addNewComponent(m)
+    comp = occ.component
+    comp.name = 'ChainPart'
+    sk = comp.sketches.add(comp.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0, 0, 0),
+                                                     adsk.core.Point3D.create(1.0, 0.8, 0))
+    feats = comp.features.extrudeFeatures
+    ein = feats.createInput(sk.profiles.item(0),
+                            adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    ein.setDistanceExtent(False, adsk.core.ValueInput.createByReal(0.6))
+    feats.add(ein)
+    comp.bRepBodies.item(0).name = 'ChainBody'
+"""
+
+_CHAIN_READ = """import adsk.core, adsk.fusion, adsk.cam, json
+
+def run(context):
+    doc = adsk.core.Application.get().activeDocument
+    assert doc.dataFile is None
+    d = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    cam = adsk.cam.CAM.cast(doc.products.itemByProductType('CAMProductType'))
+    def pt(p):
+        return [round(p.x * 10, 4), round(p.y * 10, 4), round(p.z * 10, 4)]
+    def seg(c):
+        good, a, b = c.evaluator.getParameterExtents()
+        ga, pa = c.evaluator.getPointAtParameter(a)
+        gb, pb = c.evaluator.getPointAtParameter(b)
+        assert good and ga and gb
+        return sorted([pt(pa), pt(pb)])
+    ops = {}
+    setup = [s for s in cam.setups if s.name == 'ChainSetup'][0]
+    for op in setup.allOperations:
+        sels = op.parameters.itemByName('contours').value.getCurveSelections()
+        rows = []
+        for i in range(sels.count):
+            sel = sels.item(i)
+            rows.append({'paths': [sorted(seg(path.item(j)) for j in range(path.count))
+                                   for path in sel.outputGeometry],
+                         'has_error': sel.hasError, 'has_warning': sel.hasWarning})
+        ops[op.name] = {'selections': rows, 'heights': sorted(
+            [q.name, q.expression] for q in op.parameters
+            if q.name.startswith(('topHeight_', 'bottomHeight_')))}
+    occ = [o for o in d.rootComponent.occurrences if o.component.name == 'ChainPart'][0]
+    body = occ.bRepBodies.item(0)
+    top = sorted(sorted([pt(e.startVertex.geometry), pt(e.endVertex.geometry)]) for e in body.edges
+                 if abs(e.startVertex.geometry.z * 10 - 11) < 1e-6
+                 and abs(e.endVertex.geometry.z * 10 - 11) < 1e-6)
+    print(json.dumps({'operations': ops, 'top_edges': top, 'pose': list(occ.transform2.asArray()),
+                      'bbox_mm': [pt(body.boundingBox.minPoint), pt(body.boundingBox.maxPoint)],
+                      'timeline_count': d.timeline.count}))
+"""
+
+_CHAIN_OPS = ("CR_Flat", "CR_Grouped")
+
+
+def _chain_top_handles(p):
+    """The handles of the ChainPart line edges at z = 11 mm, in match order."""
+    return [m["handle"] for m in p.get("matches") or []
+            if _near(((m.get("position") or [None] * 3)[2]), 11.0, 1e-3)]
+
+
+def _chain_resolved(p):
+    """Both ops hold one selection of ONE path whose four segments are the body's top edges, and
+    the heights, pose and box read as before the selects."""
+    before = _RECALL.get("chain_before") or {}
+    ops = p.get("operations") or {}
+    top = p.get("top_edges") or []
+    same = all(len((ops.get(n) or {}).get("selections") or []) == 1
+               and ops[n]["selections"][0]["paths"] == [top]
+               and ops[n]["selections"][0]["has_error"] is False
+               and ops[n]["heights"] == ((before.get("operations") or {}).get(n) or {}).get("heights")
+               for n in _CHAIN_OPS)
+    return _measured("flat and grouped chains resolve the same four world segments", p,
+                     len(top) == 4 and same and p.get("pose") == before.get("pose")
+                     and p.get("bbox_mm") == before.get("bbox_mm")
+                     and p.get("bbox_mm") == [[22.0, 20.0, 5.0], [30.0, 30.0, 11.0]])
+
+
+def _chain_transformed_rows():
+    """Flat handles and one chain_group on a rotated, translated component resolve the same four
+    native world segments, in a scratch document closed again."""
+    rows = [("doc_get", {}, _home_document, ("chain_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "chain_home", "CAM story")},
+             _new_document, ("chain_doc", lambda p: p["document_handle"]))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c: {**(args(c) if callable(args) else args),
+                                      "expect_document": _ctx_get(c, "chain_doc", "chain scratch")},
+                     check, save))
+    write("sys_execute_script", {"script": _CHAIN_BUILD, "read_only": False})
+    write("view_switch_workspace", {"workspace": "manufacture"})
+    write("cam_edit_tools", {"action": "add", "scope": "document",
+                             "add_tools": [{"from_type": "flat end mill", "diameter": "6 mm"}]},
+          lambda p: p.get("added") == 1 and p.get("tool_count") == 1)
+    write("cam_create_setup", {"name": "ChainSetup", "models": ["ChainPart:1"]},
+          lambda p: p.get("created") is True and p.get("model_count") == 1)
+    for name in _CHAIN_OPS:
+        write("cam_create_operation", {"setup": "ChainSetup", "strategy": "contour2d", "name": name,
+                                       "tool_scope": "document", "tool_index": 0, "generate": False},
+              _op_created("ChainSetup", "contour2d"))
+    rows.append(("find_geometry", {"target": "ChainPart:1", "kind": "line_edge", "units": "mm",
+                                   "max_results": 30},
+                 lambda p: _measured("the transformed block's four top edges",
+                                     _chain_top_handles(p), len(_chain_top_handles(p)) == 4),
+                 ("chain_tops", _chain_top_handles)))
+    rows.append(("sys_execute_script", {"script": _CHAIN_READ, "read_only": True}, "ok",
+                 ("chain_before", _recall("chain_before", lambda p: p))))
+    write("cam_select_geometry", lambda c: {"operation": "CR_Flat", "selection": "chain",
+                                            "handles": _ctx_get(c, "chain_tops", "top edges"),
+                                            "generate": False}, _flat_chain_applied(1))
+    write("cam_select_geometry", lambda c: {"operation": "CR_Grouped", "selection": "chain",
+                                            "chain_groups": [_ctx_get(c, "chain_tops", "top edges")],
+                                            "generate": False}, _flat_chain_applied(1))
+    rows.append(("sys_execute_script", {"script": _CHAIN_READ, "read_only": True},
+                 _chain_resolved, None))
+    write("view_switch_workspace", {"workspace": "design"})
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "chain_home", "CAM story"),
+               "expect_document": _ctx_get(c, "chain_doc", "chain scratch")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "chain_doc", "chain scratch"),
+               "save_changes": False,
+               "expect_document": _ctx_get(c, "chain_home", "CAM story")}, _document_closed, None)]
+    return rows
+
+
+_CAM_STORY = _setup_preflight_rows() + _chain_transformed_rows() + [
     # the machining region: the part seated in the vise, which is what every CAM beat acts on.
     _watch([STOCK_COMP + ":1"]),
     # a scratch sketch inside the part's footprint, drawn while Design is still the active
@@ -3432,6 +3574,12 @@ def _generation_identity_probe(rows, setup, operation, max_polls=40, document_pi
                                   and "run cam_generate" not in line for line in lines),
                               f"{route} active guidance: {lines}"):
                     return False
+                # the nested tally keeps its live measure beside the handle's poll directive
+                if route == "handle" and not judged(
+                        "cam_get_status", "active ops valid" in lines[1]
+                        and f"handle='{handle}'" not in lines[1],
+                        f"handle live_states verdict kept: {lines[1]!r}"):
+                    return False
                 active_routes.add(route)
         if handle_done and target_done:
             break
@@ -3868,6 +4016,58 @@ def _planar_faces(count):
     return check
 
 
+# A legacy swarf op of its own, deleted once read: its surface set is 'swarfSurfaces'.
+_SW_LEGACY_OP = "SwarfSurfacesLegacy"
+
+
+def _drafted_wall(p):
+    """find_geometry: the one planar face nearest the -Y wall's mid-height, a wall (not top/base)."""
+    m = (p.get("matches") or [None])[0]
+    pos = (m or {}).get("position") or [None, None, None]
+    return _measured("the drafted -Y wall face", m,
+                     bool(m) and m.get("kind") == "planar_face" and _num(pos[2])
+                     and 1.0 < pos[2] < _SW_H - 1.0)
+
+
+def _swarf_surfaces_read(_ctx):
+    """Read the legacy swarf op's swarfSurfaces entities natively: area and centroid in mm."""
+    script = """import adsk.core, adsk.cam, json
+
+def run(context):
+    app = adsk.core.Application.get()
+    cam = adsk.cam.CAM.cast(app.activeDocument.products.itemByProductType('CAMProductType'))
+    ops = [s.allOperations.item(j) for s in cam.setups for j in range(s.allOperations.count)
+           if s.allOperations.item(j).name == NAME]
+    assert len(ops) == 1
+    p = ops[0].parameters.itemByName('swarfSurfaces')
+    faces = list(p.value.value) if p is not None else []
+    print(json.dumps({'present': p is not None,
+        'advanced_present': ops[0].parameters.itemByName('advancedSwarfSurfaces') is not None,
+        'faces': [{'area_mm2': f.area * 100.0,
+                   'centroid_mm': [f.centroid.x * 10.0, f.centroid.y * 10.0, f.centroid.z * 10.0]}
+                  for f in faces]}))
+"""
+    return {"script": script.replace("NAME", repr(_SW_LEGACY_OP)), "read_only": True}
+
+
+def _swarf_surfaces_hold_the_wall(p):
+    """The native swarfSurfaces reads five entries: the selected wall twice, then the three others."""
+    wall = _RECALL.get("sw_wall") or {}
+    want = [wall.get("area")] + list(wall.get("position") or [])
+    rows = [[f.get("area_mm2")] + list(f.get("centroid_mm") or []) for f in p.get("faces") or []]
+    sound = len(want) == 4 and all(len(r) == 4 and all(_num(v) for v in r) for r in rows)
+
+    def same(a, b):
+        return all(_near(x, y, 0.01) for x, y in zip(a, b))
+    selected = [r for r in rows if sound and same(r, want)]
+    others = [r for r in rows if sound and not same(r, want)]
+    return _measured("swarfSurfaces holds the selected wall twice and the three other walls", p,
+                     p.get("present") is True and p.get("advanced_present") is False
+                     and sound and len(rows) == 5 and len(selected) == 2 and len(others) == 3
+                     and not any(same(a, b) for k, a in enumerate(others) for b in others[k + 1:])
+                     and all(1.0 < r[3] < _SW_H - 1.0 for r in others))
+
+
 def _face_facing(label, normal_reads):
     """find_geometry(kind='planar_face'): the ONE face found, told apart by its own outward normal.
     The cameo is dealt a cell by the layout pass, so a centroid would not travel with it - the
@@ -4186,6 +4386,54 @@ def _requested_parameter_rows(payload):
     params = payload.get("parameters") or {}
     raw = params.get("requested_parameters") or []
     return params, raw, {row.get("requested_name"): row for row in raw}
+
+
+def _expressions_read(op, want):
+    """cam_get parameters: each named row of `op` reads the expression `want` maps it to."""
+    def check(p):
+        _params, _raw, rows = _requested_parameter_rows(p)
+        got = {name: (rows.get(name) or {}).get("expression") for name in want}
+        return _measured(f"{op} rows read back", got, got == want)
+    return check
+
+
+# A setup of its own with no machine, deleted at the end with both operations: a parallel op whose
+# four-row 5-axis edit refuses and whose restore of a re-locked conditional row raises, and a
+# three_plus_two op whose roughingType write disables the stepover row it carries.
+_PE_SETUP = "PartialEditSetup"
+_PE_OP, _MD_OP = "PartialEdit5x", "ModeDiagnosticRough"
+_PE_ROWS = ["multiAxisMachiningType", "toolAxisMode", "tiltTool", "useShaftAndHolder"]
+_PARTIAL_EDIT_ROWS = [
+    ("cam_create_setup", {"models": [_SW_COMP], "name": _PE_SETUP},
+     lambda p: p.get("created") is True and p.get("setup_name") == _PE_SETUP, None),
+    ("cam_get", {"include": ["strategies"], "setup": _PE_SETUP},
+     _offers(_PE_SETUP, "parallel", "three_plus_two"), None),
+    ("cam_create_operation", lambda c: {"setup": _PE_SETUP, "strategy": "parallel", "name": _PE_OP,
+                                        "tool_scope": "document", "generate": False,
+                                        "tool_index": _ctx_get(c, "sw_mill", "the flat mill's index")},
+     _op_created(_PE_SETUP, "parallel"), None),
+    ("cam_edit_operation", {"operation": _PE_OP, "parameters": {
+        "multiAxisMachiningType": "'five_axis'", "toolAxisMode": "'lead_lean'",
+        "tiltTool": "true", "useShaftAndHolder": "true"}},
+     _refused("did NOT come back", "'toolAxisMode' refused its prior"), None),
+    # the two rows restored first read their prior expressions again; toolAxisMode keeps the request
+    ("cam_get", {"include": ["parameters"], "operation": _PE_OP, "parameter_names": _PE_ROWS},
+     _expressions_read(_PE_OP, {"multiAxisMachiningType": "'three_axis'",
+                                "useShaftAndHolder": "tiltTool",
+                                "toolAxisMode": "'lead_lean'"}), None),
+    ("cam_create_operation", lambda c: {"setup": _PE_SETUP, "strategy": "three_plus_two",
+                                        "name": _MD_OP, "tool_scope": "document", "generate": False,
+                                        "tool_index": _ctx_get(c, "sw_mill", "the flat mill's index")},
+     _op_created(_PE_SETUP, "three_plus_two"), None),
+    ("cam_edit_operation", {"operation": _MD_OP,
+                            "parameters": {"roughingType": "'adaptive'", "stepover": "1.5 mm"}},
+     _refused("Maximum Stepover", "reads isEnabled false", "Rolled back all 2"), None),
+    ("cam_get", {"include": ["parameters"], "operation": _MD_OP,
+                 "parameter_names": ["roughingType"]},
+     _expressions_read(_MD_OP, {"roughingType": "'offset'"}), None),
+    ("cam_delete", {"entity": _PE_SETUP},
+     lambda p: p.get("deleted") is True and p.get("entity_type") == "setup", None),
+]
 
 
 def _valid_unavailable_page(page, expected_offset):
@@ -4648,6 +4896,25 @@ _CAM_EXTENSION = [
                                         "generate": False},
      _op_created(_SW_SETUP, "swarf"),
      ("swarf_op", _recall("swarf_op", lambda p: p["operation"]))),
+    # surface_target='swarf' on a legacy swarf op lands on the 'swarfSurfaces' set it carries,
+    # judged by a native read of that set; the op is deleted again before anything generates.
+    ("cam_create_operation", lambda c: {"setup": _SW_SETUP, "strategy": "swarf",
+                                        "name": _SW_LEGACY_OP, "tool_scope": "document",
+                                        "tool_index": _ctx_get(c, "sw_mill",
+                                                               "the flat mill's index"),
+                                        "generate": False},
+     _op_created(_SW_SETUP, "swarf"), None),
+    ("find_geometry", {"target": _SW_COMP, "kind": "planar_face", "max_results": 1,
+                       "nearest_to": [_SW_CX, _SW_CY - _SW_BASE_Y / 2 + _SW_INSET / 2, _SW_H / 2]},
+     _drafted_wall, ("sw_wall", _recall("sw_wall", lambda p: p["matches"][0]))),
+    ("cam_select_geometry", lambda c: {"operation": _SW_LEGACY_OP, "selection": "surfaces",
+                                       "surface_target": "swarf", "generate": False,
+                                       "handles": [_ctx_get(c, "sw_wall", "the wall")["handle"]]},
+     lambda p: p.get("surface_param") == "swarfSurfaces" and p.get("selections") == 1
+     and p.get("assigned") == 1 and p.get("stored") == 5
+     and "swarfSurfaces reads back 5 entries for the 1 assigned" in (p.get("note") or ""), None),
+    ("sys_execute_script", _swarf_surfaces_read, _swarf_surfaces_hold_the_wall, None),
+    ("cam_delete", {"entity": _SW_LEGACY_OP}, _op_deleted(_SW_LEGACY_OP), None),
     # the named feeds/speeds recipe, pointed at while there is no toolpath to lose: assigning a
     # preset INVALIDATES a valid operation's toolpath.
     ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "swarf_op", "the swarf op"),
@@ -4809,6 +5076,7 @@ _CAM_EXTENSION = [
     ("cam_delete", lambda c: {"entity": _ctx_get(c, "corner_op", "the corner op")},
      lambda p: p["deleted"] is True and p["entity"] == _RECALL.get("corner_op")
      and p["entity_type"] == "operation", None),
+] + _PARTIAL_EDIT_ROWS + [
     # THE SIMULTANEOUS STRATEGIES, in a setup of their own: the rail program spans the swarf setup
     # and the cameo's plain milling one, and the 3-axis post it is written through refuses a 5-axis
     # toolpath - so these three ride a setup that program never reaches.
@@ -5624,18 +5892,42 @@ def _seed_library_stored(p):
         and p.get("cleanup_attempted") is False)
 
 
+def _seeded_library_list(count):
+    """A public list of the seeded library by the url its create reply published."""
+    return ("cam_edit_tools", lambda c: {"action": "list", "scope": "local",
+                                         "library": _RECALL["seed_library_reply"]["url"]},
+            lambda p: p.get("tool_count") == count, None)
+
+
+# Every run leaves its CodexSweepSeed-<hex> library in the Local library (no delete path); the rows
+# after the stored read empty it and re-add the seed, so it ends holding one tool. The refused
+# create under the fixed name FWSeedGuardRefused persists nothing (_seed_library_stored's census).
 _SEEDED_LIBRARY_ROWS = [
     ("sys_execute_script", _seed_library_before,
      lambda p: p.get("empty_is_none") is False and p.get("empty_bool") is False
      and p.get("empty_count") == 0 and bool(p.get("source_seed")) and bool(p.get("owned_name")),
      ("seed_library_before", _recall("seed_library_before", lambda p: p))),
+    ("cam_edit_tools", {"action": "create_library", "scope": "local",
+                        "library": "FWSeedGuardRefused", "add_tools": [{"from_type": "flat end mill"}]},
+     _refused("takes exactly 'library_url'", "action='add' only", "Nothing was created"), None),
     ("cam_edit_tools", lambda c: {"action": "create_library", "scope": "local",
       "library": _RECALL["seed_library_before"]["owned_name"],
       "add_tools": [{"library_url": _RECALL["seed_library_before"]["source_url"], "index": 0}]},
      lambda p: p.get("created_library") == _RECALL["seed_library_before"]["owned_name"]
      and p.get("scope") == "local" and p.get("tool_count") == 1 and bool(p.get("url")),
      ("seed_library_reply", _recall("seed_library_reply", lambda p: p))),
+    _seeded_library_list(1),
     ("sys_execute_script", _seed_library_after, _seed_library_stored, None),
+    ("cam_edit_tools", lambda c: {"action": "remove", "scope": "local",
+      "library": _RECALL["seed_library_reply"]["url"], "remove_indices": [0]},
+     lambda p: p.get("removed") == 1 and p.get("tool_count") == 0, None),
+    _seeded_library_list(0),
+    ("cam_edit_tools", lambda c: {"action": "add", "scope": "local",
+      "library": _RECALL["seed_library_reply"]["url"],
+      "add_tools": [{"library_url": _RECALL["seed_library_before"]["source_url"], "index": 0}]},
+     lambda p: p.get("added") == 1 and p.get("tool_count") == 1
+     and p.get("verified_in_memory_only") is False, None),
+    _seeded_library_list(1),
 ]
 
 

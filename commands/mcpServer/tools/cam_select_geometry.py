@@ -11,7 +11,8 @@ import adsk.cam
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import CM_TO_UNIT, named_with_remainder, ok, error, safe, scale, set_verified
+from ._common import (CM_TO_UNIT, named_with_remainder, native_identity, ok, error, safe, scale,
+                      set_verified)
 from ._cam_common import (MACHINE_MODE_MEMBERS, PARAM_READ, SWARF_CONTOURS_PARAM, avoid_groups,
                           choice_expressions, choice_quoting, enumeration_remedy, expression_error, get_cam,
                           group_record, machine_mode_value, matched_quoting, offset_mm_per_unit,
@@ -132,12 +133,13 @@ _DIRECT_MISS = {_HOLES: "drilling/boring strategies (drill / bore / circular / t
                 _ORIENTATION: "a strategy that takes tool-axis orientations, e.g. three_plus_two",
                 _CHAMFER: "the turning_chamfer strategy"}
 
-# 'surfaces' = the same shape, one parameter per ROLE, and an op can carry several at once - so the
-# role is an input, not a probe order. The op's 'model' parameter is the same class but is NOT one
+# One parameter per ROLE (an op can carry several, so the role is an input); a role's names are
+# probed in order - a legacy swarf op carries 'swarfSurfaces'. The op's 'model' parameter is NOT one
 # of these: assigning a face list to it raises 'Parameter is not available through the API.'
-_SURFACE_TARGET_PARAM = {"drive": "driveSurfaces", "floor": "floorSurfaces",
-                         "wall": "wallSurfaces", "ceiling": "ceilingSurfaces",
-                         "check": "checkSurfaceSelection", "swarf": "advancedSwarfSurfaces"}
+_SURFACE_TARGET_PARAM = {"drive": ("driveSurfaces",), "floor": ("floorSurfaces",),
+                         "wall": ("wallSurfaces",), "ceiling": ("ceilingSurfaces",),
+                         "check": ("checkSurfaceSelection",),
+                         "swarf": ("advancedSwarfSurfaces", "swarfSurfaces")}
 _DEFAULT_SURFACE_TARGET = "drive"
 
 _CURVE_BUILDER = {
@@ -822,9 +824,9 @@ def _direct_params(op):
     return out, blocked
 
 
-def _set_object_set(nm, p, entities, noun):
+def _set_object_set(nm, p, entities, noun, extra):
     """(count, None) or (None, error) - assign a CAD-object list to ONE direct-family parameter and
-    read the count back off the parameter, since an assignment that raises nothing proves nothing."""
+    read it back off the parameter, since an assignment that raises nothing proves nothing."""
     pv = safe(lambda: p.value)
     if pv is None:
         return None, f"Could not read the operation's '{nm}' parameter value."
@@ -837,10 +839,17 @@ def _set_object_set(nm, p, entities, noun):
     if back is None:
         return None, (f"{nm} cannot be read back after {len(wanted)} {noun}(s) were assigned, so "
                       f"the selection is UNCONFIRMED - re-read the operation with {PARAM_READ}.")
-    if len(back) != len(wanted):
+    if len(back) == len(wanted):
+        return len(back), None
+    # A legacy swarf op's swarfSurfaces reads back more entries than it was assigned, so a longer
+    # read-back is judged by whether it holds every assigned entity.
+    held = {native_identity(e) for e in back}
+    asked = [native_identity(e) for e in wanted]
+    if len(back) < len(wanted) or None in asked or any(key not in held for key in asked):
         return None, (f"Setting {nm} did not take - {len(wanted)} {noun}(s) were assigned and the "
                       f"operation reads back {len(back)}.")
-    return len(back), None
+    extra["assigned"], extra["stored"] = len(wanted), len(back)
+    return len(wanted), None
 
 
 def _not_editable(op_name, listed, selection):
@@ -873,7 +882,7 @@ def _apply_direct(op, selection, entities, extra):
             return None, merr
         if safe(lambda p=p: p.isEditable) is not True:
             return None, _mode_retained(nm, _not_editable(name, f"'{nm}'", selection), held)
-        count, err = _set_object_set(nm, p, entities, _HANDLE_REQUIRE[selection])
+        count, err = _set_object_set(nm, p, entities, _HANDLE_REQUIRE[selection], extra)
         return (None, _mode_retained(nm, err, held)) if err else (count, None)
     if blocked:
         return None, _not_editable(name, named_with_remainder(blocked), selection)
@@ -1083,14 +1092,16 @@ def _surface_params(op):
     # it raises '3 : Parameter is deprecated', while advancedSwarfSurfaces reads True. So a SURFACE
     # set is offered only where isEditable reads True; the curve params route by presence.
     out, blocked = {}, []
-    for key, nm in _SURFACE_TARGET_PARAM.items():
-        p = safe(lambda nm=nm: op.parameters.itemByName(nm))
-        if p is None:
-            continue
-        if safe(lambda p=p: p.isEditable) is True:
-            out[key] = (nm, p)
-        else:
-            blocked.append(nm)
+    for key, names in _SURFACE_TARGET_PARAM.items():
+        for nm in names:
+            p = safe(lambda nm=nm: op.parameters.itemByName(nm))
+            if p is None:
+                continue
+            if safe(lambda p=p: p.isEditable) is True:
+                out[key] = (nm, p)
+            else:
+                blocked.append(nm)
+            break
     return out, blocked
 
 
@@ -1112,14 +1123,16 @@ def _apply_surfaces(op, faces, target, extra):
     listed = named_with_remainder([k for k in _SURFACE_TARGET_PARAM if k in carried])
     if not target:
         if _DEFAULT_SURFACE_TARGET not in carried:
+            default = "/".join(_SURFACE_TARGET_PARAM[_DEFAULT_SURFACE_TARGET])
             return None, (f"'surface_target' is needed here: operation '{name}' has no "
-                          f"'{_SURFACE_TARGET_PARAM[_DEFAULT_SURFACE_TARGET]}' parameter to default "
+                          f"'{default}' parameter to default "
                           f"to. It carries {listed} - pass whichever of those these faces are.")
         target = _DEFAULT_SURFACE_TARGET
     if target not in carried:
         # A blocked set is PRESENT on the operation, so 'has no parameter' would be the wrong read
         # to hand back - the refusal says which of the two it saw.
-        param = _SURFACE_TARGET_PARAM[target]
+        names = _SURFACE_TARGET_PARAM[target]
+        param = next((nm for nm in names if nm in blocked), "/".join(names))
         if param in blocked:
             return None, (f"Operation '{name}' carries '{param}' but it did not read isEditable "
                           f"true, so surface_target='{target}' is not offered on it. It carries "
@@ -1127,7 +1140,7 @@ def _apply_surfaces(op, faces, target, extra):
         return None, (f"Operation '{name}' has no '{param}' parameter, so surface_target="
                       f"'{target}' cannot be applied to it. It carries {listed}.")
     nm, p = carried[target]
-    count, err = _set_object_set(nm, p, faces, _HANDLE_REQUIRE[_SURFACES])
+    count, err = _set_object_set(nm, p, faces, _HANDLE_REQUIRE[_SURFACES], extra)
     if err:
         return None, err
     extra["surface_target"] = target
@@ -1368,6 +1381,23 @@ def _sketch_scope_tail(result) -> str:
     return _SKETCH_SCOPE_NOTE if result.get("selection") == _SKETCH else ""
 
 
+def _probe_type_tail(result) -> str:
+    """The clause for an omitted-type probe selection whose probingType read changed across it."""
+    if not result.get("probing_type_changed"):
+        return ""
+    return (f" probingType read '{result['probing_type_before']}' before this selection and "
+            f"'{result['probing_type']}' after it.")
+
+
+def _stored_tail(result) -> str:
+    """The clause for a set that reads back more entries than the faces assigned to it."""
+    if "stored" not in result:
+        return ""
+    return (f" {result.get('surface_param') or result.get('selection_param')} reads back "
+            f"{result['stored']} entries for the {result['assigned']} assigned, each assigned one "
+            "among them.")
+
+
 def _seed_loop_tail(result) -> str:
     """The clause for a per-reference 'curves' chain (trace/project/morph/multi_axis_contour) whose
     resolved paths equal its seed count - the structural norm for this family (each seed expands
@@ -1530,9 +1560,11 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
 
     # A normal probe left at probing-unknown cannot produce a path. Probe geometry can infer a
     # type from the selected face, so its final parameter is checked after that selection lands.
+    type_before = None
     if selection == _PROBE and probing_type is None:
         p = safe(lambda: op.parameters.itemByName(_PROBING_TYPE_PARAM))
         current = unquote_expression(safe(lambda: p.expression) or "") if p is not None else None
+        type_before = current
         if current == _PROBING_TYPE_UNKNOWN and safe(lambda: op.strategy) != "probe_geometry":
             return error(
                 f"Operation '{safe(lambda: op.name)}' still reads {_PROBING_TYPE_PARAM}="
@@ -1639,6 +1671,10 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
                              + _probe_selection_remains(extra, record["selections"])
                              + refresh_effect)
             extra["probing_type"] = actual_type
+            # The platform re-infers probingType from the selected face when none is passed.
+            if type_before and type_before != actual_type:
+                extra["probing_type_before"] = type_before
+                extra["probing_type_changed"] = True
     result.update(record)
     result.update(extra)
     # Bounded through the shared capped-list renderer: this list is as long as the selection, and a
@@ -1650,7 +1686,8 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
         result["diameter_filter"] = diam_note
 
     # ── generate: LAUNCH async and return - generation runs in the background on its own ──
-    tails = _contour_tail(result) + _sketch_scope_tail(result) + _seed_loop_tail(result)
+    tails = (_contour_tail(result) + _sketch_scope_tail(result) + _seed_loop_tail(result)
+             + _probe_type_tail(result) + _stored_tail(result))
     if not generate:
         result["note"] = ("Selection applied; pass generate=true (or cam_generate) to compute the "
                           "toolpath.") + tails

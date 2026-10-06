@@ -1359,6 +1359,54 @@ ROWS = [
 """,
     },
     {
+        "id": "extrude-throughall-retired-negative-flag-reads-false",
+        "claim": ("A one-sided through-all cut built with the retired ExtrudeFeatureInput."
+                  "setAllExtent(NegativeExtentDirection) reads extentOne.isPositiveDirection False "
+                  "with its bore wall on the negative side; setOneSideExtent(ThroughAll, Positive) "
+                  "at its edit position makes the flag read True and moves the wall to the "
+                  "positive side"),
+        "encoded_in": ("model_extrude's one-sided through_all 'direction' read-back; "
+                       "model_edit_extrude._side; tests/unit/test_model_extrude.py TestThroughAll"),
+        "need_box": True,
+        "body": """
+    root = des.rootComponent
+    feats = root.features.extrudeFeatures
+    V = adsk.core.ValueInput
+    plane_in = root.constructionPlanes.createInput()
+    plane_in.setByOffset(root.xYConstructionPlane, V.createByReal(0.5))
+    sk = root.sketches.add(root.constructionPlanes.add(plane_in))
+    sk.sketchCurves.sketchCircles.addByCenterRadius(adsk.core.Point3D.create(0.5, 0.5, 0.0), 0.1)
+    cut_in = feats.createInput(sk.profiles.item(0), adsk.fusion.FeatureOperations.CutFeatureOperation)
+    set_ok = cut_in.setAllExtent(adsk.fusion.ExtentDirections.NegativeExtentDirection)
+    cut_in.participantBodies = [body]
+    cut = feats.add(cut_in)
+    def wall():
+        target = cut.bodies.item(0)
+        faces = [target.faces.item(j) for j in range(target.faces.count)]
+        return [[round(f.boundingBox.minPoint.z, 6), round(f.boundingBox.maxPoint.z, 6)]
+                for f in faces if f.geometry.objectType == "adsk::core::Cylinder"]
+    before_flag, before_wall = cut.extentOne.isPositiveDirection, wall()
+    tl = des.timeline
+    end = tl.markerPosition
+    rolled = cut.timelineObject.rollTo(True)
+    prior = list(cut.participantBodies)
+    moved = cut.setOneSideExtent(adsk.fusion.ThroughAllExtentDefinition.create(),
+                                 adsk.fusion.ExtentDirections.PositiveExtentDirection,
+                                 V.createByString("0 deg"))
+    cut.participantBodies = prior
+    tl.markerPosition = end
+    after_flag, after_wall = cut.extentOne.isPositiveDirection, wall()
+    near = lambda got, want: (len(got) == 1 and abs(got[0][0] - want[0]) < 1e-6
+                              and abs(got[0][1] - want[1]) < 1e-6)
+    emit(set_ok is True and rolled is True and moved is True and before_flag is False
+         and after_flag is True and near(before_wall, (0.0, 0.5)) and near(after_wall, (0.5, 1.0)),
+         "extrude-throughall-retired-negative-flag-reads-false: set " + str(set_ok)
+         + " flag " + str(before_flag) + " wall_z " + str(before_wall) + "; after positive edit "
+         + str(moved) + " flag " + str(after_flag) + " wall_z " + str(after_wall)
+         + " (expect False [0, 0.5] then True [0.5, 1.0])")
+""",
+    },
+    {
         "id": "joint-drive-moves-occurrence-one",
         "claim": ("Driving an as-built slider displaces occurrenceONE: with occurrenceTwo locked to "
                   "its parent, occurrenceOne's transform2 translation moves by +the commanded value "
@@ -1649,6 +1697,35 @@ ROWS = [
     emit(before == 1 and len(after) > 1 and set(kinds) == set(["BRepFace"]),
          "find-entity-token-multi: pre_split=" + str(before) + " post_split="
          + str(len(after)) + " kinds=" + ",".join(kinds) + " (expect 1 then >1 BRepFace)")
+""",
+    },
+    {
+        "id": "profile-token-names-outer-plus-islands",
+        "claim": ("Design.findEntityByToken(Profile.entityToken) hit count on native profiles: a "
+                  "component's 2-loop profile answers 2 (itself and its island), a component's "
+                  "single-loop profile answers 1, and a ROOT 2-loop profile answers 0"),
+        "encoded_in": ("commands/mcpServer/tools/_inputs.py _pick_profile_hit and _refind_profile; "
+                       "tests/unit/test_inputs.py TestProfileTokenAnsweringSeveralProfiles"),
+        "body": """
+    root = des.rootComponent
+    P = adsk.core.Point3D.create
+    comp = root.occurrences.addNewComponent(adsk.core.Matrix3D.create()).component
+    ring_sk = comp.sketches.add(comp.xYConstructionPlane)
+    ring_sk.sketchCurves.sketchLines.addTwoPointRectangle(P(0, 0, 0), P(4, 4, 0))
+    ring_sk.sketchCurves.sketchLines.addTwoPointRectangle(P(1, 1, 0), P(3, 3, 0))
+    one_sk = comp.sketches.add(comp.xYConstructionPlane)
+    one_sk.sketchCurves.sketchLines.addTwoPointRectangle(P(6, 0, 0), P(8, 2, 0))
+    root_sk = root.sketches.add(root.xYConstructionPlane)
+    root_sk.sketchCurves.sketchCircles.addByCenterRadius(P(0, 10, 0), 2.0)
+    root_sk.sketchCurves.sketchCircles.addByCenterRadius(P(0, 10, 0), 1.0)
+    def hits(sk, loops):
+        profs = [sk.profiles.item(i) for i in range(sk.profiles.count)]
+        named = [p for p in profs if p.profileLoops.count == loops]
+        return len(des.findEntityByToken(named[0].entityToken)) if len(named) == 1 else None
+    counts = [hits(ring_sk, 2), hits(one_sk, 1), hits(root_sk, 2)]
+    emit(counts == [2, 1, 0],
+         "profile-token-names-outer-plus-islands: component 2-loop / component 1-loop / root "
+         "2-loop hits = " + repr(counts) + " (expect [2, 1, 0])")
 """,
     },
     {
@@ -7234,7 +7311,8 @@ ROWS = [
                   "sits in a FRESH setup: a tool-less op added under the harness raises a modal "
                   "'Failed to generate toolpath - no tool selected' dialog that parks the thread"),
         "encoded_in": ("cam_select_geometry._SURFACE_TARGET_PARAM's 'swarf' entry "
-                       "(advancedSwarfSurfaces) with _surface_params' isEditable filter, which "
+                       "(advancedSwarfSurfaces, then swarfSurfaces, the first present) with "
+                       "_surface_params' isEditable filter, which "
                        "make surface_target='swarf' the one settable role here; and _apply_curve's "
                        "no-curve-parameter refusal, which is what a chain/face selection meets on "
                        "this strategy and which hands back the surface set instead"),
@@ -8345,6 +8423,172 @@ ROWS = [
              + " | at end " + str(at_end) + " -> movetoNextStep " + str(next_ok)
              + " marker " + str(after_next)
              + " | at 0 -> moveToPreviousStep " + str(prev_ok) + " marker " + str(after_prev))
+    finally:
+        tmp.close(False)
+""",
+    },
+    {
+        "id": "timeline-reorder-past-end-raises",
+        "claim": ("reorder(-1) and reorder(timeline.count) on a non-last item raise featureAtIndex "
+                  "('2 : InternalValidationError : featureAtIndex') and leave the order and the "
+                  "marker unchanged, so no reorder places an item after the last row"),
+        "encoded_in": ("design_edit_timeline.py _do_reorder pre-call gate (_last_refusal); "
+                       "tests/unit/test_design_edit_timeline.py _Movable.reorder"),
+        "body": """
+    tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+    try:
+        des = adsk.fusion.Design.cast(tmp.products.itemByProductType("DesignProductType"))
+        root = des.rootComponent
+        P = adsk.core.Point3D.create
+        for x in (0, 3):
+            sk = root.sketches.add(root.xYConstructionPlane)
+            sk.sketchCurves.sketchLines.addTwoPointRectangle(P(x, 0, 0), P(x + 1, 1, 0))
+            root.features.extrudeFeatures.addSimple(
+                sk.profiles.item(0), adsk.core.ValueInput.createByReal(1.0),
+                adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        tl = des.timeline
+        def order():
+            return [tl.item(i).name for i in range(tl.count)]
+        item = tl.item(1)
+        results = []
+        for idx in (-1, tl.count):
+            before, marker = order(), tl.markerPosition
+            raised = None
+            try:
+                item.reorder(idx)
+            except Exception as e:
+                raised = str(e)
+            results.append((idx, raised, order() == before, tl.markerPosition == marker))
+        emit(all(r[1] is not None and "featureAtIndex" in r[1] and r[2] and r[3] for r in results),
+             "timeline-reorder-past-end-raises: count " + str(tl.count) + ", second row | "
+             + " | ".join("reorder(" + str(i) + ") raised " + repr(e) + " order kept " + str(o)
+                          + " marker kept " + str(m) for i, e, o, m in results))
+    finally:
+        tmp.close(False)
+""",
+    },
+    {
+        "id": "addexistingcomponent-lands-composed-with-first-occurrence",
+        "claim": ("Occurrences.addExistingComponent(comp, M) does not land the new occurrence at M "
+                  "once `comp` has a placed occurrence. With H and W the world poses of the "
+                  "occurrence root.allOccurrencesByComponent lists first for the host and for "
+                  "`comp` (H identity for the root): a DIRECT design lands the local transform at "
+                  "inv(H).M.W; a PARAMETRIC design lands it at inv(H).W.H.inv(W).M, which is M "
+                  "itself in the root. An identity M lands at inv(H).W in both. Passing "
+                  "H.M.inv(W) (direct) or inv(inv(H).W.H.inv(W)).M (parametric) lands at M"),
+        "encoded_in": ("design_add_instance.py _cells_to_pass; "
+                       "tests/unit/test_design_add_instance.py _placed"),
+        "body": """
+    import math
+    def pose(deg, axis, t):
+        m = adsk.core.Matrix3D.create()
+        m.setToRotation(math.radians(deg), adsk.core.Vector3D.create(*axis),
+                        adsk.core.Point3D.create(0.0, 0.0, 0.0))
+        m.translation = adsk.core.Vector3D.create(*t)
+        return m
+    def mul(*ms):
+        out = ms[-1].copy()
+        for m in reversed(ms[:-1]):
+            out.transformBy(m)
+        return out
+    def inv(m):
+        out = m.copy()
+        out.invert()
+        return out
+    def same(a, b):
+        return all(abs(x - y) < 1e-6 for x, y in zip(a.asArray(), b.asArray()))
+    H = pose(40.0, (1.0, 0.0, 0.0), (-3.0, 7.0, 0.5))
+    W = pose(70.0, (0.0, 1.0, 0.0), (4.0, 2.0, 1.0))
+    M = pose(-45.0, (0.0, 0.0, 1.0), (-5.0, -2.0, 3.0))
+    I = adsk.core.Matrix3D.create()
+    shift = mul(inv(H), W, H, inv(W))
+
+    def legs(direct):
+        tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+        try:
+            d = adsk.fusion.Design.cast(tmp.products.itemByProductType("DesignProductType"))
+            if direct:
+                d.designType = adsk.fusion.DesignTypes.DirectDesignType
+            root = d.rootComponent
+            host = root.occurrences.addNewComponent(H)
+            src = root.occurrences.addNewComponent(W)
+            comp, inner = src.component, host.component.occurrences
+            def first():
+                return root.allOccurrencesByComponent(comp).item(0).transform2.copy()
+            in_root = root.occurrences.addExistingComponent(comp, M).transform
+            in_host = inner.addExistingComponent(comp, M).transform
+            F = first()
+            walk_first_is_nested = same(F, mul(H, in_host)) and not same(F, W)
+            plain = root.occurrences.addExistingComponent(comp, I).transform
+            plain_host = inner.addExistingComponent(comp, I).transform
+            fixed_root = root.occurrences.addExistingComponent(
+                comp, mul(M, inv(F)) if direct else M).transform
+            fixed_host = inner.addExistingComponent(
+                comp, mul(H, M, inv(F)) if direct
+                else mul(inv(mul(inv(H), F, H, inv(F))), M)).transform
+            return (same(in_root, mul(M, W) if direct else M),
+                    same(in_host, mul(inv(H), M, W) if direct else mul(shift, M)),
+                    walk_first_is_nested, same(plain, F), same(plain_host, mul(inv(H), F)),
+                    same(fixed_root, M), same(fixed_host, M))
+        finally:
+            tmp.close(False)
+
+    direct, parametric = legs(True), legs(False)
+    emit(all(v is True for v in direct + parametric),
+         "addexistingcomponent-lands-composed-with-first-occurrence: direct=" + str(direct)
+         + " parametric=" + str(parametric) + " for (root rule, host rule, nested occurrence "
+         "became walk-first, root identity lands at W, host identity at inv(H).W, compensated root at M, "
+         "compensated host at M)")
+""",
+    },
+    {
+        "id": "pinslot-custom-rotation-z-slide-reads-back-x",
+        "claim": ("Joint.setAsPinSlotJointMotion(CustomJointDirection, slide, axisEntity) answers "
+                  "True for every frame slide, yet a ZAxisJointDirection slide reads back "
+                  "slideDirection XAxisJointDirection - also when the slide read Y before the call "
+                  "- while X and Y read back as given. The slide vector is perpendicular to the "
+                  "custom rotation entity in each case and no custom slide entity is set"),
+        "encoded_in": ("joint_edit.py slide read-back after a pin_slot set; "
+                       "tests/fakes/joints.py FakeJoint.setAsPinSlotJointMotion"),
+        "body": """
+    tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+    try:
+        d = adsk.fusion.Design.cast(tmp.products.itemByProductType("DesignProductType"))
+        root = d.rootComponent
+        JD = adsk.fusion.JointDirections
+        def box(x):
+            m = adsk.core.Matrix3D.create()
+            m.translation = adsk.core.Vector3D.create(x, 0.0, 0.0)
+            occ = root.occurrences.addNewComponent(m)
+            sk = occ.component.sketches.add(occ.component.xYConstructionPlane)
+            sk.sketchCurves.sketchLines.addTwoPointRectangle(
+                adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(2, 2, 0))
+            occ.component.features.extrudeFeatures.addSimple(
+                sk.profiles.item(0), adsk.core.ValueInput.createByReal(1.0),
+                adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+            return adsk.fusion.JointGeometry.createByPoint(occ.bRepBodies.item(0).vertices.item(0))
+        ji = root.joints.createInput(box(0.0), box(10.0))
+        ji.setAsPinSlotJointMotion(JD.CustomJointDirection, JD.XAxisJointDirection,
+                                   root.yConstructionAxis)
+        joint = root.joints.add(ji)
+        axes = (root.xConstructionAxis, root.yConstructionAxis, root.zConstructionAxis)
+        asked = (JD.YAxisJointDirection, JD.ZAxisJointDirection, JD.XAxisJointDirection,
+                 JD.ZAxisJointDirection)
+        results = []
+        for entity in axes:
+            for slide in asked:
+                joint.timelineObject.rollTo(True)
+                answered = joint.setAsPinSlotJointMotion(JD.CustomJointDirection, slide, entity)
+                d.timeline.moveToEnd()
+                m = joint.jointMotion
+                dot = m.slideDirectionVector.dotProduct(m.rotationAxisVector)
+                results.append((slide, answered, m.slideDirection, abs(dot) < 1e-9,
+                                m.customSlideDirectionEntity is None, int(joint.healthState)))
+        want = lambda s: JD.XAxisJointDirection if s == JD.ZAxisJointDirection else s
+        emit(all(a is True and got == want(s) and perp and plain and health == 0
+                 for s, a, got, perp, plain, health in results),
+             "pinslot-custom-rotation-z-slide-reads-back-x: (asked, answered, read) per custom "
+             "X/Y/Z entity = " + str([r[:3] for r in results]))
     finally:
         tmp.close(False)
 """,

@@ -94,6 +94,23 @@ class TestOrientationRead:
         assert [r["is_active"] for r in rows] == [False, True]
         assert rows[0]["width"] == 420.0 and rows[0]["width_height_unit"] == "mm"
 
+    @pytest.mark.parametrize("start,flips,expected", [
+        (False, True, True), (False, False, None), (True, True, None)])
+    def test_a_read_that_leaves_a_clean_document_modified_says_so(self, install, start, flips,
+                                                                  expected):
+        sheet = _sheet("S")
+        drawing = install([sheet], is_modified=start)
+
+        def revision_read():
+            if flips:
+                drawing.parentDocument.isModified = True
+            return None
+        sheet.getRevisionTable = revision_read
+        out = payload(dg.handler(include=["revisions"]))
+        assert out["is_modified"] is start
+        assert out.get("modified_by_read") is expected
+        assert ("read false before this read" in out["note"]) is bool(expected)
+
     def test_unread_modified_state_remains_null(self, install):
         install([_sheet("Cover")], modified_raises="modified unavailable")
         assert payload(dg.handler())["is_modified"] is None

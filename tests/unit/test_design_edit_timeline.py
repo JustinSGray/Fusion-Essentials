@@ -454,7 +454,7 @@ def test_two_collapsed_unfold_groups_name_both_qualified_candidates(wire, cut_in
     groups = _collapsed_unfold_groups(wire, 2, cut_in)
     message = error_message(et.handler(action='suppress', feature='Unfold1'))
     assert message.endswith(
-        "'Unfold1' names 2 hidden unfold features in collapsed groups: for 'SheetA/Unfold1' run "
+        "'Unfold1' names 2 hidden unfold-group features in collapsed groups: for 'SheetA/Unfold1' run "
         "design_edit_timeline(action='group_state', feature='Group1', collapsed=false); "
         + second + ". Then retry the original action with that qualified reference. Keep "
         "the unfold group intact.")
@@ -465,7 +465,7 @@ def test_two_collapsed_unfold_groups_name_both_qualified_candidates(wire, cut_in
 def test_collapsed_unfold_candidates_past_five_are_counted(wire, count, tail):
     _collapsed_unfold_groups(wire, count)
     message = error_message(et.handler(action='suppress', feature='Unfold1'))
-    assert f"names {count} hidden unfold features" in message and tail in message
+    assert f"names {count} hidden unfold-group features" in message and tail in message
     assert "SheetF" not in message and ("more not listed" in message) is (count > 5)
 
 
@@ -491,6 +491,40 @@ def test_hidden_unfold_with_cut_does_not_offer_unsupported_group_state(unfold_gr
     message = error_message(et.handler(action='suppress', feature='SheetA/Unfold1'))
     assert 'outside' in message and 'expand it in Fusion' in message and 'design_get' in message
     assert "action='group_state'" not in message and "action='ungroup'" not in message
+
+
+def test_hidden_refold_of_an_unfold_group_gets_group_state_advice_not_ungroup(wire):
+    group, = _collapsed_unfold_groups(wire, 1)
+    message = error_message(et.handler(action='suppress', feature='Refold1'))
+    assert message.endswith(
+        "'SheetA/Refold1' is inside collapsed group 'Group1'. Run design_edit_timeline("
+        "action='group_state', feature='Group1', collapsed=false), then retry the original action "
+        "with qualified reference 'SheetA/Refold1'. Keep the unfold group intact.")
+    assert group.item(1).isSuppressed is False and group.isCollapsed is True
+
+
+def test_visible_twin_of_a_hidden_refold_gets_group_state_advice(wire):
+    group, = _collapsed_unfold_groups(wire, 1)
+    visible = FakeTimelineObject('Refold1', 1, entity=types.SimpleNamespace(
+        entityToken='refold-b', objectType='adsk::fusion::RefoldFeature', parentComponent=MakeComp('SheetB')))
+    timeline = et._common.design().timeline
+    timeline._items.append(visible)
+    visible.timeline = timeline
+    message = error_message(et.handler(action='suppress', feature='Refold1'))
+    assert "also matches" in message and "qualified reference 'SheetA/Refold1'" in message
+    assert "action='ungroup'" not in message and visible.isSuppressed is False
+
+
+@pytest.mark.parametrize("collapsed, text", [
+    (True, "'Group1' is an unfold group; ungrouping it loses its unfold/refold association. Expand it "
+           "with design_edit_timeline(action='group_state', feature='Group1', collapsed=false) instead."),
+    (False, "'Group1' is an unfold group and is already expanded, so its items are listed; name them "
+            "directly. Nothing changed.")])
+def test_ungroup_refuses_an_unfold_group_and_keeps_it(wire, collapsed, text):
+    group, = _collapsed_unfold_groups(wire, 1)
+    group.isCollapsed = collapsed
+    assert error_message(et.handler(action='ungroup', feature='Group1')) == text
+    assert group.delete_calls == [] and group.count == 2
 
 
 def test_readable_hidden_construction_plane_keeps_ordinary_owner_hint(unfold_group):
@@ -1401,7 +1435,7 @@ class _Movable(FakeTimelineObject):
     def reorder(self, beforeIndex):
         self.reorder_calls.append(beforeIndex)
         items = self.timeline._items
-        if beforeIndex == -1 or beforeIndex >= len(items):
+        if beforeIndex == -1 or beforeIndex >= len(items):   # measure_api timeline-reorder-past-end-raises
             raise RuntimeError("2 : InternalValidationError : featureAtIndex")
         if self._returns:
             anchor = items[beforeIndex]

@@ -2730,6 +2730,18 @@ class TestFaceAttachedSketchNamesItsFace:
         assert out["plane"] == "XY" and "on_face" not in out
         assert design.timeline._moves == []
 
+    @pytest.mark.parametrize("reads, disclosed", [((False, True), True), ((True, True), False),
+                                                  ((None, True), False), ((False, None), False)])
+    def test_only_a_clean_to_modified_flip_across_the_roll_is_disclosed(
+            self, monkeypatch, reads, disclosed):
+        sketch = FaceAttachedSketch("OnFace", _face_support())
+        _install_face_sketch(sketch)
+        seq = iter(reads)
+        monkeypatch.setattr(sd._view_common, "document_modified", lambda: next(seq))
+        out = _payload(sd.handler(sketch_name="OnFace"))
+        assert out.get("document_modified") is (True if disclosed else None)
+        assert ("reads modified after it" in out["note"]) is disclosed
+
 
 # ── every point/curve row's HANDLE, minted where the sketch's frame is placed ────────────────────
 

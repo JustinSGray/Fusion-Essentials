@@ -20,7 +20,7 @@ import pytest
 
 from conftest import (load_tool, make_source_document, make_bbox, BRepBody, Camera,
                       FakeApplication, FakeDataFile, FakeFusionDocument, FakeOccurrence, FakePoint,
-                      FakeVector3D, MakeComp, MakeDesign, Viewport)
+                      FakeVector3D, MakeComp, MakeDesign, Viewport, _NamedCollection)
 
 iv = load_tool("view_set")
 
@@ -501,6 +501,19 @@ class _BlindAfterClear(FakeOccurrence):
         self._raises_on["isIsolated"] = "2 : InternalValidationError : isIsolated"
 
 
+class _IsolationLog(FakeOccurrence):
+    """An occurrence recording every isIsolated write, in order."""
+
+    def __init__(self, name, **kw):
+        super().__init__(**_occ_args(name, **kw))
+        self.writes = []
+
+    @FakeOccurrence.isIsolated.setter
+    def isIsolated(self, value):
+        self.writes.append(value)
+        FakeOccurrence.isIsolated.fset(self, value)
+
+
 class TestVisibilityReadBack:
     """Every occurrence write is read BACK: a swallowed hide/isolate/show is an error, and a
     mid-list failure names the targets it already changed."""
@@ -519,6 +532,22 @@ class TestVisibilityReadBack:
         res = iv.handler(action="isolate", target="Bracket")
         assert res["isError"] is True
         assert "isIsolated reads back False" in res["message"]
+
+    @pytest.mark.parametrize("already,sibling_visible,refused", [
+        (True, True, True), (True, False, False), (False, True, False)])
+    def test_a_repeat_isolate_reapplies_and_names_a_sibling_still_visible(
+            self, monkeypatch, already, sibling_visible, refused):
+        tray = _IsolationLog("Tray:1", isolated=already)
+        chassis = FakeOcc("Chassis:1")
+        tray.isVisible, chassis.isVisible = True, sibling_visible
+        design = _install(monkeypatch, [tray, chassis])
+        design.rootComponent.occurrences = _NamedCollection([tray, chassis])
+        res = iv.handler(action="isolate", target="Tray:1")
+        assert tray.writes == ([False, True] if already else [True]) and tray.isIsolated is True
+        assert res["isError"] is refused
+        if refused:
+            assert res["message"] == ("Isolated 'Tray:1', but 'Chassis:1' still reads visible. Hide it "
+                                      "with view_set(action='hide', target=['Chassis:1']).")
 
     def test_a_show_whose_ancestor_bulb_will_not_light_is_an_error(self, monkeypatch):
         # The leaf lights but the parent stays dark, so the target is STILL invisible - reporting

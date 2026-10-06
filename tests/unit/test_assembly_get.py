@@ -441,6 +441,28 @@ class TestProbe:
         assert quiet["joint_count"] == 1 and quiet["joints"] is None
         assert all("joints" not in r for r in quiet["all_occurrences"])
 
+    def test_a_sub_assembly_joint_is_listed_on_every_placement_of_its_owner(self, kin_design):
+        # The native halves answer PSub:1's paths only; each placement's proxy answers its own.
+        psub = MakeComp(name="PSub", entity_token="PSUB")
+        placed = [make_occurrence(path=f"PSub:{n}", component=psub) for n in (1, 2)]
+        kids = {f"PSub:{n}+{c}:1": make_occurrence(path=f"PSub:{n}+{c}:1")
+                for n in (1, 2) for c in ("PChildA", "PChildB")}
+        inner = _joint("Inner", _RIGID, kids["PSub:1+PChildA:1"], kids["PSub:1+PChildB:1"])
+        inner.parentComponent = psub
+        inner.createForAssemblyContext = lambda occ: SimpleNamespace(
+            occurrenceOne=kids[occ.fullPathName + "+PChildA:1"],
+            occurrenceTwo=kids[occ.fullPathName + "+PChildB:1"])
+        kin_design(occs=placed, all_occs=placed + list(kids.values()), joints=[inner])
+        out = _payload(ap.handler(include=["all_occurrences"]))
+        rows = {r["full_path"]: r for r in out["all_occurrences"]}
+        assert all(rows[path]["joints"] == ["Inner"] for path in kids)
+        assert rows["PSub:2"]["joints"] == [] and out["joint_count"] == 1
+        record = out["joints"][0]
+        assert record["owner_component"] == "PSub"
+        assert record["placements"][1] == {"placement": "PSub:2",
+                                           "occurrence_one_path": "PSub:2+PChildA:1",
+                                           "occurrence_two_path": "PSub:2+PChildB:1"}
+
     def test_include_joints_false_skips(self, kin_design):
         kin_design(occs=[_occ("A:1", "A")], joints=[_joint("J", _REVOLUTE, "A:1", None)])
         out = _payload(ap.handler(include_joints=False))
@@ -992,6 +1014,25 @@ class TestJointOriginsSlice:
         assert consumers()["RootAnchor"] is None
         root.joints = _NamedCollection([])
         assert all(value == [] for value in consumers().values())
+
+    def test_a_sub_assembly_joint_consumes_its_datum_on_every_placement(self, jo_design):
+        # The native half answers PSub:1's path only; each placement's proxy answers its own.
+        child, sub = _slice_comp("PChildA"), _slice_comp("PSub")
+        datum = _SliceJO("PChildADatum", token="JO:DA", comp=child)
+        child.jointOrigins = _NamedCollection([datum])
+        kids = {n: _slice_occ(f"PSub:{n}+PChildA:1", child) for n in (1, 2)}
+        inner = _slice_joint("Inner", datum, None)
+        inner.occurrenceOne, inner.parentComponent = kids[1], sub
+        inner.createForAssemblyContext = lambda occ: SimpleNamespace(
+            occurrenceOne=kids[int(occ.fullPathName[-1])], occurrenceTwo=None)
+        sub.joints = _NamedCollection([inner])
+        root = _slice_root(occ_by_comp={"PChildA": list(kids.values()),
+                                        "PSub": [_slice_occ(f"PSub:{n}", sub) for n in (1, 2)]})
+        jo_design(_slice_design(root, subs=[sub, child]))
+        rows = {r["qualified_name"]: r["consumed_by"] for r in
+                _payload(ap.handler(include=["joint_origins"], include_joints=False))["joint_origins"]}
+        assert rows == {"PSub:1+PChildA:1:PChildADatum": ["Inner"],
+                        "PSub:2+PChildA:1:PChildADatum": ["Inner"]}
 
     def test_unconsumed_jo_has_empty_consumed_by(self, jo_design):
         jo = _SliceJO("Lonely", token="L")

@@ -46,6 +46,44 @@ def _number(label, value):
     return number, None
 
 
+_UNREAD = object()
+_OWNER_REMEDY = ("Select one entity on occurrence_one first, then one on occurrence_two, or use "
+                 "'relationships' with explicit '<occurrence>:<snap>' pairs.")
+
+
+def _path_is_unique(design, path):
+    """Whether exactly one occurrence in the design's walk reads fullPathName `path`."""
+    occs = _common.all_occurrences(design)
+    return sum(1 for o in occs if safe(lambda o=o: o.fullPathName) == path) == 1
+
+
+def _owner_refusal(design, i, entity, requested, value):
+    """Why selected entity `i` is not on the `requested` occurrence, or None when it is."""
+    owner = safe(lambda: entity.assemblyContext, _UNREAD)
+    if owner is None:
+        return (f"Selected entity {i} is root-component geometry with no placed owner; a constraint "
+                "locates occurrences - select a face on an occurrence, or pass "
+                "'<occurrence>:<snap>' relationships.")
+    owner_path = safe(lambda: owner.fullPathName) if owner is not _UNREAD else None
+    requested_path = safe(lambda: requested.fullPathName)
+    if not owner_path or not requested_path:
+        return (f"Selected entity {i}'s placed owner cannot be confirmed for "
+                f"'{_common.short_ref(value)}'. {_OWNER_REMEDY}")
+    mismatch = (f"Selected entity {i} belongs to '{_common.short_ref(owner_path)}', not requested "
+                f"'{_common.short_ref(value)}'. {_OWNER_REMEDY}")
+    if owner_path != requested_path:
+        return mismatch
+    owner_key = _common.native_identity(owner)
+    requested_key = _common.native_identity(requested)
+    if owner_key is not None and requested_key is not None:
+        return None if owner_key == requested_key else mismatch
+    # A nested placement's native token raises, so its identity is the path the walk holds once.
+    if _path_is_unique(design, owner_path):
+        return None
+    return (f"Selected entity {i}'s placed owner cannot be confirmed for "
+            f"'{_common.short_ref(value)}'. {_OWNER_REMEDY}")
+
+
 def handler(occurrence_one: str = "", occurrence_two: str = "",
             snap_one: str = "", snap_two: str = "", relationships=None,
             offset: float = 0.0, angle_deg: float = 0.0,
@@ -152,19 +190,9 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
                 return error("Could not read the two selected entities. Re-select and try again.")
             for i, (entity, requested, value) in enumerate(
                     ((e1, o1, occurrence_one), (e2, o2, occurrence_two)), 1):
-                owner = safe(lambda entity=entity: entity.assemblyContext)
-                owner_path = safe(lambda: owner.fullPathName)
-                requested_path = safe(lambda: requested.fullPathName)
-                owner_key = _common.native_identity(owner)
-                requested_key = _common.native_identity(requested)
-                remedy = ("Select one entity on occurrence_one first, then one on occurrence_two, "
-                          "or use 'relationships' with explicit '<occurrence>:<snap>' pairs.")
-                if not owner_path or not requested_path or owner_key is None or requested_key is None:
-                    return error(f"Selected entity {i}'s placed owner cannot be confirmed for "
-                                 f"'{_common.short_ref(value)}'. {remedy}")
-                if owner_path != requested_path or owner_key != requested_key:
-                    return error(f"Selected entity {i} belongs to '{_common.short_ref(owner_path)}', "
-                                 f"not requested '{_common.short_ref(value)}'. {remedy}")
+                refusal = _owner_refusal(design, i, entity, requested, value)
+                if refusal:
+                    return error(refusal)
             cin = design.rootComponent.assemblyConstraints.createInput()
             rels = cin.geometricRelationships
             val = (adsk.core.ValueInput.createByString(f"{angle_v} deg") if angle_v

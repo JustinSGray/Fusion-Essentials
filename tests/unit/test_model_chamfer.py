@@ -395,6 +395,17 @@ class TestTangentChainTargeting:
         assert res["isError"] is True and "PARTIALLY applied" in res["message"]
         assert "resolved to 1" in res["message"] and cf.result.deleted is True
 
+    def test_a_repeated_handle_is_one_edge_not_a_partial_application(self):
+        one = _edge_ent(token="physical")
+        _, cf = _install_handles({"E1": one},
+                                 timeline=make_timeline("Extrude1", "Chamfer1", marker=2))
+        one.assemblyContext = None
+        one.body.parentComponent = fl._inputs._common.design().rootComponent
+        cf.result = FakeCountingFeature("Chamfer1", faces=1, tangent=False, cut_edges=1)
+        out = _payload(fl.handler(edges=["E1", "E1"], distance=.5, tangent_chain=False))
+        assert cf.last.edges.count == out["edges_cut"] == 1 and out["edges_requested"] == 2
+        assert out["edge_selection"] == "1 edge seed(s) from handles" and cf.result.deleted is False
+
 
 class TestGuards:
 

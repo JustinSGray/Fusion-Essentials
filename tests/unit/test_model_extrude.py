@@ -95,6 +95,7 @@ class FakeExtrudeFeatures:
         self.added = False
         self.next_result = True   # propagated onto every extent setter of each new input
         self.on_add = None        # optional callable(inp) - simulates a live body mutation from add()
+        self.landed_positive = "requested"  # a one-sided through_all's read-back side flag
 
     def createInput(self, profile, operation):
         self.last_input = FakeExtrudeInput(profile, operation)
@@ -102,11 +103,20 @@ class FakeExtrudeFeatures:
         return self.last_input
 
     def add(self, inp):
+        import adsk.fusion
         self.added = True
         if self.on_add:
             self.on_add(inp)
         # mirror the input's solid/surface mode onto the resulting feature (read back as is_solid)
-        return FakeFeature(is_solid=getattr(inp, "isSolid", True))
+        feature = FakeFeature(is_solid=getattr(inp, "isSolid", True))
+        positive = adsk.fusion.ExtentDirections.PositiveExtentDirection
+        side = (inp.all_extent if inp.all_extent is not None else
+                inp.one_side[1] if inp.one_side and inp.one_side[0] == ["through_all"] else None)
+        if side is not None:
+            flag = side == positive if self.landed_positive == "requested" else self.landed_positive
+            feature.extentOne = types.SimpleNamespace(
+                objectType="adsk::fusion::ThroughAllExtentDefinition", isPositiveDirection=flag)
+        return feature
 
 
 def _component(name, sketches=(), bodies=(), ef=None):
@@ -1214,6 +1224,25 @@ class TestThroughAll:
         assert ef.last_input.all_extent is None
         assert ef.last_input.one_side is None    # a symmetric cut is never routed one-sided
         assert out["direction"] == "symmetric"
+
+    @pytest.mark.parametrize("distance,landed,asked", [(-1, True, "negative"), (5, False, "positive")])
+    def test_a_side_read_back_against_the_request_is_an_error_naming_the_retained_feature(
+            self, distance, landed, asked):
+        ef = _install([_sketch("S")])
+        ef.landed_positive = landed
+        res = ex.handler(sketch_name="S", extent="through_all", distance=distance)
+        other = "positive" if landed else "negative"
+        assert res["isError"] is True
+        assert (f"Extrude built 'Extrude1' for a {asked} extent=through_all, but its extent reads "
+                f"back the {other} side.") in res["message"]
+        assert "remains in the timeline" in res["message"] and ef.added is True
+
+    def test_an_unread_side_publishes_no_direction_and_says_so(self):
+        ef = _install([_sketch("S")])
+        ef.landed_positive = None
+        out = _payload(ex.handler(sketch_name="S", extent="through_all", distance=-1))
+        assert out["direction"] is None
+        assert "The landed through_all side was not read back." in out["note"]
 
     def test_a_one_sided_through_all_never_sets_two_sides(self):
         ef = _install([_sketch("S")])

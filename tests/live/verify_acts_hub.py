@@ -1400,6 +1400,27 @@ def _additive_names_absent(tool, labels):
                      {"empty_toolpaths": labels, "additive": names}, all(names) and not hits)
 
 
+def _additive_time_row(op=None):
+    """cam_get time on an additive setup: additive true, no figure, no cam_generate remedy."""
+    def check(p):
+        row = ((p.get("time") or {}).get("setups") or [{}])[0]
+        return _measured("the additive setup's time row", row,
+                         row.get("additive") is True and row.get("machining_time_seconds") is None
+                         and "error" not in row and "cam_generate" not in str(p)
+                         and row.get("operation") == op)
+    return check
+
+
+def _container_order(first, second):
+    """cam_reorder inside an additive container: the order re-read, first before second."""
+    def check(p):
+        order = p.get("order") or []
+        return _measured(f"{first} before {second}, re-read", p,
+                         "order_unverified" not in p and first in order and second in order
+                         and order.index(first) < order.index(second))
+    return check
+
+
 _HUB_ADDITIVE = [
     _watch(HUB_COMP + ":1"),
     # The catalog reads first: the names the setup below is built from are READ, not assumed.
@@ -1471,6 +1492,24 @@ _HUB_ADDITIVE = [
     ("cam_get", {"include": ["operations", "default"], "setup": _ADD_SETUP},
      lambda p: _container_rows(_ADD_SETUP, (_RECALL["add_orient_op"],
                                             _RECALL["add_support_op"]))(p), None),
+    # the time slice classifies the additive setup before its toolpath gate, on both routes
+    ("cam_get", {"include": ["time"], "setup": _ADD_SETUP}, _additive_time_row(), None),
+    ("cam_get", lambda c: {"include": ["time"], "setup": _ADD_SETUP,
+                           "operation": _ctx_get(c, "add_orient_op", "the orientation op")},
+     lambda p: _additive_time_row(_RECALL["add_orient_op"])(p), None),
+    # a second orientation in the same container, moved before the first and back: the order is
+    # re-read off the container's children
+    ("cam_create_operation", {"setup": _ADD_SETUP, "strategy": "automatic_orientation"},
+     _additive_op_created(_ADD_SETUP, "automatic_orientation"),
+     ("add_orient_op2", _recall("add_orient_op2", lambda p: p["operation"]))),
+    ("cam_reorder", lambda c: {"entity": _ctx_get(c, "add_orient_op2", "the second orientation"),
+                               "position": "before",
+                               "reference": _ctx_get(c, "add_orient_op", "the orientation op")},
+     lambda p: _container_order(_RECALL["add_orient_op2"], _RECALL["add_orient_op"])(p), None),
+    ("cam_reorder", lambda c: {"entity": _ctx_get(c, "add_orient_op2", "the second orientation"),
+                               "position": "after",
+                               "reference": _ctx_get(c, "add_orient_op", "the orientation op")},
+     lambda p: _container_order(_RECALL["add_orient_op"], _RECALL["add_orient_op2"])(p), None),
     # An additive row never carries tool_unselected or a spindle_check, and the setup's own
     # readiness never sends it to cam_edit_operation for a tool - additive rows take neither by
     # construction, the manual-NC exclusion's additive sibling.

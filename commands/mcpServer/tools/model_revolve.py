@@ -261,6 +261,12 @@ def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
     if join_clause:
         note += " " + join_clause
 
+    # A symmetric angle extent spans its angle on EACH side (measured: a symmetric 89.4 deg
+    # revolve adds the area of a one-sided 178.8 deg one). A two-sided extent has no single angle.
+    one_extent = symmetric or not second
+    extent = safe(lambda: feature.extentDefinition) if one_extent else None
+    landed = _common.measured(lambda: extent.angle.value, 180.0 / math.pi) if one_extent else None
+    landed_sym = _common.read_flag(lambda: extent.isSymmetric) if one_extent else None
     payload = {
         "revolved": True,
         "feature": safe(lambda: feature.name),
@@ -269,12 +275,17 @@ def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
         "component": safe(lambda: feature.parentComponent.name),
         "profile_index": idx,
         "axis": axis_label,
-        "angle_deg": round(ang, 6),
+        "angle_deg": landed if landed is not None else round(ang, 6),
         "second_angle_deg": round(float(second_angle_deg or 0.0), 6),
-        "symmetric": bool(symmetric),
+        "symmetric": landed_sym if landed_sym is not None else bool(symmetric),
         "result_bodies": body_names,
         "note": note,
     }
+    if landed_sym and landed is not None:
+        payload["total_angle_deg"] = round(2 * landed, 6)
+    unread = [k for k, v in (("angle_deg", landed), ("symmetric", landed_sym)) if one_extent and v is None]
+    if unread:
+        payload["unverified"] = unread
     if scoped_bodies is not None:
         payload["scoped_to_bodies"] = [_inputs.qualified_body_name(b) for b in scoped_bodies]
     # Absent, never null: a null would read as "no material moved".
@@ -298,9 +309,9 @@ revolve_tool = (
     .add_input_property("angle_deg", {"type": "number"})
     .add_input_property("second_angle_deg", {"type": "number"})
     .add_input_property("target_bodies", _TARGET_BODIES.schema())
-    .add_input_property(*_inputs.boolean_op(default="new").as_property())
+    .add_input_property(*_inputs.boolean_op(default="new", description="").as_property())
     .add_input_property(*_sketch_detail.COMPONENT_SCOPE)
-    .add_input_property("symmetric", {"type": "boolean"})
+    .add_input_property("symmetric", {"type": "boolean", "description": "angle_deg is per side."})
     .strict_schema()
 )
 revolve_item = Item.create_tool_item(tool=revolve_tool, write="write", handler=handler, run_on_main_thread=True,

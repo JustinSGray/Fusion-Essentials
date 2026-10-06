@@ -867,6 +867,7 @@ class TestAdditiveOperationRows:
         assert "assigns a tool" in rows_by_setup["Mill"]["summary"]["readiness"]
 
     def test_an_additive_setup_is_held_out_of_the_time_slice_entirely(self):
+        # valid=True models the platform-seeded preset node of a fresh additive setup
         import adsk.cam
         additive_op = FakeOperation("AutoOrient", has_toolpath=False, valid=True,
                                     operation_state=0, tool=None,
@@ -882,6 +883,25 @@ class TestAdditiveOperationRows:
         assert row["operations"] == []
         assert row["total_excludes_operations"] == ["AutoOrient"]
         assert "setup_total_unavailable" not in row and "error" not in row
+
+    @pytest.mark.parametrize("by_operation", [False, True])
+    def test_an_ungenerated_additive_op_reads_additive_not_the_generate_remedy(self, by_operation):
+        # valid=False is a created additive op; the valid=True test above is the seeded preset node
+        import adsk.cam
+        additive_op = FakeOperation("AutoOrient", has_toolpath=False, valid=False,
+                                    operation_state=3, tool=None,
+                                    strategy="automatic_orientation")
+        additive_setup = FakeSetup("Build", [additive_op],
+                                   operation_type=adsk.cam.OperationTypes.AdditiveOperation)
+        additive_op.parentSetup = additive_setup
+        self._install(additive_setup, machining_times={})
+        out = _payload(cg._cr.get_machining_time_handler(
+            operation=additive_op if by_operation else None))
+        row = out["setups"][0]
+        assert row["additive"] is True and row["machining_time_seconds"] is None
+        assert "error" not in row and "cam_generate" not in json.dumps(out)
+        assert "getMachiningTime is not called" in out["note"]
+        assert row.get("operation") == ("AutoOrient" if by_operation else None)
 
     def test_nc_program_held_ops_excludes_additive_ops_by_their_own_setup(self):
         # A held list can draw from several setups (Setup.parentSetup, not the program), so an

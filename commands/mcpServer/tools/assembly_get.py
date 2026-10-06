@@ -72,6 +72,13 @@ def _joint_record(design, j, inv_k):
                              if safe(lambda: j.occurrenceTwo) else None)
     rec["occurrence_one_path"] = safe(lambda: j.occurrenceOne.fullPathName)
     rec["occurrence_two_path"] = safe(lambda: j.occurrenceTwo.fullPathName)
+    placed = _joints.joint_placements(design, j)
+    if placed:
+        rec["owner_component"] = safe(lambda: j.parentComponent.name)
+        rec["placements"] = [{"placement": p,
+                              "occurrence_one_path": safe(lambda x=x: x.occurrenceOne.fullPathName),
+                              "occurrence_two_path": safe(lambda x=x: x.occurrenceTwo.fullPathName)}
+                             for p, x in placed]
     # Suppression is DISCLOSED, not folded into healthy - a suppressed joint is inert, not broken.
     # BOTH flags OR'd: Joint.isSuppressed keeps reading False when the suppression was set on the
     # TIMELINE item. read_flag, so two unreadable flags stay unstated.
@@ -137,10 +144,12 @@ def handler(units: str = "mm", include=None, include_joints: bool = True,
     for j in _joints.all_joints(design):
         rec = _joint_record(design, j, inv_k)
         joints.append(rec)
-        for key in ("occurrence_one_path", "occurrence_two_path"):
-            path = rec.get(key)
-            if path:
-                occ_joints.setdefault(path, []).append(rec["name"])
+        # A sub-component joint is credited on every placement of its owner, not only the first.
+        paths = []
+        for row in [rec] + rec.get("placements", []):
+            paths += [row.get("occurrence_one_path"), row.get("occurrence_two_path")]
+        for path in dict.fromkeys(p for p in paths if p):
+            occ_joints.setdefault(path, []).append(rec["name"])
 
     # Cap the JOINTS array reported to the caller; occ_joints (the cross-index) was built from the
     # FULL walk above, and broken_joints/health below reads the FULL 'joints' list, so capping here

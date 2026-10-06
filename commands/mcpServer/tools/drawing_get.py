@@ -247,6 +247,10 @@ def handler(include=None, sheet: str = "", view: int = None) -> dict:
         "Dimension values, symbol text, view scales, parts lists and balloons do not read back - "
         "the PDF is the read. revisions lists every row, title and header included, at the "
         "indexes drawing_edit_revisions takes.")
+    if payload["is_modified"] is False and _common.read_flag(lambda: dd.isModified) is True:
+        payload["modified_by_read"] = True
+        payload["note"] += (" isModified read false before this read and true after it; this read "
+                            "requested no edit.")
     return ok(payload)
 
 

@@ -32,7 +32,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | `ProfileRef` | A reference to a sketch PROFILE - a stable 'handle' (entityToken, order-stable across rebuilds) |
 | `ProfileRefList` | An ORDERED list of profile references - for loft, where profile ORDER is load-bearing (the loft |
 | `SectionRef` | A reference to one SectionAnalysis by its generated name from view_section cut/list. |
-| `SheetMetalRuleRef` | A rule selected by scoped name or a current scope/index ref. |
+| `SheetMetalRuleRef` | A rule selected by scoped name or a current scope/index/name ref. |
 | `SketchLineRef` | An exact sketch line from sketch_get, optionally scoped to a component. |
 | `SketchRefList` | A LIST of SKETCHES by name - the reference an operation taking WHOLE sketches needs (a CAM |
 | `SurfaceRef` | The FACE/PLANE a sketch entity is constrained or dimensioned to. Schema and resolution come |

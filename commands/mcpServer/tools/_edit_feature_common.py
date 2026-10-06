@@ -67,6 +67,10 @@ def read_extrude_definition(feature, limit=None):
     unavailable = {}
     get = lambda key, getter: _definition_value(getter, key, unavailable)
     kind = extrude_extent_kind(feature)
+    pair = [safe(lambda side=side: getattr(feature, side).objectType) for side in ("extentOne", "extentTwo")]
+    if kind is None and safe(lambda: feature.hasTwoExtents) is True and all(isinstance(t, str) for t in pair):
+        unavailable["extent"] = ("two-sided " + " + ".join(t.rsplit("::", 1)[-1] for t in pair)
+                                 + " is not a supported extent")
     param = (get("distance", lambda: feature.extentOne.distance)
              if kind in ("distance", "symmetric", "two_side") else None)
     param2 = get("distance2", lambda: feature.extentTwo.distance) if kind == "two_side" else None
@@ -300,15 +304,33 @@ def feature_body_keys(feature):
 
 
 def health(design, marker):
-    """Evaluated timeline errors and warnings, or None when a state cannot be read."""
+    """Evaluated timeline errors and warnings, collapsed-group members included, or None when unread."""
     timeline = safe(lambda: design.timeline)
     states = adsk.fusion.FeatureHealthStates
     known = (states.HealthyFeatureHealthState, states.WarningFeatureHealthState,
              states.ErrorFeatureHealthState)
-    if any(safe(lambda i=i: timeline.item(i).healthState) not in known for i in range(marker)):
-        return None
+    grouped = {states.ErrorFeatureHealthState: [], states.WarningFeatureHealthState: []}
+    for i in range(marker):
+        item = safe(lambda i=i: timeline.item(i))
+        if _common.read_flag(lambda: item.isGroup) is not True:
+            if safe(lambda: item.healthState) not in known:
+                return None
+            continue
+        # A collapsed group row reads its own healthState outside these three; its members carry theirs.
+        count = counted(lambda: item.count)
+        members = [safe(lambda j=j: item.item(j)) for j in range(count or 0)]
+        if count is None or None in members:
+            return None
+        for member in members:
+            state = safe(lambda: member.healthState)
+            if state not in known:
+                return None
+            grouped.get(state, []).append(_common._HealthName(
+                safe(lambda: member.name) or f"#{i}", safe(lambda: member.entity.entityToken)))
     errors, warnings, total = _common.timeline_health(design, limit=marker)
-    return {"errors": errors, "warnings": warnings} if total == marker else None
+    return ({"errors": errors + grouped[states.ErrorFeatureHealthState],
+             "warnings": warnings + grouped[states.WarningFeatureHealthState]}
+            if total == marker else None)
 
 
 def same_feature(design, token, feature, index, count):

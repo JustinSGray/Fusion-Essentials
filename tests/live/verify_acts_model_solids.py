@@ -177,6 +177,24 @@ def _loft_curve_refusal_rows():
                   _document_closed, None)])
     return rows
 
+
+def _hole_note_detail(p):
+    """Read the requested hole-note values and display back off an independent pmi_get record."""
+    notes = [a for a in p.get("annotations") or [] if a.get("name") == "SweepHoleNote"]
+    note = notes[0] if len(notes) == 1 else {}
+    dia, depth = note.get("diameter") or {}, note.get("depth") or {}
+    tol = dia.get("tolerance") or {}
+    primary, secondary = note.get("display") or {}, note.get("display_secondary") or {}
+    valid = (p.get("units") == "mm" and note.get("kind") == "hole_note"
+             and _near(depth.get("value"), 4.5, 1e-6) and depth.get("overridden") is True
+             and _near(dia.get("value"), 4.2, 1e-6) and dia.get("overridden") is True
+             and tol.get("type") == "symmetric" and _near(tol.get("upper"), .05, 1e-6)
+             and _near(tol.get("lower"), -.05, 1e-6)
+             and primary.get("precision") == 2 and primary.get("leading_zeros") is True
+             and secondary.get("precision") == 3 and secondary.get("units") == "inches")
+    return _measured("hole note values and display read back", notes, valid)
+
+
 _SOLIDS = [
     # The sketch acts have already drawn the whole scratch field by now, so a whole-model fit is a
     # metre of scenery with the part a speck in it. Frame the profiles the features below consume,
@@ -589,6 +607,22 @@ _SOLIDS = [
     ("pmi_create", lambda c: {"kind": "hole_note", "geometry": [_ctx_get(c, "mount_bore", "a mounting bore")]},
      _unless(MACHINING_EXTENSION,
              _refused("Extension is required", "This operation requires", "pmi_get")), None),
+    # requested values and display differ from the bore's nominal, so the independent read below
+    # cannot pass on the nominal masquerading as the set.
+    ("pmi_create", lambda c: {"kind": "hole_note", "geometry": [_ctx_get(c, "mount_bore", "a mounting bore")],
+                              "name": "SweepHoleNote", "units": "mm",
+                              "values": {"depth": 4.5, "diameter": {"value": 4.2, "tolerance": {"type": "symmetric", "value": 0.05}}},
+                              "display": {"precision": 2, "leading_zeros": True, "secondary": {"precision": 3, "units": "in"}}},
+     _needs(MACHINING_EXTENSION, lambda p: p.get("annotation") == "SweepHoleNote" and p.get("kind") == "hole_note"), None),
+    ("pmi_create", lambda c: {"kind": "hole_note", "geometry": [_ctx_get(c, "mount_bore", "a mounting bore")],
+                              "name": "SweepHoleNote", "units": "mm",
+                              "values": {"depth": 4.5, "diameter": {"value": 4.2, "tolerance": {"type": "symmetric", "value": 0.05}}},
+                              "display": {"precision": 2, "leading_zeros": True, "secondary": {"precision": 3, "units": "in"}}},
+     _unless(MACHINING_EXTENSION,
+             _refused("Extension is required", "This operation requires", "pmi_get")), None),
+    ("pmi_get", {"include": ["detail"]}, _needs(MACHINING_EXTENSION, _hole_note_detail), None),
+    ("pmi_delete", {"annotation": "SweepHoleNote"},
+     _needs(MACHINING_EXTENSION, lambda p: p.get("deleted") == "SweepHoleNote" and p.get("kind") == "hole_note"), None),
     ("pmi_get", {"include": ["segments", "detail"]}, "ok", None),
     # an over-cap 'max_results' is CLAMPED, not refused - pmi_get's own contract, since every record
     # it returns crosses the wire whole. The answer still comes back with its census keys.
@@ -1508,7 +1542,7 @@ def _edge_extent_history(tag, feature_key, feature_type):
 
 
 def _edge_extent_rows(duplicate):
-    """Compare repeated-edge fillets or signed through-all cuts against independent public reads."""
+    """Compare repeated-edge fillets/chamfers or signed through-all cuts against independent public reads."""
     tag = "distinct_edge" if duplicate else "signed_all"
     rows = [("doc_get", {}, _home_document, (tag + "_home", _home_address)),
             ("doc_new", lambda c: {"expect_document": _ctx_get(c, tag + "_home", "story")},
@@ -1570,33 +1604,65 @@ def _edge_extent_rows(duplicate):
             _RECALL[tag + "_edge"] = matches[0]["handle"]
         return _measured("one resolved physical edge at [5,8,0]", matches, valid)
 
-    def fillet_result(n):
+    def edge_result(kind, n):
         def check(p):
             note = p.get("note") or ""
             said = f"The {n} handles named 1 distinct edge(s), so each was sent once." in note
-            valid = (p.get("filleted") is True and p.get("edges_requested") == n
+            valid = (p.get(kind + "ed") is True and p.get("edges_requested") == n
+                     and p.get("edge_selection") == "1 edge seed(s) from handles"
                      and p.get("edges_cut") == 1 and p.get("faces_created") == 1
                      and p.get("tangent_chain") is False
                      and (said if n > 1 else "handles named" not in note))
-            return _measured(f"{n} handle(s) naming one physical edge, cut once", p, valid)
+            return _measured(f"{n} {kind} handle(s) naming one physical edge, cut once", p, valid)
         return check
 
-    cases = (("single", 1), ("repeated", 2)) if duplicate else (
+    def landed(family, n):
+        compare = _retire_compare(f"{tag}_{family}_landed_geometry", _edge_extent_geometry, n > 1)
+        def check(p):
+            state = _edge_extent_geometry(p) or []
+            faces = sum(1 for r in state if r["kind"].endswith("face"))
+            census = {"faces": faces, "edges": len(state) - faces}
+            _measured("landed stock census", census, census == {"faces": 7, "edges": 15})
+            return compare(p)
+        return check
+
+    def retired(feature_type):
+        def check(p):
+            return _measured("the created feature deleted by type", p,
+                p.get("deleted") is True and p.get("feature") == _RECALL.get(tag + "_feature")
+                and p.get("entity_type") == feature_type and p.get("also_deleted") == [])
+        return check
+
+    # (family, tool, size args, landed stock volume mm3, feature type): the one-handle control and
+    # the repeated handle must both land this volume and the same face/edge census.
+    families = (("constant", "model_fillet", {"radius": .5, "tangent_chain": False},
+                 479.4634954084937, "FilletFeature"),
+                ("chamfer", "model_chamfer", {"distance": .5, "tangent_chain": False},
+                 478.75, "ChamferFeature"),
+                ("chord", "model_fillet", {"fillet_type": "chord_length", "chord_length": .5,
+                                           "tangent_chain": False}, 479.731748, "FilletFeature"),
+                ("variable", "model_fillet", {"fillet_type": "variable", "radius": .5,
+                                              "end_radius": 1}, 478.749187, "FilletFeature"))
+    cases = tuple((family, n) for family in families for n in (1, 2)) if duplicate else (
         ("AllPositive", 1), ("AllNegative", -1), ("AllSymmetric", 1))
     for case, value in cases:
         if duplicate:
+            family, tool, size_args, expected_volume, feature_type = case
             rows.append(("find_geometry", geometry("stock", "line_edge"), acquire_edge,
                          (tag + "_edge", lambda p: _RECALL[tag + "_edge"])))
-            write("model_fillet", lambda c, n=value: {"edges": [
-                _ctx_get(c, tag + "_edge", "physical edge")] * n, "radius": .5,
-                "tangent_chain": False}, fillet_result(value),
+            write(tool, lambda c, n=value, size_args=size_args: {"edges": [
+                _ctx_get(c, tag + "_edge", "physical edge")] * n, "units": "mm", **size_args},
+                edge_result(tool[len("model_"):], value),
                 (tag + "_feature", _recall(tag + "_feature", lambda p: p["feature"])))
-            expected_volume = 479.4634954084937
         else:
             write("model_extrude", lambda c, case=case, value=value: {
                 "sketch_name": case, "operation": "cut", "extent": "through_all", "distance": value,
                 "symmetric": case == "AllSymmetric", "target_bodies": [_ctx_get(c, tag + "_stock", "stock")]},
-                _extruded, (tag + "_feature", _recall(tag + "_feature", lambda p: p["feature"])))
+                lambda p, case=case: _extruded(p) and _measured(
+                    "through_all reply names the side its extent reads", p.get("direction"),
+                    p.get("direction") == {"AllPositive": "positive", "AllNegative": "negative",
+                                           "AllSymmetric": "symmetric"}[case]),
+                (tag + "_feature", _recall(tag + "_feature", lambda p: p["feature"])))
             expected_volume = baseline_volume - math.pi * .5 ** 2 * (10 if case == "AllSymmetric" else 5)
         rows += [("model_inspect", inspect("stock"), changed_material(expected_volume), None),
                  ("model_inspect", inspect("witness"), _retire_compare(
@@ -1605,10 +1671,9 @@ def _edge_extent_rows(duplicate):
                      tag + "_witness_geometry", _edge_extent_geometry, True), None),
                  ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
                                   "tree_handles": True, "max_depth": 10, "max_results": 2000},
-                  _edge_extent_history(tag, tag + "_feature", "FilletFeature" if duplicate else "ExtrudeFeature"), None)]
+                  _edge_extent_history(tag, tag + "_feature", feature_type if duplicate else "ExtrudeFeature"), None)]
         if duplicate:
-            rows.append(("find_geometry", geometry("stock"), _retire_compare(
-                tag + "_landed_geometry", _edge_extent_geometry, case == "repeated"), None))
+            rows.append(("find_geometry", geometry("stock"), landed(family, value), None))
         else:
             x, z = {"AllPositive": (2, 2.5), "AllNegative": (5, -2.5), "AllSymmetric": (8, 0)}[case]
             def side(p, x=x, z=z):
@@ -1629,7 +1694,23 @@ def _edge_extent_rows(duplicate):
                 return _measured("bore wall bounds reach exactly the requested stock side", bounds, valid)
             rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, tag + "_wall", "bore wall"),
                 "include": ["default"], "units": "mm"}, wall_bounds, None))
-        write("design_delete_feature", lambda c: {"feature": _ctx_get(c, tag + "_feature", "created feature")})
+            if case == "AllNegative":
+                # The side the reply named is the side the editor reads; its edit moves the wall up.
+                write("model_edit_extrude", lambda c: {
+                    "feature": _ctx_get(c, tag + "_feature", "created feature"), "action": "extent",
+                    "extent": "through_all", "direction": "positive"},
+                    lambda p: _measured("negative through_all edited to the positive side", p,
+                        p.get("edited") is True and p.get("definition_matches") is True
+                        and (p.get("definition_before") or {}).get("side") == "negative"
+                        and (p.get("definition_after") or {}).get("side") == "positive"))
+                rows += [("model_inspect", inspect("stock"), changed_material(expected_volume), None),
+                         ("find_geometry", geometry("stock", "cylinder_face"),
+                          lambda p, side=side: side(p, z=2.5), _fg(tag + "_wall")),
+                         ("model_inspect", lambda c: {"target": _ctx_get(c, tag + "_wall", "bore wall"),
+                          "include": ["default"], "units": "mm"},
+                          lambda p, wall_bounds=wall_bounds: wall_bounds(p, low=0, high=5), None)]
+        write("design_delete_feature", lambda c: {"feature": _ctx_get(c, tag + "_feature", "created feature")},
+              retired(feature_type) if duplicate else "ok")
         rows += _retire_reads(tag, [""], [], True)
         for role in ("stock", "witness"):
             rows += [("model_inspect", inspect(role), _retire_compare(

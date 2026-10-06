@@ -901,6 +901,21 @@ class TestTangentChainTargeting:
         assert ff.last.edge_set[0].count == 1 and out["edges_requested"] == 2
         assert "2 handles named 1 distinct edge(s)" in out["note"]
 
+    @pytest.mark.parametrize("kw,slot", [
+        ({"fillet_type": "chord_length", "chord_length": .5, "tangent_chain": False}, "chord_set"),
+        ({"fillet_type": "variable", "radius": .5, "end_radius": 1}, "variable_set")])
+    def test_a_repeated_handle_is_one_edge_for_every_variant(self, kw, slot):
+        one = _edge_ent(token="physical")
+        ff, _ = _install_edge_handles({"E1": one},
+                                      timeline=make_timeline("Extrude1", "Fillet1", marker=2))
+        one.assemblyContext = None
+        one.body.parentComponent = fl._inputs._common.design().rootComponent
+        ff.result = FakeCountingFeature("Fillet1", faces=1, tangent=False, cut_edges=1)
+        out = _payload(fl.handler(edges=["E1", "E1"], **kw))
+        assert getattr(ff.last, slot)[0].count == out["edges_cut"] == 1
+        assert out["edges_requested"] == 2 and ff.result.deleted is False
+        assert out["edge_selection"] == "1 edge seed(s) from handles"
+
     def test_proxy_aliases_use_native_identity_with_the_same_actual_placement(self):
         native = _edge_ent(token="physical")
         one, alias = _edge_ent(token="proxy-one"), _edge_ent(token="proxy-two")

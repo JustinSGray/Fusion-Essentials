@@ -10,7 +10,7 @@ import adsk.core
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import iter_collection, ok, error, safe
+from ._common import counted, ok, error, safe
 from . import _inputs
 
 app = adsk.core.Application.get()
@@ -18,12 +18,34 @@ app = adsk.core.Application.get()
 _ACTIONS = ("list", "switch")
 
 
-def _all_hubs(data):
-    """Return [(hub, name, id), ...] for every data hub."""
+def _hub_census(data):
+    """([(hub, name or None, id), ...], complete): every data hub, complete False when a hub or the
+    count did not read."""
+    hubs = safe(lambda: data.dataHubs)
+    count = counted(lambda: hubs.count)
     out = []
-    for h in iter_collection(safe(lambda: data.dataHubs)):
-        out.append((h, safe(lambda h=h: h.name) or "(unnamed)", safe(lambda h=h: h.id)))
-    return out
+    for i in range(count or 0):
+        h = safe(lambda i=i: hubs.item(i))
+        if h is not None:
+            out.append((h, safe(lambda h=h: h.name) or None, safe(lambda h=h: h.id)))
+    return out, count is not None and len(out) == count
+
+
+def _name_target(hubs, complete, want):
+    """((hub, name, id), None) for the one hub named `want`, or (None, error text)."""
+    wl = want.lower()
+    matches = [row for row in hubs if (row[1] or "").strip().lower() == wl]
+    if len(matches) > 1:
+        rows = ", ".join(f"'{nm}' ({hid})" for (_, nm, hid) in matches)
+        return None, (f"Hub name '{want}' matches {len(matches)} hubs: {rows}. Nothing was "
+                      "switched. Pass hub=<id> to choose one.")
+    unread = [hid or "(id unread)" for (_, nm, hid) in hubs if nm is None]
+    if unread or not complete:
+        what = (f"the name of hub(s) {', '.join(unread)} did not read" if unread
+                else "the hub list did not read completely")
+        return None, (f"Hub name '{want}' cannot be resolved: {what}. Nothing was switched. Pass "
+                      "hub=<id> from data_get(include=['hubs']).")
+    return (matches[0] if matches else None), None
 
 
 def handler(action: str = "list", hub: str = "") -> dict:
@@ -38,13 +60,14 @@ def handler(action: str = "list", hub: str = "") -> dict:
 
     active = safe(lambda: data.activeHub)
     active_id = safe(lambda: active.id) if active else None
-    hubs = _all_hubs(data)
+    hubs, complete = _hub_census(data)
 
     if act == "list":
         return ok({
         "active_hub": ({"name": safe(lambda: active.name), "id": active_id} if active else None),
         "hub_count": len(hubs),
-        "hubs": [{"name": nm, "id": hid, "is_active": (hid == active_id)} for (_, nm, hid) in hubs],
+        "hubs": [{"name": nm or "(unnamed)", "id": hid, "is_active": (hid == active_id)}
+                 for (_, nm, hid) in hubs],
         })
 
     # switch
@@ -52,23 +75,17 @@ def handler(action: str = "list", hub: str = "") -> dict:
     if not want:
         return error("Provide 'hub' - the name or id of the hub to switch to (see action='list').")
 
-    # match by id first (exact), then by case-insensitive name
-    target = None
-    for (h, nm, hid) in hubs:
-        if hid == want:
-            target = (h, nm, hid)
-            break
+    # an exact id first; a name only when it names exactly one hub of a census that read whole
+    by_id = [row for row in hubs if row[2] == want]
+    target, name_error = (by_id[0], None) if len(by_id) == 1 else _name_target(hubs, complete, want)
+    if name_error:
+        return error(name_error)
     if target is None:
-        wl = want.lower()
-        for (h, nm, hid) in hubs:
-            if (nm or "").strip().lower() == wl:
-                target = (h, nm, hid)
-                break
-    if target is None:
-        names = ", ".join(nm for (_, nm, _) in hubs) or "(none)"
+        names = ", ".join(nm or "(unnamed)" for (_, nm, _) in hubs) or "(none)"
         return error(f"No hub matched '{want}'. Available: {names}.")
 
     th, tname, tid = target
+    tname = tname or "(unnamed)"
     if tid == active_id:
         return ok({
         "switched": False,

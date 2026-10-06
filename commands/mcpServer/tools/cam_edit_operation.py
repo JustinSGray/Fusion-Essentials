@@ -372,6 +372,9 @@ def _parameter_state_note(op, cam) -> str:
     return ("The operation reads error; cam_get(include=['operations']) carries the fault to fix "
             "before generation.")
 
+_DISABLED_CLAUSE = (" - this row reads isEnabled false after the call's other writes; set the "
+                    "mode first and write the row this mode enables")
+
 _UNCHANGED_NOTE = ("changed[].unchanged means the requested expression already matched.")
 
 _UNLOCKED_NOTE = ("changed[].unlocked_here means another requested row made it editable first.")
@@ -390,18 +393,22 @@ _WROTE_THEN_RESTORED = (
     "cam_get(include=['operations']) before relying on it.")
 
 _RESTORE_FAILED = (
-    "This call WROTE {n} parameter(s) on the operation and restored each one, but {bad} did NOT "
+    "This call WROTE {n} parameter(s) on the operation and restored {k} of {n}; {bad} did NOT "
     "come back: {rows}. The operation is left holding those values - set each one back by hand.")
 
 
 def _restore(changed, resolved):
-    """Put every parameter this call wrote back to the expression it held and RE-READ each one;
-    returns the rows whose expression did not come back, as '<name> reads <x>, held <y>'. The
-    restore is a MUTATION and is left to raise - only the read-back is guarded."""
+    """Restore and re-read every written row; returns the rows that did not come back."""
     failed = []
     for rec in changed:
         p = resolved[rec["name"]]
-        p.expression = rec["before"]
+        try:
+            p.expression = rec["before"]
+        except Exception as e:
+            back = safe(lambda p=p: p.expression)
+            failed.append(f"'{rec['name']}' refused its prior {rec['before']!r} ({e}) and reads "
+                          f"{back!r}")
+            continue
         back = safe(lambda p=p: p.expression)
         if back != rec["before"]:
             failed.append(f"'{rec['name']}' reads {back!r}, held {rec['before']!r}")
@@ -415,7 +422,8 @@ def _restored_clause(changed, resolved) -> str:
         return "Nothing was applied."
     failed = _restore(changed, resolved)
     if failed:
-        return _RESTORE_FAILED.format(n=len(changed), bad=len(failed), rows="; ".join(failed))
+        return _RESTORE_FAILED.format(n=len(changed), k=len(changed) - len(failed),
+                                      bad=len(failed), rows="; ".join(failed))
     return _WROTE_THEN_RESTORED.format(n=len(changed))
 
 
@@ -654,10 +662,14 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
     # Three ways a write is not a success: it did not evaluate, it did not move, it will not read
     # back. Restore EVERY parameter set in this call, re-read each one, and name what each one did.
     if eval_failures or no_takes or unreadable:
+        # Read once every write has landed and before the restore: a mode write can disable a row.
+        disabled = {n for n, _e, _why in eval_failures
+                    if read_flag(lambda n=n: resolved[n].isEnabled) is False}
         restore_failed = _restore(changed, resolved)
         parts = []
         if eval_failures:
-            detail = "; ".join(f"'{n}' = '{e}' ({why})" for n, e, why in eval_failures)
+            detail = "; ".join(f"'{n}' = '{e}' ({why})" + (_DISABLED_CLAUSE if n in disabled else "")
+                               for n, e, why in eval_failures)
             parts.append(f"expression did not evaluate - {detail}")
         if no_takes:
             # `before` is never null here: a no-take needs after == before with after readable.
@@ -677,12 +689,15 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
             remedy = "(" + _TOOL_DIMENSION_REMEDY + ")"
         else:
             remedy = "(Re-read the operation with cam_get(include=['operations']).)"
-        failed_clause = (f" {len(restore_failed)} did NOT come back and the operation is left "
-                         f"holding them: {'; '.join(restore_failed)}."
-                         if restore_failed else "")
-        return error(f"Operation '{operation}': {'; '.join(parts)}. Rolled back all "
-                     f"{len(changed)} parameter(s), each restored expression re-read.{failed_clause}"
-                     f" {remedy}" + _applied_clause(pre_landed))
+        if restore_failed:
+            rolled = (f"Restored {len(changed) - len(restore_failed)} of {len(changed)} "
+                      f"parameter(s); {len(restore_failed)} did NOT come back and the operation is "
+                      f"left holding them: {'; '.join(restore_failed)}.")
+        else:
+            rolled = (f"Rolled back all {len(changed)} parameter(s), each restored expression "
+                      "re-read.")
+        return error(f"Operation '{operation}': {'; '.join(parts)}. {rolled} {remedy}"
+                     + _applied_clause(pre_landed))
 
     out = {
         "edited": True,

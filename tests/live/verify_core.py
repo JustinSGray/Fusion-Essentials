@@ -150,9 +150,22 @@ def attestation_identity(health):
             "load_id": attestation["load_id"], "session_id": health["session_id"]}
 
 
+def _health_read():
+    """The /health body; a read that times out is taken once more after 5 s, then raises."""
+    for last in (False, True):
+        try:
+            with urllib.request.urlopen(BASE + "/health", timeout=20) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except OSError as exc:
+            timed_out = isinstance(exc, TimeoutError) or isinstance(
+                getattr(exc, "reason", None), TimeoutError)
+            if last or not timed_out:
+                raise
+            time.sleep(5)
+
+
 def health_gate():
-    with urllib.request.urlopen(BASE + "/health", timeout=5) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    data = _health_read()
     if data.get("server") != SERVER_NAME:
         sys.exit(f"Refusing to run: {BASE} is answering as {data.get('server')!r}, "
                  f"not {SERVER_NAME!r}. Is Autodesk's built-in server on this port?")
@@ -1411,7 +1424,7 @@ def _base_feature_closed(p):
 
 def _arranged(count):
     """model_arrange: the solver's effect read back - which named inputs MOVED, or the occurrences
-    it added (it restructures parts under Envelope occurrences and can mint copies)."""
+    it added (the feature adds Arrange/Envelope occurrences and can mint copies)."""
     def check(p):
         return _measured(f"arrange effect (want {count} shapes)",
                          {"arranged_count": p.get("arranged_count"), "moved": p.get("moved"),
@@ -1768,8 +1781,7 @@ def _link_healthy(link_key):
 
 def _limits_survived(name, min_deg, max_deg):
     """assembly_get: the joint's enabled rotation limits after a motion re-set, off the design's
-    own joint walk. A re-set that CHANGES the axis clears them; one that keeps it leaves them
-    standing, so this is the reading that tells the two apart."""
+    own joint walk."""
     def check(p):
         row = next((j for j in (p.get("joints") or []) if j.get("name") == name), None)
         lim = (row or {}).get("rotation_limits_deg") or {}
@@ -1812,7 +1824,7 @@ def _joint_axis_vs(name, kind, key, same):
 
 def _axis_kept(name, axis):
     """joint_edit with NO axis: 'axis' is the direction READ off the joint (not the tool's own
-    default) and 'axis_kept' says so - a re-aim nobody asked for also drops the joint's limits."""
+    default) and 'axis_kept' says so."""
     def check(p):
         return _measured(f"'{name}' kept its own {axis} axis across the re-set",
                          {"edited": p.get("edited"), "changes": p.get("changes"),

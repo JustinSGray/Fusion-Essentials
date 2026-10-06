@@ -723,6 +723,15 @@ def _with_modified(out, before):
     return ok(out)
 
 
+def _visible_root_siblings(design, occ):
+    """The names of root occurrences other than `occ`'s own top-level one that read isVisible true."""
+    top = (safe(lambda: occ.fullPathName) or safe(lambda: occ.name) or "").split("+")[0]
+    root = safe(lambda: design.rootComponent)
+    return [n for o in _common.iter_collection(safe(lambda: root.occurrences))
+            if (n := safe(lambda o=o: o.name)) and n != top
+            and _common.read_flag(lambda o=o: o.isVisible) is True]
+
+
 def _do_visibility(design, action, target):
     if action == "clear_isolation":
         before = _view_common.document_modified()
@@ -796,11 +805,22 @@ def _do_visibility(design, action, target):
             # a bulb/isolation assignment and can leave the state where it was.
             try:
                 if action == "isolate":
+                    repeat = _common.read_flag(lambda ent=ent: ent.isIsolated) is True
+                    if repeat:
+                        # A sibling shown after an isolation stays drawn while the target still reads
+                        # isIsolated true (measured), so the isolation is cleared and set again.
+                        ent.isIsolated = False
                     ent.isIsolated = True
                     got = _common.read_flag(lambda ent=ent: ent.isIsolated)
                     if got is not True:
                         return error(f"Set isolate on '{nm}' but isIsolated reads back {got} - the "
                                      "change did not take." + _partial_suffix(affected))
+                    lit = _visible_root_siblings(design, ent) if repeat else []
+                    if lit:
+                        names, one = ", ".join(f"'{n}'" for n in lit), len(lit) == 1
+                        return error(f"Isolated '{nm}', but {names} still read{'s' if one else ''} "
+                                     f"visible. Hide {'it' if one else 'them'} with "
+                                     f"view_set(action='hide', target=[{names}]).")
                 elif action == "show":
                     # An occurrence stays hidden if any ANCESTOR occurrence's bulb is off - so turning
                     # on a nested child alone does nothing visible. Light up the whole ancestor chain.

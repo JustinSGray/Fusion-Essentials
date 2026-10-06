@@ -448,6 +448,14 @@ def _child_kind(child):
     return "operation" if safe(lambda: adsk.cam.Operation.cast(child)) is not None else "base"
 
 
+def child_row_names(parent, kind):
+    """The names of `parent`'s `children` of CamNode `kind`, in order; None when `children` does not read."""
+    children = safe(lambda: parent.children)
+    if children is None:
+        return None
+    return [safe(lambda c=c: c.name) for c in iter_collection(children) if _child_kind(c) == kind]
+
+
 def _walk_children(parent, setup_name, path, out, parent_node=None):
     """Collect CamNodes for everything nested under `parent` (a Setup, or a container below one),
     off the ONE `children` list Fusion keeps them in - a parent whose `children` does not read holds

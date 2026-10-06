@@ -136,6 +136,29 @@ def test_as_built_unsupported_parameter_refuses_before_retype_or_roll(as_built_p
     assert isinstance(joint.jointMotion, RevoluteJointMotion)
 
 
+def test_world_axis_on_an_as_built_joint_is_refused_before_roll(as_built_preflight):
+    joint, calls = as_built_preflight
+    res = jt.handler(joint_name="AB", world_axis="x")
+    assert res["isError"] is True and "AS-BUILT" in res["message"]
+    assert "No edits applied" in res["message"] and "design_delete_feature" in res["message"]
+    assert calls == [] and _rolls(joint) == []
+
+
+@pytest.mark.parametrize("landed,refused", [(_JD.ZAxisJointDirection, True),
+                                            (_JD.XAxisJointDirection, False)])
+def test_an_as_built_axis_edit_reads_the_landed_direction_back(monkeypatch, landed, refused):
+    _, joint = _install_as_built(monkeypatch, "WhAxis")
+    joint.motionLinks = []
+    monkeypatch.setattr(jt, "_apply_motion", lambda j, *_a, **_k: (
+        setattr(j, "jointMotion", SliderJointMotion(direction=landed)) or True, None))
+    res = jt.handler(joint_name="WhAxis", axis="x")
+    if refused:
+        assert res["isError"] is True and "WAS EDITED" in res["message"]
+        assert f"JointDirections {landed}" in res["message"] and "joint_create" in res["message"]
+    else:
+        assert _payload(res)["axis"] == "x"
+
+
 @pytest.mark.parametrize("field,value,opposite", [("max_deg", -20, "min_deg=-10"), ("min_deg", 20, "max_deg=10")])
 def test_single_rotation_bound_conflict_refuses_before_roll_and_preserves_legal_updates(retained_rotation_limits, field, value, opposite):
     joint, limits = retained_rotation_limits
@@ -449,6 +472,45 @@ class TestAxisIsReadOffTheJoint:
         assert f"JointDirections {_JD.CustomJointDirection}" in res["message"]
         assert "slide_axis=x|y|z" in res["message"]
         assert joint._motion_calls == [] and _rolls(joint) == []
+
+    @pytest.mark.parametrize("slide_axis,kept", [("y", _JD.CustomJointDirection),
+                                                 ("", _JD.YAxisJointDirection)])
+    def test_a_kept_custom_rotation_checks_the_slide_against_no_placeholder_axis(
+            self, slide_axis, kept):
+        # the custom Y entity has no frame index, so the slide is compared against no rotation axis
+        _, joint = _install(["PS"])
+        joint.jointMotion = PinSlotJointMotion(axis=_JD.CustomJointDirection,
+                                               custom_axis_entity="WAXIS_Y", direction=kept)
+        out = _payload(jt.handler(joint_name="PS", joint_type="pin_slot", slide_axis=slide_axis))
+        assert joint._motion_calls == [("pin_slot", (_JD.CustomJointDirection,
+                                                     _JD.YAxisJointDirection, "WAXIS_Y"))]
+        assert out["axis"] == "custom" and out["slide_axis"] == "y"
+
+    def test_a_slide_that_reads_back_another_axis_is_an_error_naming_both(self):
+        _, joint = _install(["PS"])
+        joint.jointMotion = PinSlotJointMotion(axis=_JD.CustomJointDirection,
+                                               custom_axis_entity="WAXIS_Y",
+                                               direction=_JD.YAxisJointDirection)
+        res = jt.handler(joint_name="PS", joint_type="pin_slot", slide_axis="z")
+        assert res["isError"] is True
+        assert "WAS EDITED (joint_type=pin_slot, axis=custom, slide_axis=x)" in res["message"]
+        assert "reads back 'x', not the requested slide_axis 'z'" in res["message"]
+        assert joint.jointMotion.slideDirection == _JD.XAxisJointDirection
+
+    def test_a_slide_that_does_not_read_back_is_published_null(self):
+        _, joint = _install(["PS"])
+        joint.jointMotion = PinSlotJointMotion(axis=_JD.YAxisJointDirection,
+                                               direction=_JD.ZAxisJointDirection)
+        joint._motion_set_ok = True
+        real = joint.setAsPinSlotJointMotion
+
+        def set_then_blank(*args):
+            done = real(*args)
+            joint.jointMotion.slideDirection = None
+            return done
+        joint.setAsPinSlotJointMotion = set_then_blank
+        out = _payload(jt.handler(joint_name="PS", joint_type="pin_slot", slide_axis="x"))
+        assert out["slide_axis"] is None and out["edits_unverified"] == ["slide_axis"]
 
     def test_a_planar_normal_carries_its_own_custom_entity_through(self):
         # a planar joint re-aimed by world_axis sits on CustomJointDirection with a construction
@@ -1012,6 +1074,21 @@ class TestAutoRecompute:
         assert out["health_error"] == "The joint cannot be solved."
         assert "reads error after the edit" in out["note"]
 
+    @pytest.mark.parametrize("resets", [True, False])
+    def test_a_driven_joint_the_recompute_reset_is_published(self, monkeypatch, resets):
+        driven = _joint("RstRev", motion=RevoluteJointMotion(value=math.radians(30)))
+        design = _install_joints([_joint("BoomPivot"), driven])
+        if resets:
+            monkeypatch.setattr(design, "computeAll",
+                                lambda: setattr(driven.jointMotion, "rotationValue", 0.0) or True)
+        out = _payload(jt.handler(joint_name="BoomPivot", min_deg=-15))
+        if resets:
+            assert out["driven_joints_reset"] == [
+                {"name": "RstRev", "before": {"angle_deg": 30.0}, "after": {"angle_deg": 0.0}}]
+            assert "RstRev" in out["note"] and "assembly_capture_position" in out["note"]
+        else:
+            assert "driven_joints_reset" not in out
+
     def test_a_healthy_joint_reads_healthy_after_the_edit(self):
         _install(["BoomPivot"])
         out = _payload(jt.handler(joint_name="BoomPivot", flip=True))
@@ -1253,6 +1330,18 @@ class TestEditMotionFailure:
 
 
 class TestEditLimitsGuard:
+    @pytest.mark.parametrize("cls", [PinSlotJointMotion, PlanarJointMotion])
+    def test_a_crossing_single_rotation_bound_on_pin_slot_or_planar_is_refused(self, cls):
+        joint = _joint("AB", motion=cls())
+        limits = _MotionLimits(minimum=math.radians(-10), maximum=math.radians(10))
+        joint.jointMotion.rotationLimits = limits
+        _install_joints([joint])
+        res = jt.handler(joint_name="AB", min_deg=20)
+        assert res["isError"] is True and "min_deg=20" in res["message"]
+        assert "max_deg=10.0" in res["message"] and "No edits applied" in res["message"]
+        assert _rolls(joint) == [] and limits.minimumValue == math.radians(-10)
+        assert limits.maximumValue == math.radians(10)
+
     def test_limits_on_a_joint_with_no_motion_are_refused(self, monkeypatch):
         j = _edit_joint()
         _edit_rig(monkeypatch, j)
@@ -1261,6 +1350,39 @@ class TestEditLimitsGuard:
 
 
 class TestEditFailureReporting:
+    def test_a_raise_after_an_input_landed_names_that_input(self, monkeypatch):
+        j = _joint_raising_on("geometryOrOriginTwo",
+                              RuntimeError("2 : InternalValidationError : face"))
+        _edit_rig(monkeypatch, j)
+        monkeypatch.setattr(jt, "_resolve_input", lambda d, spec: (SimpleNamespace(), spec, None))
+        res = jt.handler(joint_name="J", input_one="DAnchor:1:DAltA", input_two="Face")
+        assert res["isError"] is True
+        assert "Edits already applied before the failure: input_one=DAnchor:1:DAltA." in res["message"]
+        body = json.loads(res["content"][0]["text"])
+        assert body["edits_applied"] == {"input_one": "DAnchor:1:DAltA"} and "moved" in body
+        assert _rolls(j) == [True, False]
+
+    @pytest.mark.parametrize("occ_index,refused,spec", [(9, True, "FaceHandle"), (4, True, "FaceHandle"),
+                                                        (3, False, "FaceHandle"), (9, True, "DLate:1:top")])
+    def test_geometry_on_an_occurrence_created_at_or_after_the_joint_is_refused_before_writing(
+            self, monkeypatch, occ_index, refused, spec):
+        # A snap spec names its occurrence even when the built geometry answers no context.
+        j = _edit_joint(tl_index=4)
+        late = make_occurrence("DLate:1")
+        late.timelineObject = FakeTimelineObject(name="DLate:1", index=occ_index)
+        _edit_rig(monkeypatch, j, design=make_design(comp=MakeComp(name="Root", occurrences=[late])))
+        geometry = (SimpleNamespace() if ":top" in spec
+                    else SimpleNamespace(entityOne=SimpleNamespace(assemblyContext=late)))
+        monkeypatch.setattr(jt, "_resolve_input", lambda d, s: (geometry, s, None))
+        res = jt.handler(joint_name="J", input_two=spec)
+        if refused:
+            assert res["isError"] is True and "'DLate:1'" in res["message"]
+            assert f"position {occ_index}" in res["message"] and "position 4" in res["message"]
+            assert "No edits applied" in res["message"] and _rolls(j) == []
+            assert j.geometryOrOriginTwo is None
+        else:
+            assert _payload(res)["input_two"] == spec and j.geometryOrOriginTwo is geometry
+
     def test_a_platform_refusal_is_reported_as_an_error(self, monkeypatch):
         j = _joint_raising_on("isFlipped", RuntimeError("3 : the flip was refused"))
         _edit_rig(monkeypatch, j)

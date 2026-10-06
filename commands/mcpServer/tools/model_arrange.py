@@ -471,6 +471,7 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
         return (safe(lambda: t.x), safe(lambda: t.y), safe(lambda: t.z)) if t is not None else None
     before_pos = {nm: _translation(o) for nm, o in zip(resolved, occs)}
     before_paths = set(_common.occurrence_paths(design))
+    input_paths = [safe(lambda o=o: o.fullPathName) for o in occs]
 
     applied = {}
     try:
@@ -589,7 +590,7 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
         return error(_common.no_feature_error(design, "Arrange"))
 
     # Read the effect back: which inputs actually MOVED, and which occurrence paths the feature
-    # ADDED (the solver restructures parts under Envelope occurrences and can mint copies).
+    # ADDED (the feature adds Arrange/Envelope occurrences and can mint copies).
     moved = []
     for nm, o in zip(resolved, occs):
         now = _translation(o)
@@ -597,7 +598,9 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
         if now is not None and was is not None and any(
                 a is not None and b is not None and abs(a - b) > 1e-6 for a, b in zip(now, was)):
             moved.append(nm)
-    new_paths = sorted(set(_common.occurrence_paths(design)) - before_paths)
+    after_paths = set(_common.occurrence_paths(design))
+    new_paths = sorted(after_paths - before_paths)
+    lost_paths = [p for p in input_paths if p and p not in after_paths]
     if not moved and not new_paths:
         return error("Arrange reported success but NOTHING happened - no input occurrence moved "
                      "and no occurrence was added. "
@@ -623,8 +626,11 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
     if new_paths and not moved:
         note += (" new_occurrences holds the copies; moved reads empty - re-arranging stacks "
                  "another set, design_delete_feature removes it.")
+    elif new_paths and lost_paths:
+        note += (f" Input path(s) no longer read: {_common.named_with_remainder(lost_paths, 3)}; "
+                 "new_occurrences lists the added paths.")
     elif new_paths:
-        note += " The solver restructured the arranged parts under new Envelope occurrences."
+        note += " Inputs moved on their own paths; new_occurrences lists the added occurrences."
     if not stats:
         note += (" The feature's arrangeStatistics did not read, so 'components_arranged' and "
                  "'components_unarranged' are null.")

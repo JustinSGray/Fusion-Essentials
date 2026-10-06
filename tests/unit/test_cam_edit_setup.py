@@ -218,12 +218,27 @@ class TestGuards:
 
 # ── set parameters (WCS / stock / anything) ─────────────────────────────────
 
+_JOB_STOCK_DEFAULT = "(job_type == 'turning') ? 'fixedcylinder' : 'default'"
+
+
+def _write_mode(setup, mode):
+    """Setup.stockMode's setter: the mode lands and job_stockMode reads that mode's literal."""
+    setup.__dict__["stockMode"] = mode
+    literal = "'fixedcylinder'" if mode == _STOCK_MODES["FixedCylinderStock"] else "'default'"
+    setup.parameters.itemByName("job_stockMode").expression = literal
+
+
+_MODE_REWRITES_JOB_STOCK = property(lambda setup: setup.__dict__["stockMode"], _write_mode)
+
+
 @pytest.fixture
 def setup_retention(monkeypatch):
     def prepare(case="machine"):
         target = _install(monkeypatch).setups.item(0)
         if case == "setter":
             _replace(target.parameters, _EnumRefusingSetupParam("wcs_origin_boxPoint", "'top center'"))
+            _replace(target.parameters, FakeCAMParameter("job_stockMode", _JOB_STOCK_DEFAULT))
+            monkeypatch.setattr(_Setup, "stockMode", _MODE_REWRITES_JOB_STOCK, raising=False)
         elif case == "collection":
             monkeypatch.setattr(target, "models_stick", False)
         elif case == "restore":
@@ -252,9 +267,16 @@ class TestRetainedSetupState:
         state = _observed_setup(result)
         assert state["before"]["stock_mode"] == "relative_box"
         assert state["now"]["stock_mode"] == "fixed_cylinder"
-        assert state["now"]["parameters"] == {"stockZHigh": "1 mm", "wcs_origin_boxPoint": "'top center'"}
+        assert state["now"]["parameters"] == {"stockZHigh": "1 mm",
+                                              "wcs_origin_boxPoint": "'top center'",
+                                              "job_stockMode": "'fixedcylinder'"}
         assert "Already applied: none" not in result["message"]
-        assert "Partial changes may remain." in result["message"]
+        msg = result["message"]
+        assert ("Still changed after this failure: stock_mode reads 'fixed_cylinder' "
+                "(was 'relative_box')") in msg
+        assert "stockZHigh reads '1 mm'" in msg
+        assert "job_stockMode reads \"'fixedcylinder'\"" in msg
+        assert "wcs_origin_boxPoint reads" not in msg      # the unmoved row is not listed
 
     def test_collection_refusal_keeps_parameter_and_mode_evidence(self, setup_retention):
         setup_retention("collection")
@@ -478,7 +500,7 @@ class TestParameterNoTake:
         res = ces.handler(setup="Setup1", parameters={"stockZHigh": "2.5"})
         assert res["isError"] is True
         assert "UNCONFIRMED" in res["message"] and "stockZHigh" in res["message"]
-        assert "Partial changes may remain." in res["message"]
+        assert "Unread after this failure: stockZHigh." in res["message"]
         # and NOT worded as a no-take: no expression was read to say what it still holds
         assert "reads back" not in res["message"]
 
@@ -503,7 +525,7 @@ class TestParameterNoTake:
         assert sp.itemByName("wcs_origin_boxPoint").expression == "'top center'"   # rolled back
         assert "Rolled back all 2 parameter(s)" in res["message"]
         assert "Observed setup fields match their pre-call values." in res["message"]
-        assert "Partial changes may remain." not in res["message"]
+        assert "after this failure" not in res["message"]
 
     def test_a_store_that_quotes_the_request_is_not_a_no_take(self, monkeypatch):
         # What the receipt measured is two-sided: a numeric parameter's expression reads back the

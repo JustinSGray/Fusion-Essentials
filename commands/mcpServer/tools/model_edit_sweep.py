@@ -11,7 +11,7 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from . import _assert, _common, _inputs, _sketch_detail, _sweep_common
+from . import _assert, _common, _design_common, _inputs, _sketch_detail, _sweep_common
 from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_address, failed,
                                    feature_body_keys as _feature_body_keys,
                                    health as _health, identical_geometry_reply,
@@ -93,23 +93,54 @@ def _addresses(operand):
     return [sketch_address(member) for member in _members(operand)]
 
 
+def _rolled_back_row(design, owner, name):
+    """The timeline row of the one rolled-back sketch of `owner` named `name`, else None."""
+    timeline = safe(lambda: design.timeline)
+    rows = []
+    for i in range(counted(lambda: timeline.count) or 0):
+        obj = safe(lambda i=i: timeline.item(i))
+        entity = safe(lambda: obj.entity)
+        if (safe(lambda: obj.name) == name and _common.read_flag(lambda: obj.isRolledBack) is True
+                and safe(lambda: entity.objectType) == "adsk::fusion::Sketch"
+                and _common.same_component(safe(lambda: entity.parentComponent), owner) is True):
+            rows.append(counted(lambda: obj.index))
+    return rows[0] if len(rows) == 1 else None
+
+
 def _later_refusal(design, owner, label, index, action, raw, component):
-    """(reorder advice, refusal a move would not cure, open profile) at the current marker."""
+    """(reorder advice, refusal a move would not cure, open profile, refusal before any roll)."""
     open_profile = host = None
     if action == "path":
         operand, _label, refusal = _common.build_path(owner, raw)
+        name = raw.split(":", 1)[1].strip() if isinstance(raw, str) and ":" in raw else None
+        row = (_rolled_back_row(design, owner, name)
+               if refusal and name and raw.strip().lower().startswith("sketch:") else None)
+        if row is not None:
+            return None, None, False, (
+                f"Editing '{label}': sketch '{name}' at timeline row {row} is rolled back behind "
+                "the marker. Roll to the end with design_edit_timeline(action='roll', to='end'), "
+                "then retry. Nothing was edited.")
     else:
         operand, _solid, open_profile, host, sketch, refusal = _sweep_common.resolve_profile(
             design, owner, raw, False, component)
         # An open Profile has no parentSketch; its source curves carry timeline provenance.
         if not refusal and open_profile:
             operand, _label, refusal = _common.build_path(host, f"sketch:{sketch.name}")
-    advice = None if refusal else later_operand_refusal(label, index, _members(operand))
+    members = [] if refusal else _members(operand)
+    for member in members:
+        source, row, from_sketch = operand_source(member)
+        hint = (_design_common.collapsed_group_hint_for(safe(lambda: design.timeline), source,
+                                                        safe(lambda: source.name))
+                if from_sketch and row is None else None)
+        if hint:
+            return None, None, False, (f"{hint} The {action} sketch timeline row does not read; "
+                                       "nothing was edited.")
+    advice = later_operand_refusal(label, index, members) if members else None
     if advice is None:
-        return None, None, False
+        return None, None, False, None
     if action == "profile" and _common.same_component(host, owner) is not True:
-        return advice, _KEEP_OWNER_MODE, open_profile
-    return advice, safe(lambda: _operand_error(operand, action, owner, None)), open_profile
+        return advice, _KEEP_OWNER_MODE, open_profile, None
+    return advice, safe(lambda: _operand_error(operand, action, owner, None)), open_profile, None
 
 
 def _members_text(addresses):
@@ -317,8 +348,10 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         return error(f"'{label}' has unreadable timeline identity; nothing was edited.")
     if marker <= index:
         return error(f"'{label}' is after marker {marker}; roll after it with design_edit_timeline.")
-    pending_later_refusal, later_blocker, later_open = _later_refusal(
+    pending_later_refusal, later_blocker, later_open, unread_row = _later_refusal(
         design, component_owner, label, index, action, raw[action], component)
+    if unread_row:
+        return error(unread_row)
     linked_before = _inactive_link_count(entity, index)
     if linked_before is None:
         return error(f"'{label}' has unreadable or active linked features; nothing was edited.")

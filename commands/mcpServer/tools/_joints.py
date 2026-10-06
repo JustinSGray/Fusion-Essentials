@@ -337,7 +337,7 @@ def apply_motion(ji, jtype, axis_idx, custom_entity=None, slide_axis_idx=None):
     """Set rigid/revolute/slider/cylindrical/planar/ball/pin_slot motion on a JointInput or an
     existing Joint. axis_idx (0/1/2) selects the FRAME-relative axis unless custom_entity is given,
     which pairs CustomJointDirection with that entity for a TRUE direction. pin_slot takes two:
-    axis_idx rotates and slide_axis_idx slides, and they must differ. Returns (did, error)."""
+    axis_idx rotates and slide_axis_idx slides, and two frame axes must differ. Returns (did, error)."""
     JD = adsk.fusion.JointDirections
     dirs = [JD.XAxisJointDirection, JD.YAxisJointDirection, JD.ZAxisJointDirection]
     if custom_entity is not None:
@@ -376,7 +376,7 @@ def apply_motion(ji, jtype, axis_idx, custom_entity=None, slide_axis_idx=None):
             # customSlideDirectionEntity]) - a positional custom_entity fills the ROTATION entity,
             # so the slide direction stays frame-relative.
             s_idx = slide_axis_idx if slide_axis_idx is not None else (axis_idx + 1) % 3
-            if s_idx == axis_idx:
+            if custom_entity is None and s_idx == axis_idx:
                 return False, "pin_slot rotation axis and slide direction must differ."
             slide_dir = dirs[s_idx]
             if custom_entity is not None:
@@ -624,6 +624,21 @@ def all_joints(design):
                     continue
                 seen.add(key)
                 out.append(j)
+    return out
+
+
+def joint_placements(design, joint):
+    """[(placement fullPathName, the joint read in that placement)] for a joint owned by a placed
+    sub-component, else [] - its native halves answer the first placement's paths only."""
+    root = safe(lambda: design.rootComponent)
+    owner = safe(lambda: joint.parentComponent)
+    if root is None or owner is None or _common.same_component(owner, root) is True:
+        return []
+    out = []
+    for occ in list(safe(lambda: root.allOccurrencesByComponent(owner)) or []):
+        proxy = safe(lambda o=occ: joint.createForAssemblyContext(o))
+        if proxy is not None:
+            out.append((safe(lambda o=occ: o.fullPathName), proxy))
     return out
 
 

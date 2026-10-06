@@ -319,6 +319,14 @@ class TestAlgorithm:
         out = payload(mc.handler(target="T", tools=["A"], algorithm="enhanced"))
         assert out["algorithm"] == "enhanced" and "algorithm_unverified" not in out
 
+    def test_the_algorithm_is_labelled_an_input_readback_never_what_ran(self):
+        des, feats, *_ = _build()
+        out = payload(mc.handler(target="T", tools=["A"], algorithm="enhanced"))
+        assert out["algorithm_source"] == "input_readback"
+        assert ("'algorithm' is what the input read back before the add; the algorithm that ran "
+                "is not confirmed.") in out["note"]
+        assert "fewer triangles" not in out["note"]
+
 
 # ── the no-op gate: unchanged body count + unchanged target triangles = error ────────────────────
 

@@ -1727,6 +1727,19 @@ class TestProbingType:
         assert out["selections"] == 1
         assert op.parameters.itemByName("probingType").expression == "'probing-z'"
 
+    def test_a_reselection_that_infers_the_same_type_publishes_no_change(self, monkeypatch):
+        op = _probe_op(name="Probe Geometry1", probing_type="'probing-z'",
+                       probing_type_choices=self._CHOICES, strategy="probe_geometry")
+        probe_value = _ProbeTypeResetOnSelection(op.parameters.itemByName("probingType"),
+                                                 "'probing-z'")
+        mode = op.parameters.itemByName("probe_mode")
+        op.parameters.swap("probe_selection", _ModeGatedParam(probe_value, mode, "selection-model"))
+        _install(monkeypatch, _CAM([_Setup([op])]), [_Face()])
+        out = _payload(cg.handler(operation="Probe Geometry1", selection="probe", handles=["f"],
+                                  generate=False))
+        assert out["probing_type"] == "probing-z"
+        assert "probing_type_changed" not in out and "probingType read" not in out["note"]
+
     def test_probe_with_a_valid_type_writes_it_and_launches(self, monkeypatch):
         op = _probe_op(probing_type="'probing-unknown'", probing_type_choices=self._CHOICES)
         cam = _CAM([_Setup([op])])
@@ -1772,6 +1785,8 @@ class TestProbingType:
         assert out["selections"] == 1
         assert probe_type.expression == "'probing-x'"
         assert out["probing_type"] == "probing-x"
+        assert out["probing_type_changed"] is True and out["probing_type_before"] == "probing-z"
+        assert "probingType read 'probing-z' before this selection and 'probing-x'" in out["note"]
         assert cam.generated == []
 
     def test_probe_geometry_refuses_when_face_leaves_type_unknown(self, monkeypatch):
@@ -3574,6 +3589,51 @@ class TestSurfaceSelection:
                                   handles=["a", "b"], surface_target="swarf", generate=False))
         assert op.parameters.itemByName("advancedSwarfSurfaces").value.value == faces
         assert out["surface_param"] == "advancedSwarfSurfaces" and out["selections"] == 2
+
+    def test_the_swarf_target_lands_on_a_legacy_swarf_ops_swarf_surfaces(self, monkeypatch):
+        # a legacy swarf op carries swarfSurfaces and none of the other surface sets
+        op = _Op("Swarf1", {"swarfSurfaces": _Param(_HoleParamValue())})
+        cam = _CAM([_Setup([op])])
+        faces = [_Face()]
+        _install(monkeypatch, cam, faces)
+        out = _payload(cg.handler(operation="Swarf1", selection="surfaces", handles=["a"],
+                                  surface_target="swarf", generate=False))
+        assert op.parameters.itemByName("swarfSurfaces").value.value == faces
+        assert out["surface_param"] == "swarfSurfaces" and out["selections"] == 1
+
+    @staticmethod
+    def _tokened(*tokens):
+        faces = [_Face() for _ in tokens]
+        for face, token in zip(faces, tokens):
+            face.entityToken = token
+        return faces
+
+    def _swarf_storing(self, monkeypatch, stored, assigned="wall"):
+        """A legacy swarf op whose swarfSurfaces reads back `stored` whatever one face it is given."""
+        class _Expanding:
+            value = property(lambda self: list(stored), lambda self, faces: None)
+        op = _Op("Swarf1", {"swarfSurfaces": _Param(_Expanding())})
+        wall = self._tokened(assigned)
+        _install(monkeypatch, _CAM([_Setup([op])]), wall)
+        return cg.handler(operation="Swarf1", selection="surfaces", handles=["a"],
+                          surface_target="swarf", generate=False)
+
+    def test_a_longer_read_back_holding_the_assigned_face_publishes_both_counts(self, monkeypatch):
+        out = _payload(self._swarf_storing(
+            monkeypatch, self._tokened("wall", "wall", "w2", "w3", "w4")))
+        assert (out["selections"], out["assigned"], out["stored"]) == (1, 1, 5)
+        assert "swarfSurfaces reads back 5 entries for the 1 assigned" in out["note"]
+
+    def test_a_longer_read_back_without_the_assigned_face_is_an_error(self, monkeypatch):
+        res = self._swarf_storing(monkeypatch, self._tokened("w2", "w3", "w4", "w5", "w6"))
+        assert res["isError"] is True
+        assert "1 face(s) were assigned and the operation reads back 5" in res["message"]
+
+    def test_an_assigned_face_with_no_readable_token_is_never_matched(self, monkeypatch):
+        # a token-less stored entry and a token-less assigned face both key on None
+        res = self._swarf_storing(monkeypatch, self._tokened(None, "w2", "w3"), assigned=None)
+        assert res["isError"] is True
+        assert "1 face(s) were assigned and the operation reads back 3" in res["message"]
 
     def test_an_omitted_target_on_the_swarf_op_names_the_one_set_it_can_take(self, monkeypatch):
         # its non-editable floor/check sets stay out of the listing, so the caller is sent at the

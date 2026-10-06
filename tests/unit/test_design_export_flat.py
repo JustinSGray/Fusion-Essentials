@@ -50,6 +50,15 @@ def test_flat_conflicts_refused_before_export(exporter, extra):
     design.exportManager.execute.assert_not_called()
 
 
+def test_flat_refusal_names_only_the_sketch_flags_sent(exporter):
+    mod, design, flat, opts = exporter
+    result = mod.handler(format="dxf", dxf_flat_pattern="body", dxf_bend_lines=False, dxf_bend_extents=False,
+                         dxf_export_construction=False, dxf_export_points=False)
+    assert result["message"] == ("dxf_flat_pattern takes dxf_flat_units, dxf_bend_lines and dxf_bend_extents "
+                                 "only; drop dxf_export_construction, dxf_export_points.")
+    design.exportManager.execute.assert_not_called()
+
+
 def test_wrong_folded_body_is_refused(exporter):
     mod, design, flat, opts = exporter
     flat.foldedBody = object()

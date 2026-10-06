@@ -272,6 +272,20 @@ def test_the_controls_an_extrude_read_omits_are_listed_as_not_read(extrude_defin
                                 "omits.")
 
 
+@pytest.mark.parametrize("two", ["ToEntityExtentDefinition", "DistanceExtentDefinition"])
+def test_an_unsupported_two_sided_pair_names_its_classes_as_unavailable(extrude_definition_scene, two):
+    s = extrude_definition_scene
+    s.hole.hasTwoExtents = True
+    s.hole.extentTwo = SimpleNamespace(objectType="adsk::fusion::" + two)
+    out = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    if two == "DistanceExtentDefinition":
+        assert out["extent"] == "two_side" and "extent" not in out["unavailable"]
+        return
+    assert out["extent"] is None and out["distance_applicable"] is None
+    assert out["unavailable"]["extent"] == ("two-sided DistanceExtentDefinition + "
+                                            "ToEntityExtentDefinition is not a supported extent")
+
+
 def test_symmetric_definition_keeps_native_full_length_semantics(extrude_definition_scene):
     s = extrude_definition_scene
     s.hole.extentOne.objectType = "adsk::fusion::SymmetricExtentDefinition"

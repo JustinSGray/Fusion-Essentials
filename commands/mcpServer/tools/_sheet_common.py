@@ -129,7 +129,7 @@ def rule_ref_and_index(design, rule, scope):
     ordinal_rule = (duplicates[int(tail) - 1] if duplicates and len(duplicates) >= 2
                     and int(tail) <= len(duplicates) else None)
     if literal and ordinal_rule is not None and any(r != ordinal_rule for r in literal):
-        return ({"scope": scope, "index": index} if index is not None else None), index
+        return ({"scope": scope, "index": index, "name": name} if index is not None else None), index
     return f"{scope}:{ref}", index
 
 
@@ -165,7 +165,7 @@ def component_rule_ref(rule, rules):
             matches.append(i)
     if len(matches) != 1:
         return None, "unknown"
-    return {"scope": "design", "index": matches[0]}, "matched"
+    return {"scope": "design", "index": matches[0], "name": safe(lambda: rules[matches[0]].name)}, "matched"
 
 
 _UNREAD = object()

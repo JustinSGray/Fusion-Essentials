@@ -405,6 +405,87 @@ def _duplicate_project_result(value):
         and 'pass an exact project_id' in read.get('text', ''))
 
 
+def _duplicate_hub_probe(_ctx):
+    """Drive the loaded hub switch over injected same-name and unread-name hub censuses."""
+    return {"read_only": False, "script": '''import json, sys
+from types import SimpleNamespace
+
+def run(context):
+    def module(suffix):
+        hits = [m for n, m in sys.modules.items() if n.endswith(suffix)]
+        assert len(hits) == 1
+        return hits[0]
+    switch = module('.tools.data_switch_hub')
+    sets = []
+    class Hub:
+        def __init__(self, name, hub_id):
+            self._name, self.id = name, hub_id
+        @property
+        def name(self):
+            if self._name is None:
+                raise RuntimeError('diagnostic unreadable hub name')
+            return self._name
+    class Hubs:
+        def __init__(self, rows):
+            self.rows = rows
+            self.count = len(rows)
+        def item(self, i):
+            return self.rows[i]
+    class Data:
+        def __init__(self, rows):
+            self.dataHubs, self._active = Hubs(rows), rows[-1]
+        @property
+        def activeHub(self):
+            return self._active
+        @activeHub.setter
+        def activeHub(self, hub):
+            sets.append(hub.id)
+    other = ('UnrelatedHub', 'diagnostic-hub-other')
+    twins = Data([Hub('SweepHub', 'diagnostic-hub-a'), Hub('SweepHub', 'diagnostic-hub-b'),
+                  Hub(*other)])
+    blind = Data([Hub('SweepHub', 'diagnostic-hub-a'), Hub(None, 'diagnostic-hub-blind'),
+                  Hub(*other)])
+    old_app = switch.app
+    try:
+        switch.app = SimpleNamespace(data=twins)
+        ambiguous = switch.handler(action='switch', hub='SweepHub')
+        switch.app = SimpleNamespace(data=blind)
+        unread = switch.handler(action='switch', hub='SweepHub')
+    finally:
+        switch.app = old_app
+    def result(value):
+        return {'is_error': value.get('isError') is True,
+                'text': (value.get('content') or [{}])[0].get('text', '')}
+    print(json.dumps({'injected_census': True, 'set_calls': len(sets),
+        'restored': switch.app is old_app,
+        'ambiguous': result(ambiguous), 'unread': result(unread)}))
+'''}
+
+
+def _duplicate_hub_result(value):
+    """Check both refusals name their candidates by id, no hub was assigned and the seam restored."""
+    p = value if isinstance(value, dict) else json.loads(value)
+    twins, blind = p.get("ambiguous") or {}, p.get("unread") or {}
+    return _measured("injected hub-name ambiguity through the loaded switch", p,
+        p.get("injected_census") is True and p.get("set_calls") == 0 and p.get("restored") is True
+        and twins.get("is_error") is True and blind.get("is_error") is True
+        and all(x in twins.get("text", "") for x in ("matches 2 hubs", "diagnostic-hub-a",
+                                                    "diagnostic-hub-b", "hub=<id>"))
+        and all(x in blind.get("text", "") for x in ("diagnostic-hub-blind", "did not read",
+                                                    "hub=<id>"))
+        and all("diagnostic-hub-other" not in row.get("text", "") for row in (twins, blind)))
+
+
+def _hubs_untouched(p):
+    """data_get(include=['hubs']): the configured hub is still the one active hub, no injected row."""
+    rows = p.get("hubs") or []
+    return _measured(f"'{HUB}' still the only active hub", p,
+                     (p.get("active_hub") or {}).get("name") == HUB
+                     and p.get("hub_count") == len(rows) >= 1
+                     and [r.get("name") for r in rows if r.get("is_active")] == [HUB]
+                     and not any(str(r.get("id", "")).startswith("diagnostic-") for r in rows))
+
+
 def _capped_name_move_result(stdout):
     """Check the cap refusal, unchanged parent and exact-URN idempotence from the native probe."""
     if isinstance(stdout, dict):
@@ -513,15 +594,16 @@ def _downloaded(p):
 
 def _file_deleted(p):
     """data_delete_file: deleteMe() returned true (the tool errors on false), the file's own name and
-    URN come back, and 'forced' false says no reference check was bypassed to do it."""
+    URN come back, 'forced' false says no reference check was bypassed, and the re-resolve after
+    the delete observed the lineage absent."""
     return _measured("the cloud file was deleted",
                      {"deleted": p.get("deleted"), "name": p.get("name"),
                       "document_id": p.get("document_id"),
                       "was_referenced_by": p.get("was_referenced_by"),
-                      "forced": p.get("forced")},
+                      "forced": p.get("forced"), "absence_observed": p.get("absence_observed")},
                      p.get("deleted") is True and bool(p.get("name"))
                      and str(p.get("document_id") or "").startswith("urn:")
-                     and p.get("forced") is False)
+                     and p.get("forced") is False and p.get("absence_observed") is True)
 
 
 def _folder_deleted(name):
@@ -532,9 +614,10 @@ def _folder_deleted(name):
                          {"deleted": p.get("deleted"), "name": p.get("name"),
                           "contained_files": p.get("contained_files"),
                           "contained_subfolders": p.get("contained_subfolders"),
-                          "recursive": p.get("recursive")},
+                          "recursive": p.get("recursive"),
+                          "absence_observed": p.get("absence_observed")},
                          p.get("deleted") is True and p.get("name") == name
-                         and p.get("recursive") is False
+                         and p.get("recursive") is False and p.get("absence_observed") is True
                          and p.get("contained_files") == 0
                          and p.get("contained_subfolders") == 0)
     return check
@@ -1923,6 +2006,15 @@ def _drawing_persistence_version(p, unchanged=False,
                      and (not unchanged or snap == _RECALL.get(saved_key)))
 
 
+def _drawing_dirtied_by_read(p):
+    """drawing_get on the clean reopened drawing: the read reports the false-to-true isModified flip."""
+    return _measured("the read reports leaving the reopened drawing modified",
+                     {k: p.get(k) for k in ("is_modified", "modified_by_read", "sheet_count")},
+                     p.get("is_modified") is False and p.get("modified_by_read") is True
+                     and p.get("sheet_count") == 2
+                     and "read false before this read and true after it" in str(p.get("note")))
+
+
 def _drawing_persistence_absent(p, handle_key="drawing_persist_opened",
                                 active_key="drawing_persist_source", active_name=SOURCE_DOC):
     """Require one closed drawing handle absent from a complete document census."""
@@ -2636,7 +2728,13 @@ def _derive_selector_rows():
             "expect_document": _ctx_get(c, "selector_derive_doc", "derive host")},
             _refused(field, "nonblank", "Remove that entry"), None))
         rows += _selector_reads(reads, True)
-
+    # a sub-component body is refused before createInput; the component row below is its remedy
+    rows.append(("doc_insert_derive", lambda c: {
+        "document_id": _ctx_get(c, "source_urn", "source"), "source_bodies": [SRC_COMP + "/Body1"],
+        "expect_document": _ctx_get(c, "selector_derive_doc", "derive host")},
+        _refused(f"sub-component '{SRC_COMP}'", "3 : invalid argument entities",
+                 "Nothing was derived", f"source_components=['{SRC_COMP}']"), None))
+    rows += _selector_reads(reads, True)
 
     rows += [
         ("doc_insert_derive", lambda c: {"document_id": _ctx_get(c, "source_urn", "source"),
@@ -2765,6 +2863,21 @@ def _named_derive_rows():
              and p["xref_tree"]["references"][0].get("kind") == "derive"
              and p["xref_tree"]["references"][0].get("source_document") == name
              and p["xref_tree"]["references"][0].get("out_of_date") is False), None)]
+    # whole design minus the sibling: 'excluded' must come from the landing, judged by its volume
+    write("doc_insert_derive", lambda c: {"document_id": c["named_urn"],
+          "exclude_bodies": [c["named_sibling"]]},
+          lambda p: _derived(name)(p) and _measured(
+              "the excluded root body read back from the landing",
+              {k: p.get(k) for k in ("excluded", "exclusion_unverified", "derived_components")},
+              p.get("excluded") == _RECALL["named_sibling"] and "exclusion_unverified" not in p
+              and [r.get("body_count") for r in p.get("derived_components") or []] == [1]),
+          ("named_excluding", _recall("named_excluding", lambda p: p["derived_occurrence"])),
+          owner="named_host")
+    rows.append(("model_inspect", lambda c: {"target": c["named_excluding"],
+                 "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                 lambda p: _measured("the excluding derive holds only the 10 mm cube", p,
+                     p.get("kind") == "occurrence" and all(_near(p.get(a), 10, .0001) for a in "xyz")
+                     and _near((p.get("mass") or {}).get("volume"), 1000, .001)), None))
     write("doc_activate", lambda c: {"name": c["named_source"]}, _activated(name), owner="named_host")
     write("doc_close", lambda c: {"name": c["named_host"], "save_changes": False}, _document_closed)
     rows += _selector_reads(controls, True)
@@ -2904,6 +3017,43 @@ def _fit_refusal_sketches(p):
     return p
 
 
+def _released_then_deleted(name, key):
+    """Rows deleting the saved file <key>_urn after its modified document was closed discarding."""
+    # Closed modified, the file can keep reading in use and its delete then raises; a clean reopen
+    # and close releases it, read off the file record before the delete.
+    def urn(c):
+        return _ctx_get(c, key + "_urn", "the saved file")
+
+    def home(c):
+        return _ctx_get(c, key + "_home", "home")
+
+    def released(p):
+        call, reads = facade("call"), 1
+        for _ in range(12):
+            if (p.get("state") or {}).get("is_in_use") is False:
+                break
+            time.sleep(_SETTLE_GAP_S)
+            is_error, again = call("data_get", {"file": (p.get("file") or {}).get("id") or ""})
+            reads += 1
+            if not is_error and isinstance(again, dict):
+                p = again
+        return _measured("the closed file reads not in use", {"state": p.get("state"), "reads": reads},
+                         (p.get("state") or {}).get("is_in_use") is False
+                         and (p.get("file") or {}).get("name") == name)
+    return [
+        ("doc_open", lambda c: {"file_id": urn(c), "force_api_open": True, "expect_document": home(c)},
+         _opened(name, lambda: _RECALL.get(key + "_urn")),
+         (key + "_reopened", _recall(key + "_reopened", lambda p: p["document_handle"]))),
+        ("doc_get", {}, _modified_reads(name, False), None),
+        ("doc_activate", lambda c: {"name": home(c)}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, key + "_reopened", "the reopened file"),
+                                 "save_changes": False, "expect_document": home(c)},
+         _document_closed, None),
+        ("data_get", lambda c: {"file": urn(c)}, released, None),
+        ("data_delete_file", lambda c: {"document_id": urn(c), "confirm_name": name,
+                                        "expect_document": home(c)}, _file_deleted, None)]
+
+
 def _fit_refusal_rows():
     """Demonstrate dirty-state disclosure on the saved shared-body refusal in the cloud act."""
     name = "SweepFitRefusal." + _STAMP
@@ -2959,10 +3109,56 @@ def _fit_refusal_rows():
     write("doc_activate", lambda c: {"name": _ctx_get(c, "fit_home", "home")})
     rows.append(("doc_close", lambda c: {"name": _ctx_get(c, "fit_doc", "fit coupon"),
                  "save_changes": False, "expect_document": _ctx_get(c, "fit_home", "home")}, _document_closed, None))
-    rows.append(("data_delete_file", lambda c: {"document_id": _ctx_get(c, "fit_urn", "saved coupon"),
-                 "confirm_name": name, "expect_document": _ctx_get(c, "fit_home", "home")}, _file_deleted, None))
+    rows += _released_then_deleted(name, "fit")
     return rows
 
+
+def _sketch_roll_dirty_rows():
+    """sketch_get on a face-supported sketch of a saved, clean design discloses the dirty flag."""
+    name = "SweepSketchRoll." + _STAMP
+    rows = [("doc_get", {}, _home_document, ("roll_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "roll_home", "home")},
+             _new_document, ("roll_doc", _recall("roll_doc", lambda p: p["document_handle"])))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: {**(args(c) if callable(args) else args),
+                     "expect_document": _ctx_get(c, "roll_doc", "roll scratch")}, check, save))
+    write("sketch_create", {"plane": "xy", "name": "RollBaseS"})
+    write("sketch_add_geometry", {"sketch_name": "RollBaseS", "geometry": [
+          {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 40, "y2": 30}]})
+    write("model_extrude", {"sketch_name": "RollBaseS", "distance": 20}, _extruded)
+    rows.append(("find_geometry", {"kind": "planar_face", "nearest_to": [20, 15, 20], "max_results": 1},
+                 _face_up_at(20, 15, 20), _fg("roll_face")))
+    write("sketch_create", lambda c: {"on_face": _ctx_get(c, "roll_face", "box top face"), "name": "RollFaceS"})
+    write("sketch_add_geometry", {"sketch_name": "RollFaceS", "geometry": [
+          {"kind": "circle", "cx": 20, "cy": 15, "radius": 5}]})
+    write("sketch_create", {"plane": "xz", "name": "RollPlaneS"})
+    write("sketch_add_geometry", {"sketch_name": "RollPlaneS", "geometry": [
+          {"kind": "line", "x1": 0, "y1": -30, "x2": 40, "y2": -30}]})
+    write("doc_save_as", {"name": name, "project": PROJECT, "folder": FOLDER},
+          lambda p: _saved_as(name, FOLDER)(p) and p.get("cloud_processing_complete") is True)
+    rows += _settled(name, "roll_urn")
+    rows.append(("doc_get", {}, _modified_reads(name, False), None))
+    rows.append(("sketch_get", {"sketch_name": "RollPlaneS"},
+                 lambda p: _measured("plane read publishes no dirty flag", p.get("plane"),
+                                     p.get("plane") == "XZ" and "document_modified" not in p), None))
+    rows.append(("doc_get", {}, _modified_reads(name, False), None))
+    rows.append(("sketch_get", {"sketch_name": "RollFaceS"},
+                 lambda p: _measured("face read discloses the clean-to-modified flip",
+                                     {k: p.get(k) for k in ("plane", "on_face", "document_modified")},
+                                     p.get("plane") is None and bool((p.get("on_face") or {}).get("body"))
+                                     and p.get("document_modified") is True
+                                     and "reads modified after it" in (p.get("note") or "")
+                                     and "timeline_marker_unrestored" not in p), None))
+    rows.append(("doc_get", {}, _modified_reads(name, True), None))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 1000},
+                 lambda p: _measured("history back at its end", p.get("timeline"),
+                                     (p.get("timeline") or {}).get("count") == 4
+                                     and (p.get("timeline") or {}).get("marker_position") == 4), None))
+    write("doc_activate", lambda c: {"name": _ctx_get(c, "roll_home", "home")})
+    rows.append(("doc_close", lambda c: {"name": _ctx_get(c, "roll_doc", "roll scratch"),
+                 "save_changes": False, "expect_document": _ctx_get(c, "roll_home", "home")}, _document_closed, None))
+    rows += _released_then_deleted(name, "roll")
+    return rows
 
 # --- ACT 11a: THE DATA MODEL -------------------------------------------------------------------
 # A folder tree of this run's own, one file uploaded into it, moved, read, downloaded - and then
@@ -3011,6 +3207,11 @@ _CLOUD_DATA = [
      _folder_summary(RUN_PATH, "run_folder_id", 1, 1), None),
     ("sys_execute_script", _capped_name_move_probe, _capped_name_move_result, None),
     ("sys_execute_script", _duplicate_project_probe, _duplicate_project_result, None),
+    ("doc_get", {}, _home_document, ("hub_probe_census", _recall("hub_probe_census", lambda p: p))),
+    ("sys_execute_script", _duplicate_hub_probe, _duplicate_hub_result, None),
+    ("doc_get", {}, lambda p: _measured("the open documents are unchanged by the hub probe",
+                                        p.get("active"), p == _RECALL.get("hub_probe_census")), None),
+    ("data_get", {"include": ["hubs"]}, _hubs_untouched, None),
     ("data_get", lambda c: {"file": _ctx_get(c, "cloud_file", "the uploaded file")},
      _file_record(RUN_PATH, complete=None), None),
     ("data_get", {"project": PROJECT, "folder": MOVED_PATH, "include": ["summary"]},
@@ -3047,6 +3248,9 @@ _CLOUD_DATA = [
     ("data_delete_file", lambda c: {"document_id": _ctx_get(c, "cloud_file", "the uploaded file"),
                                     "confirm_name": _ctx_get(c, "cloud_file_name", "its name")},
      _file_deleted, None),
+    # the typed re-resolve, apart from the delete's own absence read
+    ("data_get", lambda c: {"file": _ctx_get(c, "cloud_file", "the uploaded file")},
+     _refused("No cloud file resolves from"), None),
     ("data_delete_folder", lambda c: _dependent_folder_args(c, "moved_folder_id", MOVED_FOLDER),
      _folder_deleted(MOVED_FOLDER), None),
     ("data_delete_folder", lambda c: _dependent_folder_args(c, "run_folder_id", RUN_FOLDER),
@@ -3201,7 +3405,7 @@ _CLOUD_LINK = [
 # milestoned, rolled back, copied, and inserted as an xref into a host saved beside it. The SOURCE is
 # left standing - the drawing act generates from it and deletes it; the copy and the host are this
 # act's own and go at the end of it.
-_CLOUD_DOC = _fit_refusal_rows() + _named_derive_rows() + [
+_CLOUD_DOC = _fit_refusal_rows() + _sketch_roll_dirty_rows() + _named_derive_rows() + [
     ("doc_new", {}, _new_document, None),
     ("model_create_component", {"name": SRC_COMP, "activate": True}, _made_component, None),
     ("sketch_create", {"plane": "xy", "name": SRC_SKETCH}, "ok", None),
@@ -3571,8 +3775,15 @@ _CLOUD_DRAWING = [
      _drawing_persistence_reopened(
         version_key="drawing_two_saved", prior_handle_key="drawing_persist_reopened"),
      ("drawing_two_reopened", _recall("drawing_two_reopened", lambda p: p["document_handle"]))),
-    ("doc_get", {}, _drawing_persistence_document("drawing_two_reopened", version=True,
-                                   version_key="drawing_two_saved"), None),
+    ("doc_get", {}, lambda p: _drawing_persistence_document(
+        "drawing_two_reopened", version=True, version_key="drawing_two_saved")(p)
+     and _measured("the reopened drawing reads clean", (p.get("active") or {}).get("is_modified"),
+                   (p.get("active") or {}).get("is_modified") is False), None),
+    ("drawing_get", {"include": ["views", "revisions", "tables"]}, _drawing_dirtied_by_read, None),
+    ("doc_get", {}, lambda p: _drawing_persistence_document(
+        "drawing_two_reopened", version=True, version_key="drawing_two_saved")(p)
+     and _measured("the read left the drawing modified", (p.get("active") or {}).get("is_modified"),
+                   (p.get("active") or {}).get("is_modified") is True), None),
     ("drawing_get", {"include": ["views"]}, lambda p: _drawing_two_sheets(p, compare=True), None),
     ("drawing_export", _drawing_deferred_export_args(
         _DRAWING_TWO_AFTER_PDF, _DRAWING_TWO_AFTER_KEY, "drawing_two_reopened"),
@@ -4089,9 +4300,12 @@ _CLOUD_CAM_PERSISTENCE = [
                                       "preset": _CAM_PERSIST_PRESET},
      _preset_applied(_CAM_PERSIST_PRESET), None),
     ("cam_generate", {"target": _CAM_PERSIST_SOURCE, "skip_valid": False},
-     _launched_on(_CAM_PERSIST_SOURCE), None),
+     _launched_on(_CAM_PERSIST_SOURCE),
+     ("cam_persist_handle", _recall("cam_persist_handle", lambda p: p["handle"]))),
     ("cam_get_status", {"target": _CAM_PERSIST_SOURCE, "include_operations": True},
      _cam_persistence_generated(_CAM_PERSIST_SOURCE), None),
+    ("cam_get_status", lambda c: {"handle": _ctx_get(c, "cam_persist_handle", "the source launch")},
+     lambda p: p.get("completed") is True, None),
     ("cam_inspect_toolpaths", {"scope": _CAM_PERSIST_SOURCE},
      _cam_persistence_paths(_CAM_PERSIST_SOURCE), None),
     ("cam_get", lambda c: {"include": ["tool"], "preset": _CAM_PERSIST_PRESET,
@@ -4149,6 +4363,8 @@ _CLOUD_CAM_PERSISTENCE = [
      ("cam_persist_urn", _recall("cam_persist_urn", lambda p: p["document_id"]))),
     ("doc_get", {}, _cam_persistence_document("cam_persist_owned", saved=True),
      ("cam_persist_saved", _recall("cam_persist_saved", lambda p: p["active"]))),
+    ("cam_get_status", lambda c: {"handle": _ctx_get(c, "cam_persist_handle", "the source launch")},
+     _refused("is released", f"cam_get_status(target='{_CAM_PERSIST_SOURCE}')"), None),
     ("data_get", lambda c: _version_args("cam_persist_version")(
         {"source_urn": _ctx_get(c, "cam_persist_urn", "the saved coupon")}),
      _cam_persistence_cloud,

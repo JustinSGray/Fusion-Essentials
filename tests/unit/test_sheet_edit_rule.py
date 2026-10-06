@@ -53,7 +53,8 @@ def test_literal_ordinal_collision_refuses_then_disclosed_refs_edit_only_each_in
     design = SimpleNamespace(designSheetMetalRules=_NamedCollection(items=rules))
     monkeypatch.setattr(mod._common, "design", lambda: design)
     refs = [mod._sheet_common.rule_ref_and_index(design, r, "design")[0] for r in rules]
-    assert refs == [{"scope": "design", "index": 0}, "design:Steel (mm)#2", {"scope": "design", "index": 2}]
+    assert refs == [{"scope": "design", "index": 0, "name": "Steel (mm)"}, "design:Steel (mm)#2",
+                    {"scope": "design", "index": 2, "name": "Steel (mm)#1"}]
     for raw in ("design:Steel (mm)#1", "design:Steel (mm)"):
         result = mod.handler(action="update", rule=raw, thickness="4 mm")
         assert result["isError"] is True and "sheet_get" in result["message"]
@@ -84,6 +85,21 @@ def test_unread_native_rule_slot_cannot_shift_a_disclosed_collision_index(monkey
     design = SimpleNamespace(designSheetMetalRules=_NamedCollection(items=[first, None, literal]))
     monkeypatch.setattr(mod._common, "design", lambda: design)
     assert mod._sheet_common.rule_ref_and_index(design, literal, "design") == (None, None)
-    result = mod.handler(action="update", rule={"scope": "design", "index": 1}, k_factor=.7)
+    result = mod.handler(action="update", rule={"scope": "design", "index": 1, "name": "Steel (mm)#1"},
+                         k_factor=.7)
     assert result["isError"] is True and "could not be read" in result["message"]
     assert first.kFactor == literal.kFactor == .44
+
+
+def test_index_ref_whose_rule_name_changed_is_refused_and_edits_nothing(monkeypatch):
+    # An earlier delete compacts the collection, so the ref's index now holds another rule.
+    target = SimpleNamespace(name="FW2 Target", kFactor=.44)
+    tail = SimpleNamespace(name="FW3 Tail", kFactor=.44)
+    monkeypatch.setattr(mod._common, "design", lambda: SimpleNamespace(
+        designSheetMetalRules=_NamedCollection(items=[SimpleNamespace(name="Steel (mm)"), target, tail])))
+    stale = mod.handler(action="update", rule={"scope": "design", "index": 2, "name": "FW2 Target"}, k_factor=.31)
+    assert stale["isError"] is True
+    assert "index 2 is now 'FW3 Tail', not 'FW2 Target'" in stale["message"]
+    assert target.kFactor == tail.kFactor == .44
+    fresh = mod.handler(action="update", rule={"scope": "design", "index": 2, "name": "fw3 tail"}, k_factor=.31)
+    assert fresh["isError"] is False and tail.kFactor == .31 and target.kFactor == .44

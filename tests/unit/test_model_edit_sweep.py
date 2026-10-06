@@ -5,11 +5,12 @@ from types import SimpleNamespace
 import adsk.fusion
 import pytest
 
-from conftest import (FakeTimeline, Profile, Sketch, SketchCurves, _NamedCollection, error_message,
-                      load_tool, payload)
+from conftest import (FakeTimeline, FakeTimelineObject, Profile, Sketch, SketchCurves,
+                      _NamedCollection, error_message, load_tool, payload)
 
 
 mod = load_tool("model_edit_sweep")
+_real_health = mod._health
 _real_target_error = mod._target_error
 _real_definition = mod._definition
 _real_profile_members = mod._profile_members
@@ -237,6 +238,99 @@ def test_a_later_profile_invalid_at_the_current_marker_gets_no_reorder_advice(ri
     assert (sweep.assignments, timeline.markerPosition) == (0, 3)
 
 
+_ROLLED = ("Editing 'Sweep1': sketch 'PathLater' at timeline row 3 is rolled back behind the "
+           "marker. Roll to the end with design_edit_timeline(action='roll', to='end'), then "
+           "retry. Nothing was edited.")
+
+
+@pytest.mark.parametrize("rows", [[True], [False], [True, True]])
+def test_a_rolled_back_path_sketch_is_named_with_its_row_and_the_roll_remedy(rig, monkeypatch, rows):
+    sweep, timeline = rig
+    for i, rolled in enumerate(rows):
+        sketch = Sketch(name="PathLater", parent_component=sweep.parentComponent)
+        sketch.objectType = "adsk::fusion::Sketch"
+        timeline._items.append(FakeTimelineObject(name="PathLater", index=3 + i, entity=sketch,
+                                                  rolled_back=rolled))
+    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (
+        None, None, "No sketch named 'PathLater' for the path. Use sketch_get or sketch_create."))
+    rolls = []
+    sweep.timelineObject.rollTo = lambda _before: rolls.append(True) or timeline.roll()
+    text = error_message(mod.handler(feature="Sweep1", action="path", path="sketch:PathLater"))
+    named = rows == [True]
+    assert (text == _ROLLED) is named
+    assert ("No sketch named 'PathLater'" in text) is not named
+    assert (sweep.assignments, timeline.markerPosition, bool(rolls)) == (0, 3, not named)
+
+
+class _UnreadRow:
+    """A collapsed-group member's own timeline row, whose index read raises."""
+
+    @property
+    def index(self):
+        raise RuntimeError("2 : InternalValidationError : res >= 0")
+
+
+def test_a_path_sketch_in_a_collapsed_group_gets_the_ungroup_hint_before_any_roll(rig, monkeypatch):
+    sweep, timeline = rig
+    grouped = Sketch(name="PathLater", timeline_object=_UnreadRow())
+    grouped.entityToken = "grouped-sketch"
+    member = FakeTimelineObject(name="PathLater", entity=grouped)
+    group = FakeTimelineObject(name="LaterGroup", is_group=True)
+    group.isCollapsed, group.count, group.item = True, 1, lambda _i: member
+    timeline.timelineGroups = _NamedCollection([group])
+    line = SimpleNamespace(entityToken="later-line", parentSketch=grouped)
+    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(line), "p", None))
+    rolls = []
+    sweep.timelineObject.rollTo = lambda _before: rolls.append(True) or timeline.roll()
+    text = error_message(mod.handler(feature="Sweep1", action="path", path="sketch:PathLater"))
+    assert text == ("'PathLater' is inside the collapsed timeline group 'LaterGroup', which the "
+                    "timeline lists as one item. Run design_edit_timeline(action='ungroup', "
+                    "feature='LaterGroup') - its items are kept - then retry. The path sketch "
+                    "timeline row does not read; nothing was edited.")
+    assert (rolls, sweep.assignments, timeline.markerPosition) == ([], 0, 3)
+
+
+@pytest.mark.parametrize("healthy", [True, False])
+def test_a_collapsed_group_row_is_read_through_its_members(rig, monkeypatch, healthy):
+    sweep, timeline = rig
+    states = adsk.fusion.FeatureHealthStates
+    member_health = states.HealthyFeatureHealthState if healthy else states.UnknownFeatureHealthState
+    member = FakeTimelineObject(name="Grouped", health=member_health)
+    group = FakeTimelineObject(name="LaterGroup", is_group=True,
+                               health=states.UnknownFeatureHealthState)
+    group.count, group.item = 1, lambda _i: member
+    timeline._items = [FakeTimelineObject(name="Prof"), FakeTimelineObject(name="Sweep1"), group]
+    monkeypatch.setattr(mod, "_health", _real_health)
+    result = mod.handler(feature="Sweep1", action="path", path="sketch:Arc")
+    if healthy:
+        assert payload(result)["edited"] is True and sweep.path == ("arc",)
+    else:
+        assert error_message(result) == ("'Sweep1's evaluated-health census is unreadable; "
+                                         "nothing was edited.")
+        assert sweep.assignments == 0
+
+
+class _UncountedGroup(FakeTimelineObject):
+    """A collapsed group row whose member count read raises."""
+
+    @property
+    def count(self):
+        raise RuntimeError("count unread")
+
+
+def test_a_collapsed_group_whose_count_raises_leaves_health_unread(rig, monkeypatch):
+    sweep, timeline = rig
+    group = _UncountedGroup(name="LaterGroup", is_group=True,
+                            health=adsk.fusion.FeatureHealthStates.UnknownFeatureHealthState)
+    timeline._items = [FakeTimelineObject(name="Prof"), FakeTimelineObject(name="Sweep1"), group]
+    monkeypatch.setattr(mod, "_health", _real_health)
+    assert _real_health(SimpleNamespace(timeline=timeline), 3) is None
+    result = mod.handler(feature="Sweep1", action="path", path="sketch:Arc")
+    assert error_message(result) == ("'Sweep1's evaluated-health census is unreadable; "
+                                     "nothing was edited.")
+    assert sweep.assignments == 0
+
+
 @pytest.mark.parametrize("row,refused", [(0, False), (1, True)])
 def test_an_operand_at_the_features_own_row_is_already_too_late(row, refused):
     sketch = Sketch(name="Prof", timeline_object=SimpleNamespace(index=row))
@@ -281,7 +375,7 @@ def test_setter_exception_names_the_profile_it_left(rig, addressed, remedy):
 
 def _sketch_line(name):
     """One line its own sketch lists, as a path member reads it."""
-    sketch = Sketch(name=name)
+    sketch = Sketch(name=name, timeline_object=SimpleNamespace(index=0))
     line = SimpleNamespace(entityToken=name.lower(), parentSketch=sketch, isValid=True)
     sketch.sketchCurves = SketchCurves(lines=[line])
     return line

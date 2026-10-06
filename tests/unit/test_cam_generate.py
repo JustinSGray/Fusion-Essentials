@@ -719,7 +719,9 @@ class TestEntitlementPreflight:
         assert out["live_states"]["out_of_date"] == 2
         assert out["live_states"]["generating"] == 0
         assert out["readiness"] == readiness
-        assert out["live_states"]["readiness"] == readiness
+        # the nested tally keeps its own verdict beside the top-level poll directive
+        assert out["live_states"]["readiness"] == ("0 of 2 active ops valid; 1 of them read "
+                                                   "isGenerationAllowed false")
         assert "handle 'gen1' is still incomplete" in out["note"]
         _GENERATIONS.clear()
 

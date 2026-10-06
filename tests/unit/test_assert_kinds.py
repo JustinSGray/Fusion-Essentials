@@ -1045,6 +1045,20 @@ def _sheet(name, free, sealed=0, area=1.0):
                     edges=[_edge(1) for _ in range(free)] + [_edge(2) for _ in range(sealed)])
 
 
+def _owned_row(name, index, component):
+    """A timeline row whose feature lives in `component` - what its address is qualified with."""
+    feature = types.SimpleNamespace(parentComponent=types.SimpleNamespace(name=component))
+    return FakeTimelineObject(name=name, index=index, entity=feature)
+
+
+def _namesake_timeline(monkeypatch, name):
+    """A parametric design whose timeline already holds `name` in another component, at index 0."""
+    tl = FakeTimeline([_owned_row(name, 0, "Sibling")])
+    common = sys.modules[kernel.__package__ + "._common"]
+    monkeypatch.setattr(common, "design", lambda: types.SimpleNamespace(designType=1, timeline=tl))
+    return tl
+
+
 class TestFreeEdgesChanged:
     def _wire(self, monkeypatch, census):
         monkeypatch.setattr(kernel, "census_bodies", lambda: census)
@@ -1105,6 +1119,26 @@ class TestFreeEdgesChanged:
         msg = kernel.wrap(handler, [kernel.FreeEdgesChanged("sealed")])()["message"]
         assert ("design_delete_feature(feature='Stitch1')" in msg) is (design_type == 1)
         assert ("DIRECT mode" in msg) is (design_type == 0)
+
+    def test_a_refused_stitch_names_the_added_row_beside_a_namesake(self, monkeypatch):
+        tl = _namesake_timeline(monkeypatch, "Stitch1")
+        self._wire(monkeypatch, [_sheet("A", free=4)])
+
+        def handler(**kw):
+            tl._items.append(_owned_row("Stitch1", 1, "Shell"))
+            return _ok({"stitched": True, "feature": "Stitch1"})
+        msg = kernel.wrap(handler, [kernel.FreeEdgesChanged("sealed")])()["message"]
+        assert msg.endswith("design_delete_feature(feature='Shell/Stitch1@1').")
+
+    def test_two_added_namesake_rows_keep_the_bare_name(self, monkeypatch):
+        tl = _namesake_timeline(monkeypatch, "Stitch1")
+        self._wire(monkeypatch, [_sheet("A", free=4)])
+
+        def handler(**kw):
+            tl._items += [_owned_row("Stitch1", 1, "Shell"), _owned_row("Stitch1", 2, "Lid")]
+            return _ok({"stitched": True, "feature": "Stitch1"})
+        msg = kernel.wrap(handler, [kernel.FreeEdgesChanged("sealed")])()["message"]
+        assert msg.endswith("design_delete_feature(feature='Stitch1').") and "@" not in msg
 
     def test_an_edge_whose_face_count_does_not_read_is_disclosed(self, monkeypatch):
         census = [BRepBody(name="A", is_solid=False, edges=[BRepEdge(curve=None)])]
@@ -1173,6 +1207,21 @@ class TestSurfaceAreaAdded:
         assert res["message"].endswith(
             " Its result bodies: 'Body2'. 'Extrude2' remains in the timeline; remove it with "
             "design_delete_feature(feature='Extrude2').")
+
+    def test_a_refused_sheet_beside_a_namesake_names_its_own_address(self, monkeypatch):
+        # A bare name another component's feature shares is refused by design_delete_feature.
+        tl = _namesake_timeline(monkeypatch, "Extrude2")
+        census = [_sheet("Old", free=4, area=3.0)]
+        self._wire(monkeypatch, census)
+
+        def handler(**kw):
+            census.append(_sheet("Body2", free=4, area=5e-7))
+            tl._items.append(_owned_row("Extrude2", 1, "H1Surf"))
+            return _ok({"created": True, "feature": "Extrude2", "result_bodies": ["Body2"]})
+        res = kernel.wrap(handler, [kernel.SurfaceAreaAdded()])()
+        assert res["message"].endswith(
+            " Its result bodies: 'Body2'. 'H1Surf/Extrude2@1' remains in the timeline; remove it "
+            "with design_delete_feature(feature='H1Surf/Extrude2@1').")
 
     def test_no_growth_beside_an_unread_area_is_disclosed_not_failed(self, monkeypatch):
         # the sheet may be the body whose area did not read - no conviction from a blind census

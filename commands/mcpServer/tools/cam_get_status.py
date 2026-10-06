@@ -13,7 +13,7 @@ from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe
 from . import _cam_common   # the shared CAM substrate: live_readiness (the single job-health source)
-from ._write_guard import _active_identity, document_key
+from ._write_guard import _active_identity, document_key, on_key_renamed
 
 # The registry and the handles it mints live in _cam_common - the ONE registration path every
 # launch goes through. These names are those same objects.
@@ -35,6 +35,16 @@ def _release(key: str, entry: dict, elapsed: float, live=None) -> None:
                       "elapsed_seconds": elapsed, "tally": dict(live) if live else None}
     if len(_RELEASED) > _RELEASED_CAP:
         _RELEASED.popitem(last=False)
+
+
+def _carry_released_keys(old_key, new_key):
+    """Re-stamp released handles launched under a document key a save just changed."""
+    for released in _RELEASED.values():
+        if released.get("doc_key") == old_key:
+            released["doc_key"] = new_key
+
+
+on_key_renamed(_carry_released_keys)
 
 
 def _released_miss(key: str, released: dict) -> str:
@@ -422,10 +432,8 @@ def _status_future(entry: dict, key: str, include_operations: bool) -> dict:
     payload["completed"] = completed
     payload["completion_basis"] = basis   # whose operations settled this verdict
     owned_readiness = _owned_future_readiness(live, key, future_done)
-    live = dict(live)
-    live["readiness"] = owned_readiness
     payload["live_states"] = live  # valid/out_of_date/errored/generating/suppressed (+ setup/program for document)
-    # A handle owns its incomplete Future, so the top-level and nested verdict are the same next step.
+    # The top-level verdict is the next step; live_states.readiness keeps the scope's live verdict.
     payload["readiness"] = owned_readiness
 
     if not completed:

@@ -19,7 +19,7 @@ from . import _inputs
 
 MAP_BLURB = (
     "EDGES/FACES/BODY/_EDGE_FILTER_DESC/_TANGENT_CHAIN_DESC - targeting; _edges_of_faces - face "
-    "edges; _distinct_placed_edges - constant-fillet handles per placement; _edge_convexity/"
+    "edges; _distinct_placed_edges - edge handles per placement; _edge_convexity/"
     "_collect_edges - dihedral filters; _tangent_chain_read - applied chain; _cut_edges - resolved "
     "count via rolled_to; _apply - build and verify volume/area")
 
@@ -430,13 +430,11 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
                           "edges than asked.)" if requested_n else "")
             return error(herr + count_note)
         handles_sent = len(ents)
-        if kind == "fillet" and variant is None:
-            ents = _distinct_placed_edges(ents, safe(lambda: design.rootComponent))
+        ents = _distinct_placed_edges(ents, safe(lambda: design.rootComponent))
         edges = adsk.core.ObjectCollection.create()
         for e in ents:
             edges.add(e)
-        edge_src = (f"{edges.count} edge seed(s) from handles" if kind == "fillet" and variant is None
-                    else f"{edges.count} handle(s)")
+        edge_src = f"{edges.count} edge seed(s) from handles"
         body_label = _qualified_body_name(safe(lambda: ents[0].body))
         verify_bodies = _geom.owning_bodies(ents)
     else:

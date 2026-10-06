@@ -231,9 +231,11 @@ def _bind_cad_param(setup, cad_param_name, entity):
     return (len(list(after)) if after else 0), None
 
 
-def _edit_state(target, parameters, collections, machine, wcs):
+def _edit_state(target, parameters, collections, machine, wcs, mode=False):
     """Read the requested setup fields without turning unread values into unchanged state."""
-    names = list(dict.fromkeys(list(parameters) + [_WCS_BINDINGS[k][0] for k in wcs]))
+    # A stockMode write also rewrites the job_stockMode expression.
+    names = list(dict.fromkeys(list(parameters) + [_WCS_BINDINGS[k][0] for k in wcs]
+                               + (["job_stockMode"] if mode else [])))
     state = {"setup": safe(lambda: target.name),
              "stock_mode": stock_mode_name(safe(lambda: target.stockMode)),
              "parameters": {name: safe(lambda name=name: target.parameters.itemByName(name).expression)
@@ -249,6 +251,30 @@ def _edit_state(target, parameters, collections, machine, wcs):
         state["wcs_bound_counts"] = {key: safe(lambda key=key: len(list(
             target.parameters.itemByName(_WCS_BINDINGS[key][2]).value.value))) for key in wcs}
     return state
+
+
+def _moved_clause(before, now):
+    """The sentence naming each field that moved from, or did not read like, its pre-call value."""
+    moved, unread = [], []
+
+    def visit(label, was, cur):
+        if isinstance(was, dict) or isinstance(cur, dict):
+            for key in dict.fromkeys(list(was or {}) + list(cur or {})):
+                visit(key, (was or {}).get(key), (cur or {}).get(key))
+        elif cur is None:
+            unread.append(label)
+        elif cur != was:
+            moved.append(f"{label} reads {cur!r} (was {'unread' if was is None else repr(was)})")
+
+    for key in now:
+        if key != "setup":
+            visit(key, before.get(key), now.get(key))
+    if not moved and not unread:
+        return "Observed setup fields match their pre-call values."
+    text = ("Still changed after this failure: " + "; ".join(moved) + ".") if moved else ""
+    if unread:
+        text += (" " if text else "") + "Unread after this failure: " + ", ".join(unread) + "."
+    return text
 
 
 def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=None,
@@ -342,15 +368,15 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
             return error(m_err)
         resolved_machine = (m_obj, m_label)
 
-    before_state = _edit_state(target, wanted, resolved_bodies, want_machine, resolved_wcs)
+    mode_write = want_stock_mode is not None
+    before_state = _edit_state(target, wanted, resolved_bodies, want_machine, resolved_wcs,
+                               mode=mode_write)
 
     def failed(message):
         observed = {"before": before_state,
-                    "now": _edit_state(target, wanted, resolved_bodies, want_machine, resolved_wcs)}
-        unread = any(value is None for field in observed["now"].values()
-                     for value in (field.values() if isinstance(field, dict) else [field]))
-        outcome = ("Partial changes may remain." if before_state != observed["now"] or unread else
-                   "Observed setup fields match their pre-call values.")
+                    "now": _edit_state(target, wanted, resolved_bodies, want_machine, resolved_wcs,
+                                       mode=mode_write)}
+        outcome = _moved_clause(before_state, observed["now"])
         return error(message + " " + outcome + " Observed setup state: "
                      + json.dumps(observed) + ". Null fields are unread. Re-read with "
                      "cam_get(include=['setups','parameters'], setup=...).")

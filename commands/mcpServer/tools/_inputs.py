@@ -392,6 +392,8 @@ def _resolve_token_entity(des, s):
         return _placed_hit(des, hits, locator)
     if len(hits) == 1:
         return hits[0]
+    if len(hits) > 1 and locator and locator[0].startswith("profile"):
+        return _pick_profile_hit(hits, locator)
     if len(hits) > 1:
         picked, reason = _pick_by_locator(hits, locator) if locator else (None, None)
         if picked is not None:
@@ -560,13 +562,8 @@ def _tied_profile_refusal(sketches):
             "in its own sketch.")
 
 
-def _refind_profile(des, kind, want_pt):
-    """The Profile a locator re-finds, or None. The kind may carry 'profile[<sketch>~<area_cm2>]':
-    the sketch scopes the scan and the area tells same-centroid profiles apart (an annulus band and
-    its full disk share a centroid); a locator sketch name SEVERAL sketches carry is REFUSED here."""
-    # VERIFIED LIVE: findEntityByToken returns NOTHING for a sub-component sketch profile's token,
-    # so for profiles the locator is the real resolution path, not just staleness recovery.
-    global _LAST_REFIND_REFUSAL
+def _profile_locator(kind):
+    """(sketch name, area cm2 or None) that a 'profile[<sketch>~<area_cm2>]' locator kind carries."""
     sk_name, want_area = "", None
     if "[" in kind and kind.endswith("]"):
         payload = kind[kind.index("[") + 1:-1]
@@ -579,6 +576,70 @@ def _refind_profile(des, kind, want_pt):
                 sk_name = payload
         else:
             sk_name = payload
+    return sk_name, want_area
+
+
+def _match_profiles(candidates, want_pt, want_area):
+    """(best profile, [sketch per tied best], [sketch per profile AT the point]) over (sketch,
+    profile) pairs: centroid within 0.1 cm, and area within 1% when the locator carries one."""
+    lx, ly, lz = want_pt
+    best, best_score, tied, at_point = None, None, [], []
+    for sk, p in candidates:
+        ap = _common.safe(lambda p=p: p.areaProperties())
+        c = _common.safe(lambda: ap.centroid) if ap else None
+        area = _common.safe(lambda: ap.area) if ap else None
+        if c is None:
+            continue
+        dist = ((c.x - lx) ** 2 + (c.y - ly) ** 2 + (c.z - lz) ** 2) ** 0.5
+        if dist > 0.1:                              # cm - not the recorded region
+            continue
+        at_point.append(sk)
+        if want_area is not None:
+            if area is None:
+                continue
+            rel = abs(area - want_area) / max(abs(want_area), 1e-9)
+            if rel > 0.01:                          # wrong region sharing the centroid
+                continue
+            score = (dist, rel)
+        else:
+            score = (dist, 0.0)
+        if best_score is None or score < best_score:
+            best, best_score, tied = p, score, [sk]
+        elif score == best_score:
+            # An equal score leaves only the scan ORDER to pick between them, and a handle
+            # naming two profiles names neither.
+            tied.append(sk)
+    return best, tied, at_point
+
+
+def _pick_profile_hit(hits, locator):
+    """The ONE Profile among a token's hits that the locator's area and centroid name, else None
+    with _LAST_REFIND_REFUSAL set; a locator carrying no area names none of them."""
+    # MEASURED: in a component a multi-loop profile's token answers that profile AND each island
+    # profile inside it, every centroid in the same sketch-local frame the locator carries.
+    global _LAST_REFIND_REFUSAL
+    want_area = _profile_locator(locator[0])[1]
+    profs = [h for h in hits if _isinstance(h, adsk.fusion.Profile)]
+    if want_area is not None:
+        best, tied, _at = _match_profiles(
+            [(_common.safe(lambda p=p: p.parentSketch), p) for p in profs], locator[1:4], want_area)
+        if len(tied) > 1:
+            _LAST_REFIND_REFUSAL = _tied_profile_refusal(tied)
+            return None
+        if best is not None:
+            return best
+    _LAST_REFIND_REFUSAL = _ambiguous_token_refusal(hits, locator)
+    return None
+
+
+def _refind_profile(des, kind, want_pt):
+    """The Profile a locator re-finds, or None. The kind may carry 'profile[<sketch>~<area_cm2>]':
+    the sketch scopes the scan and the area tells same-centroid profiles apart (an annulus band and
+    its full disk share a centroid); a locator sketch name SEVERAL sketches carry is REFUSED here."""
+    # MEASURED: a ROOT multi-loop profile's token answers no entity, so this scan is its resolution
+    # path; a single-loop profile's token answers itself.
+    global _LAST_REFIND_REFUSAL
+    sk_name, want_area = _profile_locator(kind)
     if sk_name:
         # find_sketch, not resolve_sketch: the collapsing form answers None for a name NO sketch
         # carries AND for one SEVERAL carry, so a collision reached the caller as "not found".
@@ -593,37 +654,13 @@ def _refind_profile(des, kind, want_pt):
             coll = _common.safe(lambda c=comp: c.sketches)
             for i in range(_common.safe(lambda: coll.count, 0) if coll else 0):
                 sketches.append(coll.item(i))
-    lx, ly, lz = want_pt
-    best, best_score, tied = None, None, []
-    at_point = []                # the sketches holding a profile AT the recorded point
+    candidates = []
     for sk in sketches:
         profs = _common.safe(lambda s=sk: s.profiles)
         for i in range(_common.safe(lambda: profs.count, 0) if profs else 0):
-            p = profs.item(i)
-            ap = _common.safe(lambda p=p: p.areaProperties())
-            c = _common.safe(lambda: ap.centroid) if ap else None
-            area = _common.safe(lambda: ap.area) if ap else None
-            if c is None:
-                continue
-            dist = ((c.x - lx) ** 2 + (c.y - ly) ** 2 + (c.z - lz) ** 2) ** 0.5
-            if dist > 0.1:                              # cm - not the recorded region
-                continue
-            at_point.append(sk)
-            if want_area is not None:
-                if area is None:
-                    continue
-                rel = abs(area - want_area) / max(abs(want_area), 1e-9)
-                if rel > 0.01:                          # wrong region sharing the centroid
-                    continue
-                score = (dist, rel)
-            else:
-                score = (dist, 0.0)
-            if best_score is None or score < best_score:
-                best, best_score, tied = p, score, [sk]
-            elif score == best_score:
-                # An equal score leaves only the scan ORDER to pick between them, and a handle
-                # naming two profiles names neither.
-                tied.append(sk)
+            candidates.append((sk, profs.item(i)))
+    # at_point: the sketches holding a profile AT the recorded point
+    best, tied, at_point = _match_profiles(candidates, want_pt, want_area)
     if len(tied) > 1:
         _LAST_REFIND_REFUSAL = _tied_profile_refusal(tied)
         return None
@@ -2774,15 +2811,16 @@ class Choice(InputKind):
 
 
 class SheetMetalRuleRef(InputKind):
-    """A rule selected by scoped name or a current scope/index ref."""
+    """A rule selected by scoped name or a current scope/index/name ref."""
 
-    MAP_HINT = "a scoped sheet-metal rule name or current {scope,index} ref; refuses ambiguous names"
+    MAP_HINT = "a scoped sheet-metal rule name or current {scope,index,name} ref; refuses ambiguous names"
 
     def schema(self, brief=False) -> dict:
+        # resolve() refuses a negative index and any other key, so the schema does not repeat them.
         return {"type": ["string", "object"], "properties": {
             "scope": {"enum": ["design", "library"]},
-            "index": {"type": "integer", "minimum": 0}},
-            "required": ["scope", "index"], "additionalProperties": False, **self._desc(brief)}
+            "index": {"type": "integer"}, "name": {"type": "string"}},
+            "required": ["scope", "index", "name"], **self._desc(brief)}
 
     def contract_note(self) -> str:
         return "Fresh sheet_get ref."
@@ -2790,9 +2828,9 @@ class SheetMetalRuleRef(InputKind):
     def resolve(self, raw):
         from ._sheet_common import matching_rules, scoped_rules
         if isinstance(raw, dict):
-            scope, index = raw.get("scope"), raw.get("index")
-            if (set(raw) != {"scope", "index"} or scope not in ("design", "library")
-                    or type(index) is not int or index < 0):
+            scope, index, want = raw.get("scope"), raw.get("index"), raw.get("name")
+            if (set(raw) != {"scope", "index", "name"} or scope not in ("design", "library")
+                    or type(index) is not int or index < 0 or not isinstance(want, str) or not want):
                 return None, f"'{self.name}' got {raw!a}; pass an exact rule ref from sheet_get."
             design = _common.design()
             rules = scoped_rules(design, scope)
@@ -2801,6 +2839,10 @@ class SheetMetalRuleRef(InputKind):
             if index >= len(rules):
                 return None, (f"'{self.name}': index {index} is out of range for {len(rules)} {scope} rules. "
                               "Re-read sheet_get for a current rule ref.")
+            now = rules[index].name
+            if now.lower() != want.lower():
+                return None, (f"'{self.name}' index {index} is now '{now}', not '{want}' - the rule list "
+                              "changed. Re-read sheet_get(include=['rules','components']) for a current ref.")
             return (rules[index], scope), None
         value = (raw or "").strip() if isinstance(raw, str) else ""
         if ":" not in value:

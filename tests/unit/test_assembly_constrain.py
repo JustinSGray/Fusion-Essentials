@@ -206,6 +206,38 @@ def test_selection_owner_match_requires_complete_placed_identity(constrain, monk
     assert ac.last_input is None and ac.added == 0
 
 
+@pytest.mark.parametrize("request_path,duplicate,expected", [
+    ("RP:2+Leaf:1", False, None),
+    ("RP:1+Leaf:1", False, "Selected entity 1 belongs to 'RP:2+Leaf:1', not requested 'RP:1+Leaf:1'"),
+    ("RP:2+Leaf:1", True, "Selected entity 1's placed owner cannot be confirmed"),
+    ("root", False, "Selected entity 1 is root-component geometry with no placed owner"),
+])
+def test_nested_selection_owner_is_matched_by_a_unique_path(constrain, monkeypatch,
+                                                             request_path, duplicate, expected):
+    # Nested placements carry no entityToken here: their native identity does not read.
+    specs = [("RP:1+Leaf:1", _ORIGIN), ("RP:2+Leaf:1", (4, 0, 0)), ("Anchor:1", (8, 0, 0))]
+    design, ac = constrain(occ_specs=specs)
+    occs = list(design.rootComponent.occurrences)
+    occs[2].entityToken = "occ-anchor"
+    one = "RP:2+Leaf:1" if request_path == "root" else request_path
+    if duplicate:
+        # Requested by handle: the path resolver never saw the second wearer of the path.
+        monkeypatch.setattr(ja.adsk.fusion, "Occurrence", type(occs[1]), raising=False)
+        design._tokens["h-leaf2"] = occs[1]
+        design.rootComponent.allOccurrences.append(_part("RP:2+Leaf:1", _ORIGIN))
+        one = "h-leaf2"
+    owner = None if request_path == "root" else occs[1]
+    faces = [BRepFace(None, assembly_context=owner), BRepFace(None, assembly_context=occs[2])]
+    monkeypatch.setattr(ja.app, "userInterface",
+                        FakeUserInterface(FakeSelections([FakeSelection(f) for f in faces])), raising=False)
+    result = ja.handler(occurrence_one=one, occurrence_two="Anchor:1", flipped=True)
+    if expected is None:
+        assert payload(result)["created"] is True and ac.added == 1
+    else:
+        assert result["isError"] is True and expected in result["message"]
+        assert ac.last_input is None and ac.added == 0
+
+
 class TestAssemblyConstraintSnaps:
     """Autonomous geometry snaps (no human selection) — '<occurrence>:<snap>'."""
 

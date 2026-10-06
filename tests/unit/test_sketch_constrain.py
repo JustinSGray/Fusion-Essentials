@@ -1114,12 +1114,14 @@ class TestSingleLine:
         out = _one_row(_constrain(constraint="fix", sketch_name="S", entity_one="line:1"))
         assert s.sketchCurves.sketchLines.item(1).isFixed is True
         assert out["applied"] == "fix"
+        assert "endpoints can still move" in out["note"] and "point ids" in out["note"]
 
     def test_unfix(self, install):
         s = _two_line_sketch(); install(s)
         s.sketchCurves.sketchLines.item(0).isFixed = True
-        _payload(_constrain(constraint="unfix", sketch_name="S", entity_one="line:0"))
+        out = _one_row(_constrain(constraint="unfix", sketch_name="S", entity_one="line:0"))
         assert s.sketchCurves.sketchLines.item(0).isFixed is False
+        assert "endpoints can still move" not in out["note"]
 
     def test_fix_failure_is_reported_not_a_false_success(self, install):
         s = _two_line_sketch(); install(s)

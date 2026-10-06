@@ -472,6 +472,91 @@ def _crossindex_disclosure(joined=False, quiet=False, repeat=False):
     return check
 
 
+_SUB_JOINT_SETUP = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    root = adsk.fusion.Design.cast(app.activeProduct).rootComponent
+    def at(x_cm, y_cm):
+        m = adsk.core.Matrix3D.create()
+        m.translation = adsk.core.Vector3D.create(x_cm, y_cm, 0)
+        return m
+    sub = root.occurrences.addNewComponent(at(0.0, 6.0))
+    sc = sub.component
+    sc.name = 'PSub'
+    def child(name, x_cm):
+        occ = sc.occurrences.addNewComponent(at(x_cm, 0.0))
+        comp = occ.component
+        comp.name = name
+        sk = comp.sketches.add(comp.xYConstructionPlane)
+        sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(.4, .4, 0))
+        inp = comp.features.extrudeFeatures.createInput(sk.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        inp.setDistanceExtent(False, adsk.core.ValueInput.createByString('4 mm'))
+        comp.features.extrudeFeatures.add(inp)
+        jo = comp.jointOrigins.add(comp.jointOrigins.createInput(adsk.fusion.JointGeometry.createByPoint(comp.originConstructionPoint)))
+        jo.name = name + 'Datum'
+        return occ, jo
+    a, ja = child('PChildA', 0.0)
+    b, jb = child('PChildB', 1.0)
+    ji = sc.joints.createInput(ja.createForAssemblyContext(a), jb.createForAssemblyContext(b))
+    ji.setAsRigidJointMotion()
+    inner = sc.joints.add(ji)
+    inner.name = 'Inner'
+    second = root.occurrences.addExistingComponent(sc, at(10.0, 6.0))
+    print(json.dumps({'joint': inner.name, 'placements': [sub.fullPathName, second.fullPathName]}))
+"""
+
+# Per placement of PSub, the halves Inner reads in that placement's context, plus the history.
+_SUB_JOINT_NATIVE = """import adsk.core, adsk.fusion, json
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    root = design.rootComponent
+    sub = [c for c in design.allComponents if c.name == 'PSub'][0]
+    inner = sub.joints.itemByName('Inner')
+    halves = {}
+    for p in root.allOccurrencesByComponent(sub):
+        px = inner.createForAssemblyContext(p)
+        halves[p.fullPathName] = [px.occurrenceOne.fullPathName, px.occurrenceTwo.fullPathName]
+    print(json.dumps({'halves': halves, 'timeline_count': design.timeline.count,
+                      'marker': design.timeline.markerPosition}))
+"""
+
+
+def _sub_joint_native(after):
+    """Each PSub placement's own Inner halves, natively; the second read must equal the first."""
+    def check(p):
+        halves = p.get("halves") or {}
+        valid = (sorted(halves) == ["PSub:1", "PSub:2"]
+                 and all(v == [k + "+PChildA:1", k + "+PChildB:1"] for k, v in halves.items())
+                 and p.get("marker") == p.get("timeline_count"))
+        if after:
+            valid = valid and p == _RECALL.get("sub_joint_native")
+        elif valid:
+            _RECALL["sub_joint_native"] = p
+        return _measured("Inner's halves in each PSub placement", p, valid)
+    return check
+
+
+def _sub_joint_disclosure(p):
+    """Inner is credited on all four placed child rows, and both placements' datums name it."""
+    native = (_RECALL.get("sub_joint_native") or {}).get("halves") or {}
+    paths = {path for pair in native.values() for path in pair}
+    rows = {r.get("full_path"): r for r in p.get("all_occurrences") or []}
+    inner = next((j for j in p.get("joints") or [] if j.get("name") == "Inner"), {})
+    datums = {r.get("qualified_name"): r.get("consumed_by") for r in p.get("joint_origins") or []}
+    placed = {r.get("placement"): [r.get("occurrence_one_path"), r.get("occurrence_two_path")]
+              for r in inner.get("placements") or []}
+    valid = (len(paths) == 4 and all((rows.get(path) or {}).get("joints") == ["Inner"] for path in paths)
+             and all((rows.get(k) or {}).get("joints") == [] for k in ("PSub:1", "PSub:2"))
+             and p.get("all_occurrences_truncated") is False and p.get("joint_origins_truncated") is False
+             and inner.get("owner_component") == "PSub" and placed == native
+             and all(datums.get(path + ":" + path.split("+")[-1].split(":")[0] + "Datum") == ["Inner"]
+                     for path in paths))
+    return _measured("sub-assembly joint on every placement of its owner", {"rows": {
+        k: (rows.get(k) or {}).get("joints") for k in sorted(paths)}, "placements": placed,
+        "datums": datums}, valid)
+
+
 def _crossindex_rows():
     """Exercise the measured reused-parent cross-index with independent native state controls."""
     rows = [("doc_get", {}, _home_document, ("ci_story", _home_address)),
@@ -508,12 +593,81 @@ def _crossindex_rows():
     native("repeat")
     rows.append(("design_delete_feature", lambda c: {"feature": _ctx_get(c, "ci_joint", "as-built joint name")}, "ok", None))
     native("restored")
-    rows += [("assembly_get", assembly, _crossindex_disclosure(), None),
-             ("doc_activate", lambda c: {"name": _ctx_get(c, "ci_story", "story"),
+    rows.append(("assembly_get", assembly, _crossindex_disclosure(), None))
+    # REVIEW-1004-ASSEMBLY-JOINT-PATHS-1: a joint owned by a twice-placed sub-assembly.
+    write("sys_execute_script", {"script": _SUB_JOINT_SETUP, "read_only": False},
+          lambda p: p.get("joint") == "Inner" and p.get("placements") == ["PSub:1", "PSub:2"])
+    write("sys_execute_script", {"script": _SUB_JOINT_NATIVE, "read_only": True}, _sub_joint_native(False))
+    write("assembly_get", {"include": ["all_occurrences", "joint_origins"], "units": "mm", "max_joints": 100,
+                           "max_all_occurrences": 100, "max_joint_origins": 100}, _sub_joint_disclosure)
+    write("sys_execute_script", {"script": _SUB_JOINT_NATIVE, "read_only": True}, _sub_joint_native(True))
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "ci_story", "story"),
                                          "expect_document": _ctx_get(c, "ci_doc", "cross-index scratch")}, "ok", None),
              ("doc_close", lambda c: {"name": _ctx_get(c, "ci_doc", "cross-index scratch"), "save_changes": False,
                                       "expect_document": _ctx_get(c, "ci_story", "story")}, _document_closed, None)]
     return rows
+
+
+_REUSED_ORIGIN_SETUP = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    root = adsk.fusion.Design.cast(app.activeProduct).rootComponent
+    def at(x_cm):
+        m = adsk.core.Matrix3D.create()
+        m.translation = adsk.core.Vector3D.create(x_cm, 0, 0)
+        return m
+    p1 = root.occurrences.addNewComponent(at(0.0))
+    pc = p1.component
+    pc.name = 'ReusedParent'
+    lc = pc.occurrences.addNewComponent(at(0.0)).component
+    lc.name = 'Leaf'
+    sk = lc.sketches.add(lc.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(.4, .4, 0))
+    inp = lc.features.extrudeFeatures.createInput(sk.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    inp.setDistanceExtent(False, adsk.core.ValueInput.createByString('4 mm'))
+    lc.features.extrudeFeatures.add(inp)
+    datum = lc.jointOrigins.add(lc.jointOrigins.createInput(adsk.fusion.JointGeometry.createByPoint(lc.originConstructionPoint)))
+    datum.name = 'Datum'
+    p2 = root.occurrences.addExistingComponent(pc, at(4.0))
+    leaf2 = p2.childOccurrences.item(0)
+    ain = root.jointOrigins.createInput(adsk.fusion.JointGeometry.createByPoint(root.originConstructionPoint))
+    ain.offsetX = adsk.core.ValueInput.createByString('40 mm')
+    anchor = root.jointOrigins.add(ain)
+    anchor.name = 'RootAnchor'
+    ji = root.joints.createInput(datum.createForAssemblyContext(leaf2), anchor)
+    ji.setAsRigidJointMotion()
+    j = root.joints.add(ji)
+    j.name = 'SecondOnly'
+    print(json.dumps({'joint': j.name, 'one': j.occurrenceOne.fullPathName}))
+"""
+
+
+def _reused_origin_consumers(p):
+    """consumed_by credits only the placement the joint stores, against the native half."""
+    rows = {r.get("qualified_name"): r.get("consumed_by") for r in p.get("joint_origins") or []}
+    return _measured("consumer attributed to the stored placement", rows,
+                     rows.get("ReusedParent:2+Leaf:1:Datum") == ["SecondOnly"]
+                     and rows.get("ReusedParent:1+Leaf:1:Datum") == []
+                     and rows.get("RootAnchor") == ["SecondOnly"])
+
+
+def _reused_origin_rows():
+    """A root joint on one placement of a twice-placed leaf's origin, read through joint_origins."""
+    return [("doc_get", {}, _home_document, ("ro_story", _home_address)),
+            ("doc_new", {}, _new_document, None),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("doc_get", {}, _home_document, ("ro_doc", _home_address)),
+            ("sys_execute_script", {"script": _REUSED_ORIGIN_SETUP, "read_only": False},
+             lambda p: p.get("joint") == "SecondOnly" and p.get("one") == "ReusedParent:2+Leaf:1", None),
+            ("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True,
+                          "focus": ["ReusedParent:1", "ReusedParent:2"]}, "ok", None),
+            ("assembly_get", {"include": ["joint_origins"], "units": "mm", "max_joint_origins": 100},
+             _reused_origin_consumers, None),
+            ("doc_activate", lambda c: {"name": _ctx_get(c, "ro_story", "story"),
+                                        "expect_document": _ctx_get(c, "ro_doc", "reused-origin scratch")}, "ok", None),
+            ("doc_close", lambda c: {"name": _ctx_get(c, "ro_doc", "reused-origin scratch"), "save_changes": False,
+                                     "expect_document": _ctx_get(c, "ro_story", "story")}, _document_closed, None)]
 
 
 _ORIGIN_CONSUMER_NATIVE = """import adsk.core, adsk.fusion, json, sys
@@ -874,6 +1028,335 @@ def _selected_owner_rows():
     return rows
 
 
+# The measured scratch-part recipe (lengths cross the API in cm): a 4 x 4 mm box, 10 mm tall unless
+# given. `ground` None leaves Fusion's own ground-to-parent default.
+_PART_RECIPE = """import adsk.core, adsk.fusion, json, math
+def _part(parent, name, x_mm, y_mm, rot_deg=0.0, axis=None, height='10 mm', ground=None):
+    m = adsk.core.Matrix3D.create()
+    if rot_deg:
+        m.setToRotation(math.radians(rot_deg), axis, adsk.core.Point3D.create(0, 0, 0))
+    m.translation = adsk.core.Vector3D.create(x_mm / 10.0, y_mm / 10.0, 0)
+    occ = parent.occurrences.addNewComponent(m)
+    comp = occ.component
+    comp.name = name
+    sk = comp.sketches.add(comp.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(.4, .4, 0))
+    inp = comp.features.extrudeFeatures.createInput(sk.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    inp.setDistanceExtent(False, adsk.core.ValueInput.createByString(height))
+    comp.features.extrudeFeatures.add(inp)
+    if ground is not None:
+        occ.isGroundToParent = ground
+    return occ
+def _root():
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None, 'owned unsaved scratch only'
+    return adsk.fusion.Design.cast(app.activeProduct).rootComponent
+"""
+
+# Every placed occurrence's world matrix and body boxes (mm), the constraint names and the history.
+_PLACED_STATE = """import adsk.core, adsk.fusion, json
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    root = design.rootComponent
+    def box(b):
+        bb = b.boundingBox
+        return [[round(v * 10, 6) for v in (bb.minPoint.x, bb.minPoint.y, bb.minPoint.z)],
+                [round(v * 10, 6) for v in (bb.maxPoint.x, bb.maxPoint.y, bb.maxPoint.z)]]
+    cons = root.assemblyConstraints
+    print(json.dumps({'placements': {o.fullPathName: {'matrix': [round(c, 6) for c in o.transform2.asArray()],
+                                                      'bodies': [box(o.bRepBodies.item(i)) for i in range(o.bRepBodies.count)]}
+                                     for o in root.allOccurrences},
+                      'constraints': [cons.item(i).name for i in range(cons.count)],
+                      'timeline_count': design.timeline.count, 'marker': design.timeline.markerPosition}))
+"""
+
+
+def _placed(key, judge=None, what="placements held"):
+    """The native placed state: parked under `key` when `judge` is None, else judge(before, now)."""
+    def check(p):
+        now = p if isinstance(p.get("placements"), dict) and p.get("marker") == p.get("timeline_count") else None
+        before = _RECALL.get(key)
+        if judge is None:
+            valid = now is not None
+            if valid:
+                _RECALL[key] = now
+        else:
+            valid = now is not None and before is not None and judge(before, now)
+        return _measured(what, {"before": before, "now": now}, valid)
+    return check
+
+
+def _all_but(before, now, moved):
+    """Every placement except `moved` reads exactly as before, and no placement came or went."""
+    return (set(now["placements"]) == set(before["placements"])
+            and all(now["placements"][k] == v for k, v in before["placements"].items() if k not in moved))
+
+
+def _scratch(tag, steps):
+    """Open an owned scratch document, run `steps` there, then close it unsaved."""
+    rows = [("doc_get", {}, _home_document, (tag + "_story", _home_address)),
+            ("doc_new", {}, _new_document, None),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("doc_get", {}, _home_document, (tag + "_doc", _home_address))]
+    for tool, args, check, save in steps:
+        rows.append((tool, args if callable(args) else (lambda c, a=args: dict(a)), check, save))
+    return rows + [
+        ("doc_activate", lambda c: {"name": _ctx_get(c, tag + "_story", "story"),
+                                    "expect_document": _ctx_get(c, tag + "_doc", "scratch")}, "ok", None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, tag + "_doc", "scratch"), "save_changes": False,
+                                 "expect_document": _ctx_get(c, tag + "_story", "story")}, _document_closed, None)]
+
+
+# ASSEMBLY-WRITE-1: a nested placement's native token raises, so the selected owner is matched by
+# its unique path. The group fixture recipe: ReusedParent placed twice holding a 4 mm Leaf cube,
+# and a free 4 x 4 x 10 mm Anchor at x 80 mm.
+_NESTED_OWNER_SETUP = _PART_RECIPE + """
+def run(context):
+    root = _root()
+    first = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    first.component.name = 'ReusedParent'
+    _part(first.component, 'Leaf', 0, 0, height='4 mm')
+    m = adsk.core.Matrix3D.create()
+    m.translation = adsk.core.Vector3D.create(4, 0, 0)
+    root.occurrences.addExistingComponent(first.component, m)
+    _part(root, 'Anchor', 80, 0, ground=False)
+    print(json.dumps({'paths': sorted(o.fullPathName for o in root.allOccurrences)}))
+"""
+
+# Selects [ReusedParent:2+Leaf:1 top face, Anchor:1 bottom face], each a proxy in its placement.
+_NESTED_OWNER_SELECT = """import adsk.core, adsk.fusion, json
+def _cap(occ, top):
+    body = occ.component.bRepBodies.item(0)
+    best = None
+    for i in range(body.faces.count):
+        f = body.faces.item(i)
+        lo, hi = f.boundingBox.minPoint.z, f.boundingBox.maxPoint.z
+        if abs(hi - lo) <= 1e-6 and (best is None or (lo > best[0] if top else lo < best[0])):
+            best = (lo, f)
+    return best[1].createForAssemblyContext(occ)
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None, 'owned unsaved scratch only'
+    occ = {o.fullPathName: o for o in adsk.fusion.Design.cast(app.activeProduct).rootComponent.allOccurrences}
+    sel = app.userInterface.activeSelections
+    sel.clear()
+    added = [sel.add(_cap(occ['ReusedParent:2+Leaf:1'], True)), sel.add(_cap(occ['Anchor:1'], False))]
+    print(json.dumps({'added': added, 'owners': [sel.item(i).entity.assemblyContext.fullPathName for i in range(sel.count)]}))
+"""
+
+
+def _anchor_seated(before, now):
+    """The matched mate: one new constraint, Anchor's 4 x 4 x 10 box resting on the 4 mm Leaf top."""
+    box = (now["placements"].get("Anchor:1") or {}).get("bodies") or [[[0] * 3, [0] * 3]]
+    size = [b - a for a, b in zip(*box[0])]
+    return (_all_but(before, now, {"Anchor:1"}) and len(now["constraints"]) == len(before["constraints"]) + 1
+            and _near(box[0][0][2], 4.0, 1e-4) and all(_near(s, w, 1e-4) for s, w in zip(size, (4, 4, 10))))
+
+
+def _nested_owner_rows():
+    """A nested selection: the sibling placement is refused naming the real owner, the match mates."""
+    selected = lambda p: p.get("added") == [True, True] and p.get("owners") == ["ReusedParent:2+Leaf:1", "Anchor:1"]
+    return _scratch("nested_owner", [
+        ("sys_execute_script", {"script": _NESTED_OWNER_SETUP, "read_only": False},
+         lambda p: p.get("paths") == ["Anchor:1", "ReusedParent:1", "ReusedParent:1+Leaf:1",
+                                      "ReusedParent:2", "ReusedParent:2+Leaf:1"], None),
+        ("sys_execute_script", {"script": _NESTED_OWNER_SELECT, "read_only": False}, selected, None),
+        ("sys_execute_script", {"script": _PLACED_STATE, "read_only": True}, _placed("nested_owner_before"), None),
+        ("assembly_constrain", {"occurrence_one": "ReusedParent:1+Leaf:1", "occurrence_two": "Anchor:1",
+                                "flipped": True},
+         _refused("Selected entity 1 belongs to 'ReusedParent:2+Leaf:1'", "not requested 'ReusedParent:1+Leaf:1'"),
+         None),
+        ("sys_execute_script", {"script": _PLACED_STATE, "read_only": True},
+         _placed("nested_owner_before", lambda b, n: n == b, "the sibling refusal changed nothing"), None),
+        ("sys_execute_script", {"script": _NESTED_OWNER_SELECT, "read_only": False}, selected, None),
+        ("assembly_constrain", {"occurrence_one": "ReusedParent:2+Leaf:1", "occurrence_two": "Anchor:1",
+                                "flipped": True},
+         lambda p: _constrained(p) and [m.get("occurrence") for m in p["moved"]] == ["Anchor:1"], None),
+        ("sys_execute_script", {"script": _PLACED_STATE, "read_only": True},
+         _placed("nested_owner_before", _anchor_seated, "Anchor seated on the Leaf top, all else held"), None),
+        ("sys_execute_script", {"script": _selected_owner_script()}, lambda p: p.get("count") == 0, None),
+    ])
+
+
+# WHT-V2-ASBUILT-AXIS-EFFECT-1: two free carriages and a grounded bridge nested in one chassis.
+_ASBUILT_AXIS_SETUP = _PART_RECIPE + """
+def run(context):
+    root = _root()
+    chassis = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    chassis.component.name = 'WhChassis'
+    chassis.isGroundToParent = True
+    _part(chassis.component, 'WhBridge', 40, 0, ground=True)
+    _part(chassis.component, 'WhCar2', 0, 30)
+    _part(chassis.component, 'WhCar3', 0, 60)
+    print(json.dumps({'paths': sorted(o.fullPathName for o in root.allOccurrences)}))
+"""
+
+
+def _slid_x(before, now):
+    """Both carriages slid 2 mm along world +X (cells 3/7/11 in cm); the bridge held."""
+    def delta(path):
+        a, b = before["placements"][path]["matrix"], now["placements"][path]["matrix"]
+        return [round(b[i] - a[i], 6) for i in (3, 7, 11)]
+    return (_all_but(before, now, {"WhChassis:1+WhCar2:1", "WhChassis:1+WhCar3:1"})
+            and delta("WhChassis:1+WhCar2:1") == delta("WhChassis:1+WhCar3:1") == [0.2, 0, 0])
+
+
+def _asbuilt_axis_rows():
+    """world_axis on an as-built slider is refused before any write; axis=x still slides along +X."""
+    steps = [("sys_execute_script", {"script": _ASBUILT_AXIS_SETUP, "read_only": False},
+              lambda p: p.get("paths") == ["WhChassis:1", "WhChassis:1+WhBridge:1", "WhChassis:1+WhCar2:1",
+                                           "WhChassis:1+WhCar3:1"], None)]
+    for name, car in (("WhAxis", "WhCar2"), ("WhWorld", "WhCar3")):
+        steps.append(("joint_create_as_built", {
+            "occurrence_one": f"WhChassis:1+{car}:1", "occurrence_two": "WhChassis:1+WhBridge:1",
+            "geometry": f"WhChassis:1+{car}:1:origin", "joint_type": "slider", "axis": "x", "name": name},
+            lambda p, n=name: _as_built(p) and p.get("joint") == n, None))
+    return _scratch("asbuilt_axis", steps + [
+        ("joint_edit", {"joint_name": "WhWorld", "world_axis": "x"},
+         _refused("AS-BUILT", "world_axis=x", "No edits applied", "design_delete_feature", "joint_create"), None),
+        ("joint_edit", {"joint_name": "WhAxis", "axis": "x"},
+         lambda p: p.get("edited") is True and p.get("axis") == "x", None),
+        ("design_recompute", {}, "ok", None),
+        ("sys_execute_script", {"script": _PLACED_STATE, "read_only": True}, _placed("asbuilt_axis_before"), None),
+        ("joint_drive", {"joint_name": "WhWorld", "distance": 2, "units": "mm"}, "ok", None),
+        ("joint_drive", {"joint_name": "WhAxis", "distance": 2, "units": "mm"}, "ok", None),
+        ("sys_execute_script", {"script": _PLACED_STATE, "read_only": True},
+         _placed("asbuilt_axis_before", _slid_x, "both carriages slid +2 mm along world X"), None),
+    ])
+
+
+# JOINT-CREATE-1: a slider on an anchor turned +90 deg about X lands its offset along the anchor's
+# lifted frame Z and its angle about it, read off the mover's own matrix.
+_PLACED_SLIDER_SETUP = _PART_RECIPE + """
+def run(context):
+    root = _root()
+    _part(root, 'JcSlAnchor', 0, 200, 90, adsk.core.Vector3D.create(1, 0, 0), ground=True)
+    _part(root, 'JcSlMove', 0, 260, ground=False)
+    print(json.dumps({'paths': sorted(o.fullPathName for o in root.allOccurrences)}))
+"""
+_JCSL_MOVED = [0.956305, 0.292372, 0, 0, 0, 0, -1, 20.4, -0.292372, 0.956305, 0, 0, 0, 0, 0, 1]
+
+
+def _slider_offset_landed(before, now):
+    """The mover's matrix is the measured offset-4 / angle-17 pose; the anchor held."""
+    got = now["placements"]["JcSlMove:1"]["matrix"]
+    return _all_but(before, now, {"JcSlMove:1"}) and all(_near(a, b, 1e-5) for a, b in zip(got, _JCSL_MOVED))
+
+
+def _placed_slider_rows():
+    """joint_create's offset/angle/flip on a placed anchor, judged by the mover's native matrix."""
+    return _scratch("placed_slider", [
+        ("sys_execute_script", {"script": _PLACED_SLIDER_SETUP, "read_only": False},
+         lambda p: p.get("paths") == ["JcSlAnchor:1", "JcSlMove:1"], None),
+        ("sys_execute_script", {"script": _PLACED_STATE, "read_only": True}, _placed("placed_slider_before"), None),
+        ("joint_create", {"occurrence_one": "JcSlAnchor:1:origin", "occurrence_two": "JcSlMove:1:origin",
+                          "joint_type": "slider", "axis": "x", "offset": 4, "angle": 17, "flip": False,
+                          "units": "mm", "name": "JcSlider"},
+         lambda p: _jointed("JcSlider")(p) and p.get("offset") == 4 and p.get("angle_deg") == 17
+         and p.get("flipped") is False, None),
+        ("sys_execute_script", {"script": _PLACED_STATE, "read_only": True},
+         _placed("placed_slider_before", _slider_offset_landed, "mover at the measured offset/angle pose"), None),
+        ("design_delete_feature", {"feature": "JcSlider"}, "ok", None),
+        ("sys_execute_script", {"script": _PLACED_STATE, "read_only": True},
+         _placed("placed_slider_before", lambda b, n: n == b, "retiring the joint restored every pose"), None),
+    ])
+
+
+# REVIEW-0921-PINSLOT-CUSTOM-1: JRig's own pin-slot heading, read natively.
+_JRIG_HEADING = """import adsk.core, adsk.fusion, json
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    found = [j for c in design.allComponents for j in c.joints if j.name == 'JRig']
+    assert len(found) == 1
+    m, JD = found[0].jointMotion, adsk.fusion.JointDirections
+    entity = m.customRotationAxisEntity
+    d = entity.geometry.direction if entity else None
+    names = {JD.XAxisJointDirection: 'x', JD.YAxisJointDirection: 'y', JD.ZAxisJointDirection: 'z'}
+    print(json.dumps({'rotation_custom': m.rotationAxis == JD.CustomJointDirection,
+                      'rotation_entity': [round(d.x, 6), round(d.y, 6), round(d.z, 6)] if d else None,
+                      'slide': names.get(m.slideDirection),
+                      'slide_dot_rotation': m.slideDirectionVector.dotProduct(m.rotationAxisVector),
+                      'custom_slide': m.customSlideDirectionEntity is not None,
+                      'health': int(found[0].healthState)}))
+"""
+
+
+def _jrig_custom_slide(axis):
+    """JRig keeps its custom world-Y rotation entity and slides along frame `axis`, healthy."""
+    def check(p):
+        d = p.get("rotation_entity") or [None] * 3
+        dot = p.get("slide_dot_rotation")
+        return _measured("JRig custom Y rotation kept, slide on frame " + axis, p,
+                         p.get("rotation_custom") is True and _near(abs(d[1] or 0), 1, 1e-6)
+                         and p.get("slide") == axis and isinstance(dot, (int, float))
+                         and abs(dot) < 1e-6 and p.get("custom_slide") is False
+                         and p.get("health") == 0)
+    return check
+
+
+def _crossing_rotation_rows(motion):
+    """Enabled -10/10 deg on JRig's `motion`; a crossing single bound is refused with limits held."""
+    key = "jrig_" + motion + "_rotation_limits"
+    history = {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True, "max_results": 2000}
+    return [
+        ("joint_edit", {"joint_name": "JRig", "min_deg": -10, "max_deg": 10},
+         lambda p: p.get("changes") == {"min_deg": -10, "max_deg": 10}, None),
+        ("assembly_get", {"include": ["poses"]},
+         _joint_limit_snapshot("JRig", motion, "deg", -10, 10, key, True), None),
+        ("design_get", history, _retire_compare(key + "_history", _retire_design_state, False), None),
+        ("joint_edit", {"joint_name": "JRig", "max_deg": -20},
+         _refused("max_deg=-20", "min_deg=-10", "No edits applied", "assembly_get"), None),
+        ("assembly_get", {"include": ["poses"]},
+         _joint_limit_snapshot("JRig", motion, "deg", -10, 10, key, False), None),
+        ("design_get", history, _retire_compare(key + "_history", _retire_design_state, True), None),
+    ]
+
+
+def _joint_row(name):
+    """One joint's assembly_get row, or None when it is absent."""
+    return lambda p: next((j for j in (p.get("joints") or []) if j.get("name") == name), None)
+
+
+# REVIEW-1004-JOINT-APPLIED-DISCLOSURE-1: a revolute between two Joint Origins, then DLate built
+# after it - so DLate's faces are later in the timeline than DJoint.
+_LATE_INPUT_SETUP = _PART_RECIPE + """
+def run(context):
+    root = _root()
+    def origin(occ, name):
+        comp = occ.component
+        jo = comp.jointOrigins.add(comp.jointOrigins.createInput(
+            adsk.fusion.JointGeometry.createByPoint(comp.originConstructionPoint)))
+        jo.name = name
+        return jo.createForAssemblyContext(occ)
+    anchor, moving = _part(root, 'DAnchor', 240, 0, ground=True), _part(root, 'DMoving', 260, 0, ground=False)
+    ji = root.joints.createInput(origin(anchor, 'DOrigA'), origin(moving, 'DOrigM'))
+    ji.setAsRevoluteJointMotion(adsk.fusion.JointDirections.ZAxisJointDirection)
+    root.joints.add(ji).name = 'DJoint'
+    _part(root, 'DLate', 300, 0, ground=False)
+    print(json.dumps({'joints': [j.name for j in root.joints],
+                      'paths': sorted(o.fullPathName for o in root.allOccurrences)}))
+"""
+
+
+def _late_input_rows():
+    """A later face as a joint input is refused before any write; joint, poses and history held."""
+    history = {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+               "max_depth": 10, "max_results": 2000}
+    def reads(after):
+        return [("sys_execute_script", {"script": _PLACED_STATE, "read_only": True},
+                 _placed("late_input_before", (lambda b, n: n == b) if after else None), None),
+                ("assembly_get", {"units": "mm"}, _retire_compare("late_input_joint", _joint_row("DJoint"), after), None),
+                ("design_get", history, _retire_compare("late_input_history", _retire_design_state, after), None)]
+    return _scratch("late_input", [
+        ("sys_execute_script", {"script": _LATE_INPUT_SETUP, "read_only": False},
+         lambda p: p.get("joints") == ["DJoint"] and p.get("paths") == ["DAnchor:1", "DLate:1", "DMoving:1"], None),
+    ] + reads(False) + [
+        ("joint_edit", {"joint_name": "DJoint", "input_two": "DLate:1:top"},
+         _refused("Cannot rewire 'DJoint' input_two", "'DLate:1'", "not before the joint", "No edits applied"),
+         None),
+    ] + reads(True))
+
+
 def _turned_over(occurrence):
     """joint_edit(flip=...): 'moved' names the arm turned half a revolution by the flip."""
     def check(p):
@@ -1197,8 +1680,14 @@ _MOTION = (
     ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
                      "max_results": 2000},
      _retire_compare("jrig_cyl_rotation_limit_history", _retire_design_state, True), None),
+    # A world_axis re-aim keeps the enabled -5/5 mm slide limits, read off the design's own walk.
+    ("joint_edit", {"joint_name": "JRig", "world_axis": "y"},
+     lambda p: p.get("edited") is True and p.get("world_axis") == "y", None),
+    ("assembly_get", {"include": ["poses"]},
+     _joint_limit_snapshot("JRig", "cylindrical", "mm", -5, 5, "jrig_cyl_reaimed_slide_limits", True), None),
     ("joint_edit", {"joint_name": "JRig", "joint_type": "planar", "axis": "z"}, "ok", None),
     ("assembly_get", {}, _joint_is("JRig", "planar"), None),
+] + _crossing_rotation_rows("planar") + [
     ("joint_edit", {"joint_name": "JRig", "joint_type": "ball"}, "ok", None),
     ("assembly_get", {}, _joint_is("JRig", "ball"), None),
     # pin_slot alone takes TWO frame directions - it rotates about one and slides along another, so
@@ -1220,6 +1709,16 @@ _MOTION = (
     ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
                      "max_results": 2000},
      _retire_compare("jrig_pin_slot_limit_history", _retire_design_state, True), None),
+] + _crossing_rotation_rows("pin_slot") + [
+    # Beside the kept custom rotation entity a frame-y slide lands; a frame-z request reads back x.
+    ("joint_edit", {"joint_name": "JRig", "joint_type": "pin_slot", "slide_axis": "y"},
+     lambda p: p.get("edited") is True and p.get("axis") == "custom" and p.get("slide_axis") == "y"
+     and p.get("axis_kept") is True, None),
+    ("sys_execute_script", {"script": _JRIG_HEADING, "read_only": True}, _jrig_custom_slide("y"), None),
+    ("joint_edit", {"joint_name": "JRig", "joint_type": "pin_slot", "slide_axis": "z"},
+     _refused("WAS EDITED", "axis=custom", "slide_axis=x", "reads back 'x'",
+              "not the requested slide_axis 'z'", "assembly_get"), None),
+    ("sys_execute_script", {"script": _JRIG_HEADING, "read_only": True}, _jrig_custom_slide("x"), None),
     ("joint_edit", {"joint_name": "JRig", "joint_type": "pin_slot", "axis": "y",
                     "slide_axis": "y"}, "refused", None),
     ("joint_edit", {"joint_name": "JRig", "joint_type": "rigid"}, "ok", None),
@@ -1236,7 +1735,7 @@ _MOTION = (
     ("assembly_get", {}, _joint_is("JRig", "revolute"),
      ("rig_axis", _recall("rig_axis", _joint_heading("JRig")))),
     # a retype with NO axis KEEPS that heading: the tool reads the joint's own direction instead of
-    # defaulting, and re-aiming a joint nobody asked to re-aim also drops its rotation limits.
+    # defaulting to a frame axis.
     ("joint_edit", {"joint_name": "JRig", "joint_type": "cylindrical"},
      _axis_kept("JRig", "y"), None),
     ("assembly_get", {}, _joint_axis_vs("JRig", "cylindrical", "rig_axis", True), None),
@@ -1291,8 +1790,7 @@ _MOTION = (
                           "health_error": p.get("health_error")},
                          p.get("edited") is True and p.get("healthy") is True), None),
     ("assembly_get", {"include": ["relations"]}, _link_healthy("bench_link"), None),
-    # and the OTHER thing a re-aim costs: the limits set on JRev above are still standing, because
-    # this re-set kept the axis. A re-set that changed it would have cleared them.
+    # and the limits set on JRev above are still standing after this same-axis re-set.
     ("assembly_get", {}, _limits_survived("JRev", -45, 45), None),
     # every joint built above, counted off the design-wide walk by an independent read.
     ("assembly_get", {}, _joints_listed(10), None),
@@ -1554,12 +2052,17 @@ _MOTION += [
     (t, ((lambda a: (lambda c: a))(args) if t == "sketch_add_geometry" else
          (lambda c, a=args: {**a, "distance": "RstHeight"})
          if t == "model_extrude" and args.get("sketch_name") == "RstArmS" else args), e, s)
-    for t, args, e, s in _box("RstBase") + _box("RstArm", ox=60)
+    for t, args, e, s in (_box("RstBase") + _box("RstArm", ox=60)
+                          + _box("RstBase2", oy=60) + _box("RstArm2", ox=60, oy=60))
 ] + [
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
     ("joint_create", {"occurrence_one": "RstArm:1:top", "occurrence_two": "RstBase:1:top",
                       "joint_type": "revolute", "axis": "z", "name": "RstRev"},
      _jointed("RstRev"), None),
+    # A second, independent pair whose edits recompute the design under RstRev's drive.
+    ("joint_create", {"occurrence_one": "RstArm2:1:top", "occurrence_two": "RstBase2:1:top",
+                      "joint_type": "revolute", "axis": "z", "name": "RstRev2"},
+     _jointed("RstRev2"), None),
     ("joint_drive", {"joint_name": "RstRev", "angle_deg": 30}, _driven_angle(30), None),
     # UNCAPTURED: the bare recompute reads the pose right back off the joint at 0, naming RstRev.
     ("design_recompute", {},
@@ -1583,10 +2086,20 @@ _MOTION += [
     ("assembly_get", {}, lambda p: p.get("is_healthy") is True
      and _joints_listed(1, {"RstRev": 0})(p), None),
     ("joint_drive", {"joint_name": "RstRev", "angle_deg": 30}, _driven_angle(30), None),
+    # joint_edit's own recompute, on the OTHER joint, resets the uncaptured drive and says so.
+    ("joint_edit", {"joint_name": "RstRev2", "min_deg": -15},
+     lambda p: p.get("edited") is True and p.get("driven_joints_reset") == [
+         {"name": "RstRev", "before": {"angle_deg": 30.0}, "after": {"angle_deg": 0.0}}]
+     and "RstRev" in (p.get("note") or "") and "Observed value changes" in (p.get("note") or ""), None),
+    ("assembly_get", {}, _joints_listed(1, {"RstRev": 0}), None),
+    ("joint_drive", {"joint_name": "RstRev", "angle_deg": 30}, _driven_angle(30), None),
     ("assembly_capture_position", {"action": "capture"}, _captured, None),
     # CAPTURED: the same recompute now leaves the pose alone, and the design's own joint walk
     # agrees - an independent witness beside the tool's own driven_joints_reset omission.
     ("design_recompute", {}, lambda p: p.get("driven_joints_reset") is None, None),
+    ("assembly_get", {}, _joints_listed(1, {"RstRev": 30}), None),
+    ("joint_edit", {"joint_name": "RstRev2", "min_deg": -20},
+     lambda p: p.get("edited") is True and "driven_joints_reset" not in p, None),
     ("assembly_get", {}, _joints_listed(1, {"RstRev": 30}), None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "reset_story", "the story document"),
                                 "expect_document": _ctx_get(c, "reset_scratch",
@@ -1707,7 +2220,12 @@ _MOTION += [
 _MOTION += _selected_owner_rows()
 
 _MOTION += _joint_failure_rows()
+_MOTION += _placed_slider_rows()
+_MOTION += _late_input_rows()
+_MOTION += _asbuilt_axis_rows()
+_MOTION += _nested_owner_rows()
 _MOTION += _crossindex_rows()
+_MOTION += _reused_origin_rows()
 _MOTION += _origin_consumer_rows()
 _MOTION += _joint_preflight_rows()
 

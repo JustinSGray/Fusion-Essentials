@@ -112,6 +112,19 @@ class TestSwitch:
         res = dh.handler(action="switch")
         assert res["isError"] is True and "hub" in res["message"]
 
+    @pytest.mark.parametrize("hubs,wanted", [
+        ([_hub("Twin", "a.one"), _hub("Twin", "a.two"), _hub("Other", "a.other")],
+         ("matches 2 hubs", "'Twin' (a.one)", "'Twin' (a.two)")),
+        ([_hub("Twin", "a.one"), _hub(None, "a.blind"), _hub("Other", "a.other")],
+         ("hub(s) a.blind did not read", "hub=<id>"))])
+    def test_a_name_that_is_not_provably_unique_is_refused_without_assigning(self, cloud, hubs,
+                                                                              wanted):
+        data, _ = cloud(hubs=hubs, active_idx=2)
+        res = dh.handler(action="switch", hub="twin")
+        assert res["isError"] is True and data._hub_sets == []
+        assert all(w in res["message"] for w in wanted), res["message"]
+        assert "a.other" not in res["message"]
+
     def test_unknown_action_errors(self, cloud):
         cloud()
         res = dh.handler(action="teleport")

@@ -6,6 +6,8 @@ component of the active design - a one-way linked COPY that updates FROM the sou
 never travel back. Requires a PARAMETRIC destination design and an ALREADY-OPEN source: Fusion opens
 documents asynchronously, so createInput returns None for a source that is not open yet."""
 
+import re
+
 import adsk.core
 import adsk.fusion
 
@@ -105,10 +107,24 @@ def _resolve_source_components(source_design, names):
 
 
 def _resolve_source_bodies(source_design, specs):
-    """(bodies, error). Each spec is a body NAME (resolved design-wide in the source) or
-    'Component/Body' (scoped to that component's bodies). A NAME that matches bodies in 2+ components
-    is REFUSED (names the holders, asks to qualify); a miss is named. Bodies are a legal sourceEntity
-    (BRepBody/MeshBody), live-verified against DeriveFeatureInput.sourceEntities."""
+    """(bodies, error) for body names or 'Component/Body' specs; see _resolve_source_body_pairs."""
+    pairs, err = _resolve_source_body_pairs(source_design, specs)
+    return (None, err) if err else ([body for _owner, body in pairs], None)
+
+
+def _sub_component_bodies(source_design, specs):
+    """[(spec, owner name)] for resolved specs whose body a source sub-component owns."""
+    pairs, err = _resolve_source_body_pairs(source_design, specs)
+    root = safe(lambda: source_design.rootComponent)
+    return [] if err else [(spec, safe(lambda owner=owner: owner.name) or "?")
+                           for spec, (owner, _body) in zip(specs, pairs)
+                           if _common.same_component(owner, root) is False]
+
+
+def _resolve_source_body_pairs(source_design, specs):
+    """(pairs, error). Each spec is a body NAME (resolved design-wide in the source) or
+    'Component/Body' (scoped to that component's bodies); each pair is (owner, body). A NAME that
+    matches bodies in 2+ components is REFUSED (names the holders, asks to qualify); a miss is named."""
     comps = _source_components(source_design)
     out = []
     for spec in specs:
@@ -131,7 +147,7 @@ def _resolve_source_bodies(source_design, specs):
             return None, (f"Source body '{spec}' not found. Use a SOURCE body name or "
                           "'Component/Body', not a handle; doc_activate the source, then "
                           "design_get(include=['tree'], tree_bodies=true).")
-        out.append(matches[0][1])
+        out.append(matches[0])
     return out, None
 
 
@@ -225,17 +241,93 @@ def _subtree_body_count(occ):
     return total
 
 
-def _new_derived_occurrences(comp, before_tokens):
-    """[{name, body_count}] for occurrences now directly in `comp` that (a) were not there before
-    add() and (b) report isDerived=true - the occurrence-side of the landing, with real body counts."""
+def _new_derived(comp, before_tokens):
+    """Occurrences now directly in `comp` that were not there before add() and read isDerived=true."""
     out = []
     for o in _common.iter_collection(safe(lambda: comp.occurrences)):
         tok = safe(lambda o=o: o.entityToken)
         if tok and tok in before_tokens:
             continue
         if safe(lambda o=o: o.isDerived, False):
-            out.append({"name": safe(lambda o=o: o.name), "body_count": _subtree_body_count(o)})
+            out.append(o)
     return out
+
+
+def _occurrence_rows(occurrences):
+    """[{name, body_count}] per occurrence, counting its whole subtree's bodies."""
+    return [{"name": safe(lambda o=o: o.name), "body_count": _subtree_body_count(o)}
+            for o in occurrences]
+
+
+def _new_derived_occurrences(comp, before_tokens):
+    """[{name, body_count}] for the new derived occurrences in `comp`."""
+    return _occurrence_rows(_new_derived(comp, before_tokens))
+
+
+_CENSUS_CAP = 2000
+
+
+def _subtree_census(occurrences):
+    """[(component name, [body names])] under the derived occurrences, or None when any read fails."""
+    out, stack = [], list(occurrences)
+    while stack:
+        if len(out) >= _CENSUS_CAP:
+            return None
+        occ = stack.pop()
+        name = safe(lambda: occ.component.name)
+        bodies, children = safe(lambda: occ.bRepBodies), safe(lambda: occ.childOccurrences)
+        body_count = _common.counted(lambda: bodies.count)
+        child_count = _common.counted(lambda: children.count)
+        if name is None or body_count is None or child_count is None:
+            return None
+        body_names = [safe(lambda i=i: bodies.item(i).name) for i in range(body_count)]
+        kids = [safe(lambda i=i: children.item(i)) for i in range(child_count)]
+        if any(n is None for n in body_names) or any(k is None for k in kids):
+            return None
+        out.append((name, [n.lower() for n in body_names]))
+        stack.extend(kids)
+    return out
+
+
+def _absent(census, component, body=None):
+    """True when no census component named `component` (holding `body`) landed; None if unread."""
+    if census is None or not component:
+        return None
+    # A source component derived again into the same host lands renamed '<name> (N)'.
+    pattern = re.escape(component) + r"( \(\d+\))?"
+    key = None if body is None else body.lower()
+    return not any(re.fullmatch(pattern, name, re.IGNORECASE)
+                   and (key is None or key in bodies) for name, bodies in census)
+
+
+def _excluded_readback(feature, derived, source_root, comp_names, body_rows):
+    """(excluded, unverified, error): each requested exclusion judged from what landed."""
+    census = _subtree_census(derived) if derived else None
+    excluded, unverified = [], []
+    for name in comp_names:
+        (excluded if _absent(census, name) else unverified).append(name)
+    for spec, owner, body in body_rows:
+        at_root = _common.same_component(owner, source_root)
+        if at_root is False:
+            # getDerivedEntity raises 'invalid argument sourceEntity' on a sub-component body.
+            gone = _absent(census, safe(lambda: owner.name), safe(lambda: body.name))
+            (excluded if gone else unverified).append(spec)
+            continue
+        if at_root is None:
+            unverified.append(spec)
+            continue
+        try:
+            landed = feature.getDerivedEntity(body)
+        except Exception as exc:
+            # A source ROOT body left out of the derive raises 'derived entity not found'.
+            if "derived entity not found" not in str(exc):
+                unverified.append(spec)
+                continue
+            landed = None
+        if landed is not None:
+            return None, None, f"excluded source body '{spec}' has a derived result; exclusion did not take"
+        excluded.append(spec)
+    return excluded, unverified, None
 
 
 def _mapped_bodies(feature, sources, excluded, comp):
@@ -267,6 +359,14 @@ def _mapped_bodies(feature, sources, excluded, comp):
             return None, f"the mapping for source body '{name}' could not be verified: {exc}"
         rows.append({"name": safe(lambda: body.name), "is_derived": True})
     return rows, None
+
+
+def _retained(design, feature, why):
+    """The error for a derive whose feature stays in the timeline while `why` holds."""
+    feature_name = _common.feature_address(feature) or "(name unreadable)"
+    return error(f"Derive feature '{feature_name}' remains, but {why}. "
+                 "Inspect design_get(include=['tree','timeline'], tree_bodies=true). "
+                 + _common.failed_effect_remedy(design, feature))
 
 
 def handler(document_id: str = "", into_component: str = "",
@@ -339,6 +439,13 @@ def handler(document_id: str = "", into_component: str = "",
             source_design, comp_names, body_names)
         if sel_err:
             return error(sel_err)
+        nested = _sub_component_bodies(source_design, body_names)
+        if nested:
+            spec, owner = nested[0]
+            return error(f"Source body '{spec}' belongs to sub-component '{owner}'; a derive with a "
+                         "sub-component body in source_bodies is refused at configure "
+                         "('3 : invalid argument entities'). Nothing was derived. Derive its "
+                         f"component: source_components=['{owner}'].")
         scope_desc = ", ".join(scope_labels)
     else:
         source_entities = [safe(lambda: source_design.rootComponent)]
@@ -347,6 +454,9 @@ def handler(document_id: str = "", into_component: str = "",
         source_design, excl_comp_names, excl_body_names)
     if excl_err:
         return error(excl_err)
+    excl_pairs = _resolve_source_body_pairs(source_design, excl_body_names)[0] or []
+    excl_body_rows = [(spec, owner, body)
+                      for spec, (owner, body) in zip(excl_body_names, excl_pairs)]
 
     derive_feats = safe(lambda: comp.features.deriveFeatures)
     if derive_feats is None:
@@ -441,11 +551,9 @@ def handler(document_id: str = "", into_component: str = "",
                                   or reference_id != source_id):
             mapping_error = "the mapped bodies' current source document reference did not read"
         if mapping_error:
-            feature_name = _common.feature_address(feature) or "(name unreadable)"
-            return error(f"Derive feature '{feature_name}' remains, but {mapping_error}. "
-                         "Inspect design_get(include=['tree','timeline'], tree_bodies=true). "
-                         + _common.failed_effect_remedy(design, feature))
-    derived_components = _new_derived_occurrences(comp, before_occ_tokens)
+            return _retained(design, feature, mapping_error)
+    derived = _new_derived(comp, before_occ_tokens)
+    derived_components = _occurrence_rows(derived)
     # `is False` only: the net's error says the nesting FAILED, and run against a target that may
     # itself be the root a successful root derive would trip it. An unproven answer skips the net and
     # DISCLOSES that the landing was not checked.
@@ -482,6 +590,12 @@ def handler(document_id: str = "", into_component: str = "",
         return error("Derive created a feature and geometry appeared, but nothing reports "
                       "isDerived=true - the one-way link may not have formed correctly. "
                      + _common.failed_effect_remedy(design, feature))
+
+    excluded, unverified, excl_error = _excluded_readback(
+        feature, derived, safe(lambda: source_design.rootComponent),
+        excl_comp_names, excl_body_rows)
+    if excl_error:
+        return _retained(design, feature, excl_error)
 
     after_params = safe(lambda: design.userParameters.count, 0) or 0
     parameters_imported = max(0, after_params - before_params)
@@ -525,8 +639,11 @@ def handler(document_id: str = "", into_component: str = "",
         # things and only the pair shows whether source values arrived at all. Omitted rather than
         # zeroed when either count was unreadable - an unknown delta is not "nothing arrived".
         result["model_parameters_added"] = model_parameters_added
-    if excluded_entities:
-        result["excluded"] = ", ".join(excl_comp_names + excl_body_names)
+    if excluded:
+        result["excluded"] = ", ".join(excluded)
+    if unverified:
+        result["exclusion_unverified"] = (f"{', '.join(unverified)}; read design_get("
+                                          "include=['tree'], tree_bodies=true)")
     if param_warning:
         result["parameter_warning"] = param_warning
     if into_occ is not None:

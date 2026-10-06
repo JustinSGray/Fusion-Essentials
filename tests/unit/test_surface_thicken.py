@@ -152,18 +152,24 @@ class TestSourceVisibilityDisclosure:
             {"body": "Sheet", "face_indices": [0, 1, 2], "handle": "Sheet",
              "before": {"light_bulb_on": before, "visible": before},
              "after": {"light_bulb_on": after, "visible": after}}]
-        assert out["note"].count(f"Source 'Sheet' (handle Sheet) became {state}.") == 1
+        assert out["note"].count(f"Source 'Sheet' became {state}.") == 1
         assert out["note"].count("view_set(") == 1 and "design_get" not in out["note"]
         assert f"Undo it with view_set(action='{action}', target=['Sheet'])." in out["note"]
         assert "source_visibility" not in out.get("unverified", [])
 
-    def test_a_proxy_source_routes_through_the_tree_handle(self, visibility_scene):
+    def test_a_proxy_source_is_undone_by_its_own_handle(self, visibility_scene):
         visibility_scene(True, False, occurrence=types.SimpleNamespace(name="Sub:1",
                                                                        fullPathName="Sub:1"))
         out = payload(se.handler(faces=["F1"], thickness=1, chaining=False))
-        assert ("Source 'Sheet' in 'Sub:1' (handle PROXY::Sub:1::Sheet) became hidden. Read "
-                "design_get(include=['tree'], tree_bodies=true), then view_set(action='show', "
-                "target=[<body handle>]).") in out["note"]
+        assert ("Source 'Sheet' in 'Sub:1' became hidden. Undo it with view_set(action='show', "
+                "target=['PROXY::Sub:1::Sheet']).") in out["note"]
+        assert "design_get" not in out["note"]
+
+    def test_a_source_whose_handle_does_not_read_is_sent_to_the_tree(self, visibility_scene):
+        go_stale(visibility_scene(True, False), attrs=("entityToken",))
+        out = payload(se.handler(faces=["F1"], thickness=1, chaining=False))
+        assert ("Source 'Sheet' became hidden. Read design_get(include=['tree'], tree_bodies=true), "
+                "then view_set(action='show', target=[<body handle>]).") in out["note"]
 
     def test_rows_group_by_body_identity_not_by_wrapper(self):
         # each read hands back a fresh wrapper; a shared native identity, not `is`, groups the faces
@@ -187,7 +193,7 @@ class TestSourceVisibilityDisclosure:
         visibility_scene(True, False, wall_solid=wall_solid, **features)
         res = se.handler(faces=["F1"], thickness=1, units="mm", chaining=False)
         assert res["isError"] is True and fragment in res["message"]
-        assert "Source 'Sheet' (handle Sheet) became hidden." in res["message"]
+        assert "Source 'Sheet' became hidden." in res["message"]
         assert "action='show'" in res["message"]
 
     def test_an_unflipped_source_adds_no_sentence_to_an_error_exit(self, visibility_scene):
@@ -340,6 +346,20 @@ class TestOffsetThickenKind:
 
     def test_symmetric_input_description_states_per_side(self):
         assert "per side" in se.tool.input_schema["properties"]["symmetric"]["description"]
+
+    @pytest.mark.parametrize("native,hinted", [
+        ("3 : failed to thicken faces: ASM_INCONSISTENT_ORIENTATION - Faces in shell have "
+         "inconsistent orientation.", True),
+        ("3 : failed to thicken faces: ASM_SOMETHING_ELSE", False)])
+    def test_only_an_orientation_refusal_gets_the_per_face_remedy(self, native, hinted):
+        tf = FakeThickenFeatures()
+        def add(inp):
+            raise RuntimeError(native)
+        tf.add = add
+        _wire(tf, handle_map={"F1": BRepFace(None)})
+        res = se.handler(faces=["F1"], thickness=-2.5)
+        assert res["isError"] is True and native in res["message"]
+        assert ("thicken each face in its own call with chaining=false" in res["message"]) is hinted
 
     def test_thicken_zero_thickness_guard(self):
         _wire(FakeThickenFeatures(), handle_map={"F1": BRepFace(None)})

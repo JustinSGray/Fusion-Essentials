@@ -103,6 +103,7 @@ def handler(edge="", kind="", length=None, gap=None, radius=None, setback=None, 
 
     pos_type = getattr(adsk.fusion.BendPositionTypes, _POSITIONS[pos])
     flip = bool(flip)
+    hem_count = _common.counted(lambda: comp.features.hemFeatures.count)
     try:
         hems = comp.features.hemFeatures
         inp = hems.createHemFeatureInput()
@@ -132,7 +133,12 @@ def handler(edge="", kind="", length=None, gap=None, radius=None, setback=None, 
                          "own length.")
         feat = hems.add(inp)
     except Exception as exc:
-        return error(f"Hem failed: {_assert.compute_failure_message(str(exc))}")
+        text = " ".join(str(exc).split())
+        if len(text) > _assert._MESSAGE_LIMIT:
+            text = text[:_assert._MESSAGE_LIMIT].rstrip() + " ..."
+        after = _common.counted(lambda: comp.features.hemFeatures.count)
+        added = " No hem was added." if hem_count is not None and after == hem_count else ""
+        return error(f"Hem failed: {text}{added}")
     if feat is None:
         return error("Hem returned no feature; inspect the body before retrying.")
 

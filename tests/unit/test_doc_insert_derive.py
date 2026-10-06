@@ -451,13 +451,123 @@ class TestScopingHandler:
         assert res["isError"] is True and "Ghost" in res["message"]
         assert dfs.created is None                      # aborted before deriving - no partial state
 
-    def test_exclude_components_set_excluded_entities(self, monkeypatch):
+    def test_an_exclusion_with_no_derived_tree_to_read_is_unverified_not_echoed(self, monkeypatch):
         drop = _src_occ("Rotor:1")
         src = _make_source([_src_comp("Rotor")], occ_by_comp={"Rotor": [drop]}, root_name="WholeSrc")
         _, _, _, _, dfs, _ = _install(monkeypatch, source_design=src)
         out = _payload(io.handler(document_id="urn:x", exclude_components=["Rotor"]))
         assert dfs.last_input.excludedEntities == [drop]
-        assert out["excluded"] == "Rotor"
+        assert "excluded" not in out
+        assert out["exclusion_unverified"] == "Rotor; read design_get(include=['tree'], tree_bodies=true)"
+
+
+def _derived_tree(source_name, children=(), bodies=()):
+    """A landed whole-design derive: one derived occurrence of the source root and its subtree."""
+    return make_occurrence(path=source_name + ":1", component=MakeComp(source_name), derived=True,
+                           entity_token="tok-new-derive",
+                           bodies=[FakeBody(b) for b in bodies], children=children)
+
+
+def _placed(comp_name, bodies=()):
+    """A sub-component placement inside a derived tree."""
+    return make_occurrence(path=comp_name + ":1", component=MakeComp(comp_name),
+                           bodies=[FakeBody(b) for b in bodies])
+
+
+@pytest.fixture
+def whole_derive(monkeypatch):
+    """A whole-design derive whose landing is `tree`; `mapping` is the feature's getDerivedEntity."""
+    def build(tree, mapping=None, source=None):
+        dfs = FakeDeriveFeatures(bodies=())
+        _, comp, _, _, _, _ = _install(monkeypatch, derive_features=dfs, occurrences=[],
+                                       source_design=source or _make_source())
+        original_add = dfs.add
+
+        def add(di):
+            feature = original_add(di)
+            feature.mapping = dict(mapping or {})
+            comp.occurrences._items.append(tree)
+            return feature
+        monkeypatch.setattr(dfs, "add", add)
+        return dfs
+    return build
+
+
+class TestExclusionReadBack:
+    def test_a_root_body_the_mapping_does_not_find_is_published_excluded(self, whole_derive):
+        source = _make_source()
+        keep, drop = BRepBody("Keep"), BRepBody("Drop")
+        source.rootComponent.bRepBodies = FakeBodyCollection([keep, drop])
+        whole_derive(_derived_tree("Src", bodies=["Keep"]), mapping={keep: FakeBody("Keep")},
+                     source=source)
+        out = _payload(io.handler(document_id="urn:x", exclude_bodies=["Drop"]))
+        assert out["excluded"] == "Drop" and "exclusion_unverified" not in out
+
+    def test_a_root_body_the_mapping_still_finds_is_a_retained_feature_error(self, whole_derive):
+        source = _make_source()
+        drop = BRepBody("Drop")
+        source.rootComponent.bRepBodies = FakeBodyCollection([drop])
+        whole_derive(_derived_tree("Src", bodies=["Drop"]), mapping={drop: FakeBody("Drop")},
+                     source=source)
+        res = io.handler(document_id="urn:x", exclude_bodies=["Drop"])
+        assert res["isError"] is True
+        assert "excluded source body 'Drop' has a derived result" in res["message"]
+        assert "remains" in res["message"] and "design_delete_feature" in res["message"]
+
+    @pytest.mark.parametrize("landed,field", [
+        ("Other", "excluded"), ("Excluded", "exclusion_unverified"),
+        ("Excluded (1)", "exclusion_unverified")])
+    def test_a_component_exclusion_is_judged_by_the_derived_subtree(self, whole_derive, landed,
+                                                                    field):
+        drop = _src_occ("Excluded:1")
+        source = _make_source([_src_comp("Excluded")], occ_by_comp={"Excluded": [drop]})
+        whole_derive(_derived_tree("Src", children=[_placed(landed, ["B"])]), source=source)
+        out = _payload(io.handler(document_id="urn:x", exclude_components=["Excluded"]))
+        assert out[field].startswith("Excluded")
+        assert ({"excluded", "exclusion_unverified"} - {field}).isdisjoint(out)
+
+    def test_only_the_exclusions_the_landing_confirms_are_published_excluded(self, whole_derive):
+        kept = _src_occ("Kept:1")
+        source = _make_source([_src_comp("Kept")], occ_by_comp={"Kept": [kept]})
+        drop = BRepBody("Drop")
+        source.rootComponent.bRepBodies = FakeBodyCollection([drop])
+        whole_derive(_derived_tree("Src", children=[_placed("Kept", ["B"])]), source=source)
+        out = _payload(io.handler(document_id="urn:x", exclude_components=["Kept"],
+                                  exclude_bodies=["Drop"]))
+        assert out["excluded"] == "Drop"
+        assert out["exclusion_unverified"].startswith("Kept;")
+
+    def test_a_sub_component_body_is_judged_by_its_owner_in_the_subtree(self, whole_derive):
+        source = _make_source([_src_comp("Holder", bodies=["Peg", "Plate"])])
+        whole_derive(_derived_tree("Src", children=[_placed("Holder", ["Plate"])]), source=source)
+        out = _payload(io.handler(document_id="urn:x", exclude_bodies=["Holder/Peg"]))
+        assert out["excluded"] == "Holder/Peg"
+
+    @pytest.mark.parametrize("landed,field", [
+        (["Peg", "Plate"], "exclusion_unverified"), (["Plate"], "excluded"),
+        (None, "exclusion_unverified")])
+    def test_a_sub_component_body_exclusion_follows_the_landed_census(self, whole_derive, landed,
+                                                                    field):
+        source = _make_source([_src_comp("Holder", bodies=["Peg", "Plate"])])
+        child = _placed("Holder", landed or ["Plate"])
+        if landed is None:
+            child.childOccurrences = None            # the census read does not answer
+        whole_derive(_derived_tree("Src", children=[child]), source=source)
+        out = _payload(io.handler(document_id="urn:x", exclude_bodies=["Holder/Peg"]))
+        assert out[field].startswith("Holder/Peg")
+        assert ({"excluded", "exclusion_unverified"} - {field}).isdisjoint(out)
+
+
+class TestSubComponentSourceBody:
+    def test_a_sub_component_body_is_refused_before_createInput(self, monkeypatch):
+        src = _make_source([_src_comp("Nested", bodies=["NestedBody"])])
+        _, _, _, _, dfs, _ = _install(monkeypatch, source_design=src)
+        res = io.handler(document_id="urn:x", source_bodies=["Nested/NestedBody"])
+        assert res["isError"] is True
+        assert "sub-component 'Nested'" in res["message"]
+        assert "'3 : invalid argument entities'" in res["message"]
+        assert "source_components=['Nested']" in res["message"]
+        assert dfs.last_input is None and dfs.created is None
 
 
 # ── read-back honesty: something must actually land ───────────────────────────────────────────────
@@ -515,7 +625,7 @@ class TestMappedSelectedBody:
                                   exclude_bodies=["Body2"]))
         assert [b.name for b in dfs.last_input.excludedEntities] == ["Body2"]
         assert out["derived_bodies"] == [{"name": "Body1", "is_derived": True}]
-        assert out["bodies_landed"] == 1
+        assert out["bodies_landed"] == 1 and out["excluded"] == "Body2"
 
     def test_ignored_exclusion_reports_the_retained_result(self, mapped_derive):
         mapped_derive("ignored_exclusion")

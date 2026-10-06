@@ -268,11 +268,16 @@ def _jo_consumers(design):
         jname = safe(lambda j=j: j.name)
         if not jname:
             continue
+        # A sub-component joint's native halves answer its first placement only, so each
+        # placement's proxy half credits the origin there too.
+        views = [j] + [proxy for _path, proxy in _joints.joint_placements(design, j)]
         for attr, half in (("geometryOrOriginOne", "occurrenceOne"),
                            ("geometryOrOriginTwo", "occurrenceTwo")):
             ref = safe(lambda j=j, a=attr: getattr(j, a))
-            if ref is not None and _joints.is_joint_origin(ref):
-                key = _jo_consumer_key(design, ref, safe(lambda j=j, a=half: getattr(j, a), object()))
+            if ref is None or not _joints.is_joint_origin(ref):
+                continue
+            for view in views:
+                key = _jo_consumer_key(design, ref, safe(lambda v=view, a=half: getattr(v, a), object()))
                 if key is None:
                     unresolved.append(_common.native_identity(ref))
                 elif jname not in out.get(key, []):

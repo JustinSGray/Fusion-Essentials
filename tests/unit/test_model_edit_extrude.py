@@ -442,6 +442,20 @@ def test_new_downstream_error_is_reported_as_partial_edit(scene):
     assert result["details"]["new_timeline_errors"] == ["Trailing"]
 
 
+def test_a_downstream_collapsed_group_member_error_is_a_new_error(scene):
+    states = adsk.fusion.FeatureHealthStates
+    member = FakeTimelineObject(name="Grouped")
+    group = FakeTimelineObject(name="LaterGroup", index=3, is_group=True,
+                               health=states.UnknownFeatureHealthState)
+    group.isCollapsed, group.count, group.item = True, 1, lambda _i: member
+    scene.timeline._items[3] = group
+    scene.timeline.markerPosition = 4
+    scene.feature.after_edit = lambda: setattr(member, "healthState", states.ErrorFeatureHealthState)
+    result = edit()
+    assert result["isError"] is True
+    assert result["details"]["new_timeline_errors"] == ["Grouped"]
+
+
 def test_preexisting_error_is_not_new(scene):
     scene.timeline.markerPosition = 4
     scene.rows[3].healthState = adsk.fusion.FeatureHealthStates.ErrorFeatureHealthState

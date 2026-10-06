@@ -983,8 +983,12 @@ def _loft_edit_rows():
     write("sketch_create", {"plane": "xy", "name": "WitnessSketch"})
     write("sketch_add_geometry", {"sketch_name": "WitnessSketch", "geometry": [
         {"kind": "rectangle", "x1": 100, "y1": 100, "x2": 110, "y2": 110}]})
+    def witness_refs(p):
+        _RECALL["le_witness_feature"] = "LoftWitness/" + p["feature"]
+        return p["result_bodies"][0]
+
     write("model_extrude", {"sketch_name": "WitnessSketch", "distance": 10}, _extruded,
-          ("le_witness", lambda p: p["result_bodies"][0]))
+          ("le_witness", witness_refs))
     rows.append(("model_inspect", lambda c: {"target": "LoftWitness:" + _ctx_get(
         c, "le_witness", "witness body"), "include": ["mass"], "units": "cm"},
         lambda p: _num((p.get("mass") or {}).get("volume")),
@@ -1065,6 +1069,12 @@ def _loft_edit_rows():
         "include": ["mass"], "units": "cm"}, _loft_edit_volume_kept, None))
     rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
                  _loft_edit_downstream, None))
+    # A collapsed group before the marker is read through its members: the retarget below runs
+    # with the witness rows grouped, and the volume read after it is taken before the ungroup.
+    write("design_edit_timeline", lambda c: {"action": "group", "name": "LoftEarlier",
+        "feature": "WitnessSketch", "end_feature": _RECALL["le_witness_feature"]},
+        lambda p: _measured("witness rows grouped before the Loft", p, p.get("grouped") is True
+                            and p.get("group") == "LoftEarlier" and p.get("member_count") == 2))
     write("model_edit_loft", lambda c: {"feature": _ctx_get(c, "le_feature", "Loft feature"),
         "action": "retarget", "section_index": 1,
         "profile": _ctx_get(c, "le_alternate", "alternate profile"), "component": "LoftEdit"},
@@ -1077,6 +1087,8 @@ def _loft_edit_rows():
         "include": ["mass"], "units": "cm"},
         _loft_edit_volume("retarget", "le_volume_created"),
         ("le_volume_retarget", _recall("le_volume_retarget", lambda p: p["mass"]["volume"]))))
+    write("design_edit_timeline", {"action": "ungroup", "feature": "LoftEarlier"},
+          lambda p: _measured("witness group ungrouped", p, p.get("ungrouped") is True))
     write("model_edit_loft", lambda c: {"feature": _ctx_get(c, "le_feature", "Loft feature"),
         "action": "remove", "section_index": 2}, _loft_edit_landed(3))
     read_ends(True)
@@ -1620,6 +1632,57 @@ def _later_operand_rows():
                          lambda names: names[-2:] == ["Dep", "ProfLater"]
                          and names == [n for n in _RECALL.get("lo_before_end") or []
                                        if n != "ProfLater"] + ["ProfLater"]))
+    # The item one before the last needs a single move to become last.
+    write("design_edit_timeline", {"action": "reorder", "feature": "Dep", "to": "after",
+                                   "end_feature": "ProfLater"},
+          _refused("Fusion cannot place an item after the last timeline row", "Nothing moved.",
+                   "To make 'Dep' last, run design_edit_timeline(action='reorder', "
+                   "feature='ProfLater@15', to='before', end_feature='Dep@14')."))
+    write("design_edit_timeline", {"action": "reorder", "feature": "ProfLater@15", "to": "before",
+                                   "end_feature": "Dep@14"},
+          lambda p: _measured("the one-move remedy moved ProfLater before Dep", p,
+                              p.get("reordered") is True
+                              and (p.get("index_before"), p.get("index_after")) == (15, 14)))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("Dep is last; every other row kept its order",
+                         lambda names: names[-2:] == ["ProfLater", "Dep"]
+                         and names[:-2] == [n for n in _RECALL.get("lo_before_end") or []
+                                            if n not in ("ProfLater", "Dep")]),
+         ("lo_rows_end", _recall("lo_rows_end", _timeline_names)))
+    # A path sketch rolled back behind the marker is named with its row and the roll remedy.
+    write("design_edit_timeline", {"action": "roll", "feature": "PathA", "to": "before"},
+          lambda p: _measured("marker rolled to before PathA", p, p.get("rolled") is True
+                              and p.get("marker_position") == 11))
+    write("model_edit_sweep", {"feature": "Sweep1", "action": "path", "path": "sketch:PathA"},
+          _refused("Editing 'Sweep1': sketch 'PathA' at timeline row 11 is rolled back behind the "
+                   "marker. Roll to the end with design_edit_timeline(action='roll', to='end'), "
+                   "then retry. Nothing was edited."))
+    write("design_edit_timeline", {"action": "roll", "to": "end"},
+          lambda p: _measured("marker back at the end", p, p.get("rolled") is True
+                              and p.get("marker_position") == p.get("timeline_count") == 16))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("the rolled-back refusal left every row and the marker",
+                         lambda names: names == _RECALL.get("lo_rows_end")))
+    volume("the rolled-back refusal left the sweep volume", 6.283185)
+    # A collapsed group before the marker is read through its members; a path sketch inside it
+    # gets the ungroup hint.
+    write("design_edit_timeline", {"action": "group", "name": "LaterGroup", "feature": "PathA",
+                                   "end_feature": "BoxLater"},
+          lambda p: _measured("later path sketch grouped", p, p.get("grouped") is True
+                              and p.get("group") == "LaterGroup" and p.get("member_count") == 2))
+    write("model_edit_sweep", {"feature": "Sweep1", "action": "path", "path": "sketch:PathLater"},
+          _refused("'Sweep1' already uses that path", "Nothing was edited"))
+    write("model_edit_sweep", {"feature": "Sweep1", "action": "path", "path": "sketch:PathA"},
+          _refused("'PathA' is inside the collapsed timeline group 'LaterGroup', which the "
+                   "timeline lists as one item. Run design_edit_timeline(action='ungroup', "
+                   "feature='LaterGroup') - its items are kept - then retry. The path sketch "
+                   "timeline row does not read; nothing was edited."))
+    write("design_edit_timeline", {"action": "ungroup", "feature": "LaterGroup"},
+          lambda p: _measured("later path group ungrouped", p, p.get("ungrouped") is True))
+    read("design_get", {"include": ["timeline"], "max_results": 100},
+         _timeline_reads("the grouped refusals left every row and the marker",
+                         lambda names: names == _RECALL.get("lo_rows_end")))
+    volume("the grouped refusals left the sweep volume", 6.283185)
     # A collapsed group can make a member sketch's timeline row unreadable to the profile editor.
     sketch("TimelineFirst", "xy", {"kind": "rectangle", "x1": 900, "y1": 0,
                                      "x2": 910, "y2": 10})

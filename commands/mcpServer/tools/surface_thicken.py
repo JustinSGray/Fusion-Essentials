@@ -56,7 +56,6 @@ def _source_disclosure(sources):
         row = dict(row, after=_visibility(body))
         handle = safe(lambda b=body: b.entityToken)
         occurrence = safe(lambda b=body: b.assemblyContext.fullPathName)
-        native = safe(lambda b=body: b.assemblyContext, False) is None
         row.update({k: v for k, v in (("handle", handle), ("occurrence", occurrence)) if v})
         rows.append(row)
         if not row["body"] or None in (*row["before"].values(), *row["after"].values()):
@@ -65,13 +64,10 @@ def _source_disclosure(sources):
         if type(before) is bool and type(after) is bool and before != after:
             state, action = ("hidden", "show") if before else ("shown", "hide")
             label = (f"'{row['body'] or 'face %d source' % row['face_indices'][0]}'"
-                     + (f" in '{occurrence}'" if occurrence else "")
-                     + (f" (handle {handle})" if handle else ""))
-            # A proxy's entityToken differs from its native body's; which of the two design_get's
-            # tree lists for an occurrence body is unmeasured, so a proxy source is sent to the read.
+                     + (f" in '{occurrence}'" if occurrence else ""))
             text += (f" Source {label} became {state}. "
                      + (f"Undo it with view_set(action='{action}', target=['{handle}'])."
-                        if handle and native else
+                        if handle else
                         f"Read design_get(include=['tree'], tree_bodies=true), then "
                         f"view_set(action='{action}', target=[<body handle>])."))
     return rows, text, complete
@@ -129,7 +125,10 @@ def handler(faces=None, thickness: float = 0.0, units: str = "mm",
                 return error(terr)
         feature = comp.features.thickenFeatures.add(thk_input)
     except Exception as e:
-        return error(f"Thicken failed: {e}.")
+        hint = (" The selected faces face opposite ways; thicken each face in its own call with "
+                "chaining=false, or rebuild a symmetric revolve one-sided over the full angle."
+                if "INCONSISTENT_ORIENTATION" in str(e) else "")
+        return error(f"Thicken failed: {e}.{hint}")
     if not feature:
         return error(_common.no_feature_error(design, "Thicken"))
     source_rows, flips, sources_read = _source_disclosure(sources)

@@ -16,8 +16,9 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import (CM_TO_UNIT, iter_collection, named_with_remainder, ok, error, read_flag,
                       safe)
-from ._cam_common import (assets_named, get_cam, expression_error, library_assets, quote_expression,
-                          tool_dimension_value, unquote_expression)
+from ._cam_common import (asset_leaf, asset_leaf_keys, assets_named, get_cam, expression_error,
+                          library_assets, quote_expression, tool_dimension_value,
+                          unquote_expression)
 from ._cam_presets import (_apply_preset_values, _persist_preset_change, _persisted_preset_names,
                            _preset_names, _preset_spec_error, _preset_tool, _presets_named)
 
@@ -221,7 +222,8 @@ def _resolve_target(scope, library):
         return None, (f"No {scope} library '{target}'. Available: "
                       f"{', '.join(str(a) for a in avail)}.{capped}")
     lib = safe(lambda: libs.toolLibraryAtURL(lib_url))
-    if not lib:
+    # `is None`, not falsiness: a loaded library holding 0 tools tests falsy.
+    if lib is None:
         return None, f"Could not load {scope} library '{target}'."
     # A write to this library makes any cached copy of it stale, so persist drops that entry.
     cache_key = safe(lambda: lib_url.toString())
@@ -267,7 +269,7 @@ def _source_tool(library_url, index):
         url = safe(lambda: adsk.core.URL.create(library_url))
         lib = safe(lambda: libs.toolLibraryAtURL(url)) if url else None
         _cache_library(library_url, lib)
-    if not lib:
+    if lib is None:
         return None, f"Could not load source library '{library_url}'."
     n = safe(lambda: lib.count, 0) or 0
     if not (0 <= index < n):
@@ -1173,6 +1175,33 @@ def _empty_library():
     return adsk.cam.ToolLibrary.createEmpty()
 
 
+_SEED_KEYS = ("index", "library_url")
+
+
+def _seed_shape_error(position, ref):
+    """The refusal for a create_library seed that is not exactly {library_url, index}, else None."""
+    keys = sorted(ref) if isinstance(ref, dict) else None
+    if (keys == list(_SEED_KEYS) and isinstance(ref["library_url"], str)
+            and ref["library_url"].strip() and isinstance(ref["index"], int)
+            and not isinstance(ref["index"], bool)):
+        return None
+    got = ("keys " + ", ".join(keys)) if keys else repr(ref)
+    return (f"create_library seed {position} has {got}: a seed copies one existing tool and takes "
+            "exactly 'library_url' (a string) and 'index' (an integer). 'from_type' and the "
+            "overrides apply to action='add' only. Nothing was created. action='list' at "
+            "scope='fusion' lists the sample libraries; with 'library' it lists their tool indices.")
+
+
+def _listed_url(libs, root, new_url):
+    """The listed url of the one asset answering to the returned url's leaf, else None."""
+    keys = asset_leaf_keys(new_url)
+    if not any(keys):
+        return None
+    listed, _truncated = library_assets(libs, root)
+    hits = [a for a in listed if asset_leaf_keys(a) & keys]
+    return safe(lambda: hits[0].toString()) if len(hits) == 1 else None
+
+
 def _do_create_library(scope, name, seed_tools):
     """Create + persist a NEW tool library at a shared scope (Local/Cloud/Hub). Fusion360 is read-only;
     document scope can't host a new library. Seeds validated before the persistent write."""
@@ -1195,10 +1224,11 @@ def _do_create_library(scope, name, seed_tools):
         root = child[0]
     # resolve seed tools BEFORE the persistent write
     resolved = []
-    for ref in (seed_tools or []):
-        if not isinstance(ref, dict):
-            return error(f"Each seed entry must be {{library_url, index}}; got {ref!r}.")
-        t, terr = _source_tool(ref.get("library_url"), ref.get("index"))
+    for position, ref in enumerate(seed_tools or []):
+        serr = _seed_shape_error(position, ref)
+        if serr:
+            return error(serr)
+        t, terr = _source_tool(ref["library_url"], ref["index"])
         if terr:
             return error(terr)
         resolved.append(t)
@@ -1234,10 +1264,21 @@ def _do_create_library(scope, name, seed_tools):
         return error(f"Created library at '{safe(lambda: new_url.toString())}' reads "
                      f"{stored_count} tools, expected {len(resolved)}. Seed persistence is "
                      "unconfirmed; inspect that library before retrying. It was not rolled back.")
-    return ok({"created_library": name, "scope": scope, "url": safe(lambda: new_url.toString()),
-               "tool_count": stored_count,
-               "note": "Library created and persisted. List it with action='list'. (Local=disk, "
-                       "Cloud/Hub=your Autodesk account; a duplicate name gets a numeric suffix.)"})
+    returned = safe(lambda: new_url.toString())
+    listed = _listed_url(libs, root, new_url)
+    out = {"created_library": name, "scope": scope, "url": listed or returned,
+           "tool_count": stored_count,
+           "note": "Library created and persisted. List it with action='list'. (Local=disk, "
+                   "Cloud/Hub=your Autodesk account; a duplicate name gets a numeric suffix.)"}
+    # On Local, importToolLibrary returns '<name>.json', which list/add do not resolve; the
+    # listing's own url does.
+    if listed is not None and listed != returned:
+        out["import_url"] = returned
+    if listed is None:
+        out["note"] += (f" The {scope} listing shows no single library named "
+                        f"'{asset_leaf(new_url) or name}'; action='list' at scope='{scope}' "
+                        "lists what it holds.")
+    return ok(out)
 
 
 def read_library(scope: str = "document", library: str = "", tool_type: str = "") -> dict:

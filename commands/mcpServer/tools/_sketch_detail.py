@@ -16,6 +16,7 @@ from ._common import ok, error, safe, find_sketch, all_sketch_names
 from . import _common
 from . import _geom
 from . import _inputs
+from . import _view_common
 
 app = adsk.core.Application.get()
 
@@ -618,9 +619,9 @@ def _profiles(sketch, f):
         # same point; it doubles as the handle's locator.
         pos = (c.x, c.y, c.z) if c else None
         loops = safe(lambda p=p: p.profileLoops.count)
-        # findEntityByToken resolves NOTHING for a sub-component sketch profile's token, so the
-        # locator is the handle's real resolution path. It carries the RAW cm area, which tells
-        # same-centroid profiles apart; a ':' or ',' in the name would garble its parse.
+        # MEASURED: a multi-loop profile's token answers nothing in the root and itself plus its
+        # island profiles in a component, so the locator settles it; its RAW cm area tells
+        # same-centroid profiles apart. A ':' or ',' in the name would garble its parse.
         safe_name = sk_name if (":" not in sk_name and "," not in sk_name) else ""
         kind = f"profile[{safe_name}~{area:.4f}]" if area is not None else "profile"
         out.append({
@@ -1136,7 +1137,10 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
     profiles = _profiles(sketch, f)
     # ONE sketch was named, so ONE roll names the face it sits on rather than leaving plane null.
     sits_on_a_face = on_a_face(sketch)
+    clean_before = sits_on_a_face and _view_common.document_modified() is False
     face, marker_clause = face_support(sketch, design) if sits_on_a_face else (None, None)
+    # MEASURED: that roll flips a saved, clean document to isModified true.
+    dirtied = clean_before and _view_common.document_modified() is True
     out = {
         "sketch": safe(lambda: sketch.name),
         "component": safe(lambda: sketch.parentComponent.name),
@@ -1174,6 +1178,10 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
     if marker_clause:
         out["timeline_marker_unrestored"] = True
         face_note += " " + marker_clause + "."
+    if dirtied:
+        out["document_modified"] = True
+        face_note += (" The document read unmodified before this read rolled the timeline to the "
+                      "sketch and back to name its face, and reads modified after it.")
     lead = DEFERRED_NOTE + " " if profiles is None else ""
 
     if not include_entities:

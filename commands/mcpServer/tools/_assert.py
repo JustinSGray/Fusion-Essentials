@@ -645,9 +645,12 @@ class FreeEdgesChanged(Postcondition):
 
     def capture(self, kwargs):
         bodies = census_bodies()
-        return free_edge_count(bodies) if bodies is not None else None
+        return {"free": free_edge_count(bodies) if bodies is not None else None,
+                "timeline": _timeline_count()}
 
     def verify(self, kwargs, payload, before):
+        since = before.get("timeline") if isinstance(before, dict) else None
+        before = before.get("free") if isinstance(before, dict) else None
         bodies = census_bodies()
         after = free_edge_count(bodies) if bodies is not None else None
         if before is None or after is None:
@@ -660,11 +663,11 @@ class FreeEdgesChanged(Postcondition):
             if after >= before:
                 return (f"the stitch reported success but the design's free-edge count did not drop "
                         f"({before} before, {after} after) - no edge pair was sealed."
-                        + _NOT_MEASURED_CONSUMED + _left_by(payload, always=True)), {}
+                        + _NOT_MEASURED_CONSUMED + _left_by(payload, always=True, since=since)), {}
         elif after <= before:
             return (f"the unstitch reported success but the design's free-edge count did not rise "
                     f"({before} before, {after} after) - no face was set loose."
-                    + _NOT_MEASURED_CONSUMED + _left_by(payload, always=True)), {}
+                    + _NOT_MEASURED_CONSUMED + _left_by(payload, always=True, since=since)), {}
         return "", {"free_edges_before": before, "free_edges_after": after}
 
 
@@ -677,9 +680,12 @@ class SurfaceAreaAdded(Postcondition):
 
     def capture(self, kwargs):
         bodies = census_bodies()
-        return total_area(bodies) if bodies is not None else None
+        return {"area": total_area(bodies) if bodies is not None else None,
+                "timeline": _timeline_count()}
 
     def verify(self, kwargs, payload, before):
+        since = before.get("timeline") if isinstance(before, dict) else None
+        before = before.get("area") if isinstance(before, dict) else None
         bodies = census_bodies()
         after = total_area(bodies) if bodies is not None else None
         if before is None or after is None:
@@ -691,11 +697,33 @@ class SurfaceAreaAdded(Postcondition):
             return "", {"surface_area_confirmed": False}
         return (f"the surface was reported created, but total body surface area changed by "
                 f"{delta:.12g} cm2; verification requires an increase above {_AREA_TOL_CM2:g} cm2."
-                + _left_by(payload)), {
+                + _left_by(payload, since=since)), {
                     "area_change_cm2": delta, "area_increase_threshold_cm2": _AREA_TOL_CM2}
 
 
-def _left_by(payload, always=False):
+def _timeline_count():
+    """The active design's timeline count, or None when it does not read (DIRECT mode raises)."""
+    from ._common import design
+    d = design()
+    tl = safe(lambda: d.timeline) if d is not None else None
+    return safe(lambda: tl.count) if tl is not None else None
+
+
+def _added_address(name, since):
+    """The address of the ONE timeline item named `name` added at index `since` or later, else None."""
+    from ._common import design
+    from ._inputs import candidate_address
+    d = design()
+    tl = safe(lambda: d.timeline) if d is not None else None
+    count = safe(lambda: tl.count) if tl is not None else None
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in (since, count)):
+        return None
+    items = [safe(lambda k=k: tl.item(k)) for k in range(since, count)]
+    hits = [o for o in items if o is not None and (safe(lambda o=o: o.name) or "").strip() == name]
+    return candidate_address(hits[0]) if len(hits) == 1 else None
+
+
+def _left_by(payload, always=False, since=None):
     """The removal clause for the payload's feature and bodies ('' with none, unless `always`)."""
     from ._common import design, left_in_timeline
     feature = payload.get("feature") or payload.get("form")
@@ -703,7 +731,8 @@ def _left_by(payload, always=False):
         return " " + left_in_timeline(design(), None) if always else ""
     bodies = [b for b in payload.get("result_bodies") or () if isinstance(b, str)]
     added = (" Its result bodies: " + ", ".join(f"'{b}'" for b in bodies) + "." if bodies else "")
-    return added + " " + left_in_timeline(design(), feature)
+    address = _added_address(feature.strip(), since) or feature
+    return added + " " + left_in_timeline(design(), address)
 
 
 class PatternElementsPlaced(Postcondition):

@@ -494,8 +494,9 @@ class TestStuckParameter:
         assert "did not take" not in res["message"]
         assert "cam_edit_tools" not in res["message"]
         assert "cam_get(include=['operations'])" in res["message"]
-        # rolled back exactly like the other two failure paths
-        assert "Rolled back all 2 parameter(s)" in res["message"]
+        # the other row is rolled back; the unreadable one is not claimed restored
+        assert "Restored 1 of 2 parameter(s)" in res["message"]
+        assert "'tolerance' reads None, held '0.01'" in res["message"]
         assert op.parameters.itemByName("tool_stepover").expression == "2."
 
     def test_two_unreadable_reads_are_UNCONFIRMED_never_a_nothing_moved_verdict(self, monkeypatch):
@@ -1986,6 +1987,41 @@ class GatedParam(FakeParam):
         pass
 
 
+class _RefusesRestore(FakeParam):
+    """Takes the first write and raises on the restore, as a re-locked conditional row did live."""
+
+    @FakeParam.expression.setter
+    def expression(self, value):
+        if getattr(self, "_written_once", False):
+            raise RuntimeError("3 : Invalid enumeration value.")
+        self._written_once = True
+        FakeParam.expression.fset(self, value)
+
+
+class _ModeGatedParam(FakeParam):
+    """stepover under roughingType 'adaptive': the row reads the validation error, and isEnabled
+    false when `disables`."""
+
+    def __init__(self, name, expression="", gate=None, disables=True, **kw):
+        super().__init__(name, expression, **kw)
+        self._gate, self._disables = gate, disables
+
+    def _adaptive(self):
+        return self._gate.expression == "'adaptive'"
+
+    @property
+    def error(self):
+        return "Maximum Stepover must be positive and non-zero!" if self._adaptive() else ""
+
+    @property
+    def isEnabled(self):
+        return not (self._disables and self._adaptive())
+
+    @isEnabled.setter
+    def isEnabled(self, value):
+        pass
+
+
 class TestASwitchInTheSameCall:
     """A row whose isEditable is gated by ANOTHER parameter of the same request: the locked rows go
     LAST and their flag is re-read once the switch has landed, so one call carrying both works."""
@@ -2044,8 +2080,38 @@ class TestASwitchInTheSameCall:
         res = ce.handler(operation="Adaptive1",
                          parameters={"tool_feedCutting": "3000", "numberOfStepovers": "3"})
         assert res["isError"] is True
-        assert "restored each one, but 1 did NOT come back" in res["message"]
+        assert "restored 0 of 1; 1 did NOT come back" in res["message"]
         assert "'tool_feedCutting' reads '3000', held '5210.23'" in res["message"]
         assert "set each one back by hand" in res["message"]
         # and NOT the clean-restore sentence, which would contradict the line beside it
         assert "every restored expression reads back what it held" not in res["message"]
+
+    def test_a_restore_that_raises_is_named_and_the_later_rows_are_still_restored(self, monkeypatch):
+        op = _install(monkeypatch, params={
+            "toolAxisMode": _RefusesRestore("toolAxisMode", "'vertical'"),
+            "tolerance": FakeParam("tolerance", "0.01mm",
+                                   error="Failed to evaluate expression.")})
+        res = ce.handler(operation="Adaptive1",
+                         parameters={"toolAxisMode": "'lead_lean'", "tolerance": "0.02 mm"})
+        assert res["isError"] is True
+        assert "Restored 1 of 2 parameter(s); 1 did NOT come back" in res["message"]
+        assert ("'toolAxisMode' refused its prior \"'vertical'\" (3 : Invalid enumeration "
+                "value.) and reads \"'lead_lean'\"") in res["message"]
+        assert "Rolled back all" not in res["message"]
+        assert op.parameters.itemByName("tolerance").expression == "0.01mm"
+
+    @pytest.mark.parametrize("disables", [True, False])
+    def test_a_failed_row_the_mode_write_disabled_says_set_the_mode_first(self, monkeypatch,
+                                                                          disables):
+        gate = FakeParam("roughingType", "'offset'")
+        _install(monkeypatch, params={
+            "roughingType": gate,
+            "stepover": _ModeGatedParam("stepover", "tool_diameter * 0.5", gate=gate,
+                                        disables=disables)})
+        res = ce.handler(operation="Adaptive1",
+                         parameters={"roughingType": "'adaptive'", "stepover": "1.5 mm"})
+        assert res["isError"] is True
+        assert "Maximum Stepover must be positive and non-zero!" in res["message"]
+        assert "Rolled back all 2 parameter(s)" in res["message"]
+        assert ("reads isEnabled false after the call's other writes; set the mode first"
+                in res["message"]) is disables

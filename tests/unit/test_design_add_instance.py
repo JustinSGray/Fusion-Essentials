@@ -95,7 +95,8 @@ def _make(names=("Bolt",), refuse=None, ghost=False):
     """
     root = _comp("Root")
     des = MakeDesign(comp=root)
-    des.tree, des.counter, des.comps = [], {}, {"Root": root}
+    des.tree, des.counter, des.comps, des.landed = [], {}, {"Root": root}, None
+    des.lands = None
     for name in names:
         comp = _comp(name)
         des.comps[name] = comp
@@ -130,9 +131,14 @@ def _make(names=("Bolt",), refuse=None, ghost=False):
                     _clone_children(des, source, node)
             _refresh(des)
             # The RETURN is the measured read asymmetry: an occurrence taken from <component>.
-            # occurrences reports a COMPONENT-LOCAL fullPathName, not the assembly path.
+            # occurrences reports a COMPONENT-LOCAL fullPathName, not the assembly path. Its local
+            # transform reads the request unless a test sets `des.landed`.
+            landed = des.landed if des.landed is not None else transform.asArray()
+            if des.landed is None and des.lands is not None:
+                landed = des.lands(transform.asArray())
             return SimpleNamespace(name=made[0].name, fullPathName=made[0].name,
-                                   isValid=(refuse != "invalid"), component=component)
+                                   isValid=(refuse != "invalid"), component=component,
+                                   transform=SimpleNamespace(asArray=lambda: list(landed)))
         host.occurrences.addExistingComponent = add_existing
 
     for comp in des.comps.values():
@@ -141,10 +147,22 @@ def _make(names=("Bolt",), refuse=None, ghost=False):
     return des
 
 
+def _cells(tx=0.0, ty=0.0, tz=0.0, **cells):
+    """Row-major Matrix3D cells: the identity translated by (tx, ty, tz) cm, with `cells` overrides
+    keyed 'c<index>'."""
+    out = [1.0, 0, 0, tx, 0, 1.0, 0, ty, 0, 0, 1.0, tz, 0, 0, 0, 1.0]
+    for key, value in cells.items():
+        out[int(key[1:])] = value
+    return out
+
+
 def _matrix():
+    """The placement matrix; its cells carry the translation only - rotation is recorded, not applied."""
     m = SimpleNamespace(translation=None, rotation=None)
     m.setToRotation = lambda angle, axis, origin: (setattr(m, "rotation", (angle, axis, origin))
                                                    or True)
+    m.asArray = lambda: _cells(*(m.translation[1:] if m.translation else ()))
+    m.setWithArray = lambda cells: setattr(m, "asArray", lambda: list(cells)) or True
     return m
 
 
@@ -368,7 +386,7 @@ class TestPlacement:
         des = wire()
         out = payload(ai.handler(component="Bolt"))
         assert des.last_transform.translation is None
-        assert out["position"] == "origin"
+        assert out["position"] == {"x": 0.0, "y": 0.0, "z": 0.0}
 
     def test_rotation_is_about_the_named_world_axis(self, wire):
         des = wire()
@@ -527,8 +545,129 @@ class TestPlacementCannotBeCaptured:
     def test_an_instance_at_the_origin_makes_no_placement_claim(self, wire):
         wire()
         out = payload(ai.handler(component="Bolt"))
-        assert out["position"] == "origin"
         assert "cannot be captured" not in out["note"]
+
+
+class TestLandedPlacement:
+    """The landed LOCAL matrix is read back and compared with the request: a non-root host can take
+    an already-placed component at another matrix, and that is never reported as the request."""
+
+    def test_the_position_is_the_read_back_local_origin_in_units(self, wire):
+        des = wire(names=("Outer", "Bolt"))
+        des.landed = _cells(1.0, 0.0, 0.5)              # cm: the request below, as landed
+        out = payload(ai.handler(component="Bolt", into_component="Outer:1", x=10.0, z=5.0))
+        assert out["position"] == {"x": 10.0, "y": 0.0, "z": 5.0}
+        assert out["axes"] == {"x": [1.0, 0, 0], "y": [0, 1.0, 0], "z": [0, 0, 1.0]}
+
+    def test_a_landing_off_the_request_is_an_error_naming_the_kept_instance(self, wire):
+        des = wire(names=("Outer", "Bolt"))
+        des.landed = _cells(0.0, 1.89323, 4.06004, c0=-1.0, c10=-1.0)
+        msg = error_message(ai.handler(component="Bolt", into_component="Outer:1",
+                                       rotate_deg=180.0))
+        assert "as 'Bolt:2' at 'Outer:1+Bolt:2' (kept)" in msg
+        assert "reads (0.0, 18.9323, 40.6004) mm, 44.797594 mm from the requested one" in msg
+        assert "local axes x [-1.0, 0.0, 0.0] y [0.0, 1.0, 0.0] z [0.0, 0.0, -1.0]" in msg
+        assert "Its transform was not reset to the request." in msg and "assembly_move" in msg
+        assert len(des.tree) == 3                        # the instance is kept, not deleted
+
+    @pytest.mark.parametrize("cells,lands", [
+        ({"tx": 1e-6}, True), ({"tx": 2e-6}, False),     # origin tolerance: 1e-6 cm
+        ({"c1": 1e-5}, True), ({"c1": 2e-5}, False)])    # axis tolerance: 1e-5
+    def test_the_tolerances_are_inclusive_at_their_bound(self, wire, cells, lands):
+        des = wire(names=("Outer", "Bolt"))
+        des.landed = _cells(**cells)
+        res = ai.handler(component="Bolt", into_component="Outer:1", rotate_deg=180.0)
+        assert res["isError"] is (not lands)
+
+    def test_an_unreadable_transform_publishes_no_position(self, wire):
+        des = wire(names=("Outer", "Bolt"))
+        des.landed = [1.0] * 15                          # not 16 cells: the read declines
+        out = payload(ai.handler(component="Bolt", into_component="Outer:1"))
+        assert "position" not in out and "axes" not in out
+        assert "not compared with the request: its transform did not read" in out["note"]
+
+
+def _pose(deg, tx, ty, tz, axis="z"):
+    """A 4x4 numpy pose: `deg` about `axis`, then the translation (cm)."""
+    import numpy as np
+    c, s = np.cos(np.radians(deg)), np.sin(np.radians(deg))
+    i, j = {"x": (1, 2), "y": (2, 0), "z": (0, 1)}[axis]
+    out = np.eye(4)
+    out[i, i], out[i, j], out[j, i], out[j, j] = c, -s, s, c
+    out[:3, 3] = (tx, ty, tz)
+    return out
+
+
+def _placed(des, direct, bolt, outer=None):
+    """Give the first Bolt (and Outer) occurrence a world pose and land by the measured rule."""
+    import numpy as np
+    import adsk.fusion
+    types = adsk.fusion.DesignTypes
+    des.designType = types.DirectDesignType if direct else types.ParametricDesignType
+    host = np.eye(4) if outer is None else outer
+    for node in des.tree:
+        pose = bolt if node.component.name == "Bolt" else outer
+        node.transform2 = SimpleNamespace(asArray=lambda pose=pose: [float(v) for v in pose.flatten()])
+    inv = np.linalg.inv
+
+    def lands(cells):
+        m = np.array(cells, dtype=float).reshape(4, 4)
+        out = inv(host) @ m @ bolt if direct else inv(host) @ bolt @ host @ inv(bolt) @ m
+        if not direct and np.allclose(m, np.eye(4)):
+            out = inv(host) @ bolt
+        return [float(v) for v in out.flatten()]
+    des.lands = lands
+
+
+class TestPreCompensation:
+    """The matrix passed is the one that lands the instance at the request under the measured rule."""
+
+    def test_a_direct_design_instance_lands_at_the_request(self, wire):
+        des = wire()
+        _placed(des, True, _pose(90, 4.0, 2.0, 1.0))
+        out = payload(ai.handler(component="Bolt", x=-50.0, y=-20.0, z=30.0))
+        assert out["position"] == {"x": -50.0, "y": -20.0, "z": 30.0}
+        assert out["axes"]["x"] == [1.0, 0.0, 0.0]
+        assert [round(des.last_transform.asArray()[i], 6) for i in (0, 1, 3, 7, 11)] == [
+            0.0, 1.0, -7.0, 2.0, 2.0]
+
+    def test_a_direct_design_host_pose_is_part_of_the_matrix_passed(self, wire):
+        des = wire(names=("Outer", "Bolt"))
+        _placed(des, True, _pose(90, 4.0, 2.0, 1.0), _pose(-30, -3.0, 7.0, 0.5))
+        out = payload(ai.handler(component="Bolt", into_component="Outer:1", x=10.0, z=5.0))
+        assert out["position"] == {"x": 10.0, "y": 0.0, "z": 5.0}
+
+    def test_a_parametric_host_instance_lands_at_the_request(self, wire):
+        # poses about different axes do not commute, so the order of the product is what lands it
+        des = wire(names=("Outer", "Bolt"))
+        _placed(des, False, _pose(70, 4.0, 2.0, 1.0, "y"), _pose(40, -3.0, 7.0, 0.5, "x"))
+        out = payload(ai.handler(component="Bolt", into_component="Outer:1", x=10.0, y=-20.0,
+                                 z=5.0))
+        assert out["position"] == {"x": 10.0, "y": -20.0, "z": 5.0}
+        assert out["axes"] == {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]}
+
+    def test_a_parametric_root_instance_is_passed_the_request_itself(self, wire):
+        des = wire()
+        _placed(des, False, _pose(90, 4.0, 2.0, 1.0))
+        payload(ai.handler(component="Bolt", x=10.0))
+        assert des.last_transform.translation == ("vec", 1.0, 0.0, 0.0)
+
+    def test_no_placement_stacked_on_the_first_occurrence_is_ok_with_the_read_back(self, wire):
+        des = wire()
+        _placed(des, False, _pose(90, 4.0, 2.0, 1.0))
+        out = payload(ai.handler(component="Bolt"))
+        assert out["position"] == {"x": 40.0, "y": 20.0, "z": 10.0}
+        assert out["axes"]["x"] == [0.0, 1.0, 0.0]
+        assert ("No placement was requested; it reads at (40.0, 20.0, 10.0) mm in the root component."
+                in out["note"])
+
+    def test_a_given_placement_that_still_misses_is_the_kept_instance_error(self, wire):
+        des = wire()
+        _placed(des, False, _pose(90, 4.0, 2.0, 1.0))
+        des.landed = _cells(4.0, 2.0, 1.0)
+        msg = error_message(ai.handler(component="Bolt", x=10.0))
+        assert "as 'Bolt:2' at 'Bolt:2' (kept), but not at the requested placement" in msg
+        assert "reads (40.0, 20.0, 10.0) mm" in msg and "assembly_move" in msg
 
 
 class TestHostPrefixes:

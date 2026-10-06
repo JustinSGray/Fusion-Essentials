@@ -5,12 +5,13 @@ from types import SimpleNamespace
 import adsk.fusion
 import pytest
 
-from conftest import FakeTimeline, Sketch, _NamedCollection, error_message, load_tool, payload
+from conftest import FakeTimeline, FakeTimelineObject, Sketch, _NamedCollection, error_message, load_tool, payload
 
 
 mod = load_tool("model_edit_loft")
 _real_target_error = mod._target_error
 _real_operand_error = mod._operand_error
+_real_health = mod._health
 
 
 class Timeline(FakeTimeline):
@@ -451,6 +452,26 @@ def test_new_downstream_warning_is_error(rig, monkeypatch):
     assert result["isError"] is True
     assert result["details"]["new_timeline_warnings"] == ["Dependent"]
     assert timeline.markerPosition == 5
+
+
+@pytest.mark.parametrize("member_error", [False, True])
+def test_a_collapsed_group_before_the_marker_is_read_through_its_members(rig, monkeypatch,
+                                                                       member_error):
+    loft, timeline = rig
+    states = adsk.fusion.FeatureHealthStates
+    member = FakeTimelineObject(name="Grouped", health=(
+        states.ErrorFeatureHealthState if member_error else states.HealthyFeatureHealthState))
+    group = FakeTimelineObject(name="Earlier", is_group=True,
+                               health=states.UnknownFeatureHealthState)
+    group.count, group.item = 1, lambda _i: member
+    timeline._items = [group] + [FakeTimelineObject(name=f"Row{i}") for i in range(1, 5)]
+    seen = []
+    monkeypatch.setattr(mod, "_health", lambda design, marker: (
+        seen.append(_real_health(design, marker)) or seen[-1]))
+    result = mod.handler(feature="Loft1", action="retarget", section_index=1, profile="X")
+    assert result["isError"] is False
+    assert tuple(s.entity for s in loft.sections) == ("A", "X", "C")
+    assert [str(n) for n in seen[0]["errors"]] == (["Grouped"] if member_error else [])
 
 
 def test_restore_failure_is_error(rig):

@@ -192,14 +192,31 @@ def _extrude_edit_history(p):
 
 
 def _extrude_edit_dependent(key, component, healthy):
-    """The recalled dependent row's health in an independent timeline read."""
+    """The recalled dependent row's health in an independent timeline read; a failed one is a
+    plain-text warning while no row reads error."""
     def check(p):
-        rows = [r for r in (p.get("timeline") or {}).get("timeline") or []
+        timeline = (p.get("timeline") or {}).get("timeline") or []
+        rows = [r for r in timeline
                 if r.get("name") == _RECALL.get(key) and r.get("component") == component]
         health = rows[0].get("health", "healthy") if len(rows) == 1 else None
-        return _measured("dependent feature health", health,
-                         health == "healthy" if healthy else health in ("warning", "error"))
+        if healthy:
+            return _measured("dependent feature health", health, health == "healthy")
+        message = rows[0].get("message") if rows else None
+        return _measured("dependent feature warning", {"health": health, "message": message},
+                         health == "warning" and isinstance(message, str) and bool(message.strip())
+                         and "<" not in message and ">" not in message
+                         and not message.endswith(_RECALL.get(key) or "\0")
+                         and all(r.get("health") != "error" for r in timeline))
     return check
+
+
+def _orient_warnings(count):
+    """workspace_orient's design health: no errors, `count` timeline warnings, still healthy."""
+    return lambda p: _measured(f"workspace_orient reads {count} timeline warning(s)",
+                               {"health": p.get("health")},
+                               (p.get("health") or {}).get("timeline_errors") == 0
+                               and (p.get("health") or {}).get("timeline_warnings") == count
+                               and (p.get("health") or {}).get("is_healthy") is True)
 
 
 def _extrude_side_body(label, z_low, z_high, volume):
@@ -397,10 +414,12 @@ def _extrude_edit_rows():
     inspect("EditSide:Body1", _extrude_side_body("kept flip beside its failed pocket", 0, 10, 4000))
     rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
                  _extrude_edit_dependent("ee_side_pocket", "EditSide", healthy=False), None))
+    rows.append(("workspace_orient", {}, _orient_warnings(1), None))
     side_edit({"extent": "symmetric", "distance": 10.0}, _extrude_edit_landed)
     inspect("EditSide:Body1", _extrude_side_body("named remedy restores the pocket", -10, 10, 7700))
     rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
                  _extrude_edit_dependent("ee_side_pocket", "EditSide", healthy=True), None))
+    rows.append(("workspace_orient", {}, _orient_warnings(0), None))
     side_edit({"extent": "symmetric", "distance": 10.0},
               _refused("already has that definition", "Nothing was edited"))
     inspect("EditSide:Body1", _extrude_side_body("identical re-edit refused", -10, 10, 7700))
@@ -889,6 +908,88 @@ def _org_same_mesh_sibling(p):
                                "same-owner sibling mesh geometry")
 
 
+def _instance_at(path_prefix, origin, deg):
+    """Require an instance landed at the requested local origin and Z rotation; record its frame."""
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    want = {"x": [c, s, 0.0], "y": [-s, c, 0.0], "z": [0.0, 0.0, 1.0]}
+
+    def check(p):
+        position, axes = p.get("position") or {}, p.get("axes") or {}
+        path = p.get("full_path") or ""
+        valid = (p.get("created") is True and p.get("units") == "mm"
+                 and path.startswith(path_prefix) and path[len(path_prefix):].isdigit()
+                 and all(_num(position.get(a)) and _near(position[a], v, 1e-4)
+                         for a, v in zip("xyz", origin))
+                 and all(isinstance(axes.get(a), list) and len(axes[a]) == 3
+                         and all(_num(g) and _near(g, w, 1e-5) for g, w in zip(axes[a], want[a]))
+                         for a in "xyz"))
+        _RECALL.pop("org_offset_instance", None)
+        if valid:
+            _RECALL["org_offset_instance"] = {
+                "path": path, "origin": [position[a] for a in "xyz"],
+                "axes": [axes[a] for a in "xyz"]}
+        return _measured("instance reads back at the requested local placement",
+                         {"full_path": path, "position": position, "axes": axes}, valid)
+    return check
+
+
+def _instance_offset_world(p):
+    """Compose the host's world pose with the refusal's local frame and compare assembly_get."""
+    got = _RECALL.get("org_offset_instance") or {}
+    rows = {r.get("full_path"): r for r in p.get("all_occurrences") or []}
+    host, inst = rows.get("OrgDestination:1") or {}, rows.get(got.get("path")) or {}
+    keys = ("origin", "x_axis", "y_axis", "z_axis")
+    valid = (p.get("units") == "mm" and bool(got) and all(
+        isinstance(r.get(k), list) and len(r[k]) == 3 and all(_num(v) for v in r[k])
+        for r in (host, inst) for k in keys))
+    if valid:
+        basis = [host[k] for k in keys[1:]]
+        def world(local):
+            return [sum(local[j] * basis[j][i] for j in range(3)) for i in range(3)]
+        want = [[h + w for h, w in zip(host["origin"], world(got["origin"]))]]
+        want += [world(axis) for axis in got["axes"]]
+        valid = all(_near(v, e, .01 if k == "origin" else .001)
+                    for k, w in zip(keys, want) for v, e in zip(inst[k], w))
+    return _measured("instance world pose equals host pose composed with the reply's local frame",
+                     {"reply": got, "host": host, "instance": inst}, valid)
+
+
+def _instance_unplaced(p):
+    """An instance given no placement is ok, off the origin, and its note states the read position."""
+    position, path = p.get("position") or {}, p.get("full_path") or ""
+    xyz = [position.get(a) for a in "xyz"]
+    sentence = ("No placement was requested; it reads at ({}, {}, {}) mm in the root component."
+                .format(*xyz))
+    valid = (p.get("created") is True and p.get("units") == "mm" and all(_num(v) for v in xyz)
+             and path.startswith("OrgSource:") and path[len("OrgSource:"):].isdigit()
+             and math.dist(xyz, [0, 0, 0]) > 1 and sentence in (p.get("note") or ""))
+    _RECALL.pop("org_unplaced_instance", None)
+    if valid:
+        _RECALL["org_unplaced_instance"] = {"path": path, "origin": xyz,
+                                            "axes": [(p.get("axes") or {}).get(a) for a in "xyz"]}
+    return _measured("unplaced instance is ok and names its read position",
+                     {"full_path": path, "position": position, "note": p.get("note")}, valid)
+
+
+def _instance_unplaced_world(p):
+    """assembly_get reads the unplaced instance at the reply's frame, the first occurrence's pose."""
+    got = _RECALL.get("org_unplaced_instance") or {}
+    rows = {r.get("full_path"): r for r in p.get("all_occurrences") or []}
+    inst, first = rows.get(got.get("path")) or {}, rows.get("OrgSource:1") or {}
+    keys = ("origin", "x_axis", "y_axis", "z_axis")
+    want = [got.get("origin")] + list(got.get("axes") or [])
+    valid = (p.get("units") == "mm" and bool(got) and len(want) == 4 and all(
+        isinstance(r.get(k), list) and len(r[k]) == 3 and all(_num(v) for v in r[k])
+        for r in (inst, first) for k in keys))
+    if valid:
+        valid = all(_near(v, e, .01 if k == "origin" else .001)
+                    for k, w in zip(keys, want) for v, e in zip(inst[k], w))
+        valid = valid and all(_near(v, e, .01 if k == "origin" else .001)
+                              for k in keys for v, e in zip(inst[k], first[k]))
+    return _measured("unplaced instance world pose equals the reply and the first occurrence",
+                     {"reply": got, "instance": inst, "first": first}, valid)
+
+
 def _body_organization_rows():
     """Exercise ownership transfers and output-handle consumers in owned documents."""
     rows = []
@@ -965,10 +1066,12 @@ def _body_organization_rows():
             and p.get("full_path") == "OrgDestination:1+OrgExistingChild:1", write=True)
         row("design_add_instance", {"component": "OrgSource", "x": -50, "y": -20,
             "z": 30, "rotate_deg": -45, "rotate_axis": "z"},
-            lambda p: p.get("full_path") == "OrgSource:2", write=True)
+            lambda p: p.get("full_path") == "OrgSource:2"
+            and _instance_at("OrgSource:", (-50, -20, 30), -45)(p), write=True)
         row("design_add_instance", {"component": "OrgDestination", "x": 70, "y": -50,
             "z": 10, "rotate_deg": 60, "rotate_axis": "z"},
-            lambda p: p.get("full_path") == "OrgDestination:2", write=True)
+            lambda p: p.get("full_path") == "OrgDestination:2"
+            and _instance_at("OrgDestination:", (70, -50, 10), 60)(p), write=True)
         vertices((source_ref if surface else "OrgSource:2:Body1"),
                  lambda p, surface=surface: len(_org_vertices(p)) == (4 if surface else 8),
                  save("org_before", _org_vertices))
@@ -1144,6 +1247,18 @@ def _body_organization_rows():
                 _org_mesh_unchanged("org_mesh_sentinel_before"))
             row("model_inspect", {"target": "OrgMeshLanding:1:OrgLandingSentinelMesh"},
                 lambda p: _org_mesh_box_shape(p, "org_landing_sentinel", 216.0, 228.0))
+        if kind == "brep" and mode == "parametric" and not surface:
+            # An already-placed component instanced into a rotated non-root host: the row requires
+            # the requested local frame, then composes it with the host's world pose.
+            row("design_add_instance", {"component": "OrgSource", "into_component": "OrgDestination:1",
+                "rotate_deg": 180, "rotate_axis": "z"},
+                _instance_at("OrgDestination:1+OrgSource:", (0, 0, 0), 180), write=True)
+            row("assembly_get", {"include": ["all_occurrences", "poses"], "units": "mm",
+                "max_all_occurrences": 100}, _instance_offset_world)
+            # No placement given: the instance is ok where Fusion put it, on the first occurrence.
+            row("design_add_instance", {"component": "OrgSource"}, _instance_unplaced, write=True)
+            row("assembly_get", {"include": ["all_occurrences", "poses"], "units": "mm",
+                "max_all_occurrences": 100}, _instance_unplaced_world)
         row("doc_close", lambda c: {"name": _ctx_get(c, "org_doc", "owned document"),
             "save_changes": False}, _document_closed, write=True)
         row("doc_activate", lambda c: {"name": _ctx_get(c, "org_home", "home")},
@@ -1553,3 +1668,78 @@ _BODY_ORGANIZATION += _merge_face_rows()
 
 
 _EXTRUDE_EDITS = _extrude_edit_rows()
+
+
+_MIXED_EXTENT_CREATE = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None, 'owned unsaved scratch only'
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    root = design.rootComponent
+    assert root.bRepBodies.count == 1, 'one base body'
+    all_faces = root.bRepBodies.item(0).faces
+    faces = [f for f in (all_faces.item(i) for i in range(all_faces.count))
+             if abs(f.boundingBox.minPoint.z + 1.0) < 1e-9 and abs(f.boundingBox.maxPoint.z + 1.0) < 1e-9]
+    assert len(faces) == 1, 'one base face at z -10 mm'
+    extrudes = root.features.extrudeFeatures
+    feature_input = extrudes.createInput(root.sketches.itemByName('MixProfS').profiles.item(0),
+                                         adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    one = adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByString('3 mm'))
+    two = adsk.fusion.ToEntityExtentDefinition.create(faces[0], False)
+    assert feature_input.setTwoSidesExtent(one, two) is True, 'two-sided setter refused'
+    feature = extrudes.add(feature_input)
+    assert feature is not None
+    feature.name = 'MixedExtrude'
+    feature.bodies.item(0).name = 'MixedBody'
+    print(json.dumps({'name': feature.name, 'health': int(feature.healthState),
+                      'bodies': feature.bodies.count}))
+"""
+
+
+def _mixed_extent_definition(p):
+    """A distance + to-entity two-sided Extrude reads no extent and names the class pair."""
+    d = p.get("definition") or {}
+    return _measured("unsupported two-sided extent is named, not an unexplained null", d,
+                     d.get("type") == "ExtrudeFeature" and d.get("extent") is None
+                     and d.get("extent_side_count") is None and d.get("direction") is None
+                     and d.get("distance") is None and d.get("distance2") is None
+                     and d.get("distance_applicable") is None and d.get("distance2_applicable") is None
+                     and (d.get("unavailable") or {}).get("extent")
+                     == "two-sided DistanceExtentDefinition + ToEntityExtentDefinition is not a supported extent"
+                     and d.get("not_read") == ["taper_angle", "thin", "start_extent", "is_solid"])
+
+
+def _mixed_extent_rows():
+    """A natively built distance + to-face Extrude, its named definition gap and its material."""
+    rows = [("doc_get", {}, _home_document, ("mx_story", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "mx_story", "story")},
+             _new_document, ("mx_doc", lambda p: p["document_handle"]))]
+
+    def write(name, args, check="ok"):
+        rows.append((name, lambda c, args=args: _combine_pin(c, "mx_doc", args), check, None))
+
+    for name, low, high in (("MixBaseS", (40, 0), (60, 20)), ("MixProfS", (45, 5), (55, 15))):
+        write("sketch_create", {"name": name, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [{
+            "kind": "rectangle", "x1": low[0], "y1": low[1], "x2": high[0], "y2": high[1]}]})
+        if name == "MixBaseS":
+            write("model_extrude", {"sketch_name": name, "distance": -10}, _extruded)
+    write("sys_execute_script", {"script": _MIXED_EXTENT_CREATE, "read_only": False},
+          lambda p: _measured("mixed two-sided extrude built natively", p,
+                              p.get("name") == "MixedExtrude" and p.get("health") == 0
+                              and p.get("bodies") == 1))
+    rows += [("design_get", {"include": ["definition"], "feature": "MixedExtrude", "units": "mm"},
+              _mixed_extent_definition, None),
+             ("model_inspect", _combine_inspect("MixedBody"),
+              _combine_body("mixed two-sided extrude", (45, 5, -10), (55, 15, 3), 1300), None),
+             ("model_inspect", _combine_inspect("Body1"),
+              _combine_body("mixed extrude base unchanged", (40, 0, -10), (60, 20, 0), 4000), None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "mx_story", "story"),
+                                         "expect_document": _ctx_get(c, "mx_doc", "scratch")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "mx_doc", "scratch"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "mx_story", "story")},
+              _document_closed, None)]
+    return rows
+
+
+_EXTRUDE_EDITS += _mixed_extent_rows()

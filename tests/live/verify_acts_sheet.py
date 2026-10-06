@@ -42,6 +42,7 @@ _DRAW_KEY = "sm-sweep-drawing-" + _STAMP
 _FLAT_TEMPLATE = "SM Sweep Flat " + _STAMP
 _DXF = EXPORT_DIR + "/sm_sweep_flat.dxf"
 _CUT_DXF = EXPORT_DIR + "/sm_sweep_cut.dxf"
+_REFUSED_DXF = EXPORT_DIR + "/sm_sweep_flat_refused_" + _STAMP + ".dxf"
 _PDF = EXPORT_DIR + "/sm_sweep_drawing.pdf"
 _PDF_KEY = "sm-sweep-pdf-" + _STAMP
 _DRAWING_PNG = EXPORT_DIR + "/sm_sweep_drawing_" + _STAMP + ".png"
@@ -197,8 +198,8 @@ def _collision_refs(p):
     dups = sorted([r for r in rows if r.get("name") == "Steel (mm)"], key=lambda r: r["index"])
     literal = [r for r in rows if r.get("name") == "Steel (mm)#1"]
     valid = (len(dups) == 2 and len(literal) == 1
-             and dups[0]["ref"] == {"scope": "design", "index": dups[0]["index"]}
-             and literal[0]["ref"] == {"scope": "design", "index": literal[0]["index"]}
+             and dups[0]["ref"] == {"scope": "design", "index": dups[0]["index"], "name": "Steel (mm)"}
+             and literal[0]["ref"] == {"scope": "design", "index": literal[0]["index"], "name": "Steel (mm)#1"}
              and dups[1]["ref"] == "design:Steel (mm)#2")
     steel_indices = {r["index"] for r in dups}
     components = state["components"]["components"] if state else []
@@ -207,6 +208,7 @@ def _collision_refs(p):
                 and r.get("active_rule_ref_state") == "matched"
                 and isinstance(r.get("active_rule_ref"), dict)
                 and r["active_rule_ref"].get("scope") == "design"
+                and r["active_rule_ref"].get("name") == "Steel (mm)"
                 and r["active_rule_ref"].get("index") in steel_indices]
     assigned_indices = {r["active_rule_ref"]["index"] for r in assigned}
     valid = (valid and len(assigned) >= 2 and len(assigned_indices) >= 2
@@ -369,6 +371,66 @@ def _collision_rule_rows():
         rows.append(("model_inspect", {"target": _PART + ":1", "include": ["default", "mass"],
                                       "per_body": True, "accuracy": "very_high", "units": "mm"},
                      _retire_compare("sm_collision_refusal_" + _PART + ":1", _retire_material_state, True), None))
+    return rows + _stale_rule_ref_rows()
+
+
+_STALE_RULES = ("SM Stale Victim", "SM Stale Target", "SM Stale Tail")
+
+
+def _delete_rules_script(names):
+    """Delete each named unused design rule through the raw API, bypassing every tool."""
+    return f'''import adsk.core, adsk.fusion, json
+
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    rules = design.designSheetMetalRules
+    out = {{}}
+    for name in {json.dumps(list(names))}:
+        hits = [rules.item(i) for i in range(rules.count) if rules.item(i).name == name]
+        out[name] = len(hits) == 1 and not hits[0].isUsed and hits[0].deleteMe()
+    print("deleted " + json.dumps(out, sort_keys=True))
+'''
+
+
+def _rules_deleted(names):
+    """Require the raw script to report every named rule deleted."""
+    def check(p):
+        got = _printed("deleted", p)
+        return _measured("unused rules deleted by the raw API", got,
+                         got == {name: True for name in names})
+    return check
+
+
+def _stale_target_ref(p):
+    """Build the Target rule's {scope,index,name} ref; the three fixture rules sit in order, unused."""
+    rows = (p.get("rules") or {}).get("rules") or []
+    hits = [r for r in rows if r.get("name") in _STALE_RULES]
+    order = [r.get("name") for r in sorted(hits, key=lambda r: r.get("index", -1))]
+    indices = sorted(r.get("index", -1) for r in hits)
+    _measured("stale-ref fixture rules in collection order", hits,
+              order == list(_STALE_RULES) and indices == list(range(indices[0], indices[0] + 3))
+              and all(r.get("is_used") is False for r in hits))
+    target = next(r for r in hits if r["name"] == "SM Stale Target")
+    return {"scope": "design", "index": target["index"], "name": target["name"]}
+
+
+def _stale_rule_ref_rows():
+    """A ref read before an earlier rule's delete refuses, naming the rule now at its index."""
+    reads = {"include": ["rules", "components"], "max_results": 200}
+    rows = [("sheet_edit_rule", {"action": "copy", "rule": "library:Steel (mm)", "name": name}, "ok", None)
+            for name in _STALE_RULES]
+    rows += [("sheet_get", reads, lambda p: _stale_target_ref(p) is not None,
+              ("sm_stale_ref", _recall("sm_stale_ref", _stale_target_ref))),
+             ("sys_execute_script", {"script": _delete_rules_script(_STALE_RULES[:1])},
+              _rules_deleted(_STALE_RULES[:1]), None),
+             ("sheet_get", reads, _retire_compare("sm_stale_rules", _collision_rule_state, False), None),
+             ("sheet_edit_rule", lambda c: {"action": "update", "k_factor": 0.31,
+                                            "rule": _ctx_get(c, "sm_stale_ref", "Target ref before the delete")},
+              _refused("is now 'SM Stale Tail', not 'SM Stale Target'", "the rule list changed",
+                       "sheet_get(include=['rules','components'])"), None),
+             ("sheet_get", reads, _retire_compare("sm_stale_rules", _collision_rule_state, True), None),
+             ("sys_execute_script", {"script": _delete_rules_script(_STALE_RULES[1:])},
+              _rules_deleted(_STALE_RULES[1:]), None)]
     return rows
 
 
@@ -563,6 +625,15 @@ def _dxf(p, slotted=False):
                      and _near(max(ys) - min(ys), 40, 0.01)
                      and ((not bends and not extents and slot_ok) if slotted
                           else (len(bends) == 1 and len(extents) == 2 and not inner)))
+
+
+def _refused_dxf_absent(p):
+    """Require the refused flat export's path to hold no file while the sheet part still reads."""
+    exists = Path(_REFUSED_DXF).exists()
+    names = [row.get("component") for row in (p.get("components") or {}).get("components") or []]
+    return _measured("refused flat DXF path holds no file",
+                     {"file_path": _REFUSED_DXF, "exists": exists, "components": names},
+                     not exists and bool(names))
 
 
 def _unfolded(p):
@@ -1372,6 +1443,14 @@ _SHEET = _SHEET_BUILD + [
     ("design_export", {"format": "dxf", "dxf_flat_pattern": _PART, "file_path": _DXF,
                        "dxf_flat_units": "mm", "dxf_bend_lines": True,
                        "dxf_bend_extents": True}, _dxf, None),
+    # Sketch-only flags beside a flat export are refused by name, and nothing is written.
+    ("sheet_get", {"include": ["components"], "max_results": 200}, _refused_dxf_absent, None),
+    ("design_export", {"format": "dxf", "dxf_flat_pattern": _PART, "file_path": _REFUSED_DXF,
+                       "dxf_flat_units": "mm", "dxf_bend_lines": False, "dxf_bend_extents": False,
+                       "dxf_export_construction": False, "dxf_export_points": False},
+     _refused("dxf_flat_pattern takes dxf_flat_units, dxf_bend_lines and dxf_bend_extents only; "
+              "drop dxf_export_construction, dxf_export_points."), None),
+    ("sheet_get", {"include": ["components"], "max_results": 200}, _refused_dxf_absent, None),
     ("find_geometry", {"target": _PART, "kind": "planar_face", "max_results": 25},
      _top_face(900), _top_handle(900)),
     ("find_geometry", {"target": _PART, "kind": "cylinder_face", "max_results": 20},
@@ -1752,17 +1831,29 @@ def _sheet_serial_rows():
               and p.get('member_count') == 2)
     rows.extend(_retire_reads('serial_two_groups', ['', 'SerialA:1', 'SerialB:1'], []))
     write('design_edit_timeline', {'action': 'suppress', 'feature': 'Unfold1'},
-          _refused("'Unfold1' names 2 hidden unfold features in collapsed groups",
+          _refused("'Unfold1' names 2 hidden unfold-group features in collapsed groups",
                    "for 'SerialA/Unfold1' run design_edit_timeline(action='group_state', "
                    "feature='Group1', collapsed=false)",
                    "for 'SerialB/Unfold1' run design_edit_timeline(action='group_state', "
                    "feature='Group2', collapsed=false)",
                    "Keep the unfold group intact."))
+    # The refold of a collapsed refolded group gets the same expand advice, and the group refuses
+    # an ungroup; once expanded, the unfold still reads its refold natively.
+    write('design_edit_timeline', {'action': 'suppress', 'feature': 'SerialA/Refold1'},
+          _refused("'SerialA/Refold1' is inside collapsed group 'Group1'. Run design_edit_timeline("
+                   "action='group_state', feature='Group1', collapsed=false)",
+                   "qualified reference 'SerialA/Refold1'. Keep the unfold group intact."))
+    write('design_edit_timeline', {'action': 'ungroup', 'feature': 'Group1'},
+          _refused("'Group1' is an unfold group; ungrouping it loses its unfold/refold association. "
+                   "Expand it with design_edit_timeline(action='group_state', feature='Group1', "
+                   "collapsed=false) instead."))
     rows.extend(_retire_reads('serial_two_groups', ['', 'SerialA:1', 'SerialB:1'], [], after=True))
     for group in ('Group1', 'Group2'):
         write('design_edit_timeline', {'action': 'group_state', 'feature': group, 'collapsed': False},
               lambda p, group=group: p.get('group') == group and p.get('is_collapsed') is False
               and p.get('member_count') == 2)
+    write('sheet_create_refold', {'unfold': 'SerialA/Unfold1'},
+          _refused("unfold='SerialA/Unfold1' already has refold 'Refold1'", 'no duplicate was created'))
 
     write('doc_close', lambda c: {'name': _ctx_get(c, 'serial_doc', 'owned serial scene'), 'save_changes': False}, _closed_one)
     rows += [('doc_activate', lambda c: {'name': _ctx_get(c, 'serial_home_handle', 'home')}, 'ok', None),
@@ -1801,6 +1892,17 @@ def _lost_pair_gone(p):
     valid = (state is not None and bool(expected) and now == expected
              and all(r.get('health', 'healthy') == 'healthy' for r in rows))
     return _measured('only the orphan refold and unfold left the timeline', now, valid)
+
+
+_RAW_UNGROUP_SCRIPT = '''import adsk.core, adsk.fusion, json
+
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    groups = design.timeline.timelineGroups
+    hits = [groups.item(i) for i in range(groups.count) if groups.item(i).name == "Group1"]
+    deleted = len(hits) == 1 and hits[0].deleteMe(False)
+    print("ungrouped " + json.dumps({"deleted": deleted, "groups": groups.count}))
+'''
 
 
 def _sheet_lost_association_rows():
@@ -1850,11 +1952,15 @@ def _sheet_lost_association_rows():
                                             'all_bends': True},
           lambda p: p.get('created') is True and p.get('feature') == 'Unfold1')
     # The measured sequence that loses both associations: collapse the unfold's group, remove the
-    # group, then refold. The refold lands and its own association check reports the loss.
+    # group, then refold. The tool refuses that ungroup, so the raw API removes the group; the refold
+    # then lands and its own association check reports the loss.
     write('design_edit_timeline', {'action': 'group_state', 'feature': 'Group1', 'collapsed': True},
           lambda p: p.get('group') == 'Group1' and p.get('is_collapsed') is True)
     write('design_edit_timeline', {'action': 'ungroup', 'feature': 'Group1'},
-          lambda p: p.get('ungrouped') is True and p.get('group') == 'Group1')
+          _refused("'Group1' is an unfold group; ungrouping it loses its unfold/refold association."))
+    write('sys_execute_script', {'script': _RAW_UNGROUP_SCRIPT},
+          lambda p: _measured('raw API removed the unfold group', _printed('ungrouped', p),
+                              _printed('ungrouped', p) == {'deleted': True, 'groups': 0}))
     write('sheet_create_refold', {'unfold': 'LostA/Unfold1'},
           _refused("Refold 'Refold1' remains", 'unfold association'))
     rows.append(('design_get', {'include': ['tree', 'timeline'], 'tree_bodies': True, 'tree_handles': True,
@@ -2112,6 +2218,113 @@ def _z_flat_rows():
 
 
 _SHEET_POSITIONS += _z_flat_rows()
+
+
+_HEM_CHANNEL_SCRIPT = '''import adsk.core, adsk.fusion, json
+
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    root = design.rootComponent
+    P, V = adsk.core.Point3D.create, adsk.core.ValueInput.createByString
+    occ = root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+    occ.activate()
+    comp = occ.component
+    comp.name = "HemProbe"
+    rule = comp.activeSheetMetalRule
+    rule.thickness.expression, rule.bendRadius.expression, rule.gap.expression = "1 mm", "1 mm", "0.5 mm"
+    rule.kFactor = 0.42
+    sk = comp.sketches.add(root.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(P(0, 0, 0), P(6, 4, 0))
+    ff = comp.features.flangeFeatures
+    ff.add(ff.createBaseFlangeInput([sk.profiles.item(0)]))
+    body = comp.bRepBodies.item(0)
+    top = body.boundingBox.maxPoint.z
+    line = adsk.core.Curve3DTypes.Line3DCurveType
+    rims = [e for e in body.edges if e.geometry.curveType == line and abs(e.length - 6.0) < 1e-6
+            and abs(e.startVertex.geometry.z - top) < 1e-6 and abs(e.endVertex.geometry.z - top) < 1e-6]
+    ff.add(ff.createEdgeFlangeInput(rims, V("20 mm")))
+    body = comp.bRepBodies.item(0)
+    plane, cyl = adsk.core.SurfaceTypes.PlaneSurfaceType, adsk.core.SurfaceTypes.CylinderSurfaceType
+    stationary = [f for f in body.faces if f.geometry.surfaceType == plane
+                  and abs(f.pointOnFace.z - top) < 1e-7 and f.area > 20]
+    unfold_in = comp.features.unfoldFeatures.createInput(stationary[0])
+    unfold_in.bendFaces = [f for f in body.faces if f.geometry.surfaceType == cyl]
+    unfold = comp.features.unfoldFeatures.add(unfold_in)
+    comp.features.refoldFeatures.add(comp.features.refoldFeatures.createInput(unfold))
+    design.activateRootComponent()
+    body = comp.bRepBodies.item(0)
+    print("built " + json.dumps({"rims": len(rims), "stationary": len(stationary),
+                                 "faces": body.faces.count, "volume_cm3": round(body.volume, 6)}))
+'''
+
+_HEM_SNAPSHOT_SCRIPT = '''import adsk.core, adsk.fusion, json
+
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    tl = design.timeline
+    comp = [c for c in design.allComponents if c.name == "HemProbe"][0]
+    body = comp.bRepBodies.item(0)
+    lo, hi = body.boundingBox.minPoint, body.boundingBox.maxPoint
+    print("snapshot " + json.dumps({
+        "timeline": [[tl.item(i).name, tl.item(i).healthState] for i in range(tl.count)],
+        "marker": tl.markerPosition, "hems": comp.features.hemFeatures.count,
+        "faces": body.faces.count, "volume_cm3": round(body.volume, 6),
+        "box_cm": [round(v, 5) for v in (lo.x, lo.y, lo.z, hi.x, hi.y, hi.z)]}))
+'''
+
+
+def _printed(tag, p):
+    """The JSON object a raw script printed after '<tag> ', or None."""
+    line = next((ln[len(tag) + 1:] for ln in (p.splitlines() if isinstance(p, str) else [])
+                 if ln.startswith(tag + " ")), None)
+    try:
+        return json.loads(line) if line is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _hem_snapshot(p):
+    """Return the channel's native timeline, hem count and body facts when they read complete."""
+    snap = _printed("snapshot", p)
+    return snap if isinstance(snap, dict) and snap.get("hems") == 0 and snap.get("faces") == 22 else None
+
+
+def _hem_rope_failure_rows():
+    """A rope hem the channel cannot take quotes Fusion's whole failure text, and nothing lands."""
+    rows = [("doc_get", {"max_results": 1000}, _home_session,
+             ("sm_home", _recall("sm_home", lambda p: p["active"]["document_handle"]))),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "sm_home", "home")}, _coupon_session,
+             ("sm_coupon", _recall("sm_coupon", lambda p: p["document_handle"])))]
+    def write(name, args, check="ok", save=None):
+        rows.append((name, lambda c, args=args: {**(args(c) if callable(args) else args),
+                     "expect_document": _ctx_get(c, "sm_coupon", "hem channel")}, check, save))
+    write("sys_execute_script", {"script": _HEM_CHANNEL_SCRIPT},
+          lambda p: _measured("rope-hem channel built", _printed("built", p), _printed("built", p) == {
+              "rims": 2, "stationary": 1, "faces": 22, "volume_cm3": 4.842743}))
+    def rim(p):
+        rows_ = p.get("matches") or []
+        _measured("one 60 mm rope rim at (30, -2, 20) mm", rows_, len(rows_) == 1
+                  and all(_near(a, b, .001) for a, b in zip(rows_[0].get("position") or [], (30, -2, 20)))
+                  and len(rows_[0].get("position") or []) == 3 and _near(rows_[0].get("length"), 60, .001))
+        return rows_[0]["handle"]
+    rows.append(("find_geometry", {"target": "HemProbe:1", "kind": "line_edge", "nearest_to": [30, -2, 20],
+                                   "max_results": 1, "units": "mm"}, lambda p: rim(p) is not None, ("hem_rim", rim)))
+    snapshot = {"script": _HEM_SNAPSHOT_SCRIPT, "read_only": True}
+    rows.append(("sys_execute_script", snapshot, _retire_compare("hem_rope_snapshot", _hem_snapshot, False), None))
+    write("sheet_create_hem", lambda c: {"kind": "rope", "edge": _ctx_get(c, "hem_rim", "rope rim"),
+                                         "length": 6, "gap": .5, "radius": 1.5, "units": "mm"},
+          _refused("Hem failed:", "Compute Failed // SM_HEM_ROPE_INVALID_INPUTS - Can't generate the Hem. "
+                   "The input values create improper geometry. Adjust the length, gap, or radius.",
+                   "No hem was added."))
+    rows.append(("sys_execute_script", snapshot, _retire_compare("hem_rope_snapshot", _hem_snapshot, True), None))
+    write("doc_activate", lambda c: {"name": _ctx_get(c, "sm_home", "home")})
+    rows.extend([("doc_close", lambda c: {"name": _ctx_get(c, "sm_coupon", "hem channel"), "save_changes": False,
+                 "expect_document": _ctx_get(c, "sm_home", "home")}, _closed_one, None),
+                 ("doc_get", {"max_results": 1000}, _story_restored, None)])
+    return rows
+
+
+_SHEET_POSITIONS += _hem_rope_failure_rows()
 
 _SHEET_CAM_READ = [
     ("cam_inspect_toolpaths", {"scope": _CAM_SETUP}, _laser_inspected, None),

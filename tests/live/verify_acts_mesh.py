@@ -5,7 +5,7 @@
 
 Families with no home on the mechanism ride scratch fixtures in the SAME document - surface bodies
 built, trimmed and stitched, a mesh round-tripped through export and insert, and the arrange solver
-nesting last, because it restructures what it nests.
+nesting last, because it adds Arrange/Envelope occurrences beside what it nests.
 """
 
 import copy
@@ -19,6 +19,7 @@ from verify_core import (
     _same_face_area, _shelled, _split_bodies, _stitched, _trim_scoped_to_target, _unless,
     _unstitched, _watch)
 from verify_acts_cam import MACHINING_EXTENSION
+from verify_acts_doc import _subject_visible
 from verify_acts_model_combine_revolve import _combine_pin
 from verify_layout import _px, _py
 from verify_acts_model_sweep import (
@@ -740,7 +741,7 @@ def _tiny_surface_history(after=False):
         valid = state is not None
         if valid:
             tree, timeline = state["tree"], state["timeline"]
-            valid = (tree.get("child_count") == 2 and timeline["count"] == (8 if after else 7)
+            valid = (tree.get("child_count") == 3 and timeline["count"] == (12 if after else 11)
                      and timeline.get("summary") == {"states": {"healthy": timeline["count"]}, "exceptions": []}
                      and timeline.get("groups") == {})
         if valid and after:
@@ -751,7 +752,7 @@ def _tiny_surface_history(after=False):
                      and added[0].get("is_solid") is False and added[0].get("visible") is True
                      and bool(added[0].get("handle"))
                      and timeline["timeline"][:-1] == before["timeline"]["timeline"]
-                     and timeline["timeline"][-1] == {"index": 7, "name": "Extrude2",
+                     and timeline["timeline"][-1] == {"index": 11, "name": "Extrude2",
                                                     "type": "ExtrudeFeature", "component": "K2Surface"})
             if valid:
                 owners[0]["bodies"].remove(added[0])
@@ -786,6 +787,36 @@ def _tiny_surface_face(p):
     return {k: row[k] for k in ("kind", "area", "position", "normal", "frame")}
 
 
+def _symmetric_cowl_rows():
+    """A symmetric 89.4 deg revolve spans 178.8 deg; its two faces refuse one thicken, one face does not."""
+    cowl = [[87, -66], [85, -73], [76, -85], [66, -94], [57, -99], [54, -99]]
+    return [
+        ("design_activate_component", {"occurrence": "root"}, "ok", None),
+        ("model_create_component", {"name": "SRevCowl", "activate": True, "x": 1600}, _made_component, None),
+        ("sketch_create", {"plane": "xy", "name": "SRevCowlS"}, "ok", None),
+        ("sketch_add_geometry", {"sketch_name": "SRevCowlS", "geometry": [
+            {"kind": "cv_spline", "points": cowl, "degree": 3}]}, "ok", None),
+        # The area equals the one-sided 178.8 deg revolve of this spline (110.364137 cm2, measured).
+        ("surface_revolve", {"sketch_name": "SRevCowlS", "axis": "y", "angle_deg": 89.4, "symmetric": True},
+         lambda p: _measured("a symmetric angle is read back per side with its 2x total",
+                             {k: p.get(k) for k in ("angle_deg", "total_angle_deg", "symmetric", "area_added_cm2")},
+                             p.get("angle_deg") == 89.4 and p.get("total_angle_deg") == 178.8
+                             and p.get("symmetric") is True and p.get("is_solid") is False
+                             and _near(p.get("area_added_cm2"), 110.364137, .001)), None),
+        ("find_geometry", {"target": "SRevCowl", "kind": "nurbs_face", "units": "mm", "max_results": 10},
+         lambda p: p.get("match_count") == p.get("returned") == 2
+         and all(_near(m.get("area"), 5518.207, .01) for m in p["matches"]), _fgn("cowl_faces")),
+        ("surface_thicken", lambda c: {"faces": _ctx_get(c, "cowl_faces", "both cowl halves"), "thickness": -2.5},
+         _refused("ASM_INCONSISTENT_ORIENTATION", "thicken each face in its own call with chaining=false"), None),
+        ("surface_thicken", lambda c: {"faces": _ctx_get(c, "cowl_faces", "both cowl halves")[:1],
+                                       "thickness": -2.5, "chaining": False},
+         lambda p: p.get("thickened") is True and p.get("is_solid") is True, None),
+    ]
+
+
+_TINY_ADDRESS = "K2Surface/Extrude2@11"
+
+
 def _tiny_surface_rows():
     """Demonstrate a small retained sheet after an area-threshold refusal using public reads."""
     rows = [("doc_get", {}, _home_document, ("tiny_home", _home_address)),
@@ -798,6 +829,17 @@ def _tiny_surface_rows():
     write("sketch_add_geometry", {"sketch_name": "K2Cube", "geometry": [
         {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]})
     write("model_extrude", {"sketch_name": "K2Cube", "component": "K2Witness", "distance": 10}, _extruded)
+    # A sibling component whose second extrude is also 'Extrude2': the bare name is then ambiguous.
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "K2Sib", "activate": True, "x": 200}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "K2SibS"})
+    write("sketch_add_geometry", {"sketch_name": "K2SibS", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10},
+        {"kind": "rectangle", "x1": 20, "y1": 0, "x2": 30, "y2": 10}]})
+    for index, name in ((0, "Extrude1"), (1, "Extrude2")):
+        write("model_extrude", {"sketch_name": "K2SibS", "component": "K2Sib", "profile_index": index,
+                                "distance": 5, "operation": "new"},
+              lambda p, name=name: _extruded(p) and p.get("feature") == name)
     write("design_activate_component", {"occurrence": "root"})
     write("model_create_component", {"name": "K2Surface", "activate": True}, _made_component)
     write("sketch_create", {"plane": "xy", "name": "K2Normal"})
@@ -817,8 +859,8 @@ def _tiny_surface_rows():
                            '"features_verified": 1', '"area_change_cm2"', '"area_increase_threshold_cm2": 1e-06',
                            "not confirmation", "Re-read with model_inspect",
                            "Its result bodies: 'Body2'.",
-                           "'Extrude2' remains in the timeline; remove it with "
-                           "design_delete_feature(feature='Extrude2')."))
+                           f"'{_TINY_ADDRESS}' remains in the timeline; remove it with "
+                           f"design_delete_feature(feature='{_TINY_ADDRESS}')."))
         rows.append(("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
                                      "tree_handles": True, "max_results": 200}, _tiny_surface_history(after), None))
         rows.append(("model_inspect", {"target": "K2Witness:1", "include": ["default", "mass"], "per_body": True,
@@ -845,12 +887,16 @@ def _tiny_surface_rows():
          lambda p: _measured("retained sheet independently spans 0.01 by 0.005 mm",
                               _tiny_surface_bounds(p, "face"), _tiny_surface_bounds(p, "face")
                               == [0.01, 0.0, 0.005, 40.0, 0.0, 0.0, 40.01, 0.0, 0.005]), None),
+        # The bare name is refused beside the sibling's namesake; the reply's own address is not.
         ("design_delete_feature", lambda c: {"feature": "Extrude2",
                                              "expect_document": _ctx_get(c, "tiny_doc", "owned scratch")},
-         lambda p: _measured("the named call removes exactly the retained tiny sheet",
+         _refused("matches 2 timeline objects", "K2Sib/Extrude2@6", _TINY_ADDRESS), None),
+        ("design_delete_feature", lambda c: {"feature": _TINY_ADDRESS,
+                                             "expect_document": _ctx_get(c, "tiny_doc", "owned scratch")},
+         lambda p: _measured("the reply's address removes exactly the retained tiny sheet",
                              {k: p.get(k) for k in ("deleted", "feature", "index", "entity_type")},
                              p.get("deleted") is True and p.get("feature") == "Extrude2"
-                             and p.get("index") == 7 and p.get("entity_type") == "ExtrudeFeature"), None),
+                             and p.get("index") == 11 and p.get("entity_type") == "ExtrudeFeature"), None),
         ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
                         "max_results": 200},
          lambda p: _measured("tree and history read as before the refused write",
@@ -898,6 +944,7 @@ _MACHINING = [
                          {"is_solid": p.get("is_solid"), "area_added_cm2": p.get("area_added_cm2")},
                          p.get("is_solid") is False and _num(p.get("area_added_cm2"))
                          and p["area_added_cm2"] > 0), None),
+    *_symmetric_cowl_rows(),
     ("design_activate_component", {"occurrence": "SRev:1"}, "ok", None),
     # a CLOSED revolved sphere surface encloses one cell; surface_fill must seal it to a SOLID at
     # the enclosed volume (r=6mm -> 904.78 mm3) MEASURED off the result, never predicted.
@@ -2121,6 +2168,64 @@ def _thicken_witness_material(p):
     return state
 
 
+def _placed_sheet_bodies(p):
+    """The PTSheet occurrence's body rows in a design_get tree, or None when not exactly one node."""
+    nodes = [n for n in (p.get("tree") or {}).get("children") or [] if n.get("component") == "PTSheet"]
+    return nodes[0].get("bodies") if len(nodes) == 1 else None
+
+
+def _placed_sheet_visible(visible):
+    """The placed sheet reads back under the thicken's disclosed handle with this visibility."""
+    def check(p):
+        bodies = _placed_sheet_bodies(p)
+        want = _RECALL.get("pt_source_handle")
+        # The new wall lands beside its source in the active component: one sheet, one solid.
+        sheets = [b for b in bodies or [] if b.get("is_solid") is False]
+        return _measured("placed source read under the disclosed handle", bodies,
+                         isinstance(bodies, list) and len(bodies) == 2 and len(sheets) == 1 and bool(want)
+                         and sheets[0].get("handle") == want and sheets[0].get("visible") is visible
+                         and sum(b.get("is_solid") is True for b in bodies) == 1)
+    return check
+
+
+def _placed_source_thickened(p):
+    """The hidden placed source is undone by view_set on its own handle, with no tree detour."""
+    rows = p.get("source_visibility") or [{}]
+    handle, body = rows[0].get("handle"), rows[0].get("body")
+    note = p.get("note") or ""
+    return _measured("placed source remedy names its own handle", {"rows": rows, "note": note},
+                     p.get("is_solid") is True and len(rows) == 1 and isinstance(handle, str) and bool(handle)
+                     and isinstance(body, str) and rows[0].get("occurrence") == "PTSheet:1"
+                     and rows[0].get("after") == {"light_bulb_on": False, "visible": False}
+                     and f"Source '{body}' in 'PTSheet:1' became hidden. Undo it with "
+                         f"view_set(action='show', target=['{handle}'])." in note
+                     and "design_get" not in note)
+
+
+def _thicken_placed_source_rows(write, rows):
+    """A sheet in a TRANSLATED component: the thicken's source handle is the tree's, and shows it."""
+    write("model_create_component", {"name": "PTSheet", "activate": True, "x": -120, "y": -120},
+          _made_component)
+    write("sketch_create", {"name": "PTSheetS", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "PTSheetS", "units": "mm", "geometry": [
+        {"kind": "line", "x1": 0, "y1": 0, "x2": 20, "y2": 0}]})
+    write("surface_extrude", {"sketch_name": "PTSheetS", "component": "PTSheet", "distance": 10,
+                              "units": "mm", "operation": "new"},
+          lambda p: p.get("created") is True and p.get("is_solid") is False)
+    rows.append(("find_geometry", {"target": "PTSheet:1", "kind": "planar_face", "units": "mm", "max_results": 10},
+                 lambda p: p.get("match_count") == p.get("returned") == 1
+                 and p["matches"][0].get("position") == [-110, -120, 5] and p["matches"][0].get("area") == 200,
+                 _fg("pt_face")))
+    write("surface_thicken", lambda c: {"faces": [_ctx_get(c, "pt_face", "placed sheet face")], "thickness": 1,
+          "units": "mm", "chaining": False, "operation": "new"}, _placed_source_thickened,
+          ("pt_source_handle", _recall("pt_source_handle", lambda p: p["source_visibility"][0]["handle"])))
+    tree = {"include": ["tree"], "tree_bodies": True, "tree_handles": True, "max_results": 2000}
+    rows.append(("design_get", tree, _placed_sheet_visible(False), None))
+    write("view_set", lambda c: {"action": "show", "target": [_ctx_get(c, "pt_source_handle", "disclosed handle")]},
+          lambda p: [(b.get("light_bulb_on"), b.get("visible")) for b in p.get("bodies") or []] == [(True, True)])
+    rows.append(("design_get", tree, _placed_sheet_visible(True), None))
+
+
 def _thicken_visibility_rows():
     """Check two source visibility transitions and typed recovery in an owned scene."""
     rows = [("doc_get", {}, _home_document, ("thicken_home", _home_address)),
@@ -2217,7 +2322,7 @@ def _thicken_visibility_rows():
                      and sources == [{"body": body, "face_indices": [0], "handle": handle,
                         "before": {"light_bulb_on": want_before, "visible": want_before},
                         "after": {"light_bulb_on": not want_before, "visible": not want_before}}]
-                     and p.get("note", "").count(f"Source '{body}' (handle {handle}) became "
+                     and p.get("note", "").count(f"Source '{body}' became "
                                                  + ("hidden." if want_before else "shown.")) == 1
                      and f"Undo it with view_set(action='{action}', target=['{handle}'])." in p["note"])
             if valid:
@@ -2259,6 +2364,7 @@ def _thicken_visibility_rows():
         rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "thicken_wall_visible", "first wall control"),
                      "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
                      _retire_compare("thicken_first_wall", _thicken_material, role == "hidden"), None))
+    _thicken_placed_source_rows(write, rows)
     rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "thicken_home", "home"),
                                         "expect_document": _ctx_get(c, "thicken_doc", "owned scene")}, "ok", None),
              ("doc_close", lambda c: {"name": _ctx_get(c, "thicken_doc", "owned scene"), "save_changes": False,
@@ -2270,9 +2376,79 @@ def _thicken_visibility_rows():
 
 _MACHINING += _thicken_visibility_rows()
 
+
+def _repeat_isolate_rows():
+    """A repeat isolate after a sibling was shown re-applies the isolation, judged by the tree."""
+    rows = [("doc_get", {}, _home_document, ("iso_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "iso_home", "home")}, _new_document,
+             ("iso_doc", lambda p: p["document_handle"]))]
+    def write(tool, args, check="ok"):
+        rows.append((tool, lambda c: {**args, "expect_document": _ctx_get(c, "iso_doc", "owned isolate scene")},
+                     check, None))
+    for name, (x1, y1, x2, y2), height in (("Tray", (0, 0, 60, 40), 10), ("Chassis", (-10, -30, 70, -10), 60)):
+        write("design_activate_component", {"occurrence": "root"})
+        write("model_create_component", {"name": name, "activate": True}, _made_component)
+        write("sketch_create", {"plane": "xy", "name": name + "S"})
+        write("sketch_add_geometry", {"sketch_name": name + "S", "geometry": [
+            {"kind": "rectangle", "x1": x1, "y1": y1, "x2": x2, "y2": y2}]})
+        write("model_extrude", {"sketch_name": name + "S", "component": name, "distance": height}, _extruded)
+    write("design_activate_component", {"occurrence": "Tray:1"})
+    write("view_set", {"action": "isolate", "target": ["Tray:1"]}, lambda p: p.get("affected") == ["Tray:1"])
+    write("view_set", {"action": "show", "target": ["Chassis:1"]}, lambda p: p.get("affected") == ["Chassis:1"])
+    write("design_activate_component", {"occurrence": "root"})
+    # The repeat: Tray:1 already reads isolated, and the chassis shown above must not stay drawn.
+    write("view_set", {"action": "isolate", "target": ["Tray:1"]}, lambda p: p.get("affected") == ["Tray:1"])
+    rows += [("design_get", {"include": ["tree"], "component": "Chassis:1", "tree_bodies": True},
+              _subject_visible("Chassis:1", False), None),
+             ("design_get", {"include": ["tree"], "component": "Tray:1", "tree_bodies": True},
+              _subject_visible("Tray:1", True), None),
+             ("view_screenshot", {"view": "iso-top-right", "width": 640, "height": 480}, "ok", None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "iso_home", "home"),
+                                         "expect_document": _ctx_get(c, "iso_doc", "owned isolate scene")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "iso_doc", "owned isolate scene"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "iso_home", "home")}, _document_closed, None)]
+    return rows
+
+
+_MACHINING += _repeat_isolate_rows()
+
+
+def _disc_centre_within(label, chunk, x0, y0, half):
+    """model_inspect: the disc reads under its own top-level path, centred within `half` mm of the
+    authored (x0, y0) of `chunk` as the layout placed it."""
+    def check(p):
+        c = p.get("center") or {}
+        return _measured(label, {"target": p.get("target"), "center": c},
+                         "ArrP3:1" in str(p.get("target")) and _num(c.get("x")) and _num(c.get("y"))
+                         and abs(c["x"] - _px(chunk, x0)) < half and abs(c["y"] - _py(chunk, y0)) < half)
+    return check
+
+
+def _move_originals_rows():
+    """move_originals moves the disc in place on its own path; the feature only ADDS occurrences."""
+    return [
+        ("model_arrange", {"boundary_sketch": "ArrB", "shapes": ["ArrP3:1"], "solver": "true_shape",
+                           "spacing": 2, "move_originals": True},
+         lambda p: _measured("move_originals moved the input in place and listed what it added",
+                             {k: p.get(k) for k in ("moved", "new_occurrences", "note")},
+                             p.get("moved") == ["ArrP3:1"] and bool(p.get("new_occurrences"))
+                             and "ArrP3:1" not in p["new_occurrences"]
+                             and "Inputs moved on their own paths; new_occurrences lists the added "
+                                 "occurrences." in (p.get("note") or "")
+                             and "restructured" not in (p.get("note") or "")),
+         ("arr_moved", lambda p: p["feature"])),
+        # The hexagon is authored at (300, 500), radius 120 mm; the box is wide enough for either radius.
+        ("model_inspect", {"target": "ArrP3:1", "units": "mm"},
+         _disc_centre_within("the disc reads on ArrP3:1 inside the hexagon's box", "ArrB", 300, 500, 140), None),
+        ("design_delete_feature", lambda c: {"feature": _ctx_get(c, "arr_moved", "move_originals nest")},
+         "ok", None),
+        ("model_inspect", {"target": "ArrP3:1", "units": "mm"},
+         _disc_centre_within("the disc is back where it was drawn", "ArrP3", 350, 359, .01), None),
+    ]
+
 # ACT 7b: NESTING - model_arrange as a FUNCTION of its boundary. It runs after the
-# parametric resize on purpose: the solver restructures the parts it nests under new
-# Envelope occurrences, and that is not a thing to hand to an act that recomputes the
+# parametric resize on purpose: the solver adds Arrange/Envelope occurrences and moves or
+# copies the parts it nests, and that is not a thing to hand to an act that recomputes the
 # whole assembly.
 _NESTING = _box("ArrP1", ox=200, oy=350) + [
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
@@ -2320,6 +2496,7 @@ _NESTING = _box("ArrP1", ox=200, oy=350) + [
     ("model_arrange", {"boundary_sketch": "ArrB", "shapes": ["ArrP1:1"]},
      _refused("ArrP1:1", "ACTIVE edit target", "design_activate_component('root')"), None),
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
+    *_move_originals_rows(),
     # TRUE-SHAPE, because the boundary is a hexagon: the rectangular solver nests bounding boxes and
     # refuses a non-rectangular envelope outright (ARRANGE_ERROR_ENVELOPE_INVALIDRECTANGULAR), which
     # is exactly what a slanted wall is for. The solver places COPIES under an Envelope occurrence
@@ -2956,8 +3133,14 @@ _MESH = [
           or p.get("volume_after_cm3") != p.get("volume_before_cm3")), None),
     # a parametric mesh write reports the MODE it ran in and the base feature it opened to run
     # there: the scope is what a parametric design requires, and the payload names both.
+    # 'algorithm' is the input's read-back; no feature comes back to say which algorithm ran.
     ("mesh_combine", {"target": "ME", "tools": ["MF"], "operation": "join"},
-     lambda p: p.get("design_mode") == "parametric" and bool(p.get("base_feature")), None),
+     lambda p: _measured("combine names its algorithm as an input read-back",
+                         {k: p.get(k) for k in ("design_mode", "base_feature", "algorithm_source", "note")},
+                         p.get("design_mode") == "parametric" and bool(p.get("base_feature"))
+                         and p.get("algorithm_source") == "input_readback"
+                         and "the algorithm that ran is not confirmed." in (p.get("note") or "")
+                         and "fewer triangles" not in (p.get("note") or "")), None),
     # a pristine scratch mesh deleted with the survivor check: the payload's own claim is the
     # re-scan. A mesh another feature already transformed (e.g. the plane-cut MD) carries a
     # different lineage; this beat exercises the plain-delete contract.

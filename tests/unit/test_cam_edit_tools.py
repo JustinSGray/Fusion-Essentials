@@ -1653,6 +1653,57 @@ class TestCreateLibrary:
         assert res["isError"] is True and "99" in res["message"]
         assert len(libs.imported) == 0
 
+    @pytest.mark.parametrize("seed", [{"from_type": "flat end mill"}, {"library_url": "u"},
+                                      {"library_url": "u", "index": 0, "description": "x"},
+                                      {"library_url": "u", "index": True}])
+    def test_seed_that_is_not_exactly_library_url_and_index_is_refused_before_import(
+            self, monkeypatch, seed):
+        libs = _install_create(monkeypatch)
+        res = ct.handler(action="create_library", scope="local", library="X", add_tools=[seed])
+        assert res["isError"] is True
+        assert "takes exactly 'library_url'" in res["message"]
+        assert "action='add'" in res["message"] and "Nothing was created" in res["message"]
+        assert libs.imported == []
+
+    @pytest.mark.parametrize("seeds, count", [([{"library_url": "u", "index": 0}], 1), ([], 0)])
+    def test_returned_url_is_the_one_list_resolves(self, monkeypatch, seeds, count):
+        # the empty case is also the 0-tool library a falsiness test refused as "Could not load"
+        libs = _install_create(monkeypatch)
+        monkeypatch.setattr(libs, "importToolLibrary", lambda lib, dest, name: (
+            libs.imported.append((lib, dest, name))
+            or _DupLeafURL(name + ".json", f"toollibraryroot://Local/{name}.json")))
+        monkeypatch.setattr(libs, "childAssetURLs", lambda url: [
+            _DupLeafURL(n, f"toollibraryroot://Local/{n}") for _l, _d, n in libs.imported]
+            if url.toString() == "toollibraryroot://Local" else [], raising=False)
+        out = _payload(ct.handler(action="create_library", scope="local", library="X",
+                                  add_tools=seeds))
+        assert out["url"] == "toollibraryroot://Local/X"
+        assert out["import_url"] == "toollibraryroot://Local/X.json"
+        listed = _payload(ct.handler(action="list", scope="local", library=out["url"]))
+        assert listed["tool_count"] == count
+
+    def test_a_create_the_listing_does_not_show_keeps_the_returned_url_and_says_so(
+            self, monkeypatch):
+        _install_create(monkeypatch)
+        out = _payload(ct.handler(action="create_library", scope="local", library="X"))
+        assert out["url"] == "toollibraryroot://Local/X" and "import_url" not in out
+        assert "shows no single library named 'X'" in out["note"]
+
+    def test_two_listed_assets_answering_the_returned_leaf_keep_the_returned_url(
+            self, monkeypatch):
+        libs = _install_create(monkeypatch)
+        monkeypatch.setattr(libs, "importToolLibrary", lambda lib, dest, name: (
+            libs.imported.append((lib, dest, name))
+            or _DupLeafURL(name + ".json", f"toollibraryroot://Local/{name}.json")))
+        monkeypatch.setattr(libs, "childAssetURLs", lambda url: [
+            _DupLeafURL("X", "toollibraryroot://Local/X"),
+            _DupLeafURL("X", "toollibraryroot://Local/Old/X")]
+            if libs.imported and url.toString() == "toollibraryroot://Local" else [],
+            raising=False)
+        out = _payload(ct.handler(action="create_library", scope="local", library="X"))
+        assert out["url"] == "toollibraryroot://Local/X.json" and "import_url" not in out
+        assert "shows no single library named" in out["note"]
+
 
 @pytest.fixture
 def seed_creation_failure(monkeypatch):
@@ -3299,7 +3350,7 @@ class TestCreateLibraryGuards:
     def test_a_seed_that_is_not_an_object(self, monkeypatch):
         libs = _install_create(monkeypatch)
         res = ct.handler(action="create_library", scope="local", library="X", add_tools=["u:0"])
-        assert res["isError"] is True and "Each seed entry must be" in res["message"]
+        assert res["isError"] is True and "seed 0 has 'u:0'" in res["message"]
         assert len(libs.imported) == 0
 
     def test_an_empty_library_that_cannot_be_created(self, monkeypatch):

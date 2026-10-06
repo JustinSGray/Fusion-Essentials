@@ -500,10 +500,14 @@ def handler(format: str = "step", file_path: str = "", target: str = "",
         return error("Flat-pattern options require format=dxf; omit them for other formats.")
     if flat_options and not dxf_flat_pattern:
         return error("dxf_flat_units/dxf_bend_lines/dxf_bend_extents require dxf_flat_pattern.")
-    if dxf_flat_pattern and (dxf_sketch or dxf_face or dxf_component or
-            dxf_export_construction is not None or dxf_export_points is not None or
-            dxf_export_projected is not None):
-        return error("dxf_flat_pattern cannot be combined with sketch/face export selectors or flags.")
+    sketch_only = [name for name, sent in (
+        ("dxf_sketch", bool(dxf_sketch)), ("dxf_face", bool(dxf_face)), ("dxf_component", bool(dxf_component)),
+        ("dxf_export_construction", dxf_export_construction is not None),
+        ("dxf_export_points", dxf_export_points is not None),
+        ("dxf_export_projected", dxf_export_projected is not None)) if sent]
+    if dxf_flat_pattern and sketch_only:
+        return error("dxf_flat_pattern takes dxf_flat_units, dxf_bend_lines and dxf_bend_extents only; "
+                     f"drop {', '.join(sketch_only)}.")
 
     # The dxf branch writes the ONE sketch/face named by dxf_sketch/dxf_face, and the split walk picks
     # its own top-level occurrences - so every knob that cannot reach either write is refused here.

@@ -15,11 +15,11 @@ import adsk.core
 from ._common import safe
 
 MAP_BLURB = (
-    "the cloud data-model substrate: resolve_file_reference / _file_in_folder_by_name - the "
+    "cloud data-model substrate: resolve_file_reference / _file_in_folder_by_name - the "
     "URN-or-name-in-a-project and one-folder resolvers, a shared name REFUSED; "
-    "navigate_folder_path - the folder-PATH walk from a project root, creating nothing, and the "
-    "miss triple a refusal is worded from; active_project - the active document's OWN DataProject; "
-    "name_extension - the NAME holds the true extension")
+    "navigate_folder_path - the folder-PATH walk from a project root, creating nothing; "
+    "active_project - the active document's OWN DataProject; name_extension - the NAME holds "
+    "the true extension; absence_after_delete - the re-resolve after deleteMe")
 
 app = adsk.core.Application.get()
 
@@ -43,6 +43,16 @@ def _data():
     if not d:
         raise RuntimeError("Data not available (not signed in?).")
     return d
+
+
+def absence_after_delete(find, ident, not_found):
+    """(absence_observed, why unread): `find(ident)` re-read once after deleteMe; True only on a
+    raise carrying `not_found`."""
+    try:
+        again = find(ident)
+    except Exception as e:
+        return (True, None) if not_found in str(e) else (None, f"the re-read raised: {e}")
+    return (False, None) if again else (None, "the re-read returned no record")
 
 
 def _find_project(data, name=None, project_id=None, id_input="project_id"):

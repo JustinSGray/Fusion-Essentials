@@ -9,6 +9,7 @@ handle. ``_live_op_tally`` is pinned in test_tier2_misc.py.
 """
 
 import json
+import sys
 from types import SimpleNamespace
 
 import adsk.cam
@@ -501,7 +502,9 @@ class TestStatusHandler:
                                             readiness="0 of 2 active ops valid - run cam_generate to finish the rest."))
         out = _payload(st.handler(handle="gen1"))
         assert out["completed"] is False
-        assert out["readiness"] == out["live_states"]["readiness"]
+        # the nested tally keeps the live verdict; the top-level line is the poll directive
+        assert out["live_states"]["readiness"] == (
+            "0 of 2 active ops valid - run cam_generate to finish the rest.")
         assert "cam_get_status(handle='gen1')" in out["readiness"]
         assert "run cam_generate" not in out["readiness"]
         assert "Future" in out["note"] and "cam_get_status(handle='gen1')" in out["note"]
@@ -1258,6 +1261,20 @@ class TestSameDocumentIdentity:
         assert out["completion_basis"] == "document"  # not "its document is not active"
         assert "is NOT the active document" not in out["note"]
 
+    def test_a_save_that_rekeys_the_document_rekeys_its_released_handles(self, monkeypatch):
+        st._GENERATIONS.clear()
+        st._RELEASED.clear()
+        st._RELEASED["gen9"] = {"target": "operation 'RK_Face'", "target_name": "RK_Face",
+                                "doc_name": "Untitled", "doc_key": "unsaved:1",
+                                "elapsed_seconds": 2.9, "tally": None}
+        # every listener the write guard fires when a save re-keys an open document
+        for listener in list(sys.modules[st.on_key_renamed.__module__]._KEY_RENAME_LISTENERS):
+            listener("unsaved:1", "urn:saved")
+        monkeypatch.setattr(st, "document_key", lambda: "urn:saved")
+        msg = st.handler(handle="gen9")["message"]
+        assert "NOT the active document" not in msg
+        assert "cam_get_status(target='RK_Face')" in msg
+
     # ── consumer 1: the 'latest' routing gate ────────────────────────────────────────────────────
     # _same_document's None is a new state for this caller's `if`, so it gets its own test here -
     # the helper's own tests do not cover the branch this consumer takes on it.
@@ -1891,9 +1908,12 @@ class TestStatusLivePoll:
         assert out["completed"] is False
         assert out["live_states"]["generating"] == 1
         assert out["live_states"]["generating_settled"] == 0
-        assert out["readiness"] == out["live_states"]["readiness"]
         if route == "handle":
             assert "handle='gen1'" in out["readiness"]
+            assert "handle='gen1'" not in out["live_states"]["readiness"]
+        else:
+            assert out["readiness"] == out["live_states"]["readiness"]
+        assert "poll cam_get_status" in out["live_states"]["readiness"]
         assert "poll cam_get_status" in out["readiness"]
         assert "run cam_generate" not in out["readiness"]
         assert "check again later" in out["note"]

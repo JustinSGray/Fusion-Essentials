@@ -800,6 +800,16 @@ class TestSolvedReadBack:
                                                "entity_two": "line:0"}]))
         assert set(self._rows(out)) == {"circle:0", "line:0"}
 
+    @pytest.mark.parametrize("dy_cm, named", [(1e-4, False), (2e-4, True)])
+    def test_a_fixed_line_the_solve_moved_is_named_past_the_move_tolerance(
+            self, monkeypatch, dy_cm, named):
+        # line:1 moves too but is not fixed, so it is never named
+        s = self._rich(monkeypatch, moves=[(0, 0.0, dy_cm), (1, 0.0, 1.0)])
+        s.sketchCurves.sketchLines.item(0).isFixed = True
+        out = _payload(sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0",
+                                               "entity_two": "line:1"}]))
+        assert out["results"][0].get("fixed_entity_moved") == (["line:0"] if named else None)
+
     def test_geometry_that_does_not_read_publishes_no_solved_block(self, monkeypatch):
         # the honest empty: nothing measured twice means nothing claimed about a move
         _install(monkeypatch)

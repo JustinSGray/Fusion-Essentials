@@ -2962,6 +2962,52 @@ class TestProfileHandleLocator:
         assert "'AtThePoint'" in err and "Elsewhere" not in err
 
 
+class TestProfileTokenAnsweringSeveralProfiles:
+    """In a component a multi-loop profile's token answers that profile plus each island inside it;
+    the locator's area and centroid pick the one the handle was minted from."""
+
+    def _resolve(self, monkeypatch, hits, locator):
+        _install_profiles(handle_map={"TOK": hits}, monkeypatch=monkeypatch)
+        return inp.ProfileRef("profile").resolve("TOK|@" + locator)
+
+    def test_the_annulus_is_picked_over_its_same_centroid_island(self, monkeypatch):
+        ring = FakeAreaProfile("ring", area=5.76)
+        island = FakeAreaProfile("island", area=10.24)
+        val, err = self._resolve(monkeypatch, [ring, island],
+                                 "profile[KeyedZGuide~5.7600]:0.000000,0.000000,0.000000")
+        assert err is None and val is ring
+
+    def test_the_slotted_blank_is_picked_out_of_three_hits(self, monkeypatch):
+        blank = FakeAreaProfile("blank", centroid=(0.0, 5.985248, 0.0), area=51.52)
+        slots = [FakeAreaProfile(f"slot{i}", centroid=(0.0, y, 0.0), area=0.96)
+                 for i, y in enumerate((4.2, 7.2))]
+        val, err = self._resolve(monkeypatch, [slots[0], blank, slots[1]],
+                                 "profile[TrayBlank~51.5200]:0.000000,5.985248,0.000000")
+        assert err is None and val is blank
+
+    def test_only_profile_hits_are_judged(self, monkeypatch):
+        # a non-Profile hit reading the same area and centroid would otherwise tie with the profile
+        ring = FakeAreaProfile("ring", area=5.76)
+        twin = types.SimpleNamespace(areaProperties=ring.areaProperties)
+        val, err = self._resolve(monkeypatch, [twin, ring],
+                                 "profile[S~5.7600]:0.000000,0.000000,0.000000")
+        assert err is None and val is ring
+
+    def test_two_equal_matches_are_the_tie_refusal(self, monkeypatch):
+        a, b = FakeAreaProfile("a", area=5.76), FakeAreaProfile("b", area=5.76)
+        val, err = self._resolve(monkeypatch, [a, b], "profile[S~5.7600]:0.000000,0.000000,0.000000")
+        assert val is None and "2 profiles match this handle's locator equally well" in err
+        assert "{sketch, profile_index}" in err
+
+    @pytest.mark.parametrize("locator", ["profile[S~99.0000]:0.000000,0.000000,0.000000",
+                                         "profile:0.000000,0.000000,0.000000"])
+    def test_no_area_match_or_no_area_at_all_keeps_the_refusal(self, monkeypatch, locator):
+        ring, island = FakeAreaProfile("ring", area=5.76), FakeAreaProfile("island", area=10.24)
+        val, err = self._resolve(monkeypatch, [ring, island], locator)
+        assert val is None
+        assert "the token resolved to 2 entities" in err and "matched none of them" in err
+
+
 class TestProfileRefComponentScope:
     """SKETCH-6: a {sketch, profile_index} selector addresses a sketch BY NAME, and Fusion numbers
     sketches per component from 1 - so 'Sketch1' in two components identifies nothing. Declaring

@@ -11,6 +11,7 @@ landed name and path are read back off the assembly tree instead of being predic
 import math
 
 import adsk.core
+import adsk.fusion
 
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
@@ -31,6 +32,69 @@ RETURNS = [
     _outputs.ReturnsName("full_path", of="new instance",
                          consumers=["joint_create", "assembly_move", "design_move_occurrence"]),
 ]
+
+# How far the landed local matrix may sit from the requested one: translation cells in cm, axis cells.
+_ORIGIN_TOL_CM = 1e-6
+_AXIS_TOL = 1e-5
+_ORIGIN_CELLS = (3, 7, 11)
+_AXIS_CELLS = {"x": (0, 4, 8), "y": (1, 5, 9), "z": (2, 6, 10)}
+
+
+def _cells(matrix):
+    """A Matrix3D's 16 row-major cells as floats, or None when they did not read."""
+    vals = safe(lambda: [float(v) for v in matrix.asArray()])
+    return vals if isinstance(vals, list) and len(vals) == 16 else None
+
+
+def _off_request(want, got):
+    """True when the landed cells leave the requested ones beyond the origin or axis tolerance."""
+    return (any(abs(got[i] - want[i]) > _ORIGIN_TOL_CM for i in _ORIGIN_CELLS)
+            or any(abs(got[i] - want[i]) > _AXIS_TOL for c in _AXIS_CELLS.values() for i in c))
+
+
+_IDENTITY = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mul(a, b):
+    """The row-major product a.b of two 16-cell matrices."""
+    return [sum(a[4 * r + i] * b[4 * i + c] for i in range(4)) for r in range(4) for c in range(4)]
+
+
+def _rigid_inverse(m):
+    """The inverse of a rigid 16-cell matrix: its rotation transposed, its origin carried back."""
+    rot = [[m[4 * c + r] for c in range(3)] for r in range(3)]
+    back = [-sum(rot[r][i] * m[4 * i + 3] for i in range(3)) for r in range(3)]
+    return [*rot[0], back[0], *rot[1], back[1], *rot[2], back[2], 0.0, 0.0, 0.0, 1.0]
+
+
+def _first_world(design, comp):
+    """World cells of the occurrence of `comp` the assembly walk lists first, or None when unread."""
+    occs = safe(lambda: design.rootComponent.allOccurrencesByComponent(comp))
+    if occs is None or not safe(lambda: occs.count):
+        return None
+    return _cells(safe(lambda: occs.item(0).transform2))
+
+
+def _cells_to_pass(design, comp, host, want):
+    """The cells addExistingComponent must be given to land at `want`; None when a pose is unread."""
+    # Direct design lands an instance at inv(H).M.W, parametric at inv(H).W.H.inv(W).M: H and W are
+    # the world poses of the walk-first occurrence of the host and of the component, M the matrix
+    # passed. A parametric identity M lands at inv(H).W, so a request needing one still misses.
+    world = _first_world(design, comp)
+    host_world = _first_world(design, host) if host is not None else _IDENTITY
+    direct = safe(lambda: design.designType == adsk.fusion.DesignTypes.DirectDesignType)
+    if world is None or host_world is None or direct is None:
+        return None
+    if direct:
+        return _mul(_mul(host_world, want), _rigid_inverse(world))
+    shift = _mul(_mul(_rigid_inverse(host_world), world), _mul(host_world, _rigid_inverse(world)))
+    return _mul(_rigid_inverse(shift), want)
+
+
+def _frame(cells, k):
+    """(local origin in 'units', {axis: unit vector}) off a matrix's cells."""
+    origin = {a: round(cells[i] / k, 6) for a, i in zip("xyz", _ORIGIN_CELLS)}
+    return origin, {a: [round(cells[i], 6) for i in c] for a, c in _AXIS_CELLS.items()}
 
 
 def _host_prefixes(paths, instance_name):
@@ -65,7 +129,7 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
         return error(f"Could not reach the component behind '{component}' to instance it.")
     comp_name = safe(lambda: comp.name) or component
 
-    host_path = ""
+    host_path, nested_host = "", None
     if (into_component or "").strip():
         into_occ, ierr = _INTO_COMPONENT.resolve(into_component)
         if ierr:
@@ -73,7 +137,7 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
         host = safe(lambda: into_occ.component)
         if host is None:
             return error(f"Occurrence '{into_component}' has no component to instance into.")
-        host_path = safe(lambda: into_occ.fullPathName) or ""
+        host_path, nested_host = safe(lambda: into_occ.fullPathName) or "", host
         host_label = f"component '{safe(lambda: host.name)}' ({host_path})"
     else:
         host = safe(lambda: design.rootComponent)
@@ -117,9 +181,15 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
     occurrences = safe(lambda: host.occurrences)
     if occurrences is None:
         return error(f"Could not access the occurrences of {host_label} to instance into.")
+    want = _cells(matrix)
+    passed, cells = matrix, want and _cells_to_pass(design, comp, nested_host, want)
+    if cells and _off_request(want, cells):
+        passed = adsk.core.Matrix3D.create()
+        if not passed.setWithArray(cells):
+            passed = matrix
     try:
         # The MUTATION - not safe-wrapped, so a refusal is reported instead of swallowed.
-        occ = occurrences.addExistingComponent(comp, matrix)
+        occ = occurrences.addExistingComponent(comp, passed)
     except Exception as e:
         return error(f"Could not instance '{comp_name}' into {host_label}: {e}")
     if not occ:
@@ -150,6 +220,21 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
     full_path = (under_host or new_paths)[0]
     landed = full_path.split("+")[-1] or safe(lambda: occ.name)
 
+    # The landed local matrix is read back and judged against the request, never the passed matrix.
+    got = _cells(safe(lambda: occ.transform))
+    frame = _frame(got, k) if got is not None else None
+    placed = bool(x or y or z or rotate_deg)
+    off = want is not None and frame is not None and _off_request(want, got)
+    if off and placed:
+        (ox, oy, oz), axes = frame[0].values(), frame[1]
+        offset = math.dist([got[i] for i in _ORIGIN_CELLS], [want[i] for i in _ORIGIN_CELLS]) / k
+        return error(
+            f"Instanced '{comp_name}' as '{landed}' at '{full_path}' (kept), but not at the "
+            f"requested placement: its local origin in {host_label} reads ({ox}, {oy}, {oz}) "
+            f"{units}, {round(offset, 6)} {units} from the requested one, local axes x {axes['x']} "
+            f"y {axes['y']} z {axes['z']}. Its transform was not reset to the request. Move it "
+            "with assembly_move, then read it with assembly_get.")
+
     # Host instances are counted by their distinct PREFIXES, never by counting leftover paths: each
     # host instance also contributes the new instance's children, which are not host instances.
     children = [p for p in new_paths if p.startswith(full_path + "+")]
@@ -175,6 +260,12 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
                  "markers, a later joint creation can revert this instance to the ORIGIN. Read the "
                  "position back with model_inspect after the next joint creation, or place the "
                  "instance BY that joint instead of by x/y/z.")
+    if off:
+        ox, oy, oz = frame[0].values()
+        note += f" No placement was requested; it reads at ({ox}, {oy}, {oz}) {units} in {host_label}."
+    if want is None or frame is None:
+        note += (" The landed placement was not compared with the request: "
+                 + ("its transform" if frame is None else "the requested matrix") + " did not read.")
 
     out = {
         "created": True,
@@ -183,12 +274,14 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
         "full_path": full_path,
         "paths": new_paths,
         "into_component": host_label,
-        "position": {"x": x, "y": y, "z": z} if (x or y or z) else "origin",
         "rotate_deg": float(rotate_deg or 0.0),
         "rotate_axis": (rotate_axis or "z").lower() if rotate_deg else None,
         "units": units,
         "note": note,
     }
+    if frame is not None:
+        # Read back off the instance, local to its host.
+        out["position"], out["axes"] = frame
     return ok(out)
 
 

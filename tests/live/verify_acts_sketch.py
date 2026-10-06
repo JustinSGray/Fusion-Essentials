@@ -155,6 +155,159 @@ def _mixed_radial_cleanup_args(ctx):
     return {"sketch_name": "RetainedDims", "include_entities": True}
 
 
+def _at(row, chunk, x, y, tol=0.01):
+    """True when an {x, y} read sits at the authored (x, y) once `chunk` is placed."""
+    return (isinstance(row, dict) and _near(row.get("x"), _px(chunk, x), tol)
+            and _near(row.get("y"), _py(chunk, y), tol))
+
+
+def _rows_by_id(p):
+    return {e.get("id"): e for e in p.get("entities") or []}
+
+
+def _polygon_witness(p):
+    """The polygon constraint names the square's four lines, each one of its edges."""
+    lines = _rows_by_id(p)
+    polys = [c.get("entities") for c in p.get("constraints") or [] if c.get("type") == "polygon"]
+    want = {"line:5", "line:6", "line:7", "line:8"}
+    corners = [(x, y) for x in (940, 980) for y in (505, 545)]
+
+    def corner(row):
+        return next((c for c in corners if _at(row, "ConBench2", *c)), None)
+    edges = {frozenset((corner(lines.get(i, {}).get("start")), corner(lines.get(i, {}).get("end"))))
+             for i in want}
+    return _measured("the polygon names the square's own four edges", polys,
+                     p.get("truncated") is False and len(polys) == 1 and len(polys[0] or []) == 4
+                     and set(polys[0]) == want and None not in set().union(*edges)
+                     and len(edges) == 4 and all(len(e) == 2 for e in edges))
+
+
+# line:0 once the collinear constraint with line:1 has turned it off its authored (860,480)-(930,486).
+_CONBENCH2_LINE0 = ((860.0459, 479.7323), (929.8883, 487.3514))
+
+
+def _line0_end_points(p):
+    """The ids of the point rows sitting on line:0's start and end, read by coordinates."""
+    rows = _rows_by_id(p)
+    line = rows.get("line:0") or {}
+
+    def on(end):
+        return [i for i, r in rows.items() if r.get("type") == "point" and isinstance(end, dict)
+                and isinstance(r.get("position"), dict)
+                and _near(r["position"].get("x"), end.get("x"), 1e-4)
+                and _near(r["position"].get("y"), end.get("y"), 1e-4)]
+    return on(line.get("start")), on(line.get("end"))
+
+
+def _line0_at_measured(line):
+    return (_at(line.get("start"), "ConBench2", *_CONBENCH2_LINE0[0])
+            and _at(line.get("end"), "ConBench2", *_CONBENCH2_LINE0[1]))
+
+
+def _fixed_line_moved(p):
+    """line:3 reads fixed, yet the 15 mm mid-to-end dimension pulled both ends in to 30 mm apart."""
+    rows = _rows_by_id(p)
+    line = rows.get("line:3") or {}
+    start, end = line.get("start") or {}, line.get("end") or {}
+    starts, ends = _line0_end_points(p)
+    _RECALL.pop("conbench2_line0_ends", None)
+    if len(starts) == 1 and len(ends) == 1 and starts != ends:
+        _RECALL["conbench2_line0_ends"] = (starts[0], ends[0])
+    return _measured("fixed line:3 moved under its dimension; line:0's end points read by position",
+                     {"line:3": {k: line.get(k) for k in ("fixed", "start", "end")},
+                      "line:0": {k: (rows.get("line:0") or {}).get(k) for k in ("start", "end")},
+                      "end_points": (starts, ends)},
+                     p.get("truncated") is False and line.get("fixed") is True
+                     and not _at(start, "ConBench2", 880, 505)
+                     and not _at(end, "ConBench2", 920, 511)
+                     and _at(start, "ConBench2", 885, 505.75)
+                     and _at(end, "ConBench2", 915, 510.25)
+                     and "conbench2_line0_ends" in _RECALL
+                     and _line0_at_measured(rows.get("line:0") or {}))
+
+
+def _fix_line0_and_ends(ctx):
+    ends = _ctx_get(_RECALL, "conbench2_line0_ends", "line:0's end point ids")
+    return {"constraints": [{"constraint": "fix", "entity_one": ref} for ref in ("line:0", *ends)],
+            "sketch_name": "ConBench2"}
+
+
+def _endpoint_fixed_held(p):
+    """line:0 with its two end points fixed is where it was read, and no dimension was added."""
+    rows = _rows_by_id(p)
+    line = rows.get("line:0") or {}
+    starts, ends = _line0_end_points(p)
+    return _measured("endpoint-fixed line:0 held and the refused dimension left nothing",
+                     {"line:0": {k: line.get(k) for k in ("fixed", "start", "end")},
+                      "end_points": (starts, ends), "dimension_count": p.get("dimension_count")},
+                     p.get("truncated") is False and line.get("fixed") is True
+                     and _line0_at_measured(line)
+                     and (starts + ends) == list(_RECALL.get("conbench2_line0_ends") or ())
+                     and p.get("dimension_count") == _RECALL.get("conbench2_dims"))
+
+
+def _offset_witness(p):
+    """The offset names the two parents then the two children, each child 8 mm outside its parent."""
+    rows = _rows_by_id(p)
+    off = [c.get("entities") for c in p.get("constraints") or [] if c.get("type") == "offset"]
+    l2, l3 = rows.get("line:2") or {}, rows.get("line:3") or {}
+    return _measured("offset parents then children, by coordinates", {"offset": off, "line:2": l2,
+                                                                      "line:3": l3},
+                     p.get("truncated") is False and off == [["line:0", "line:1", "line:2", "line:3"]]
+                     and _at((rows.get("line:0") or {}).get("start"), "OffOne", 860, 730)
+                     and _at((rows.get("line:1") or {}).get("end"), "OffOne", 940, 790)
+                     and all(_near((l2.get(k) or {}).get("y"), _py("OffOne", 722), 0.01)
+                             for k in ("start", "end"))
+                     and all(_near((l3.get(k) or {}).get("x"), _px("OffOne", 948), 0.01)
+                             for k in ("start", "end")))
+
+
+def _angle_measures(p):
+    """sketch_dimension angle: one of the two angles a 1:3 slope makes with a vertical line."""
+    parts = ((p.get("results") or [{}])[0].get("value") or "").split()
+    try:
+        got = float(parts[0])
+    except (IndexError, ValueError):
+        got = None
+    return _measured("angle between line:0 and line:1", p.get("results"),
+                     got is not None and min(abs(got - 71.5651), abs(got - 108.4349)) < 0.01)
+
+
+def _dimbench_pair_ids(p):
+    """[the line at authored y 506, the line at y 526] off one DimBench read."""
+    ids = [next(e["id"] for e in p.get("entities") or [] if e.get("type") == "line"
+                and _at(e.get("start"), "DimBench", 1095, y)) for y in (506, 526)]
+    _RECALL["dimbench_pair"] = ids
+    return ids
+
+
+def _dimbench_witness(p):
+    """The eight dimension classes name the entities they were authored on, by coordinates."""
+    rows = _rows_by_id(p)
+    dims = {}
+    for d in p.get("dimensions") or []:
+        dims.setdefault(d.get("type"), []).append(d.get("entities"))
+    pair = _RECALL.get("dimbench_pair") or []
+    want = {"sketchlinear": [["point:1", "point:2"]], "sketchdiameter": [["circle:0"]],
+            "sketchconcentriccircle": [["circle:0", "circle:1"]],
+            "sketchtangentdistance": [["line:1", "circle:0"]],
+            "sketchellipsemajorradius": [["ellipse:0"]], "sketchellipseminorradius": [["ellipse:0"]],
+            "sketchangular": [["line:0", "line:1"]], "sketchlineardiameter": [pair]}
+    c0, c1, el = rows.get("circle:0") or {}, rows.get("circle:1") or {}, rows.get("ellipse:0") or {}
+    return _measured("eight dimension classes name their authored entities", dims,
+                     p.get("truncated") is False and len(pair) == 2 and dims == want
+                     and _at((rows.get("point:1") or {}).get("position"), "DimBench", 1060, 480)
+                     and _at((rows.get("point:2") or {}).get("position"), "DimBench", 1120, 500)
+                     and _at(c0.get("center"), "DimBench", 1090, 560) and _near(c0.get("radius"), 24, .01)
+                     and _at(c1.get("center"), "DimBench", 1090, 560) and _near(c1.get("radius"), 12, .01)
+                     and _near(((rows.get("line:1") or {}).get("start") or {}).get("x"),
+                               _px("DimBench", 1140), .01)
+                     and _at(el.get("center"), "DimBench", 1090, 650)
+                     and _at((rows.get(pair[1]) or {}).get("end"), "DimBench", 1130, 526)
+                     and sum(1 for e in rows.values()
+                             if e.get("type") == "line" and e.get("construction") is True) == 2)
+
+
 def _xray_gaps_2_w3conic(payload):
     return (payload.get("truncated") is False and payload.get("counts", {}).get("conics") == 1
             and any(e.get("id") == "conic:0" and e.get("type") == "conic"
@@ -622,14 +775,34 @@ _SKETCHWORK = [
                                            "entities": "line:5,line:6,line:7,line:8"}],
                           "sketch_name": "ConBench2"},
      lambda p: p["results"][0].get("applied") == "polygon", None),
+    ("sketch_get", {"sketch_name": "ConBench2", "include_entities": True, "max_results": 200},
+     _polygon_witness, None),
     # fix pins a curve where it sits; unfix releases the same one, so the pair is checkable as a
     # pair - a 'fix' that silently did nothing leaves nothing for 'unfix' to find.
     ("sketch_constrain", {"constraints": [{"constraint": "fix", "entity_one": "line:3"}],
                           "sketch_name": "ConBench2"},
-     lambda p: p["results"][0].get("applied") == "fix", None),
+     lambda p: p["results"][0].get("applied") == "fix"
+     and "endpoints can still move" in (p["results"][0].get("note") or ""), None),
+    # A fixed line's ends still move under a driving mid-to-end dimension; the read names it.
+    ("sketch_dimension", {"dimensions": [{"dim_type": "horizontal_distance",
+                                          "entity_one": "line:3:mid", "entity_two": "line:3:end",
+                                          "value": "15 mm"}],
+                          "sketch_name": "ConBench2"},
+     lambda p: p["results"][0].get("fixed_entity_moved") == ["line:3"], None),
+    ("sketch_get", {"sketch_name": "ConBench2", "include_entities": True, "max_results": 200},
+     _fixed_line_moved, ("conbench2_dims", _recall("conbench2_dims",
+                                                   lambda p: p["dimension_count"]))),
     ("sketch_constrain", {"constraints": [{"constraint": "unfix", "entity_one": "line:3"}],
                           "sketch_name": "ConBench2"},
      lambda p: p["results"][0].get("applied") == "unfix", None),
+    # The pair: with line:0 AND its two end points fixed, the same dimension is over-constrained.
+    ("sketch_constrain", _fix_line0_and_ends, lambda p: p.get("constrained") == 3, None),
+    ("sketch_dimension", {"dimensions": [{"dim_type": "horizontal_distance",
+                                          "entity_one": "line:0:mid", "entity_two": "line:0:end",
+                                          "value": "30 mm"}],
+                          "sketch_name": "ConBench2"}, _refused("OVER_CONSTRAINT"), None),
+    ("sketch_get", {"sketch_name": "ConBench2", "include_entities": True, "max_results": 200},
+     _endpoint_fixed_held, None),
     # THE POINT-PAIR KINDS, on four free stubs of their own. They take POINTS, and a bare 'point:N'
     # counts every point the sketch owns - a line's own endpoints included - so 'point:1' on a
     # sketch holding curves is the first line's start, not the first point drawn. Anchored refs name
@@ -675,6 +848,8 @@ _SKETCHWORK = [
                           "sketch_name": "OffOne"},
      lambda p: p["results"][0].get("applied") == "offset"
      and p["results"][0].get("created_count", 0) >= 2, None),
+    ("sketch_get", {"sketch_name": "OffOne", "include_entities": True, "max_results": 200},
+     _offset_witness, None),
     ("sketch_create", {"plane": "xy", "name": "OffTwo"}, "ok", None),
     ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 960, "y1": 730,
                                            "x2": 1040, "y2": 730}],
@@ -744,6 +919,25 @@ _SKETCHWORK = [
     ("sketch_dimension", {"dimensions": [{"dim_type": "ellipse_minor_radius",
                                           "entity_one": "ellipse:0"}],
                           "sketch_name": "DimBench"}, _dim_measures(16.0), None),
+    ("sketch_dimension", {"dimensions": [{"dim_type": "angle", "entity_one": "line:0",
+                                          "entity_two": "line:1"}],
+                          "sketch_name": "DimBench"}, _angle_measures, None),
+    # The ellipse dimensions above add construction axis lines, so this pair's ids are read, not typed.
+    ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 1095, "y1": 506,
+                                           "x2": 1130, "y2": 506}],
+                             "sketch_name": "DimBench"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 1095, "y1": 526,
+                                           "x2": 1130, "y2": 526}],
+                             "sketch_name": "DimBench"}, "ok", None),
+    ("sketch_get", {"sketch_name": "DimBench", "include_entities": True, "max_results": 200},
+     "ok", ("dimbench_pair", _dimbench_pair_ids)),
+    ("sketch_dimension", lambda c: {"dimensions": [{
+        "dim_type": "linear_diameter",
+        "entity_one": _ctx_get(c, "dimbench_pair", "DimBench parallel pair")[0],
+        "entity_two": _ctx_get(c, "dimbench_pair", "DimBench parallel pair")[1]}],
+        "sketch_name": "DimBench"}, _dim_measures(40.0), None),
+    ("sketch_get", {"sketch_name": "DimBench", "include_entities": True, "max_results": 200},
+     _dimbench_witness, None),
     # A SECOND COORDINATE DIMENSION AT A SHARED X: point:2 stands at the x point:1 is already
     # dimensioned to, and the solver refuses the second horizontal distance as over-constrained.
     # The refusal names point:1 and the two-point constraint that ties them. On XZ, so the sketch
@@ -2391,3 +2585,138 @@ def _fillet_radius_rows():
 
 
 _SKETCHWORK += _fillet_radius_rows()
+
+
+def _scratch_rows(key):
+    """(rows opening an owned scratch document under `key`, its write, its read, its close)."""
+    home = key + "_home"
+    rows = [("doc_get", {}, _home_document, (home, _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, home, "home")},
+             _new_document, (key, lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: {**(args(c) if callable(args) else args),
+                     "expect_document": _ctx_get(c, key, "scratch")}, check, save))
+
+    def read(tool, args, check, save=None):
+        rows.append((tool, lambda c, args=args: args(c) if callable(args) else dict(args),
+                     check, save))
+
+    def close():
+        rows.extend([("doc_activate", lambda c: {"name": _ctx_get(c, home, "home"),
+                                                 "expect_document": _ctx_get(c, key, "scratch")},
+                      _activated(), None),
+                     ("doc_close", lambda c: {"name": _ctx_get(c, key, "scratch"),
+                                              "save_changes": False,
+                                              "expect_document": _ctx_get(c, home, "home")},
+                      _document_closed, None)])
+    return rows, write, read, close
+
+
+def _two_source_pattern(p):
+    """The pattern names both source circles then both directions; the copies sit 40 mm along x."""
+    rows = _rows_by_id(p)
+    pats = [c.get("entities") for c in p.get("constraints") or []
+            if c.get("type") == "rectangular_pattern"]
+    circles = [(i, (rows.get(i) or {}).get("center") or {}, (rows.get(i) or {}).get("radius"))
+               for i in ("circle:0", "circle:1", "circle:2", "circle:3")]
+    want = [(300, 5), (320, 4), (340, 5), (360, 4)]
+    return _measured("two-source rectangular pattern by ids and coordinates", {"pattern": pats,
+                                                                              "circles": circles},
+                     p.get("truncated") is False
+                     and pats == [["circle:0", "circle:1", "line:0", "line:1"]]
+                     and all(_near(c.get("x"), x, .01) and _near(c.get("y"), 300, .01)
+                             and _near(r, rad, .01) for (_i, c, r), (x, rad) in zip(circles, want)))
+
+
+def _pattern_witness_rows():
+    """A rectangular pattern of TWO source circles, its constraint ids read against coordinates."""
+    rows, write, read, close = _scratch_rows("refpat_doc")
+    write("sketch_create", {"plane": "xy", "name": "RefPat"})
+    write("sketch_add_geometry", {"sketch_name": "RefPat", "geometry": [
+        {"kind": "circle", "cx": 300, "cy": 300, "radius": 5},
+        {"kind": "circle", "cx": 320, "cy": 300, "radius": 4}]})
+    write("sketch_add_geometry", {"sketch_name": "RefPat", "geometry": [
+        {"kind": "line", "x1": 300, "y1": 320, "x2": 400, "y2": 320}]})
+    write("sketch_add_geometry", {"sketch_name": "RefPat", "geometry": [
+        {"kind": "line", "x1": 300, "y1": 320, "x2": 300, "y2": 420}]})
+    write("sketch_constrain", {"sketch_name": "RefPat", "constraints": [{
+        "constraint": "rectangular_pattern", "entities": "circle:0,circle:1", "entity_one": "line:0",
+        "entity_two": "line:1", "quantity": 2, "distance": 40, "quantity_two": 1,
+        "distance_two": 10}]}, lambda p: p["results"][0].get("created_count") == 2)
+    read("sketch_get", {"sketch_name": "RefPat", "include_entities": True, "max_results": 200},
+         _two_source_pattern)
+    close()
+    return rows
+
+
+_SKETCHWORK += _pattern_witness_rows()
+
+
+def _profile_with(area_mm2, loops):
+    """sketch_get: the ONE profile of this area and loop count; saves its handle."""
+    def pick(p):
+        hits = [r for r in p.get("profiles") or []
+                if _near(r.get("area"), area_mm2, 0.01) and r.get("loop_count") == loops]
+        if len(hits) != 1 or not hits[0].get("handle"):
+            raise AssertionError(f"no single {area_mm2} mm2 {loops}-loop profile: {p.get('profiles')}")
+        return hits[0]["handle"]
+    return pick
+
+
+def _largest_planar_face(area_mm2):
+    """find_geometry: the largest planar face of the scoped part reads this area."""
+    def check(p):
+        areas = [m.get("area") for m in p.get("matches") or [] if m.get("kind") == "planar_face"]
+        return _measured(f"largest planar face {area_mm2} mm2", areas,
+                         bool(areas) and p.get("truncated") is not True
+                         and _near(max(a for a in areas if isinstance(a, (int, float))), area_mm2, 0.01))
+    return check
+
+
+def _placed_profile_handle_rows():
+    """Profile handles minted by sketch_get in placed components, consumed by extrude and flange."""
+    rows, write, read, close = _scratch_rows("profile_doc")
+    write("model_create_component", {"name": "YCarriage", "activate": True, "x": 30, "y": 50},
+          _made_component)
+    write("model_construction", {"kind": "plane", "plane": "xy", "offset": -42, "name": "ZGuideBase"},
+          _datum_plane("xy"))
+    write("sketch_create", {"plane": "ZGuideBase", "name": "KeyedZGuide"})
+    write("sketch_add_geometry", {"sketch_name": "KeyedZGuide", "geometry": [
+        {"kind": "rectangle", "x1": -20, "y1": -20, "x2": 20, "y2": 20},
+        {"kind": "rectangle", "x1": -16, "y1": -16, "x2": 16, "y2": 16}]})
+    # The annulus's token also answers its island profile; the handle must still name the annulus.
+    read("sketch_get", {"sketch_name": "KeyedZGuide", "component": "YCarriage:1"}, "ok",
+         ("guide_ring", _profile_with(576.0, 2)))
+    write("model_extrude", lambda c: {"sketch_name": "KeyedZGuide", "component": "YCarriage:1",
+                                      "profile_index": _ctx_get(c, "guide_ring", "annulus handle"),
+                                      "distance": 10, "operation": "new"},
+          lambda p: _extruded(p) and p.get("component") == "YCarriage")
+    read("model_inspect", {"target": "YCarriage:1", "include": ["default", "mass"], "units": "mm"},
+         lambda p: _measured("annulus extrude volume", p.get("mass"),
+                             _near((p.get("mass") or {}).get("volume"), 5760, 0.5)))
+    read("find_geometry", {"target": "YCarriage:1", "kind": "planar_face", "max_results": 20},
+         _largest_planar_face(576.0))
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "SheetTray", "activate": True}, _made_component)
+    write("model_construction", {"kind": "plane", "plane": "xy", "offset": -44, "name": "TrayBase"},
+          _datum_plane("xy"))
+    write("sketch_create", {"plane": "TrayBase", "name": "TrayBlank"})
+    write("sketch_add_geometry", {"sketch_name": "TrayBlank", "geometry": [
+        {"kind": "rectangle", "x1": -32, "y1": 18, "x2": 32, "y2": 101.5},
+        {"kind": "rectangle", "x1": -12, "y1": 40, "x2": 12, "y2": 44},
+        {"kind": "rectangle", "x1": -12, "y1": 70, "x2": 12, "y2": 74}]})
+    read("sketch_get", {"sketch_name": "TrayBlank", "component": "SheetTray:1"}, "ok",
+         ("tray_blank", _profile_with(5152.0, 3)))
+    write("sheet_create_flange", lambda c: {"kind": "base", "component": "SheetTray:1",
+                                            "profile": _ctx_get(c, "tray_blank", "blank handle"),
+                                            "orientation": "side_one"},
+          lambda p: p.get("created") is True)
+    read("find_geometry", {"target": "SheetTray:1", "kind": "planar_face", "max_results": 40},
+         _largest_planar_face(5152.0))
+    close()
+    return rows
+
+
+_SKETCHWORK += _placed_profile_handle_rows()

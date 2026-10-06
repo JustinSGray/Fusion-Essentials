@@ -80,7 +80,13 @@ class FakeRevFeatures:
                                           else list(inp._participant_bodies))
         if self.on_add is not None:
             self.on_add(inp)
-        return FakeRevFeature()
+        feature = FakeRevFeature()
+        if inp.angle_extent is not None:
+            # the landed AngleExtentDefinition: the per-side angle (radians) and the symmetric flag
+            sym, (_kind, radians) = inp.angle_extent
+            feature.extentDefinition = types.SimpleNamespace(
+                isSymmetric=sym, angle=types.SimpleNamespace(value=radians))
+        return feature
 
 
 def _comp(sketches, rf, name="Comp", token="TOKEN:Comp"):
@@ -245,6 +251,19 @@ class TestRevolve:
         sym, _ = rf.last_input.angle_extent
         assert sym is True
 
+    @pytest.mark.parametrize("symmetric,total", [(True, 178.8), (False, None)])
+    def test_the_landed_per_side_angle_publishes_its_symmetric_total(self, symmetric, total):
+        _install([_sketch("S")])
+        out = payload(rv.handler(sketch_name="S", angle_deg=89.4, symmetric=symmetric))
+        assert out["angle_deg"] == 89.4 and out["symmetric"] is symmetric
+        assert out.get("total_angle_deg") == total and "unverified" not in out
+
+    def test_an_unreadable_landed_extent_is_unverified(self):
+        rf = _install([_sketch("S")])
+        rf.on_add = lambda inp: setattr(inp, "angle_extent", None)
+        out = payload(rv.handler(sketch_name="S", angle_deg=89.4, symmetric=True))
+        assert out["unverified"] == ["angle_deg", "symmetric"] and "total_angle_deg" not in out
+
     def test_two_sided_asymmetric(self):
         import math
         rf = _install([_sketch("S")])
@@ -255,6 +274,7 @@ class TestRevolve:
         a, b = rf.last_input.two_sides
         assert abs(a[1] - math.radians(90)) < 1e-9 and abs(b[1] - math.radians(30)) < 1e-9
         assert out["second_angle_deg"] == 30
+        assert "unverified" not in out and "total_angle_deg" not in out
 
     def test_fake_rejects_the_nonexistent_method_name(self):
         # The real API method is setTwoSideAngleExtent; the fake must not expose the nonexistent

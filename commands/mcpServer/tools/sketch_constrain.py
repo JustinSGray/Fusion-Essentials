@@ -897,6 +897,11 @@ def _one(sketch, k, entry):
                "The sketch is still NOT fully constrained - other geometry holds the remaining "
                "freedom (sketch_get(include_entities=true) shows what)." if fully is False else
                "The sketch's constrained state did not read back."))
+    if cname == "fix" and text_obj is None and base_one.strip().lower().startswith("line:"):
+        # MEASURED: a driving mid-to-end dimension moved both ends of a line reading isFixed true;
+        # with its end points fixed too, the same dimension raised OVER_CONSTRAINTS.
+        payload["note"] = ("The line reads fixed, but its endpoints can still move under a later "
+                           "dimension - fix their point ids too to hold them.")
     if cname == "coincident" and not anchor_two:
         curve_note = _coincident_curve_note(base_two)
         if curve_note:

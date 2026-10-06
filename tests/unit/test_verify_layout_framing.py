@@ -40,7 +40,8 @@ import verify_acts_sheet  # noqa: E402
         "thicken_home": "home", "thicken_doc": "scratch", "thicken_visible": "Body1", "thicken_hidden": "Body2",
         "thicken_witness": "Body3", "thicken_face": "source-face", "thicken_wall_visible": "Body4",
         "thicken_wall_hidden": "Body5", "thicken_visible_after": {"Body1": "fresh-source1"},
-        "thicken_hidden_after": {"Body2": "fresh-source2"}})])
+        "thicken_hidden_after": {"Body2": "fresh-source2"}, "pt_face": "placed-face",
+        "pt_source_handle": "placed-source"})])
 def test_product_disclosure_scenes_keep_local_geometry_fresh_consumers_and_recovery(factory, home, context):
     rows = [row for _name, _pre, narrative, _fallback in verify_program.ACTS for row in narrative]
     start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == home)
@@ -959,9 +960,11 @@ def test_sheet_serial_scene_keeps_local_coupons_and_typed_group_recovery_in_full
         ('Group1', True), ('Group1', False), ('Group1', True), ('Group2', True),
         ('Group1', False), ('Group2', False)]
     assert [a['feature'] for t, a in requests(authored)
-            if t == 'design_edit_timeline' and a['action'] == 'suppress'] == ['Unfold1']
+            if t == 'design_edit_timeline' and a['action'] == 'suppress'] == ['Unfold1', 'SerialA/Refold1']
+    assert [a['feature'] for t, a in requests(authored)
+            if t == 'design_edit_timeline' and a['action'] == 'ungroup'] == ['Group1']
     assert [a['unfold'] for t, a in requests(authored) if t == 'sheet_create_refold'] == [
-        'SerialA/Unfold1', 'SerialA/Unfold1', 'SerialB/Unfold1']
+        'SerialA/Unfold1', 'SerialA/Unfold1', 'SerialB/Unfold1', 'SerialA/Unfold1']
     first_sketch = next(i for i, row in enumerate(authored) if row[0] == 'sketch_create')
     assert first_sketch > 0
     assert authored[first_sketch - 1][:2] == ('design_activate_component', {'occurrence': 'root'})

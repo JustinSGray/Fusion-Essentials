@@ -198,7 +198,7 @@ def unfold_group_members(group):
 
 
 def _collapsed_unfold_hint(timeline, want):
-    """Return safe expansion and qualified retry advice for one matched hidden UnfoldFeature."""
+    """Return safe expansion and qualified retry advice for a matched hidden unfold-group member."""
     matches = []
     groups = safe(lambda: timeline.timelineGroups)
     count = _common.counted(lambda: groups.count)
@@ -239,7 +239,7 @@ def _collapsed_unfold_hint(timeline, want):
             kind = safe(lambda: entity.objectType)
             if not isinstance(kind, str):
                 return uncertain
-            if kind != 'adsk::fusion::UnfoldFeature':
+            if kind != 'adsk::fusion::UnfoldFeature' and unfold_group_members(group)[0] is None:
                 continue
             name = safe(lambda: item.name)
             owner = _inputs._owner_component_name(item)
@@ -258,7 +258,7 @@ def _collapsed_unfold_hint(timeline, want):
                   f"design_get(include=['timeline'], group='{holder}')")
                  for holder, target, supported in matches]
         more = f"; {len(steps) - 5} more not listed" if len(steps) > 5 else ""
-        return (f"'{want}' names {len(steps)} hidden unfold features in collapsed groups: "
+        return (f"'{want}' names {len(steps)} hidden unfold-group features in collapsed groups: "
                 + "; ".join(steps[:5]) + more + ". Then retry the original action with that "
                 "qualified reference. Keep the unfold group intact.")
     if not matches:

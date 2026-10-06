@@ -798,6 +798,17 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
                      "(a negative 'distance' reverses it)."
                      + _roll_back(design, feature, fname))
 
+    # A one-sided through_all publishes the side its extentOne.isPositiveDirection flag reads.
+    side_read = through_all_dir
+    if through_all_dir in ("positive", "negative"):
+        flag = _common.read_flag(lambda: feature.extentOne.isPositiveDirection)
+        side_read = None if flag is None else "positive" if flag else "negative"
+        if side_read is not None and side_read != through_all_dir:
+            fname = safe(lambda: feature.name) or "the new extrude feature"
+            return error(f"Extrude built '{fname}' for a {through_all_dir} extent=through_all, but "
+                         f"its extent reads back the {side_read} side. "
+                         + _common.failed_effect_remedy(design, feature))
+
     # DEPTH read-back per side: the feature's own distance ModelParameter against the cm number the
     # units engine evaluated THAT side's request to. Side one lands on extentOne and side two on
     # extentTwo, so a side is judged against its own request. A side this cannot judge is disclosed.
@@ -888,6 +899,8 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
         extent_report, distance_report = "through_all", None
         if through_all_dir == "negative":
             note += " Negative through-all uses the retired setAllExtent compatibility setter."
+        if side_read is None:
+            note += " The landed through_all side was not read back."
     else:
         extent_report, distance_report = ext_key, _inputs.expression_report(distance)
 
@@ -935,7 +948,7 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
     if ext_key == "two_side":
         result["distance2"] = _inputs.expression_report(distance2)
     if ext_key == "through_all":
-        result["direction"] = through_all_dir
+        result["direction"] = side_read
     if through_all_removed is not None:
         result["through_all_volume_removed_cm3"] = through_all_removed
     if len(affected_comps) > 1:

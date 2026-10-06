@@ -430,6 +430,7 @@ def _one(sketch, entry):
     # measures movement against; gap_before is what the dimension measures between them right now.
     pairs = _referenced_pairs((base1, e1), (base2, e2))
     before = _positions_of(pairs)
+    fixed = {ref for ref, ent in pairs if safe(lambda ent=ent: ent.isFixed) is True}
     gap_before = _gap_cm(dt, p1, p2) if dt in _DISTANCE_TYPES else None
     try:
         if dt in _DISTANCE_TYPES:
@@ -533,6 +534,10 @@ def _one(sketch, entry):
     solved, moves = _solved_block(pairs, before)
     if solved:
         out["solved"] = solved
+    # MEASURED: a line's isFixed holds through a mid-to-end dimension that moves both its endpoints.
+    fixed_moved = [ref for ref, moved in moves if ref in fixed and moved > _sketch_detail.MOVE_TOL_CM]
+    if fixed_moved:
+        out["fixed_entity_moved"] = fixed_moved
     # DISTANCE family only: a parameter's value is in DATABASE units, so an angular dimension's is
     # radians and no length threshold applies to it.
     jump = _moved_warning(moves, eval_cm, gap_before) if dt in _DISTANCE_TYPES else None

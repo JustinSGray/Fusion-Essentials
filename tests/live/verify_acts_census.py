@@ -180,7 +180,7 @@ def _probe_type_inferred(p):
     return _measured("one probe face selected with a readable inferred type",
                      {"selections": p.get("selections"), "probing_type": value},
                      p.get("selections") == 1 and isinstance(value, str) and bool(value)
-                     and value != "probing-unknown")
+                     and value != "probing-unknown" and "probing_type_changed" not in p)
 
 
 def _probe_type_selected(p):
@@ -623,6 +623,19 @@ _CENSUS_EXT = [
      lambda c: {"operation": "ProbeGeom", "selection": "probe",
                 "handles": [_ctx_get(c, "ext_top", "the flange top")],
                 "generate": False}, _probe_type_inferred,
+     ("inferred_probe_type", _recall("inferred_probe_type", lambda p: p["probing_type"]))),
+    ("cam_get", {"include": ["parameters"], "operation": "ProbeGeom",
+                  "parameter_names": ["probingType"]}, _probe_type_inferred_read, None),
+    ("cam_select_geometry",
+     lambda c: {"operation": "ProbeGeom", "selection": "probe",
+                "handles": [_ctx_get(c, "ext_wall", "the flange wall")], "generate": False},
+     lambda p: _measured("a different face re-infers probingType and says so",
+                         {k: p.get(k) for k in ("probing_type", "probing_type_before",
+                                                "probing_type_changed")},
+                         p.get("probing_type_changed") is True
+                         and p.get("probing_type_before") == "probing-z"
+                         and p.get("probing_type") != "probing-z"
+                         and "probingType read 'probing-z' before" in (p.get("note") or "")),
      ("inferred_probe_type", _recall("inferred_probe_type", lambda p: p["probing_type"]))),
     ("cam_get", {"include": ["parameters"], "operation": "ProbeGeom",
                   "parameter_names": ["probingType"]}, _probe_type_inferred_read, None),

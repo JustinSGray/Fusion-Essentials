@@ -303,8 +303,8 @@ def _do_reorder(design, timeline, feature, anchor, to):
     at, pa = keys_before.index(item), keys_before.index(near)
     if at == (pa - 1 if to == "before" else pa + 1):
         return error(f"'{name}' already sits immediately {to} '{target}'. Nothing moved.")
-    # Measured: reorder(beforeIndex) lands the item in front of the item read at beforeIndex, moving
-    # either way; reorder(-1) and reorder(count) raise featureAtIndex, so nothing lands after the last.
+    # reorder(beforeIndex) lands the item in front of the item read at beforeIndex, moving either way;
+    # nothing lands after the last row (measure_api row timeline-reorder-past-end-raises).
     nxt = pa if to == "before" else pa + 1
     land = before[nxt][1] if nxt < len(before) else None
     i = before[at][1]
@@ -515,6 +515,13 @@ def _do_ungroup(timeline, feature):
                      "is unambiguous.")
     group = hits[0]
     gname = safe(lambda: group.name) or feature
+    if _design_common.unfold_group_members(group)[0] is not None:
+        if _common.read_flag(lambda: group.isCollapsed) is False:
+            return error(f"'{gname}' is an unfold group and is already expanded, so its items are listed; "
+                         "name them directly. Nothing changed.")
+        return error(f"'{gname}' is an unfold group; ungrouping it loses its unfold/refold association. "
+                     f"Expand it with design_edit_timeline(action='group_state', feature='{gname}', "
+                     "collapsed=false) instead.")
     try:
         # deleteGroupAndContents=False: the group goes, its items stay in the timeline, expanded.
         did = group.deleteMe(False)
