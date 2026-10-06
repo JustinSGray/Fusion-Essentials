@@ -696,6 +696,47 @@ def _org_result(action, kind, source_count, destination_count):
     return check
 
 
+def _org_tree_history(expected, root_count, history_key):
+    """Check occurrence material membership and one healthy appended move row."""
+    def check(p):
+        _org_tree_counts(expected, root_count)(p)
+        old = _RECALL.get(history_key) or {}
+        now = p.get("timeline") or {}
+        old_rows, rows = old.get("timeline") or [], now.get("timeline") or []
+        valid = (("truncated" not in now or now.get("truncated") is False)
+                 and now.get("count") == now.get("returned") == len(rows)
+                 and now.get("marker_position") == len(rows) and len(rows) == len(old_rows) + 1
+                 and rows[:-1] == old_rows
+                 and (now.get("summary") or {}).get("states") == {"healthy": len(rows)}
+                 and (now.get("summary") or {}).get("exceptions") == [])
+        return _measured("body move appends one healthy timeline row",
+                         {"before_count": len(old_rows), "after": now}, valid)
+    return check
+
+
+def _org_nested_move_result(p):
+    """Require a nested move to publish the two measured destination placements."""
+    _org_result("move", "brep", 2, 1)(p)
+    effect = p.get("definition_effect") or {}
+    placements = effect.get("destination_placements") or {}
+    paths = sorted(placements.get("paths") or [])
+    wanted = ["OrgDestination:1+OrgExistingChild:1",
+              "OrgDestination:2+OrgExistingChild:1"]
+    return _measured("nested destination definition has both placed paths", placements,
+                     placements.get("count") == 2 and paths == wanted)
+
+
+def _org_body_material(volume, area):
+    """Read a placed body's independently measured material."""
+    def check(p):
+        mass = p.get("mass") or {}
+        return _measured("placed body material", mass,
+                         mass.get("units") == "mm" and mass.get("accuracy_used") == "very_high"
+                         and _near(mass.get("volume"), volume, .001)
+                         and _near(mass.get("area"), area, .001))
+    return check
+
+
 def _org_tree_counts(expected, root_count=0, no_children_of=()):
     """Read all occurrence body counts without trusting the ownership writer."""
     def check(p):
@@ -1079,6 +1120,68 @@ def _body_organization_rows():
                  save("org_sibling", _org_vertices))
         vertices("OrgDestination:2:Body1", lambda p: len(_org_vertices(p)) == 8,
                  save("org_sentinel", _org_vertices))
+        if kind == "brep" and mode == "parametric" and not surface:
+            _nested_before = {"OrgSource:1": 2, "OrgSource:2": 2,
+                              "OrgDestination:1": 1, "OrgDestination:2": 1,
+                              "OrgDestination:1+OrgExistingChild:1": 0,
+                              "OrgDestination:2+OrgExistingChild:1": 0}
+            row("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 5, "max_results": 1000},
+                _org_tree_counts(_nested_before),
+                save("org_nested_history_before", lambda p: p["timeline"]))
+            row("model_edit_body", lambda c: {"action": "move", "body": source_ref(c),
+                "destination": "OrgDestination:2+OrgExistingChild:1"},
+                _org_nested_move_result, save("org_nested_move", lambda p: p), write=True)
+            row("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 5, "max_results": 1000},
+                _org_tree_history({
+                    "OrgSource:1": 1, "OrgSource:2": 1,
+                    "OrgDestination:1": 1, "OrgDestination:2": 1,
+                    "OrgDestination:1+OrgExistingChild:1": 1,
+                    "OrgDestination:2+OrgExistingChild:1": 1}, 0,
+                    "org_nested_history_before"),
+                save("org_nested_history_after", lambda p: p["timeline"]))
+            vertices("OrgDestination:2+OrgExistingChild:1:Body1",
+                     _org_same_vertices("org_before"))
+            vertices("OrgDestination:1+OrgExistingChild:1:Body1",
+                     lambda p: _measured("second placed child has a complete world-vertex read",
+                         _org_vertices(p), len(_org_vertices(p)) == 8))
+            row("model_inspect", {"target": "OrgDestination:1+OrgExistingChild:1",
+                "include": ["mass"], "units": "mm", "accuracy": "very_high"},
+                _org_body_material(672, 472))
+            row("model_inspect", {"target": "OrgDestination:2+OrgExistingChild:1",
+                "include": ["mass"], "units": "mm", "accuracy": "very_high"},
+                _org_body_material(672, 472))
+            row("model_edit_body", lambda c: {"action": "move",
+                "body": _ctx_get(c, "org_nested_move", "nested child body")["handle"],
+                "destination": "root"}, _org_result("move", "brep", 1, 1),
+                save("org_nested_root", lambda p: p), write=True)
+            row("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 5, "max_results": 1000},
+                _org_tree_history({
+                    "OrgSource:1": 1, "OrgSource:2": 1,
+                    "OrgDestination:1": 1, "OrgDestination:2": 1,
+                    "OrgDestination:1+OrgExistingChild:1": 0,
+                    "OrgDestination:2+OrgExistingChild:1": 0}, 1,
+                    "org_nested_history_after"),
+                save("org_nested_root_history", lambda p: p["timeline"]))
+            vertices(lambda c: _ctx_get(c, "org_nested_root", "root control body")["handle"],
+                     _org_same_vertices("org_before"))
+            row("model_inspect", lambda c: {"target": _ctx_get(c, "org_nested_root",
+                "root control body")["handle"], "include": ["mass"], "units": "mm",
+                "accuracy": "very_high"}, _org_body_material(672, 472))
+            row("model_edit_body", lambda c: {"action": "move",
+                "body": _ctx_get(c, "org_nested_root", "root control body")["handle"],
+                "destination": "OrgSource:2"}, _org_result("move", "brep", 1, 2),
+                save("org_body_name", lambda p: p["body_name"]), write=True)
+            row("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 5, "max_results": 1000},
+                _org_tree_history({
+                    "OrgSource:1": 2, "OrgSource:2": 2,
+                    "OrgDestination:1": 1, "OrgDestination:2": 1,
+                    "OrgDestination:1+OrgExistingChild:1": 0,
+                    "OrgDestination:2+OrgExistingChild:1": 0}, 0,
+                    "org_nested_root_history"))
         if kind == "mesh":
             row("model_inspect", {"target": "OrgSource:2:OrgMesh"}, _org_mesh_shape,
                 save("org_mesh_selected_before", _org_mesh_snapshot))
@@ -1094,7 +1197,7 @@ def _body_organization_rows():
                 save("org_mesh_destination_before", lambda p: p))
         row("model_edit_body", lambda c: {"action": "copy", "body": source_ref(c)},
             _refused("destination"), write=True)
-        vertices((source_ref if surface else "OrgSource:2:Body1"), _org_same_vertices("org_before"))
+        vertices((source_ref if kind == "brep" else "OrgSource:2:Body1"), _org_same_vertices("org_before"))
         if kind == "mesh":
             row("model_edit_body", lambda c: {"action": "copy", "body": source_ref(c),
                 "destination": "OrgDestination:2"},

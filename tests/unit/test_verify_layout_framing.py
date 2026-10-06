@@ -21,6 +21,8 @@ import tool_verify  # noqa: E402
 import verify_layout  # noqa: E402
 import verify_program  # noqa: E402
 import verify_acts_model_solids  # noqa: E402
+import verify_acts_model_sweep  # noqa: E402
+import verify_acts_model_extrude_organization as organization  # noqa: E402
 from verify_families import fixture_steps  # noqa: E402
 import verify_acts_motion  # noqa: E402
 import verify_acts_doc  # noqa: E402
@@ -29,6 +31,52 @@ import verify_acts_sketch  # noqa: E402
 import verify_acts_cloud  # noqa: E402
 import verify_acts_mesh  # noqa: E402
 import verify_acts_sheet  # noqa: E402
+
+
+def test_loft_refusal_fixture_defers_handler_until_script_entry():
+    namespace = {}
+    exec(verify_acts_model_sweep._loft_refusal_details_script("LoftEdit/Loft1"), namespace)
+    entry = namespace.get("run")
+    assert callable(entry) and entry.__code__.co_argcount == 1
+
+
+def test_body_move_history_checks_sparse_row_summary(monkeypatch):
+    before = {"index": 0, "name": "Extrude1", "type": "ExtrudeFeature"}
+    after = {"index": 1, "name": "CutPasteBodies1", "type": "CutPasteBody"}
+    monkeypatch.setattr(organization, "_org_tree_counts", lambda *_: lambda p: True)
+    monkeypatch.setitem(organization._RECALL, "body_history", {"timeline": [before]})
+    timeline = {"count": 2, "returned": 2, "marker_position": 2,
+                "timeline": [before, after],
+                "summary": {"states": {"healthy": 2}, "exceptions": []}}
+    check = organization._org_tree_history({}, 0, "body_history")
+    assert check({"timeline": timeline}) is not None
+    for summary in ({}, {"states": {"healthy": 1, "warning": 1}, "exceptions": []}):
+        timeline["summary"] = summary
+        with pytest.raises(AssertionError):
+            check({"timeline": timeline})
+
+
+def test_body_move_round_trip_uses_the_returned_name(monkeypatch):
+    rows = organization._body_organization_rows()
+    context = {"org_doc": "scratch", "org_nested_root": {"handle": "root-body"}}
+    returned_index = next(i for i, row in enumerate(rows) if row[0] == "model_edit_body"
+                          and row[3] and row[3][0] == "org_body_name")
+    returned = rows[returned_index]
+    assert returned[1](context)["body"] == "root-body"
+    assert returned[1](context)["destination"] == "OrgSource:2"
+    monkeypatch.setitem(organization._RECALL, "org_body_name", "Body1")
+    key, getter = returned[3]
+    context[key] = getter({"body_name": "Body3"})
+    refusal_index = next(i for i, row in enumerate(rows) if i > returned_index
+                         and row[0] == "model_edit_body"
+                         and callable(row[1]) and row[1](context).get("action") == "copy"
+                         and "destination" not in row[1](context))
+    following = rows[refusal_index + 1]
+    assert following[0] == "find_geometry"
+    assert following[1](context)["target"] == "OrgSource:2:Body3"
+    copy = rows[refusal_index + 2]
+    assert copy[0] == "model_edit_body"
+    assert copy[1](context)["body"] == "OrgSource:2:Body3"
 
 
 @pytest.mark.parametrize("factory,home,context", [
@@ -77,7 +125,8 @@ def test_product_disclosure_scenes_keep_local_geometry_fresh_consumers_and_recov
 
 
 def test_saved_configuration_scene_keeps_owned_local_geometry_refusals_and_close():
-    context = {"configure_home": "session:home", "configure_owned": "session:coupon", "configure_urn": "urn:coupon"}
+    context = {"configure_home": "session:home", "configure_owned": "session:coupon", "configure_urn": "urn:coupon",
+               "lin_home": "session:home", "lin_owned": "session:lineage", "lin_reopened": "session:reopened"}
     authored = verify_acts_cloud._CLOUD_CONFIGURE
     compiled = next(rows for name, _pre, rows, _fallback in verify_program.ACTS
                     if name == "ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS")
@@ -85,13 +134,16 @@ def test_saved_configuration_scene_keeps_owned_local_geometry_refusals_and_close
         return [(tool, args(context) if callable(args) else args) for tool, args, _check, _save in rows
                 if tool in {"sketch_create", "sketch_add_geometry", "model_extrude", "design_configure",
                             "doc_save_as", "doc_close", "design_activate_component"}]
-    assert requests(compiled) == requests(authored)
-    outlines = [args for tool, args in requests(compiled) if tool == "sketch_add_geometry"]
+    compiled_requests = requests(compiled)
+    assert compiled_requests == requests(authored)
+    lineage_start = next(i for i, row in enumerate(compiled) if row[3] and row[3][0] == "lin_home")
+    coupon_requests = requests(compiled[:lineage_start])
+    outlines = [args for tool, args in coupon_requests if tool == "sketch_add_geometry"]
     assert [p["geometry"] for p in outlines] == [
         [{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 8}],
         [{"kind": "rectangle", "x1": 40, "y1": 0, "x2": 45, "y2": 5}]]
-    assert [args["distance"] for tool, args in requests(compiled) if tool == "model_extrude"] == ["ProbeW", "5 mm"]
-    columns = [args for tool, args in requests(compiled) if tool == "design_configure" and args["action"] == "add_parameter"]
+    assert [args["distance"] for tool, args in coupon_requests if tool == "model_extrude"] == ["ProbeW", "5 mm"]
+    columns = [args for tool, args in coupon_requests if tool == "design_configure" and args["action"] == "add_parameter"]
     assert [p["values"] for p in columns] == [{"B": "NoSuchProbe * 2"}, {"B": "5 kg"}, {"B": "13 mm"}]
     assert all(p["expect_document"] == "session:coupon" for p in columns)
     assert next(args for tool, args in requests(compiled) if tool == "doc_close") == {

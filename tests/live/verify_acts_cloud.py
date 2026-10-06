@@ -23,7 +23,7 @@ from verify_acts_model_precision import _section_camera
 from verify_acts_model_solids import _edge_extent_geometry, _symmetric_target_body_state
 from verify_acts_model_sweep import _retire_compare, _retire_design_state, _retire_material_state
 from verify_core import (
-    EXPORT_DIR, MARKER_PNG, NOTE_MAX, _RECALL, _activated, _ctx_get, _document_closed,
+    EXPORT_DIR, MARKER_PNG, NOTE_MAX, _RECALL, _Refusal, _activated, _ctx_get, _document_closed,
     _driven_slide, _dwell, _extruded, _face_up_at, _fg, _home_address, _home_document, _jointed,
     _made_component, _measured, _motion_linked, _new_document, _near, _num, _recall, _refused,
     _watch, facade)
@@ -484,6 +484,71 @@ def _hubs_untouched(p):
                      and p.get("hub_count") == len(rows) >= 1
                      and [r.get("name") for r in rows if r.get("is_active")] == [HUB]
                      and not any(str(r.get("id", "")).startswith("diagnostic-") for r in rows))
+
+
+def _hub_edit_preflight_probe(ctx):
+    """Check the loaded guard on real dirty cloud documents with a trapped hub assignment."""
+    lineage = _ctx_get(ctx, "source_urn", "the saved source")
+    return {"read_only": False, "script": f'''import adsk.core, json, sys
+from types import SimpleNamespace
+
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile.id == {lineage!r}
+    assert app.activeDocument.isModified is True
+    modules = [m for n, m in sys.modules.items() if n.endswith('.tools.data_switch_hub')]
+    assert len(modules) == 1
+    switch = modules[0]
+    active = app.data.activeHub
+    target = SimpleNamespace(name='Diagnostic target', id='diagnostic-preflight-hub')
+    class Hubs:
+        count = 2
+        def item(self, index):
+            return (active, target)[index]
+    class Data:
+        dataHubs = Hubs()
+        sets = 0
+        @property
+        def activeHub(self):
+            return active
+        @activeHub.setter
+        def activeHub(self, hub):
+            self.sets += 1
+            raise RuntimeError('diagnostic assignment trap; no native hub switched')
+    data = Data()
+    original = switch.app
+    try:
+        switch.app = SimpleNamespace(data=data, documents=app.documents)
+        result = switch.handler(action='switch', hub=target.id)
+    finally:
+        switch.app = original
+    print(json.dumps({{'is_error': result.get('isError') is True,
+        'result': json.loads(result['content'][0]['text']),
+        'set_calls': data.sets, 'restored': switch.app is original,
+        'native_documents': True, 'injected_target': True}}))
+'''}
+
+
+def _hub_edit_preflight_result(value):
+    """Require the exact saved source's refusal and actionable remedies before any assignment."""
+    p = value if isinstance(value, dict) else json.loads(value)
+    result = p.get("result") or {}
+    rows = result.get("modified_cloud_documents") or []
+    expected = _RECALL.get("hub_edit_census") or {}
+    active = expected.get("active") or {}
+    source = [row for row in rows if row.get("document_handle") == active.get("document_handle")]
+    handle = active.get("document_handle")
+    remedies = (f"doc_activate(name='{handle}')", f"doc_save(expect_document='{handle}')",
+                f"doc_close(name='{handle}', save_changes=false)")
+    return _measured("real modified cloud source refused before trapped hub assignment", p,
+        p.get("is_error") is True and p.get("set_calls") == 0 and p.get("restored") is True
+        and p.get("native_documents") is True and p.get("injected_target") is True
+        and result.get("blocked_by") == "modified_cloud_documents"
+        and result.get("modified_cloud_document_count") == len(rows) >= 1
+        and result.get("modified_cloud_documents_truncated") is False
+        and len(source) == 1 and source[0].get("is_modified") is True
+        and source[0].get("document_id") == _RECALL.get("source_urn")
+        and all(text in source[0].get("remedy", "") for text in remedies))
 
 
 def _capped_name_move_result(stdout):
@@ -1328,6 +1393,19 @@ def _drawing_current(p):
     return _measured("the fresh drawing is already up to date",
                      {"updated": p.get("updated"), "is_up_to_date": p.get("is_up_to_date")},
                      p.get("updated") is False and p.get("is_up_to_date") is True)
+
+
+def _auto_note_states_counts(p):
+    """drawing_dimension auto: the note carries the two counts read and names no owning view."""
+    before, after = p.get("dimension_count_before"), p.get("dimension_count_after")
+    note = p.get("note") or ""
+    return _measured("the auto note states the counts and claims no placement", note,
+                     type(before) is int and type(after) is int
+                     and note.startswith(f"The sheet's dimension count went from {before} to {after} "
+                                         f"({after - before} added); they may sit on views projected "
+                                         f"from view {p.get('view_index')}.")
+                     and "may stop being drawn after an auto run" in note
+                     and "Auto-dimensioned" not in note)
 
 
 def _dimensioned(p):
@@ -3018,14 +3096,18 @@ def _fit_refusal_sketches(p):
 
 
 def _released_then_deleted(name, key):
-    """Rows deleting the saved file <key>_urn after its modified document was closed discarding."""
-    # Closed modified, the file can keep reading in use and its delete then raises; a clean reopen
-    # and close releases it, read off the file record before the delete.
+    """Delete an owned closed coupon or independently witness Fusion's retained in-use refusal."""
     def urn(c):
         return _ctx_get(c, key + "_urn", "the saved file")
 
     def home(c):
         return _ctx_get(c, key + "_home", "home")
+
+    admitted = {}
+
+    def cleanup_args(c):
+        admitted.update(urn=urn(c), home=home(c))
+        return {"file": admitted["urn"]}
 
     def released(p):
         call, reads = facade("call"), 1
@@ -3037,9 +3119,47 @@ def _released_then_deleted(name, key):
             reads += 1
             if not is_error and isinstance(again, dict):
                 p = again
-        return _measured("the closed file reads not in use", {"state": p.get("state"), "reads": reads},
-                         (p.get("state") or {}).get("is_in_use") is False
-                         and (p.get("file") or {}).get("name") == name)
+        return _measured("the closed coupon's state is readable", {"state": p.get("state"), "reads": reads},
+                         type((p.get("state") or {}).get("is_in_use")) is bool
+                         and (p.get("state") or {}).get("is_complete") is True
+                         and (p.get("file") or {}).get("name") == name
+                         and (p.get("file") or {}).get("id") == _RECALL.get(key + "_urn"))
+
+    def cleanup(p):
+        file = p.get("file") or {}
+        own_urn = admitted.get("urn")
+        _measured("cleanup targets only this run's closed coupon", file,
+                  key in ("fit", "roll") and name == {
+                      "fit": "SweepFitRefusal.", "roll": "SweepSketchRoll."}[key] + _STAMP
+                  and bool(own_urn) and bool(admitted.get("home"))
+                  and file.get("id") == own_urn and file.get("name") == name
+                  and (p.get("state") or {}).get("is_complete") is True
+                  and type((p.get("state") or {}).get("is_in_use")) is bool)
+        call = facade("call")
+        is_error, deleted = call("data_delete_file", {
+            "document_id": own_urn, "confirm_name": name,
+            "expect_document": admitted["home"]})
+        if not is_error:
+            return _measured("delete answers this exact coupon", deleted,
+                             deleted.get("document_id") == own_urn and deleted.get("name") == name
+                             and _file_deleted(deleted))
+        _measured("only the measured in-use delete refusal is admitted", deleted,
+                  (p.get("state") or {}).get("is_in_use") is True
+                  and str(deleted) == f"Delete failed for '{name}': 2 : InternalValidationError : res")
+        read_error, after = call("data_get", {"file": own_urn})
+        _measured("refused delete leaves the exact complete coupon in use", after,
+                  not read_error and isinstance(after, dict)
+                  and (after.get("file") or {}).get("id") == own_urn
+                  and (after.get("file") or {}).get("name") == name
+                  and (after.get("state") or {}).get("is_in_use") is True
+                  and (after.get("state") or {}).get("is_complete") is True)
+        qualification = (f"Delete refused by Fusion, file left in place: {name} ({own_urn}). "
+                         "Successful-delete path on this coupon was not demonstrated in this run.")
+        _RECALL.setdefault("closed_cloud_delete_limits", []).append(qualification)
+        facade("STORY")["data_delete_file"] += " " + qualification
+        facade("STORY")["data_get"] += " " + qualification
+        print(qualification, flush=True)
+        return True
     return [
         ("doc_open", lambda c: {"file_id": urn(c), "force_api_open": True, "expect_document": home(c)},
          _opened(name, lambda: _RECALL.get(key + "_urn")),
@@ -3050,8 +3170,7 @@ def _released_then_deleted(name, key):
                                  "save_changes": False, "expect_document": home(c)},
          _document_closed, None),
         ("data_get", lambda c: {"file": urn(c)}, released, None),
-        ("data_delete_file", lambda c: {"document_id": urn(c), "confirm_name": name,
-                                        "expect_document": home(c)}, _file_deleted, None)]
+        ("data_get", cleanup_args, cleanup, None)]
 
 
 def _fit_refusal_rows():
@@ -3431,6 +3550,12 @@ _CLOUD_DOC = _fit_refusal_rows() + _sketch_roll_dirty_rows() + _named_derive_row
      _fit_to_modified_disclosed, None),
     ("doc_get", {}, _modified_reads(SOURCE_DOC, True), None),
     ("param_set", {"name": "CloudPlateH", "expression": "14 mm"}, "ok", None),
+    ("doc_get", {}, _modified_reads(SOURCE_DOC, True),
+     ("hub_edit_census", _recall("hub_edit_census", lambda p: p))),
+    ("sys_execute_script", _hub_edit_preflight_probe, _hub_edit_preflight_result, None),
+    ("doc_get", {}, lambda p: _measured("hub preflight preserved the complete session census", p,
+                                      p == _RECALL.get("hub_edit_census")), None),
+    ("data_get", {"include": ["hubs"]}, _hubs_untouched, None),
     ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
      _plate_geometry("the changed unsaved plate", 14.0), None),
     ("doc_get", {"include": ["default", "versions"]}, _tip_read,
@@ -3610,7 +3735,14 @@ _CLOUD_DRAWING = [
      ("drawing_persist_named_before_pdf", _recall("drawing_persist_named_before_pdf",
       _drawing_pdf_record))),
     ("drawing_dimension", lambda c: _drawing_overall_args(c, 0),
-     _drawing_overall_requested(0), None),
+     lambda p: _drawing_overall_requested(0)(p) and _auto_note_states_counts(p),
+     ("drawing_persist_auto", _recall("drawing_persist_auto", lambda p: p["dimension_count_after"]))),
+    # Independent: drawing_get's own count of the original sheet equals the count the note states.
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"]},
+     lambda p: _measured("drawing_get reads the count the auto run reported",
+                         [s.get("dimension_count") for s in p.get("sheets") or []],
+                         [s.get("dimension_count") for s in p.get("sheets") or []]
+                         == [_RECALL.get("drawing_persist_auto")]), None),
     # 'overall' on projected view 1 after the base view's overall lands NO new dimension while
     # autoDimension answers true; the count gate refuses it - the false success DRAW-1 named.
     ("drawing_dimension", lambda c: _drawing_overall_args(c, 1),
@@ -4413,15 +4545,16 @@ _CLOUD_CAM_PERSISTENCE = [
 ]
 
 
-def _configure_table_state(p):
+def _configure_table_state(p, active="B"):
     """Return the saved table's complete two-row/column identities without claiming cell values."""
     table = p.get("configurations") or {}
     rows, columns = table.get("configurations"), table.get("columns")
-    if (not table.get("table_id") or table.get("active_configuration") != "B"
+    if (not table.get("table_id") or table.get("active_configuration") not in {"Configuration 1", "B"}
+            or (active is not None and table.get("active_configuration") != active)
             or table.get("configuration_count") != 2 or not isinstance(rows, list) or len(rows) != 2
             or {r.get("name") for r in rows} != {"Configuration 1", "B"}
             or any(not r.get("id") or type(r.get("is_active")) is not bool
-                   or r["is_active"] != (r.get("name") == "B") for r in rows)
+                   or r["is_active"] != (r.get("name") == table.get("active_configuration")) for r in rows)
             or len({r["id"] for r in rows}) != 2 or sum(r["is_active"] for r in rows) != 1
             or not isinstance(columns, list) or not columns or table.get("truncated")
             or any(not c.get("id") or not c.get("title") or not c.get("type") for c in columns)
@@ -4573,3 +4706,119 @@ def _configure_column_rows():
 
 
 _CLOUD_CONFIGURE = _configure_column_rows()
+
+
+class _WrongLineage(_Refusal):
+    """doc_open's refusal naming the recalled Save As lineage as opened, the in-place one as asked."""
+
+    def __init__(self):
+        super().__init__(())
+
+    def missing(self, text):
+        want = ("The document that opened is 'SweepLineageSaveAs.",
+                f"({_RECALL.get('lin_saveas')}), not the file asked for ({_RECALL.get('lin_inplace')})",
+                "It stays open; discard it with doc_close(name='session:", "save_changes=false)")
+        return [f for f in want if f not in text]
+
+
+def _lineage_open_rows():
+    """A configured design saved in place then saved as: opening the in-place lineage is refused."""
+    first, second = "SweepLineageInPlace." + _STAMP, "SweepLineageSaveAs." + _STAMP
+    home = lambda c: _ctx_get(c, "lin_home", "the home session")
+
+    def write(args):
+        return lambda c: dict(args, expect_document=_ctx_get(c, "lin_owned", "the lineage coupon"))
+
+    def moved(p):
+        change = p.get("lineage_changed") or {}
+        return _measured("the in-place save moved the lineage", change,
+                         p.get("saved") is True and change.get("from") == _RECALL.get("lin_first")
+                         and bool(change.get("to")) and change.get("to") != change.get("from"))
+
+    def reopened(p):
+        active = p.get("active") or {}
+        return _measured("the open document reads the Save As lineage", active,
+                         active.get("name") == second
+                         and active.get("document_id") == _RECALL.get("lin_saveas"))
+
+    def flagged(p):
+        return _measured("the Save As design opened as itself, flag read off it", p,
+                         p.get("opened") is True and p.get("is_configured_design") is True
+                         and p.get("document_id") == p.get("resolved_id") == _RECALL.get("lin_saveas")
+                         and "configured_design_note" in p
+                         and "was not compared" not in (p.get("note") or ""))
+
+    def published(p):
+        urn = _RECALL.get("lin_saveas")
+        active = p.get("active") or {}
+        _measured("the publishing document is this Save As coupon", active,
+                  bool(urn) and active.get("document_id") == urn and active.get("name") == second)
+        missing = (f"No cloud file resolves from '{urn}'. Tried: {urn}. "
+                   "Get a lineage URN from data_get(project=<name>) ('id' on each file).")
+        for i in range(_SETTLE_POLLS):
+            is_error, last = facade("call")("data_get", {"file": urn})
+            if is_error:
+                _measured("only the exact pending lineage resolution is retried", last, last == missing)
+            else:
+                file = last.get("file") or {}
+                _measured("publication reads only this Save As coupon", file,
+                          file.get("id") == urn and file.get("name") == second)
+                if (last.get("state") or {}).get("is_complete") is True:
+                    return _file_record(FOLDER)(last)
+            if i + 1 < _SETTLE_POLLS:
+                time.sleep(_SETTLE_GAP_S)
+        return _measured("the Save As coupon finished publishing within the bound", last, False)
+
+    return [
+        ("doc_get", {}, _home_document, ("lin_home", _recall("lin_home", _home_address))),
+        ("doc_new", lambda c: {"expect_document": home(c)}, _new_document,
+         ("lin_owned", _recall("lin_owned", lambda p: p["document_handle"]))),
+        ("design_activate_component", {"occurrence": "root"}, "ok", None),
+        ("param_add", write({"name": "ProbeW", "expression": "10 mm", "unit": "mm"}), "ok", None),
+        ("sketch_create", write({"name": "LineageStock", "plane": "xy"}), "ok", None),
+        ("sketch_add_geometry", write({"sketch_name": "LineageStock", "units": "mm", "geometry": [
+            {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 8}]}), "ok", None),
+        ("model_extrude", write({"sketch_name": "LineageStock", "distance": "ProbeW", "units": "mm",
+                                 "operation": "new"}), _extruded, None),
+        ("doc_save_as", write({"name": first, "project": PROJECT, "folder": FOLDER, "create_path": False}),
+         _saved_as(first, FOLDER), ("lin_first", _recall("lin_first", lambda p: p["document_id"]))),
+        ("design_configure", write({"action": "create"}),
+         lambda p: p.get("configured") is True and p.get("created") is True, None),
+        ("design_configure", write({"action": "add_configuration", "name": "B"}),
+         lambda p: p.get("active_configuration") == "B", None),
+        ("design_configure", write({"action": "add_parameter", "parameter": "ProbeW",
+                                    "values": {"B": "13 mm"}}),
+         lambda p: p.get("parameter") == "ProbeW" and p.get("set") == 1, None),
+        ("doc_save", write({"description": "lineage replay: in-place save after conversion"}), moved,
+         ("lin_inplace", _recall("lin_inplace", lambda p: p["lineage_changed"]["to"]))),
+        ("doc_save_as", write({"name": second, "project": PROJECT, "folder": FOLDER, "create_path": False}),
+         lambda p: _saved_as(second, FOLDER)(p) and p.get("document_id") not in (
+             _RECALL.get("lin_first"), _RECALL.get("lin_inplace")),
+         ("lin_saveas", _recall("lin_saveas", lambda p: p["document_id"]))),
+        ("doc_get", {}, published, None),
+        ("doc_activate", lambda c: {"name": home(c)}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "lin_owned", "the coupon"), "save_changes": False,
+                                 "expect_document": home(c)}, _document_closed, None),
+        ("doc_open", lambda c: {"file_id": _ctx_get(c, "lin_saveas", "the Save As lineage"),
+                                "force_api_open": True, "expect_document": home(c)},
+         flagged, ("lin_reopened", _recall("lin_reopened", lambda p: p["document_handle"]))),
+        # Opening its backing item keeps the already-open owning design active.
+        ("doc_open", lambda c: {"file_id": _ctx_get(c, "lin_inplace", "the in-place lineage"),
+                                "force_api_open": True,
+                                "expect_document": _ctx_get(c, "lin_reopened", "the reopened design")},
+         _WrongLineage(), None),
+        ("doc_get", {}, reopened, None),
+        ("design_get", {"include": ["configurations"]},
+         lambda p: _measured("the open design carries the two-row ProbeW configuration table",
+                             _configure_table_state(p, None),
+                             _configure_table_state(p, None) is not None
+                             and any(c.get("title") == "ProbeW" for c in p["configurations"]["columns"])), None),
+        ("doc_activate", lambda c: {"name": home(c)}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "lin_reopened", "the reopened design"),
+                                 "save_changes": False, "expect_document": home(c)},
+         _document_closed, None),
+        ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("lin_home"), None),
+    ]
+
+
+_CLOUD_CONFIGURE += _lineage_open_rows()

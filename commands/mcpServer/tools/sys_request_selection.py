@@ -115,6 +115,8 @@ def _on_selection_changed(args, box, done):
     if not len(sels):
         return    # a clear/deselect, not a pick - keep waiting for a real one; done stays unset
     try:
+        # Read here, on the main thread at the pick: the user may have switched documents.
+        box["picked_in"] = (_write_guard._active_identity()[0], _write_guard.active_document_handle())
         box["result"] = {
             "selection_count": len(sels),
             "selections": [_selection_record(s) for s in sels],
@@ -153,7 +155,8 @@ def _begin_request(kind, clear_current, wait_seconds, expect_document):
     one of 'refused' (return as-is), 'immediate' (the full answer), or 'box'+'done' (wait, then
     read box['result'])."""
     doc_name, doc_urn = _write_guard._active_identity()
-    out = {"doc_name": doc_name, "doc_urn": doc_urn}
+    out = {"doc_name": doc_name, "doc_urn": doc_urn,
+           "doc_handle": _write_guard.active_document_handle()}
     # The same gate every wrapped write tool gets, called here because the auto-wrap is skipped
     # (write=None) and _document_refusal's read is only legal on the main thread.
     if expect_document:
@@ -258,6 +261,17 @@ def _completed_pick(box, kind, setup, extra_note=""):
     wait was expiring."""
     if "error" in box:
         return error(f"Could not read the completed selection: {box['error']}")
+    picked_name, picked_handle = box.get("picked_in") or (None, None)
+    asked = setup.get("doc_handle")
+    if not asked or not picked_handle:
+        return error("A pick landed, but the document it was made in could not be read, so no "
+                     "handle is returned. Read it with doc_get, then sys_get_selection.")
+    if picked_handle != asked:
+        return error(
+            f"The pick was made in '{picked_name}' ({picked_handle}), not in "
+            f"'{setup.get('doc_name')}' ({asked}) where it was requested, so no handle is "
+            "returned. doc_activate the document you want, then request the pick again; or read "
+            "this pick in its own document with sys_get_selection.")
     payload = dict(box["result"])
     payload.update({
         "status": "picked",

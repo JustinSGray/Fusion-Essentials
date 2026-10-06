@@ -212,10 +212,12 @@ def create_form(design, comp, text, name):
         return None, (raised + (retire(design, ff, label, count) or " The Form was removed.")
                       + _crossing(detail, True))
     if state == "open":
+        recovery = (" Ask the user to click Finish Form and choose Continue on the conversion "
+                    "dialog (or correct the cage first), then" if "SELF_INTERSECTS" in detail else
+                    " Ask the user to correct the cage in that edit and click Finish Form, then")
         return None, (raised + f" The design still reads direct, so the Form edit is still open "
                       f"and '{label}' was left in place." + _crossing(detail, False)
-                      + " Ask the user to correct the cage in that edit and click Finish Form, "
-                      "then" + remove)
+                      + recovery + remove)
     if state == "unread":
         return None, (raised + " The design type did not read after it, so whether the Form edit "
                       f"is open is unknown; '{label}' was left in place. If the design still reads "

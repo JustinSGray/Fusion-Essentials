@@ -890,6 +890,24 @@ class TestTangentChainTargeting:
         assert ("The 3 handles named 2 distinct edge(s), so each was sent once." in out["note"]
                 and ff.result.deleted is False)
 
+    def test_edges_from_distinct_component_definitions_refuse_before_feature_creation(self):
+        owner_a = MakeComp("EdgeA", entity_token="EDGE-A")
+        owner_b = MakeComp("EdgeB", entity_token="EDGE-B")
+        body_a = BRepBody(name="EdgeABody", parent_component=owner_a)
+        body_b = BRepBody(name="EdgeBBody", parent_component=owner_b)
+        edge_a = _edge_ent(body=body_a, token="EDGE-A-PROXY")
+        edge_b = _edge_ent(body=body_b, token="EDGE-B-PROXY")
+        ff, _ = _install_edge_handles({"A": edge_a, "B": edge_b})
+
+        result = fl.handler(edges=["A", "B"], radius=1, units="mm", tangent_chain=False)
+
+        assert result["isError"] is True
+        assert "component 'EdgeA'" in result["message"]
+        assert "component 'EdgeB'" in result["message"]
+        assert "Fillet one component's edges per call" in result["message"]
+        assert "no feature was created" in result["message"]
+        assert ff.last is None
+
     def test_native_subcomponent_aliases_are_sent_once(self):
         one, alias = (_edge_ent(token="physical") for _ in range(2))
         ff, _ = _install_edge_handles({"E1": one, "Alias": alias})

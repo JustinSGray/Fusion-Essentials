@@ -14,11 +14,11 @@ import math
 import adsk.fusion
 import pytest
 
-from conftest import (CylindricalJointMotion, FakeApplication, FakeDataFile, FakeFusionDocument,
-                      FakeJoint, FakeMatrix3D, FakeMotionLink, FakeOccurrence, FakeTimelineObject,
-                      FakeVector3D, MakeComp, RevoluteJointMotion, RigidJointMotion,
-                      SliderJointMotion, _MotionLimits, _NamedCollection, install, load_tool,
-                      make_design, make_occurrence, payload)
+from conftest import (BRepBody, CylindricalJointMotion, FakeApplication, FakeDataFile,
+                      FakeFusionDocument, FakeJoint, FakeMatrix3D, FakeMotionLink, FakeOccurrence,
+                      FakeTimelineObject, FakeVector3D, MakeComp, RevoluteJointMotion,
+                      RigidJointMotion, SliderJointMotion, _MotionLimits, _NamedCollection, install,
+                      load_tool, make_bbox, make_design, make_occurrence, payload)
 
 jd = load_tool("joint_drive")
 
@@ -46,15 +46,25 @@ _UNREADABLE_WALK = "2 : InternalValidationError : occ"
 
 class _DrivenOccurrence(FakeOccurrence):
     """A joint member the mechanism places from the joint's own value: `place(motion)` is its
-    transform2, so a drive that moves the part changes what a placement sample reads."""
+    transform2, so a drive that moves the part changes what a placement sample reads. `own_x`,
+    when given, is the x (cm) its ONE own body's unit box starts at for the joint's value; `children`
+    are the occurrences nested under it."""
 
-    def __init__(self, path, motion, place):
-        super().__init__(path)
-        self._motion, self._place = motion, place
+    def __init__(self, path, motion, place, own_x=None, children=()):
+        super().__init__(path, children=children, bodies_bounding_box=None)
+        self._motion, self._place, self._own_x = motion, place, own_x
 
     @property
     def transform2(self):
         return self._read("transform2", self._place(self._motion))
+
+    @property
+    def bRepBodies(self):
+        if self._own_x is None:
+            return self._read("bRepBodies", self._bodies)
+        x = self._own_x(self._motion)
+        return self._read("bRepBodies", _NamedCollection(
+            [BRepBody("Own", bbox=make_bbox((x, 0.0, 0.0), (x + 1.0, 1.0, 1.0)))]))
 
 
 def _occ(referenced=False, parent=None):
@@ -2091,46 +2101,67 @@ class TestBodyCornerEvidence:
     """The placement rows are the transform's CLAIM; a member's own body corner is the EVIDENCE."""
 
     @staticmethod
-    def _boxed(occ, corner_x):
-        """Give `occ` a bodies-only box whose min corner sits at corner_x() cm along x."""
-        occ.boundingBox2 = lambda _types: types.SimpleNamespace(
-            minPoint=types.SimpleNamespace(x=corner_x(), y=0.0, z=0.0))
-        return occ
+    def _stayed_child(path):
+        """A nested occurrence whose body never moves and sits below the parent's on every axis,
+        so it holds the min corner of any box taken over the parent's whole subtree."""
+        return make_occurrence(path, bodies=[
+            BRepBody("Far", bbox=make_bbox((-9.0, -9.0, -9.0), (-8.0, -8.0, -8.0)))])
+
+    @staticmethod
+    def _rail(arm, motion):
+        _install(FakeJoint("Rail", motion, occurrence_one=arm,
+                           occurrence_two=_DrivenOccurrence("Base:1", motion, _fixed)))
 
     def test_a_slide_whose_placement_moved_but_body_stayed_is_an_error(self):
         motion = SliderJointMotion()
-        arm = self._boxed(_DrivenOccurrence("Arm:1", motion, _slides((1.0, 0.0, 0.0))), lambda: 0.0)
-        base = _DrivenOccurrence("Base:1", motion, _fixed)
-        _install(FakeJoint("Rail", motion, occurrence_one=arm, occurrence_two=base))
+        self._rail(_DrivenOccurrence("Arm:1", motion, _slides((1.0, 0.0, 0.0)),
+                                     own_x=lambda m: 0.0), motion)
         res = jd.handler(joint_name="Rail", distance=50, units="mm")
         assert res["isError"] is True
-        assert "Arm:1" in res["message"] and "body geometry did not move" in res["message"]
+        assert "Arm:1" in res["message"]
+        assert "its own body geometry did not move (0.0 mm)" in res["message"]
 
     def test_a_slide_that_carried_its_body_publishes_how_far(self):
         motion = SliderJointMotion()
-        arm = self._boxed(_DrivenOccurrence("Arm:1", motion, _slides((1.0, 0.0, 0.0))),
-                          lambda: motion.slideValue)
-        base = _DrivenOccurrence("Base:1", motion, _fixed)
-        _install(FakeJoint("Rail", motion, occurrence_one=arm, occurrence_two=base))
+        self._rail(_DrivenOccurrence("Arm:1", motion, _slides((1.0, 0.0, 0.0)),
+                                     own_x=lambda m: m.slideValue), motion)
         out = payload(jd.handler(joint_name="Rail", distance=50, units="mm"))
         assert out["moved"]["geometry_moved_mm"] == 50.0
+        assert "is unread" not in out["note"]
+
+    def test_a_child_that_stayed_does_not_convict_a_drive_that_carried_the_own_body(self):
+        # The child holds the subtree's min corner and never moves, so a corner taken over the
+        # subtree reads 0.0 mm for a member whose own body travelled the whole command.
+        motion = SliderJointMotion()
+        self._rail(_DrivenOccurrence("Eye:1", motion, _slides((1.0, 0.0, 0.0)),
+                                     own_x=lambda m: m.slideValue,
+                                     children=[self._stayed_child("Eye:1+Free:1")]), motion)
+        out = payload(jd.handler(joint_name="Rail", distance=4, units="mm"))
+        assert out["driven"] is True and out["moved"]["occurrence"] == "Eye:1"
+        assert out["moved"]["geometry_moved_mm"] == 4.0
+
+    def test_a_member_with_no_body_of_its_own_reads_unread_not_stayed(self):
+        # Every body under this member belongs to a child that stayed: that is no evidence about
+        # the member itself, so the drive is neither convicted nor given a geometry reading.
+        motion = SliderJointMotion()
+        arm = _DrivenOccurrence("Eye:1", motion, _slides((1.0, 0.0, 0.0)),
+                                children=[self._stayed_child("Eye:1+Free:1")])
+        arm.boundingBox2 = lambda _types: make_bbox((-9.0, -9.0, -9.0), (1.0, 1.0, 1.0))
+        self._rail(arm, motion)
+        out = payload(jd.handler(joint_name="Rail", distance=4, units="mm"))
+        assert out["moved"]["delta_mm"] == [4.0, 0.0, 0.0]
+        assert "geometry_moved_mm" not in out["moved"]
+        assert "No body of 'Eye:1' itself gave a box" in out["note"]
+        assert "geometry_moved_mm is unread there" in out["note"]
 
     def test_a_spin_over_a_still_corner_is_evidence_not_an_error(self):
         # A body turning about its own axis keeps its box, so a rotation is never convicted on it.
         motion = RevoluteJointMotion()
-        rotor = self._boxed(_DrivenOccurrence("Rotor:1", motion, _spins), lambda: 0.0)
+        rotor = _DrivenOccurrence("Rotor:1", motion, _spins, own_x=lambda m: 0.0)
         base = _DrivenOccurrence("Base:1", motion, _fixed)
         _install(FakeJoint("Pivot", motion, occurrence_one=rotor, occurrence_two=base))
         out = payload(jd.handler(joint_name="Pivot", angle_deg=90))
         assert out["moved"]["geometry_moved_mm"] == 0.0
-
-    def test_a_member_whose_corner_does_not_read_carries_no_geometry_key(self):
-        motion = SliderJointMotion()
-        arm = _DrivenOccurrence("Arm:1", motion, _slides((1.0, 0.0, 0.0)))
-        base = _DrivenOccurrence("Base:1", motion, _fixed)
-        _install(FakeJoint("Rail", motion, occurrence_one=arm, occurrence_two=base))
-        out = payload(jd.handler(joint_name="Rail", distance=50, units="mm"))
-        assert "geometry_moved_mm" not in out["moved"]
 
 
 class TestMovedBandBoundary:

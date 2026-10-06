@@ -253,12 +253,12 @@ class TestHarnessSideOfTheHash:
         helper.write_bytes(b"def begin(): return False\n")
         assert tool_verify.source_hash(src) != before
 
-    def test_judged_gui_command_edit_invalidates_the_receipt(self, tmp_path, monkeypatch):
+    def test_unjudged_gui_command_edit_leaves_the_receipt_current(self, tmp_path, monkeypatch):
         src, _live = self._rig(tmp_path, monkeypatch)
         before = tool_verify.source_hash(src)
         command = Path(verify_runner.REPO_ROOT) / "commands/updateTools/entry.py"
         command.write_bytes(b"def replace_with_library_tool(): return False\n")
-        assert tool_verify.source_hash(src) != before
+        assert tool_verify.source_hash(src) == before
 
     def test_a_facts_harness_edit_leaves_the_hash_where_a_predicate_edit_moves_it(
             self, tmp_path, monkeypatch):

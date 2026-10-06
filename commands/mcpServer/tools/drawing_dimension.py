@@ -300,15 +300,17 @@ def _auto(sheet, target, idx, count, strat_key, datum_key, before):
             return error(f"autoDimension returned true for view index {idx} with strategy "
                          f"'{strat_key}', but the sheet's dimension count reads {after} after the "
                          f"call ({before} before), so no added dimension is confirmed.")
-        note = (f"Auto-dimensioned view {idx}: the sheet's dimension count went from {before} to "
-                f"{after}. " + _PLACED_NOTE)
+        note = (f"The sheet's dimension count went from {before} to {after} ({after - before} "
+                f"added); they may sit on views projected from view {idx}. A manual dimension "
+                "already on the sheet may stop being drawn after an auto run: check it in "
+                f"drawing_export's PDF. {_NO_DELETE}. doc_save persists the drawing.")
     else:
         # With no count, the flag only convicts when it was readable and FALSE on both sides; an
         # unreadable read is published as null and joins the already-modified case as inconclusive.
         if modified_before is False and modified_after is False:
             return error(f"autoDimension reported success for view index {idx} but the document "
                          "is still unmodified, so nothing was placed. " + _NO_COUNT_NOTE)
-        note = "Auto-dimensioned one view. " + _NO_COUNT_NOTE + " doc_save keeps them."
+        note = "autoDimension returned true. " + _NO_COUNT_NOTE + " doc_save keeps them."
         if modified_before is None or modified_after is None:
             note = ("The document's modified flag could not be read, so nothing here confirms the "
                     "dimensioning took. " + note)

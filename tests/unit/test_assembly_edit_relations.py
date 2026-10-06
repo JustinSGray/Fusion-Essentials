@@ -459,6 +459,27 @@ class TestGuards:
         # neither was deleted - a deleted group leaves its collection's walk
         assert design.rootComponent.rigidGroups.count == 1 and sub.rigidGroups.count == 1
 
+    def test_the_address_the_duplicate_refusal_lists_resolves_that_one_group(self, world):
+        a = FakeRigidGroup("Rigid Group 1", entity_token="A")
+        b = FakeRigidGroup("Rigid Group 1", entity_token="B")
+        world(rigid=[a], subs=[_component("Tower", rigid=[b])])
+        msg = error_message(rel.handler(kind="rigid_group", name="Rigid Group 1", action="suppress"))
+        assert msg == ("'Rigid Group 1' names 2 rigid groups - refusing to guess which one. Pass "
+                       "one as listed: 'Root/Rigid Group 1', 'Tower/Rigid Group 1'.")
+        out = payload(rel.handler(kind="rigid_group", name="tower/rigid group 1", action="suppress"))
+        assert out["is_suppressed"] is True
+        assert (a.isSuppressed, b.isSuppressed) == (False, True)
+
+    def test_an_address_two_groups_answer_to_is_refused_and_not_offered(self, world):
+        # Two components sharing a name: '<component>/<name>' tells their groups apart no better.
+        groups = [FakeRigidGroup("RG1", entity_token=t) for t in "AB"]
+        world(subs=[_component("Tower", rigid=[g]) for g in groups])
+        for name in ("RG1", "Tower/RG1"):
+            msg = error_message(rel.handler(kind="rigid_group", name=name, action="suppress"))
+            assert "names 2 rigid groups" in msg and "Rename one in Fusion" in msg
+            assert "Pass one as listed" not in msg
+        assert [g.isSuppressed for g in groups] == [False, False]
+
     def test_no_active_design(self, monkeypatch):
         monkeypatch.setattr(rel._common, "design", lambda: None)
         monkeypatch.setattr(rel._inputs._common, "design", lambda: None)

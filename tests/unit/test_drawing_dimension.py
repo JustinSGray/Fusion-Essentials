@@ -465,7 +465,12 @@ class TestCountGate:
         out = _payload(dim.handler(view=1, strategy="chain"))
         assert (out["dimension_count_before"], out["dimension_count_after"]) == (3, 4)
         assert (out["action"], out["view_index"], out["strategy"]) == ("auto", 1, "chain")
-        assert "from 3 to 4" in out["note"]
+        # The note states the counts and names no view as the owner of an added dimension.
+        assert out["note"] == (
+            "The sheet's dimension count went from 3 to 4 (1 added); they may sit on views "
+            "projected from view 1. A manual dimension already on the sheet may stop being drawn "
+            "after an auto run: check it in drawing_export's PDF. Fusion has no API to delete a "
+            "placed dimension or read its value. doc_save persists the drawing.")
 
     def test_manual_is_refused_where_the_sheet_has_no_dimension_collection(self, env):
         res = _manual()

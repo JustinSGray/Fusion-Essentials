@@ -502,10 +502,9 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
     ev = _evaluated(design, entity, (marker, index, token, count), health_before,
                     (before_shapes, after_shapes, target_before, target_after))
     geometry_changed, outside_changes = ev["geometry_changed"], ev["outside_changes"]
-    definition_matches = (definition_before is not None and definition_after is not None
-                          and definition_after["sections"] == desired
-                          and all(definition_after[key] == definition_before[key]
-                                  for key in definition_before if key != "sections"))
+    expected_definition = (dict(definition_before, sections=desired)
+                           if attempted and definition_before is not None else definition_before)
+    definition_matches = matched(definition_after, expected_definition)
     details = {"feature": label, "action": action, "section_index": section_index,
                "mutation_attempted": attempted, "definition_before": _definition_report(definition_before),
                "definition_after": _definition_report(definition_after),

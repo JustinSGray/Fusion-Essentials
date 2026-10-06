@@ -97,9 +97,10 @@ another.
    found: <name>. Available: ...`, a folder miss, or no matching name = STOP. `truncated` /
    `time_truncated` true with no match is an incomplete read, not an absent template - say so.
 2. On a STOP: report the active hub (`data_get()` -> `active_hub`) and what did not resolve in it,
-   then leave the switch to the operator. A hub switch closes every open document, and URNs recorded
-   before it stop resolving after it, so the skill never calls `data_switch_hub` itself. Do not name
-   the hub the template is in - no read here sees another hub's contents.
+   then leave the switch to the operator. Saved documents with unsaved edits can block a hub switch;
+   never-saved documents can remain open. After a switch, re-read `doc_get` and resolve hub-scoped
+   URNs again. The skill never calls `data_switch_hub` itself. Do not name the hub the template is in -
+   no read here sees another hub's contents.
 
 ## Phase 1 - Propose the machining face (READ)
 
@@ -346,9 +347,13 @@ one silently.
    path>, units="mm")` - measure after the join, in world axes (the join reorients the part, so
    Phase 3's pre-join extents land on the wrong axes) - then `param_set` each parameter from
    this reading. No PART_PARAMS = skip, and say the stock was left as the template defines.
-6. Naming (best-effort): `sketch_set_text(text=<model>, sketch_name=NAMEPLATE_SKETCH)`
-   (`changed_count` 0 = template has no nameplate; fine) and `cam_set_nc_comment(
-   comment=<model>)`.
+6. Naming (best-effort; neither write gates completion): call
+   `sketch_set_text(text=<model>, sketch_name=NAMEPLATE_SKETCH)`. When the tool returns its
+   explicit error that no sketch text was found in that named sketch, report the nameplate as not
+   set and continue; this case is an error response, not `changed_count: 0`. Report other errors
+   as failures. Then call `cam_set_nc_comment(comment=<model>)`. If it returns
+   "This document has no NC programs.", report that no NC comment was written and continue;
+   report other errors as failures.
 7. `doc_save()` - the insert, joint, and parameters are session-only until saved.
 
 ## Phase 8 - Generate the toolpaths (WRITE, async)

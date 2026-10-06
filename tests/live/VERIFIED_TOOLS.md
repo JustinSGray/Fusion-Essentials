@@ -29,8 +29,8 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source de852e0a00182acdb7aded134c7385143d8ee5efe52ac53237d3eed93c4a4004 | Fusion 2706.0.116 | verified 2026-10-05
-Loaded: implementation 5f443bcf0581e78730d1e5b4ac7e24d47126fde21b894af5f467a3889d026dca | schema 39419ca006716da07c5bfa07134d094b07bc17713a3712fcc89d3457587d1dcc | load fb10e4a58268446f8033391580804f0f | session e06da6b847fb4fdaa65ad753b5c34990
+Stamp: source 4b889304c9f1cfd84a288c604fde9e222732fbb592c09656e63babd17ab539fa | Fusion 2706.0.116 | verified 2026-10-06
+Loaded: implementation 1e8b7cd5809100953e38653e7ac2c90f9d8acb20037479548c7bea35ac8d01e1 | schema 0c990d1b7597f2bccae70fc809155ab76408722cebef1fbbecd957ed917ebe3a | load c87da3cc0c3a4b29a7c4c475fb3acbe7 | session d739805c54284ae39bfdb16fd101d6a3
 
 209 covered / 0 called / 1 refusals-only / 3 skipped(reason) / 0 pending
 
@@ -142,7 +142,7 @@ Loaded: implementation 5f443bcf0581e78730d1e5b4ac7e24d47126fde21b894af5f467a3889
 | data_get | covered | the hub this run is signed in to and the configured project listed in it - the row that puts on the ledger WHICH hub the artifacts were made in; then the uploaded file's own record (where it sits, and whether the cloud has finished with it - what the drawing generator needs true of its source); and the two read-backs standing apart from the deletes' own reports: the run folder addressed DIRECTLY, where the project answers that it holds no such subfolder - a refusal a budget cut cannot produce - and the configured folder's own file listing, scoped to that folder and failing on any listing that did not fully read |
 | data_get_upload_status | covered | poll that handle to 'complete': transfer AND cloud processing finished, with the lineage URN every later step addresses the file by. Nothing downstream runs against a file that has not landed |
 | data_move_file | covered | move the landed file into the subfolder, with the parent RE-READ off the re-resolved file - DataFile.move returns a bool, and the bool is not the evidence |
-| data_switch_hub | skipped: closes every open document, the story document among them - the cloud_tier probe refuses a config naming a hub other than the active one instead of switching to it |  |
+| data_switch_hub | skipped: actual switching requires an operator-admitted alternate hub and document census; the cloud act tests the dirty-cloud preflight with native documents and a trapped diagnostic target, without switching hubs |  |
 | data_upload_file | covered | upload the run's marker PNG into that folder - a non-Fusion file, which is the only kind that can come back down again - and mint the poll handle the status read below asks with |
 | design_activate_component | covered | step into each part to build its sketch, and back out to the root once the hub's last feature has landed |
 | design_add_instance | covered | place two more pin-cameo instances and read the landed paths back, the second naming the component while two of it already stand; the self-nesting target refused |

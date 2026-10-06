@@ -77,6 +77,16 @@ def _same_occurrence(a, b):
     return first == second and _known_component_match(a.component, b.component)
 
 
+def _destination_owner(destination):
+    """The component definition selected by an occurrence, or the root component itself."""
+    return safe(lambda: destination.component) or destination
+
+
+def _destination_is_root(destination, root):
+    """Whether the destination occurrence selects the root component."""
+    return _known_component_match(_destination_owner(destination), root)
+
+
 def _members(component, kind):
     """Every body in one owner's collection, refusing an unreadable census."""
     coll = component.meshBodies if kind == "mesh" else component.bRepBodies
@@ -247,7 +257,7 @@ def _context_body(native, occurrence):
 def _result_occurrence(design, owner, source_context, action, destination):
     """The exact intended result placement, or an ambiguity error."""
     if action != "create_component":
-        return (None, None) if _known_component_match(destination, design.rootComponent) else (destination, None)
+        return (None, None) if _destination_is_root(destination, design.rootComponent) else (destination, None)
     placements = _placements(design, owner)
     if source_context is not None:
         parent_path = source_context.fullPathName
@@ -411,8 +421,7 @@ def handler(action: str = "", body: str = "", destination: str = "", faces=None)
         source_identity = _common.native_identity(native)
         if not _contains_key(source_before, source_identity):
             return error(f"Source owner '{source_owner.name}' does not contain exactly one selected body.")
-        dest_owner = (target if _known_component_match(target, design.rootComponent) else target.component
-                      ) if target else None
+        dest_owner = _destination_owner(target) if target else None
         dest_before = _members(dest_owner, family) if dest_owner is not None else []
         source_witnesses = [member for member in source_before
                             if not _same_entity(_native(member), native)][:_WITNESS_CAP]
@@ -422,7 +431,7 @@ def handler(action: str = "", body: str = "", destination: str = "", faces=None)
                          for member in source_witnesses]
         if dest_owner is not None and not _known_component_match(dest_owner, source_owner):
             witness_total += len(dest_before)
-            dest_context = None if _known_component_match(target, design.rootComponent) else target
+            dest_context = None if _destination_is_root(target, design.rootComponent) else target
             witness_items += [(dest_owner, _native(member), dest_context,
                                _shape(_context_body(_native(member), dest_context), family))
                               for member in dest_before[:_WITNESS_CAP]]

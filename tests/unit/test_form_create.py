@@ -199,6 +199,8 @@ class TestFormCreate:
         assert rig.ran == [] and ff._deletes == deletes and len(rig.timeline._items) == 1 - deletes
         if not closes:
             assert "design_delete_feature(feature='Root/Form1')" in msg
+            assert "click Finish Form and choose Continue" in msg
+            assert "(or correct the cage first)" in msg
 
     def test_a_raising_finish_whose_design_type_then_does_not_read_leaves_the_form(
             self, rig, monkeypatch):

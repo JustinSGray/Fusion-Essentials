@@ -66,18 +66,33 @@ def handler(occurrences: str = "", bodies=None, quantity: int = 4, total_angle_d
             f"Pattern '{safe(lambda: feature.name)}' created {int(real_total)} instances but "
             f"{int(quantity)} were requested. The feature is left in the timeline for inspection - "
             "design_delete_feature removes it.")
+    landed = safe(lambda: feature.parentComponent)
+    component = safe(lambda: landed.name) or None
+    by_bodies = bodies not in (None, "", [])
+    note = ("Bodies" if by_bodies else "Occurrences") + " patterned around the axis."
+    if component is None:
+        note += " Its owning component did not read; design_get(include=['timeline']) lists it."
+    elif _common.same_component(landed, safe(lambda: design.rootComponent)) is False:
+        note += f" The pattern is owned by component '{component}'."
+    axis_owner = _inputs.entity_component(ax)
+    axis_component = safe(lambda: axis_owner.name) or None
+    foreign_axis = (component is not None and axis_component is not None
+                    and _common.same_component(axis_owner, landed) is False)
+    if foreign_axis:
+        note += f" Its axis belongs to component '{axis_component}'."
     return ok({
         "patterned": True,
         "type": "circular",
         "feature": safe(lambda: feature.name),
+        "component": component,
+        **({"axis_component": axis_component} if foreign_axis else {}),
         "entities": resolved,
-        "entity_kind": "bodies" if bodies not in (None, "", []) else "occurrences",
+        "entity_kind": "bodies" if by_bodies else "occurrences",
         "axis": _direction_label(_CIRC_AXIS, axis, ax),
         "quantity": int(real_total) if real_total is not None else int(quantity),
         "total_angle_deg": float(total_angle_deg),
         "symmetric": bool(symmetric),
-        "note": ("Bodies" if bodies not in (None, "", []) else "Occurrences")
-                + " patterned around the axis. Pair with view_screenshot to view.",
+        "note": note + " Pair with view_screenshot to view.",
     })
 
 

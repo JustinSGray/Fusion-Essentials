@@ -178,10 +178,10 @@ class TestAsyncLoadHandoff:
         assert payload["referenced_documents"] == 3
 
     def _open(self, monkeypatch, active):
-        opened = FakeFusionDocument(name="Plain")
+        opened = FakeFusionDocument(name="Plain", data_file=FakeDataFile("Plain", file_id=URN))
         elsewhere = FakeFusionDocument(name="Other")
         monkeypatch.setattr(od, "_resolve_data_file",
-                            lambda raw: (FakeDataFile("Plain"), raw, [raw]))
+                            lambda raw: (FakeDataFile("Plain", file_id=URN), raw, [raw]))
         monkeypatch.setattr(od, "_open_document", lambda d: (opened, "openUsingContext", None))
         fake_app = FakeApplication(active_document=opened if active else elsewhere)
         monkeypatch.setattr(od, "app", fake_app)
@@ -263,7 +263,8 @@ class TestTheOpenReportsItsOwnCost:
     is a different number from the document's own direct reference count."""
 
     def _open(self, monkeypatch, family):
-        opened = FakeFusionDocument(name="Assembly", references=[object()])
+        opened = FakeFusionDocument(name="Assembly", references=[object()],
+                                    data_file=FakeDataFile("Assembly", file_id=URN))
         app = FakeApplication(active_document=opened,
                               documents=FakeDocuments(documents=[FakeFusionDocument(name="Home")]))
 
@@ -273,7 +274,7 @@ class TestTheOpenReportsItsOwnCost:
             return opened, "openUsingContext", None
 
         monkeypatch.setattr(od, "_resolve_data_file",
-                            lambda raw: (FakeDataFile("Assembly"), raw, [raw]))
+                            lambda raw: (FakeDataFile("Assembly", file_id=URN), raw, [raw]))
         monkeypatch.setattr(od, "_open_document", _load)
         monkeypatch.setattr(od, "app", app)
         res = od.handler(file_id="urn:asm", force_api_open=True)
@@ -300,15 +301,67 @@ class TestTheOpenReportsItsOwnCost:
         assert od.item.enforce_timeout is False
 
 
+class TestOpenedIdentity:
+    """The reply's identity is the OPENED document's own dataFile.id, compared with the id of the
+    file that was resolved - never the request echoed back."""
+
+    L1R, L2 = "urn:adsk.wipprod:dm.lineage:L1r", "urn:adsk.wipprod:dm.lineage:L2"
+    V1R = "urn:adsk.wipprod:fs.file:vf.L1r?version=2"
+
+    def _open(self, monkeypatch, opened_file, project=None, asked_id=L1R):
+        asked = FakeDataFile("Configuration 1", file_id=asked_id, parent_project=project)
+        opened = FakeFusionDocument(name="SaveAs", data_file=opened_file)
+        fake_app = FakeApplication(active_document=opened)
+        monkeypatch.setattr(od, "_resolve_data_file", lambda raw: (asked, raw, [raw]))
+        monkeypatch.setattr(od, "_open_document", lambda d: (opened, "openUsingContext", None))
+        monkeypatch.setattr(od, "app", fake_app)
+        monkeypatch.setattr(w, "app", fake_app)
+        return od.handler(file_id=asked_id, force_api_open=True), opened
+
+    def test_a_document_reading_another_lineage_is_an_error_naming_both_and_the_close(self, monkeypatch):
+        import types
+        res, opened = self._open(monkeypatch, FakeDataFile("SaveAs", file_id=self.L2),
+                                 project=types.SimpleNamespace(name="System Project - CONFIG"))
+        handle = w.document_handle(opened)
+        assert res["isError"] is True
+        assert res["message"] == (
+            f"The document that opened is 'SaveAs' ({self.L2}), not the file asked for "
+            f"({self.L1R}). The file asked for reads name 'Configuration 1' in project 'System "
+            f"Project - CONFIG'. It stays open; discard it with doc_close(name='{handle}', "
+            "save_changes=false).")
+        assert opened._closes == []
+
+    def test_the_same_lineage_publishes_it_with_no_note(self, monkeypatch):
+        res, _opened = self._open(monkeypatch, FakeDataFile("SaveAs", file_id=self.L1R))
+        out = json.loads(res["content"][0]["text"])
+        assert (out["opened"], out["document_id"], out["note"]) == (True, self.L1R, None)
+
+    def test_an_opened_id_that_does_not_read_is_null_and_said_uncompared(self, monkeypatch):
+        res, _opened = self._open(monkeypatch, None)
+        out = json.loads(res["content"][0]["text"])
+        assert out["opened"] is True and out["document_id"] is None
+        assert out["acted_on"]["document_id"] is None
+        assert "was not compared with the file asked for" in out["note"]
+        assert "doc_get" in out["note"]
+
+    def test_an_asked_id_that_is_not_a_lineage_urn_is_uncompared_not_refused(self, monkeypatch):
+        res, _opened = self._open(monkeypatch, FakeDataFile("SaveAs", file_id=self.L2),
+                                  asked_id=self.V1R)
+        out = json.loads(res["content"][0]["text"])
+        assert out["opened"] is True and out["document_id"] == self.L2
+        assert "was not compared with the file asked for" in out["note"]
+
+
 class TestConfiguredDesign:
     """A Configured Design opens at ONE of its configurations, and which one is not this call's to
-    choose - so the payload publishes the flag it read off the DataFile and, only then, the note
-    naming where the configurations are listed and switched. A plain design carries neither."""
+    choose - so the payload publishes the flag it read off the OPENED document's DataFile and, only
+    then, the note naming where the configurations are listed and switched."""
 
     def _open(self, monkeypatch, **data_file):
-        opened = FakeFusionDocument(name="Bracket")
-        monkeypatch.setattr(od, "_resolve_data_file",
-                            lambda raw: (FakeDataFile("Bracket", **data_file), raw, [raw]))
+        opened = FakeFusionDocument(name="Bracket", data_file=FakeDataFile(
+            "Bracket", file_id="urn:bracket", **data_file) if data_file else None)
+        monkeypatch.setattr(od, "_resolve_data_file", lambda raw: (
+            FakeDataFile("Bracket", file_id="urn:bracket", is_configured_design=False), raw, [raw]))
         monkeypatch.setattr(od, "_open_document", lambda d: (opened, "openUsingContext", None))
         monkeypatch.setattr(od, "app", FakeApplication(active_document=opened))
         res = od.handler(file_id="urn:bracket", force_api_open=True)
@@ -327,6 +380,10 @@ class TestConfiguredDesign:
         plain = self._open(monkeypatch, is_configured_design=False)
         assert plain["is_configured_design"] is False
         assert "configured_design_note" not in plain
+
+    def test_a_flag_that_does_not_read_off_the_opened_document_is_null(self, monkeypatch):
+        unread = self._open(monkeypatch)
+        assert unread["is_configured_design"] is None and "configured_design_note" not in unread
 
 
 class TestSchema:

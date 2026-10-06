@@ -4,7 +4,6 @@ from ...lib import fusion360utils as futil
 from ... import config
 from ... import shared_state
 from ...timer import Timer, format_timer
-from .boundary import place_boundary_edges, unplaced_message
 from typing import List, Dict
 import math
 
@@ -95,10 +94,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
     # General logging for debug
     futil.log(f'{CMD_NAME} Command Execute Event')
     inputs = args.command.commandInputs
-    unplaced = patch_faces(inputs.itemById('chain'), inputs.itemById('sew_mode').value)
-    if unplaced:
-        args.executeFailed = True
-        args.executeFailedMessage = unplaced_message(unplaced)
+    patch_faces(inputs.itemById('chain'), inputs.itemById('sew_mode').value)
 
 # This function will be called when the command needs to compute a new preview in the graphics window
 def command_preview(args: adsk.core.CommandEventArgs):
@@ -167,17 +163,12 @@ def patch_faces(selections: adsk.core.SelectionCommandInput, sew: bool):
     for i, tf in enumerate(tangent_faces):
         timer.mark(f'get_faces:{i}')
         facess.append(get_faces(tf, selections))
-    timer.mark('plan_boundaries')
-    plans = [(faces, plan_boundary(faces)) for faces in facess if len(faces) > 1]
-    # Every chain is planned before the first loft, so a refusal leaves the design untouched.
-    unplaced = sum(len(plan[3]) for _, plan in plans)
-    if unplaced:
-        timer.finish()
-        return unplaced
     timer.mark('patch_faces')
-    for i, (faces, plan) in enumerate(plans):
+    for i, faces in enumerate(facess):
         timer.mark(f'patch_faces:{i}')
-        body, tln1, tln2 = patcher(plan, features)
+        if len(faces) == 1:
+            continue
+        body, tln1, tln2 = patcher(faces, features)
         if firstTLN is None:
             firstTLN = tln1
         secondTLN = tln2
@@ -228,7 +219,6 @@ def patch_faces(selections: adsk.core.SelectionCommandInput, sew: bool):
     timing = timer.finish()
     if config.TIMING:
         futil.log(format_timer(timing))
-    return 0
 
 def are_vectors_parallel(vector1: adsk.core.Vector3D, vector2: adsk.core.Vector3D, tol: float = 1e-6) -> bool:
     if abs(vector1.angleTo(vector2)) < tol:
@@ -381,8 +371,8 @@ def find_farthest_edge(face: adsk.fusion.BRepFace, next_face: adsk.fusion.BRepFa
     return farthest_edge
 
 
-def plan_boundary(faces: List[adsk.fusion.BRepFace]):
-    """Split a face chain's boundary into two chains: (chain_1, chain_2, interior edges, unplaced edges)."""
+# Find the loop around the edge of a set of faces
+def patcher(faces: List[adsk.fusion.BRepFace], features: adsk.fusion.Features) -> (adsk.fusion.BRepBody, adsk.fusion.TimelineObject, adsk.fusion.TimelineObject):
     edge_dict = {}
     edict = {}
     for face in faces:
@@ -423,6 +413,11 @@ def plan_boundary(faces: List[adsk.fusion.BRepFace]):
         else:
             exterior_edges_id[key] = edict[key]
 
+    # if the faces make a loop then we will need to make two loops and use a loft instead of a patch
+    # we will check to see if the first and last faces are tangent to each other
+    lofts = features.loftFeatures
+    loft_input = lofts.createInput(adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+
     vertex_dict = {}
     for face in faces:
         add_to_vertex_dict(vertex_dict, face)
@@ -447,7 +442,6 @@ def plan_boundary(faces: List[adsk.fusion.BRepFace]):
 
     # we will iterate through the faces and add the edges to the boundary edges list until we reach the first face again
     is_closed_set = (set([faces[0].vertices.item(i).entityToken for i in range(faces[0].vertices.count)]).intersection(set([faces[-1].vertices.item(i).entityToken for i in range(faces[-1].vertices.count)])).__len__() < 2 or len(faces) == 2)
-    unplaced = []
     for i in range(len(faces)):
         edges_to_place: List[adsk.fusion.BRepFace] = []
         for j in range(faces[i].edges.count):
@@ -468,17 +462,27 @@ def plan_boundary(faces: List[adsk.fusion.BRepFace]):
                 elif faces[i].edges.item(j) in boundary_edges_id_1 or faces[i].edges.item(j) in boundary_edges_id_2: # however we do want to skip the seeded edges if we are on the first face
                     continue
                 edges_to_place.append(faces[i].edges.item(j))
-        unplaced.extend(place_boundary_edges(edges_to_place, boundary_edges_id_1, boundary_edges_id_2, are_edges_connected))
-    if unplaced:
-        futil.log(f'{len(unplaced)} boundary edge(s) connect to neither chain.')
-    return boundary_edges_id_1, boundary_edges_id_2, list(interior_edges_id.values()), unplaced
+        while edges_to_place:
+            for edge in edges_to_place:
+                if are_edges_connected(boundary_edges_id_1[-1], edge):
+                    boundary_edges_id_1.append(edge)
+                    edges_to_place.remove(edge)
+                elif are_edges_connected(boundary_edges_id_1[0], edge):
+                    boundary_edges_id_1.insert(0, edge)
+                    edges_to_place.remove(edge)
+                elif are_edges_connected(boundary_edges_id_2[-1], edge):
+                    boundary_edges_id_2.append(edge)
+                    edges_to_place.remove(edge)
+                elif are_edges_connected(boundary_edges_id_2[0], edge):
+                    boundary_edges_id_2.insert(0, edge)
+                    edges_to_place.remove(edge)
+                else:
+                    futil.log(f'Failed to find a matching edge for the last edge.')
 
+    # if the face is not a loop then we will have remove one edge from each end of the surface
+    # first we have to find the edge for each of the ending faces that is the farthest away from the edge shared with the next face
 
-def patcher(plan, features: adsk.fusion.Features) -> (adsk.fusion.BRepBody, adsk.fusion.TimelineObject, adsk.fusion.TimelineObject):
-    """Loft a surface between the two boundary chains of a plan_boundary result, railed on its interior edges."""
-    boundary_edges_id_1, boundary_edges_id_2, interior_edges, _ = plan
-    lofts = features.loftFeatures
-    loft_input = lofts.createInput(adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    # fires we will make a ObjectCollection of the boundary edges
     boundary_edges_1 = adsk.core.ObjectCollection.create()
     for i in boundary_edges_id_1:
         boundary_edges_1.add(i)
@@ -492,7 +496,7 @@ def patcher(plan, features: adsk.fusion.Features) -> (adsk.fusion.BRepBody, adsk
     # now we will loft the two paths
     loft_input.loftSections.add(path_1)
     loft_input.loftSections.add(path_2)
-    for edge in interior_edges:
+    for edge in interior_edges_id.values():
         loft_input.centerLineOrRails.addRail(edge)
     
     loft_input.isSolid = False

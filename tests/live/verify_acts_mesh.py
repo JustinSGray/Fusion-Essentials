@@ -787,6 +787,22 @@ def _tiny_surface_face(p):
     return {k: row[k] for k in ("kind", "area", "position", "normal", "frame")}
 
 
+def _cowl_wall_material(p):
+    """Require the returned wall's positive volume and one solid lump beside its source sheet."""
+    mass = p.get("mass") or {}
+    rows = mass.get("per_body") or []
+    solid = [r for r in rows if r.get("is_solid") is True]
+    valid = (mass.get("units") == "mm" and mass.get("per_body_count") == len(rows) == 2
+             and mass.get("per_body_truncated") is False and len(solid) == 1
+             and sum(r.get("is_solid") is False for r in rows) == 1
+             and solid[0].get("body") == _RECALL.get("cowl_wall")
+             and solid[0].get("lump_count") == 1
+             and _num(solid[0].get("volume")) and math.isfinite(solid[0]["volume"])
+             and solid[0]["volume"] > 0
+             and _num(mass.get("volume")) and math.isfinite(mass["volume"]) and mass["volume"] > 0)
+    return _measured("single-face thicken remedy leaves one solid lump with positive volume", mass, valid)
+
+
 def _symmetric_cowl_rows():
     """A symmetric 89.4 deg revolve spans 178.8 deg; its two faces refuse one thicken, one face does not."""
     cowl = [[87, -66], [85, -73], [76, -85], [66, -94], [57, -99], [54, -99]]
@@ -810,7 +826,11 @@ def _symmetric_cowl_rows():
          _refused("ASM_INCONSISTENT_ORIENTATION", "thicken each face in its own call with chaining=false"), None),
         ("surface_thicken", lambda c: {"faces": _ctx_get(c, "cowl_faces", "both cowl halves")[:1],
                                        "thickness": -2.5, "chaining": False},
-         lambda p: p.get("thickened") is True and p.get("is_solid") is True, None),
+         lambda p: p.get("thickened") is True and p.get("is_solid") is True
+         and len(p.get("result_bodies") or []) == 1,
+         ("cowl_wall", _recall("cowl_wall", lambda p: p["result_bodies"][0]))),
+        ("model_inspect", {"target": "SRevCowl:1", "include": ["mass"], "per_body": True, "units": "mm"},
+         _cowl_wall_material, None),
     ]
 
 

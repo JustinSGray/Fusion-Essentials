@@ -1188,6 +1188,56 @@ class TestBatch:
         assert [r["dim_type"] for r in out["results"]] == ["radius", "diameter"]
         assert [c[0] for c in s.sketchDimensions.calls] == ["radius", "diameter"]
 
+    @pytest.mark.parametrize("ellipse_type", ["ellipse_major_radius", "ellipse_minor_radius"])
+    def test_line_refs_after_ellipse_radius_are_refused_with_partial_prefix(
+            self, monkeypatch, ellipse_type):
+        s = _install(monkeypatch)
+        method_name = ("addEllipseMajorRadiusDimension" if ellipse_type == "ellipse_major_radius"
+                       else "addEllipseMinorRadiusDimension")
+        add = getattr(s.sketchDimensions, method_name)
+
+        def add_with_axis(ellipse, text_point, isDriving=True):
+            dim = add(ellipse, text_point, isDriving)
+            s.sketchCurves.sketchLines._items.insert(2, FakeLine())
+            return dim
+
+        monkeypatch.setattr(s.sketchDimensions, method_name, add_with_axis)
+        out = _payload(sd.handler(dimensions=[
+            {"dim_type": ellipse_type, "entity_one": "ellipse:0"},
+            {"dim_type": "linear_diameter", "entity_one": "line:2", "entity_two": "line:0"},
+            {"dim_type": "radius", "entity_one": "circle:0"}]))
+        assert out["dimensioned"] == 1 and out["requested"] == 3
+        assert out["results"][0]["dim_type"] == ellipse_type
+        assert out["failed"]["index"] == 1 and out["not_attempted"] == 1
+        assert "'line:2'" in out["failed"]["error"]
+        assert "line:N or point:N" in out["failed"]["error"]
+        assert "line and point indices" in out["failed"]["error"]
+        assert "sketch_get(include_entities=true)" in out["failed"]["error"]
+        assert [call[0] for call in s.sketchDimensions.calls] == [ellipse_type]
+
+    def test_point_refs_after_ellipse_radius_block_later_point_and_line_entries(
+            self, monkeypatch):
+        s = _install(monkeypatch)
+        add = s.sketchDimensions.addEllipseMajorRadiusDimension
+
+        def add_with_axis_endpoints(ellipse, text_point, isDriving=True):
+            dim = add(ellipse, text_point, isDriving)
+            s.sketchPoints._items[0:0] = [FakeSketchPoint(), FakeSketchPoint()]
+            return dim
+
+        monkeypatch.setattr(s.sketchDimensions, "addEllipseMajorRadiusDimension",
+                            add_with_axis_endpoints)
+        out = _payload(sd.handler(dimensions=[
+            {"dim_type": "ellipse_major_radius", "entity_one": "ellipse:0"},
+            {"dim_type": "distance", "entity_one": "point:0", "entity_two": "point:1"},
+            {"dim_type": "distance", "entity_one": "line:0:start", "entity_two": "line:1:end"}]))
+        assert out["dimensioned"] == 1 and out["requested"] == 3
+        assert [row["dim_type"] for row in out["results"]] == ["ellipse_major_radius"]
+        assert out["failed"]["index"] == 1 and out["not_attempted"] == 1
+        assert "'point:0'" in out["failed"]["error"]
+        assert "'point:1'" in out["failed"]["error"]
+        assert [call[0] for call in s.sketchDimensions.calls] == ["ellipse_major_radius"]
+
     def test_a_later_failure_leaves_the_earlier_entry_landed(self, monkeypatch):
         s = _install(monkeypatch)
         out = _payload(sd.handler(dimensions=[

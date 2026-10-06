@@ -959,6 +959,29 @@ def _loft_edit_end_parameter(key, baseline=None):
     return check
 
 
+def _loft_refusal_details_script(feature):
+    """Repeat the minimum-section refusal and expose its structured comparison evidence."""
+    return f'''import json, sys
+
+def run(context):
+    modules = [m for n, m in sys.modules.items() if n.endswith('.tools.model_edit_loft')]
+    assert len(modules) == 1
+    result = modules[0].handler(feature={feature!r}, action='remove', section_index=1)
+    print(json.dumps({{'is_error': result.get('isError') is True, 'details': result.get('details')}}))
+'''
+
+
+def _loft_unchanged_refusal(p):
+    """Require a refusal that independently re-reads its unchanged definition without an edit."""
+    detail = p.get("details") or {}
+    return _measured("refused Loft removal re-reads its definition unchanged", detail,
+                     p.get("is_error") is True and detail.get("mutation_attempted") is False
+                     and detail.get("definition_matches") is True
+                     and detail.get("definition_before") is not None
+                     and detail.get("definition_before") == detail.get("definition_after")
+                     and detail.get("marker_restored") is True)
+
+
 def _loft_edit_rows():
     """Exercise profile retarget, three-to-two removal and minimum refusal in scratch."""
     rows = [("doc_get", {}, _home_document, ("le_story", _home_address)),
@@ -1111,6 +1134,8 @@ def _loft_edit_rows():
         ("le_volume_removed", _recall("le_volume_removed", lambda p: p["mass"]["volume"]))))
     write("model_edit_loft", lambda c: {"feature": _ctx_get(c, "le_feature", "Loft feature"),
         "action": "remove", "section_index": 1}, _refused("fewer than two"))
+    write("sys_execute_script", lambda c: {"script": _loft_refusal_details_script(
+        _ctx_get(c, "le_feature", "Loft feature")), "read_only": False}, _loft_unchanged_refusal)
     rows.append(("design_get", lambda c: {"include": ["definition"],
         "feature": _ctx_get(c, "le_feature", "Loft feature")},
         _loft_edit_definition(("Start", "End")), None))
@@ -1488,7 +1513,8 @@ def _later_operand_rows():
                           "path": "sketch:PathA", "operation": "new"}, _swept,
           ("lo_body", lambda p: p["result_bodies"][0]))
     sketch("Box", "xy", {"kind": "rectangle", "x1": 200, "y1": -20, "x2": 240, "y2": 20})
-    write("model_extrude", {"sketch_name": "Box", "profile_index": 0, "distance": 20}, _extruded)
+    write("model_extrude", {"sketch_name": "Box", "profile_index": 0, "distance": 20}, _extruded,
+          ("lo_later_body", lambda p: p["result_bodies"][0]))
     for offset in (20, 40):
         write("model_construction", {"kind": "plane", "plane": "xy", "offset": offset,
                                      "name": f"PlaneZ{offset}"}, _datum_plane("xy"))
@@ -1549,6 +1575,18 @@ def _later_operand_rows():
     write("model_edit_loft", {"feature": "Loft1", "action": "retarget", "section_index": 1,
                               "profile": {"sketch": "S1Later", "profile_index": 0}},
           _later_refusal("S1Later", 14, "Loft1", 10))
+    # An edge of the body Extrude1 built after Sweep1: the handle resolves at the marker, is
+    # refused at the Sweep's row, and the refusal names the one feature holding that body.
+    read("find_geometry", lambda c: {"target": _ctx_get(c, "lo_later_body", "the later body"),
+                                     "kind": "line_edge", "max_results": 1},
+         lambda p: _measured("one straight edge of the later body", p.get("returned"),
+                             p.get("returned") == 1), _fg("lo_later_edge"))
+    write("model_edit_sweep", lambda c: {"feature": "Sweep1", "action": "path",
+                                         "path": _ctx_get(c, "lo_later_edge", "later-body edge")},
+          _refused("Editing 'Sweep1': 'path' edge belongs to '",
+                   "', made by 'Extrude1' at row 4, after 'Sweep1' at row 2. Use an edge or sketch "
+                   "that exists before row 2; a fresh find_geometry handle on that body repeats "
+                   "this refusal. Nothing was edited."))
     read("design_get", {"include": ["timeline"], "max_results": 100},
          _timeline_reads("refused edits left the timeline as it was",
                          lambda names: names == _RECALL.get("lo_rows")))

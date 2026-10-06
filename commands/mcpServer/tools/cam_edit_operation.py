@@ -397,14 +397,57 @@ _RESTORE_FAILED = (
     "come back: {rows}. The operation is left holding those values - set each one back by hand.")
 
 
-def _restore(changed, resolved):
-    """Restore and re-read every written row; returns the rows that did not come back."""
-    failed = []
+# A row put back through its value object: the value reads as it did, the expression does not.
+_VALUE_RESTORED = (
+    "Restored the expression of {k} of {n} parameter(s); {v} came back by VALUE only, the "
+    "expression now a literal: {rows}. {failed}Operation.hasError reads {flag}.")
+
+_NOT_BACK = "{bad} did NOT come back and the operation is left holding them: {rows}. "
+
+# The typed values a prior read is written back as - never an entity list, never an unread value.
+_SCALARS = (str, bool, int, float)
+
+
+def _restore_value(p, rec, prior, refusal):
+    """(came back, sentence) - write the prior typed value to value.value once and re-read the row."""
+    name, before = rec["name"], rec["before"]
+    refused = f"'{name}' refused its prior {before!r} ({refusal}) and reads "
+    try:
+        p.value.value = prior
+    except Exception as e:
+        return False, (refused + f"{safe(lambda: p.expression)!r}, and value.value refused the "
+                       f"prior value {prior!r} ({e})")
+    back = safe(lambda: p.expression)
+    now = safe(lambda: p.value.value)
+    if now != prior:
+        return False, (refused + f"{back!r}; value.value took the prior value {prior!r} and "
+                       f"reads {now!r}")
+    err = expression_error(p)[0]
+    return True, (f"'{name}' reads value {now!r} and expression {back!r}; CAMParameter.expression "
+                  f"refused its prior expression {before!r} ({refusal}), which was NOT restored"
+                  + (f"; its error reads {err!r}" if err else ""))
+
+
+def _value_restored_clause(n, valued, failed, op) -> str:
+    """The restore sentence when a row came back by value only, with the operation's error flag."""
+    not_back = _NOT_BACK.format(bad=len(failed), rows="; ".join(failed)) if failed else ""
+    return _VALUE_RESTORED.format(k=n - len(valued) - len(failed), n=n, v=len(valued),
+                                  rows="; ".join(valued), failed=not_back,
+                                  flag=_flag_word(read_flag(lambda: op.hasError)))
+
+
+def _restore(changed, resolved, priors):
+    """(value-only rows, rows that did not come back) after restoring and re-reading every row."""
+    valued, failed = [], []
     for rec in changed:
         p = resolved[rec["name"]]
         try:
             p.expression = rec["before"]
         except Exception as e:
+            if rec["name"] in priors:
+                came_back, row = _restore_value(p, rec, priors[rec["name"]], e)
+                (valued if came_back else failed).append(row)
+                continue
             back = safe(lambda p=p: p.expression)
             failed.append(f"'{rec['name']}' refused its prior {rec['before']!r} ({e}) and reads "
                           f"{back!r}")
@@ -412,15 +455,18 @@ def _restore(changed, resolved):
         back = safe(lambda p=p: p.expression)
         if back != rec["before"]:
             failed.append(f"'{rec['name']}' reads {back!r}, held {rec['before']!r}")
-    return failed
+    return valued, failed
 
 
-def _restored_clause(changed, resolved) -> str:
+def _restored_clause(changed, resolved, priors, op) -> str:
     """The 'what this call did to the operation' sentence a refusal after a write carries: the
     restore and its re-read, worded on whether every expression actually came back."""
     if not changed:
         return "Nothing was applied."
-    failed = _restore(changed, resolved)
+    valued, failed = _restore(changed, resolved, priors)
+    if valued:
+        return (f"This call WROTE {len(changed)} parameter(s) on the operation. "
+                + _value_restored_clause(len(changed), valued, failed, op))
     if failed:
         return _RESTORE_FAILED.format(n=len(changed), k=len(changed) - len(failed),
                                       bad=len(failed), rows="; ".join(failed))
@@ -599,6 +645,7 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
     unreadable = []
     still_locked = []
     written_of = {}
+    priors = {}
     # A locked row goes LAST: a switch in the same call is what unlocks it, and the flag is re-read
     # once the rest of the request has landed.
     order = [n for n in wanted if n not in locked] + locked
@@ -610,6 +657,11 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
                 still_locked.append(name)
                 continue
         before = safe(lambda p=p: p.expression)
+        # Read BEFORE the write: the evaluated value a refused restore falls back to. Absent from
+        # `priors` = unread or not a scalar, which is not the same as holding '' or False.
+        prior = safe(lambda p=p: p.value.value)
+        if isinstance(prior, _SCALARS):
+            priors[name] = prior
         # A parameter already holding a QUOTED expression stores a string, and Fusion refuses the
         # bare spelling ('3 : Invalid enumeration value.'), so the request is wrapped to match.
         written, quoted = matched_quoting(before, expr)
@@ -656,7 +708,7 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
                         if changed else "")
         return error(_LOCKED_REFUSAL.format(
             operation=operation, names=", ".join(still_locked), after=after_clause,
-            applied=_restored_clause(changed, resolved)) + _LOCKED_REMEDY
+            applied=_restored_clause(changed, resolved, priors, op)) + _LOCKED_REMEDY
                     + _applied_clause(pre_landed))
 
     # Three ways a write is not a success: it did not evaluate, it did not move, it will not read
@@ -665,7 +717,7 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
         # Read once every write has landed and before the restore: a mode write can disable a row.
         disabled = {n for n, _e, _why in eval_failures
                     if read_flag(lambda n=n: resolved[n].isEnabled) is False}
-        restore_failed = _restore(changed, resolved)
+        valued, restore_failed = _restore(changed, resolved, priors)
         parts = []
         if eval_failures:
             detail = "; ".join(f"'{n}' = '{e}' ({why})" + (_DISABLED_CLAUSE if n in disabled else "")
@@ -689,7 +741,9 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
             remedy = "(" + _TOOL_DIMENSION_REMEDY + ")"
         else:
             remedy = "(Re-read the operation with cam_get(include=['operations']).)"
-        if restore_failed:
+        if valued:
+            rolled = _value_restored_clause(len(changed), valued, restore_failed, op)
+        elif restore_failed:
             rolled = (f"Restored {len(changed) - len(restore_failed)} of {len(changed)} "
                       f"parameter(s); {len(restore_failed)} did NOT come back and the operation is "
                       f"left holding them: {'; '.join(restore_failed)}.")

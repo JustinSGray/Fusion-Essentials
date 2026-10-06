@@ -343,6 +343,37 @@ def test_a_later_source_outside_a_sketch_is_not_called_a_sketch():
     assert mod.later_operand_refusal("Sweep1", 1, [source]) is None
 
 
+_UNRESOLVED = ("'path': handle did not resolve - the entityToken is stale AND no geometry locator "
+               "recovered it. Re-run find_geometry for a fresh handle.")
+_LATER_BODY = ("Editing 'Sweep1': 'path' edge belongs to 'LaterBody', made by 'Extrude1' at row 2, "
+               "after 'Sweep1' at row 1. Use an edge or sketch that exists before row 1; a fresh "
+               "find_geometry handle on that body repeats this refusal. Nothing was edited.")
+
+
+@pytest.mark.parametrize("holders,group,named", [
+    ({"Extrude1": 2}, False, True),
+    ({"Sweep1": 1}, False, False),
+    ({"Extrude1": 2, "Fillet1": 3}, False, False),
+    ({"Extrude1": 2}, True, False)])
+def test_an_edge_of_a_later_body_names_the_one_feature_holding_that_body(
+        rig, monkeypatch, holders, group, named):
+    sweep, timeline = rig
+    body = SimpleNamespace(name="LaterBody", entityToken="later-body")
+    edge = SimpleNamespace(entityToken="later-edge", body=body)
+    timeline._items = [
+        FakeTimelineObject(name=name, index=i, entity=SimpleNamespace(
+            bodies=_NamedCollection([body] if holders.get(name) == i else [])))
+        for i, name in enumerate(["Prof", "Sweep1", "Extrude1", "Fillet1"])]
+    if group:
+        timeline._items.append(FakeTimelineObject(name="G", index=4, is_group=True))
+    # The handle resolves at the marker and is refused at the Sweep's edit position.
+    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (
+        (_path_of(edge), "p", None) if timeline.markerPosition == 3 else (None, None, _UNRESOLVED)))
+    text = error_message(mod.handler(feature="Sweep1", action="path", path="later-edge"))
+    assert text == (_LATER_BODY if named else f"Editing 'Sweep1': {_UNRESOLVED} Nothing was edited.")
+    assert (sweep.assignments, timeline.markerPosition) == (0, 3)
+
+
 def test_wrong_operand_is_refused_before_assignment(rig):
     sweep, timeline = rig
     result = mod.handler(feature="Sweep1", action="profile", profile="new", path="sketch:Other")

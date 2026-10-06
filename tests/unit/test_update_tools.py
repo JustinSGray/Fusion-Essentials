@@ -33,24 +33,6 @@ class OperationRecord:
         self.toolPreset = SimpleNamespace(name="finish")
 
 
-class WriteCountingOperation(OperationRecord):
-    """Record tool assignments so ambiguity can prove it did not write the operation."""
-    def __init__(self, name, tool):
-        self.tool_writes = 0
-        self._tool = tool
-        self.name = name
-        self.toolPreset = SimpleNamespace(name="finish")
-
-    @property
-    def tool(self):
-        return self._tool
-
-    @tool.setter
-    def tool(self, value):
-        self.tool_writes += 1
-        self._tool = value
-
-
 class ToolRecords:
     """An owned tool list with the accessors used by the matching function."""
     def __init__(self, tools=()):
@@ -94,22 +76,6 @@ def match_tools():
         return document_tools, logs, messages
 
     return run
-
-
-@pytest.fixture
-def geometry_duplicate_case():
-    duplicate_a = JsonTool("Holder A", "Product A", 4.0)
-    duplicate_b = JsonTool("Holder B", "Product B", 4.0)
-    duplicate_a.payload["holder"] = {"description": "Holder-A", "segments": []}
-    duplicate_b.payload["holder"] = {"description": "Holder-B", "segments": []}
-    original = JsonTool("Operation tool", "Operation product", 4.0)
-    ambiguous = WriteCountingOperation("AmbiguousGeometry", original)
-    target = JsonTool("Unique holder", "Unique product", 6.0)
-    following = WriteCountingOperation("FollowingGeometry", JsonTool("Other", "Other", 6.0))
-    return SimpleNamespace(
-        ambiguous=ambiguous, original=original, original_preset=ambiguous.toolPreset,
-        target=target, following=following,
-        library=ToolRecords([duplicate_a, duplicate_b, target]))
 
 
 @pytest.mark.parametrize("correlation", ["Description", "Product ID", "Geometry"])
@@ -164,63 +130,4 @@ def test_an_unmatched_operation_keeps_its_tool(match_tools):
         [operation], ToolRecords([JsonTool("other", "other", 1.0)]), "Description")
     assert operation.tool is original and document_tools.tools == []
     assert any("Unmatched" in log and "No Match Found" in log for log in logs)
-    assert len(messages) == 1 and "could not be correlated" in messages[0]
-
-
-@pytest.mark.parametrize(
-    "correlation,duplicate_values,following_values,expected_details",
-    [
-        ("Description", ("same description", "first id", "second id"),
-         ("unique description", "unique id"),
-         ("candidate library indices/details: [0: description='same description', "
-          "product-id='first id'; 1: description='same description', product-id='second id']")),
-        ("Product ID", ("first description", "same id", "second description"),
-         ("unique description", "unique id"),
-         ("candidate library indices/details: [0: description='first description', "
-          "product-id='same id'; 1: description='second description', product-id='same id']")),
-    ],
-)
-def test_duplicate_selector_skips_ambiguous_operation_and_continues(
-        match_tools, correlation, duplicate_values, following_values, expected_details):
-    if correlation == "Description":
-        duplicate_a = JsonTool(duplicate_values[0], duplicate_values[1], 1.0)
-        duplicate_b = JsonTool(duplicate_values[0], duplicate_values[2], 2.0)
-        original = JsonTool(duplicate_values[0], "original id", 8.0)
-        following_tool = JsonTool(following_values[0], following_values[1], 9.0)
-        target = JsonTool(following_values[0], following_values[1], 3.0)
-    else:
-        duplicate_a = JsonTool(duplicate_values[0], duplicate_values[1], 1.0)
-        duplicate_b = JsonTool(duplicate_values[2], duplicate_values[1], 2.0)
-        original = JsonTool("original description", duplicate_values[1], 8.0)
-        following_tool = JsonTool("following description", following_values[1], 9.0)
-        target = JsonTool("target description", following_values[1], 3.0)
-    ambiguous = OperationRecord("Ambiguous", original)
-    original_preset = ambiguous.toolPreset
-    following = OperationRecord("Following", following_tool)
-    library = ToolRecords([duplicate_a, duplicate_b, target])
-
-    document_tools, logs, messages = match_tools([ambiguous, following], library, correlation)
-
-    assert ambiguous.tool is original and ambiguous.toolPreset is original_preset
-    assert following.tool is target and following.toolPreset is target.preset
-    assert document_tools.tools == [target]
-    assert any("Ambiguous" in log and "skipped" in log and expected_details in log for log in logs)
-    assert len(messages) == 1 and "could not be correlated" in messages[0]
-
-
-def test_duplicate_geometry_skips_without_tool_write_and_continues(
-        match_tools, geometry_duplicate_case):
-    case = geometry_duplicate_case
-    document_tools, logs, messages = match_tools(
-        [case.ambiguous, case.following], case.library, "Geometry")
-
-    assert case.ambiguous.tool is case.original and case.ambiguous.tool_writes == 0
-    assert case.ambiguous.toolPreset is case.original_preset
-    assert case.following.tool is case.target and case.following.tool_writes == 1
-    assert case.following.toolPreset is case.target.preset
-    assert document_tools.tools == [case.target]
-    assert any("Ambiguous Geometry" in log and "skipped" in log
-               and "candidate library indices/details: [0: description='Holder A', "
-                   "product-id='Product A'; 1: description='Holder B', "
-                   "product-id='Product B']" in log for log in logs)
     assert len(messages) == 1 and "could not be correlated" in messages[0]

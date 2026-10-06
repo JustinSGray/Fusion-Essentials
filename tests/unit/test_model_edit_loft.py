@@ -240,6 +240,24 @@ def test_two_section_removal_refuses_before_delete(rig):
     result = mod.handler(feature="Loft1", action="remove", section_index=1)
     assert result["isError"] is True
     assert "fewer than two" in error_message(result)
+    assert result["details"]["definition_matches"] is True
+    assert loft.assignments == 0 and timeline.markerPosition == 5
+
+
+@pytest.mark.parametrize("mode", ["guided", "cut"])
+def test_unsupported_mode_reports_the_unchanged_definition(rig, monkeypatch, mode):
+    loft, timeline = rig
+    read = mod._definition
+    monkeypatch.setattr(mod, "_definition", lambda entity: dict(read(entity), **(
+        {"guide_count": 1} if mode == "guided" else
+        {"operation": adsk.fusion.FeatureOperations.CutFeatureOperation})))
+    result = mod.handler(feature="Loft1", action="retarget", section_index=1, profile="X")
+    assert "NEW body operation" in error_message(result)
+    details = result["details"]
+    assert details["mutation_attempted"] is False
+    assert details["definition_before"] == details["definition_after"]
+    assert details["definition_matches"] is True
+    assert details["geometry_changed"] is None
     assert loft.assignments == 0 and timeline.markerPosition == 5
 
 
@@ -296,6 +314,7 @@ def test_unreadable_direction_angle_refuses_before_mutation(rig):
     result = mod.handler(feature="Loft1", action="remove", section_index=1)
     assert result["isError"] is True
     assert "definition is unreadable" in error_message(result)
+    assert result["details"]["definition_matches"] is None
     assert loft.assignments == 0 and timeline.markerPosition == 5
 
 

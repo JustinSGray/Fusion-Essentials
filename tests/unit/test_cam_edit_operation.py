@@ -2115,3 +2115,135 @@ class TestASwitchInTheSameCall:
         assert "Rolled back all 2 parameter(s)" in res["message"]
         assert ("reads isEnabled false after the call's other writes; set the mode first"
                 in res["message"]) is disables
+
+
+_DERIVED = "(multiAxisMachiningType == 'four_axis') ? 'tilt_to_rotary_axis' : 'vertical'"
+_ENUM = "3 : Invalid enumeration value."
+_FLAT = "The specified Primary Mode option cannot be used with the current tool."
+
+
+class _ChoiceValue:
+    """A choice parameter's value object: .value is the bare evaluated text, and a write to it
+    lands as a literal expression and clears the row's error."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    @property
+    def value(self):
+        if not self._owner.readable:
+            raise RuntimeError("value did not answer")
+        return self._owner.held
+
+    @value.setter
+    def value(self, v):
+        o = self._owner
+        o.value_writes.append(v)
+        if o.value_refusal:
+            raise RuntimeError(o.value_refusal)
+        if not o.swallows:
+            o.held, o._expression = v, f"'{v}'"
+            o.set_error("")
+
+
+class _DerivedChoiceParam(FakeCAMParameter):
+    """toolAxisMode on a flat cutter: the edit lands errored, and the derived default it held is
+    refused through .expression afterwards unless `takes_restore`."""
+
+    def __init__(self, name, expression, held, takes_restore=False, value_refusal=None,
+                 swallows=False, readable=True):
+        super().__init__(name, expression, error="")
+        self.held, self.takes_restore, self.value_refusal = held, takes_restore, value_refusal
+        self.swallows, self.readable = swallows, readable
+        self.value_writes, self.op, self._edited = [], None, False
+
+    def set_error(self, text):
+        self._error = text
+        if self.op is not None:
+            self.op.hasError = bool(text)
+
+    @property
+    def value(self):
+        return _ChoiceValue(self)
+
+    @value.setter
+    def value(self, v):
+        pass
+
+    @FakeCAMParameter.expression.setter
+    def expression(self, v):
+        if not self._edited:
+            self._edited = True
+            self._expression, self.held = v, v.strip("'")
+            self.set_error(_FLAT)
+        elif self.takes_restore:
+            self._expression, self.held = v, "vertical"
+            self.set_error("")
+        else:
+            raise RuntimeError(_ENUM)
+
+
+class TestRestoreByValue:
+    """A refused edit whose prior expression Fusion will not take back: the prior VALUE is written
+    to the value object, and the reply says the value came back and the expression did not."""
+
+    def _edit(self, monkeypatch, held="vertical", **kw):
+        p = _DerivedChoiceParam("toolAxisMode", _DERIVED, held, **kw)
+        p.op = _install(monkeypatch, params={"toolAxisMode": p})
+        return p, ce.handler(operation="Adaptive1", parameters={"toolAxisMode": "'lead_lean'"})
+
+    def test_the_value_comes_back_and_the_lost_expression_is_named(self, monkeypatch):
+        p, res = self._edit(monkeypatch)
+        assert res["isError"] is True and p.value_writes == ["vertical"]
+        assert ("Restored the expression of 0 of 1 parameter(s); 1 came back by VALUE only, the "
+                "expression now a literal: 'toolAxisMode' reads value 'vertical' and expression "
+                "\"'vertical'\"; CAMParameter.expression refused its prior expression "
+                f"{_DERIVED!r} ({_ENUM}), which was NOT restored. Operation.hasError reads False."
+                ) in res["message"]
+        assert "Rolled back all" not in res["message"]
+        assert "did NOT come back" not in res["message"]
+
+    def test_both_write_backs_refused_names_both_refusals(self, monkeypatch):
+        p, res = self._edit(monkeypatch, value_refusal="3 : value refused")
+        assert res["isError"] is True and p.value_writes == ["vertical"]
+        assert ("Restored 0 of 1 parameter(s); 1 did NOT come back and the operation is left "
+                f"holding them: 'toolAxisMode' refused its prior {_DERIVED!r} ({_ENUM}) and reads "
+                "\"'lead_lean'\", and value.value refused the prior value 'vertical' "
+                "(3 : value refused).") in res["message"]
+
+    def test_a_swallowed_value_write_is_not_counted_as_back(self, monkeypatch):
+        _p, res = self._edit(monkeypatch, swallows=True)
+        assert "Restored 0 of 1 parameter(s); 1 did NOT come back" in res["message"]
+        assert ("value.value took the prior value 'vertical' and reads 'lead_lean'"
+                in res["message"])
+
+    def test_an_expression_that_restores_never_writes_the_value(self, monkeypatch):
+        p, res = self._edit(monkeypatch, takes_restore=True)
+        assert res["isError"] is True and p.value_writes == []
+        assert "Rolled back all 1 parameter(s), each restored expression re-read." in res["message"]
+        assert p.expression == _DERIVED
+
+    def test_an_unread_prior_value_is_never_written(self, monkeypatch):
+        p, res = self._edit(monkeypatch, readable=False)
+        assert p.value_writes == []
+        assert (f"1 did NOT come back and the operation is left holding them: 'toolAxisMode' "
+                f"refused its prior {_DERIVED!r} ({_ENUM}) and reads \"'lead_lean'\"."
+                ) in res["message"]
+
+    def test_an_empty_prior_value_is_a_value_and_is_written_back(self, monkeypatch):
+        p, res = self._edit(monkeypatch, held="")
+        assert p.value_writes == [""]
+        assert "1 came back by VALUE only" in res["message"]
+
+    def test_the_locked_row_refusal_does_not_claim_each_row_restored(self, monkeypatch):
+        gate = FakeParam("doMultiplePasses", "false")
+        p = _DerivedChoiceParam("toolAxisMode", _DERIVED, "vertical")
+        p.op = _install(monkeypatch, params={
+            "toolAxisMode": p, "doMultiplePasses": gate,
+            "numberOfStepovers": GatedParam("numberOfStepovers", "1", gate=gate)})
+        res = ce.handler(operation="Adaptive1",
+                         parameters={"toolAxisMode": "'lead_lean'", "numberOfStepovers": "3"})
+        assert res["isError"] is True
+        assert ("This call WROTE 1 parameter(s) on the operation. Restored the expression of 0 of "
+                "1 parameter(s); 1 came back by VALUE only") in res["message"]
+        assert "restored each one" not in res["message"]

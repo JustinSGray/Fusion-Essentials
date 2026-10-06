@@ -283,6 +283,24 @@ _SOLVED_NOTE = ("When present, 'solved' is each REFERENCED entity's geometry rea
                 "sketch_get(include_entities=true).")
 
 
+def _numeric_entity_refs(entry):
+    """The numeric line and point references carried by one dimension entry."""
+    refs = []
+    for field in ("entity_one", "entity_two"):
+        raw = entry.get(field)
+        if not isinstance(raw, str):
+            continue
+        base, _anchor, err = _common.parse_anchor_ref(raw)
+        parts = base.strip().lower().split(":") if not err and base else []
+        if len(parts) == 2 and parts[0] in ("line", "point"):
+            try:
+                int(parts[1])
+            except ValueError:
+                continue
+            refs.append(raw.strip())
+    return refs
+
+
 def handler(dimensions=None, sketch_name: str = "", component: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
     entries, eerr = _sketch_batch.entries_or_error(dimensions, "dimensions", _ENTRY_FIELDS)
@@ -301,8 +319,29 @@ def handler(dimensions=None, sketch_name: str = "", component: str = "") -> dict
                         + (", ".join(n for n in _common.all_sketch_names(design) if n)
                            or "(none)") + ". Use sketch_get.")
         return error("No sketch to dimension. Create one first with sketch_create.")
+    ellipse_shift = None
+
+    def one(i, entry):
+        nonlocal ellipse_shift
+        stale = _numeric_entity_refs(entry) if ellipse_shift else []
+        if stale:
+            refs = ", ".join(f"'{ref}'" for ref in stale)
+            return _sketch_batch.refuse(
+                f"dimensions[{i}] uses numeric line:N or point:N ref(s) {refs} after "
+                f"{ellipse_shift} in this batch. Ellipse-radius dimensions can add construction "
+                "axes and endpoints, shifting line and point indices. This entry was refused before "
+                "mutation; earlier results are in the partial reply. Re-read "
+                "sketch_get(include_entities=true) and use its current line and point refs in a new "
+                "call.")
+        result, err = _one(sketch, entry)
+        dim_type = entry.get("dim_type", "distance")
+        if (not err and isinstance(dim_type, str)
+                and dim_type.strip().lower() in ("ellipse_major_radius", "ellipse_minor_radius")):
+            ellipse_shift = dim_type.strip().lower()
+        return result, err
+
     return _sketch_batch.run_batch(
-        entries, lambda i, e: _one(sketch, e), "dimensions", "dimensioned",
+        entries, one, "dimensions", "dimensioned",
         safe(lambda: sketch.name), sketch=sketch, result_note=_SOLVED_NOTE)
 
 

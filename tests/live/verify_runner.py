@@ -47,7 +47,6 @@ from verify_acts_cam import MACHINING_EXTENSION, _MX_SETUP, _SW_SETUP, _SW_SETUP
 # to one invalidate a receipt its content takes no part in.
 _NOT_THE_SWEEP = ("measure_api.py", "drawing_verify.py")
 _ATTESTATION_TCB = ("Fusion-Essentials.py", "lib/loaded_attestation.py")
-_JUDGED_COMMANDS = ("commands/updateTools/entry.py",)
 _SERVED_ASSETS = ("guidance/parametric_cad_design.json",)
 
 
@@ -63,7 +62,7 @@ def source_hash(root=None):
             if fn.endswith(".py") or rel in _SERVED_ASSETS:
                 entries.append((rel, full))
     if root == SRC_ROOT:      # a custom root (the offline tests') hashes only itself
-        for rel in _ATTESTATION_TCB + _JUDGED_COMMANDS:
+        for rel in _ATTESTATION_TCB:
             entries.append((rel, os.path.join(REPO_ROOT, *rel.split("/"))))
         for fn in sorted(os.listdir(_HERE)):
             if fn.endswith(".py") and fn not in _NOT_THE_SWEEP:

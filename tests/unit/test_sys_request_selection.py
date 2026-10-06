@@ -615,3 +615,44 @@ class TestListenerRegistrationAnswer:
         self._ui_answering(monkeypatch, False)
         sel.handler(wait_seconds=5)
         assert sel._pending["active"] is False and sel._pending["handler"] is None
+
+
+# ── a pick made after the user switched documents is refused, not stamped with the asked one ────
+
+class TestPickDocumentIdentity:
+    _RESULT = {"selection_count": 1, "selections": [{"handle": "TOK"}]}
+
+    def _pick(self, asked, picked_in):
+        box = {"result": dict(self._RESULT)}
+        if picked_in is not None:
+            box["picked_in"] = picked_in
+        return sel._completed_pick(box, "face", {"doc_name": "Home", "doc_urn": "urn:h",
+                                                "doc_handle": asked})
+
+    def test_pick_in_another_document_is_an_error_naming_both(self):
+        out = self._pick("session:home", ("Scratch", "session:scratch"))
+        assert out.get("isError") is True
+        text = str(out)
+        assert "'Scratch' (session:scratch)" in text and "'Home' (session:home)" in text
+        assert "TOK" not in text
+
+    def test_pick_in_the_asked_document_returns_the_handle(self):
+        out = self._pick("session:home", ("Home", "session:home"))
+        assert out.get("isError") is not True and "TOK" in str(out)
+
+    @pytest.mark.parametrize("asked, picked_in", [
+        ("session:home", ("Home", None)), ("session:home", None), (None, ("Home", "session:home"))])
+    def test_unread_identity_never_publishes_the_handle(self, asked, picked_in):
+        out = self._pick(asked, picked_in)
+        assert out.get("isError") is True and "TOK" not in str(out)
+
+    def test_listener_records_where_the_pick_happened(self, monkeypatch):
+        ui = _fake_ui()
+        monkeypatch.setattr(sel, "_ui", lambda: ui)
+        monkeypatch.setattr(sel._write_guard, "_active_identity", lambda: ("Scratch", None))
+        monkeypatch.setattr(sel._write_guard, "active_document_handle", lambda: "session:scratch")
+        box, done = _register_hold(ui)
+        face = BRepFace(Plane(FakeVector3D(0, 0, 1)), centroid=FakePoint(1, 1, 1), entity_token="T")
+        sel._on_selection_changed(types.SimpleNamespace(
+            currentSelection=[FakeSelection(entity=face, point=FakePoint(1, 1, 1))]), box, done)
+        assert box["picked_in"] == ("Scratch", "session:scratch")

@@ -149,6 +149,28 @@ def test_move_reports_replacement_identity(scene):
     assert result["definition_effect"]["destination_placements"]["paths"] == ["Dest:1"]
 
 
+def test_move_to_nested_occurrence_uses_component_identity_when_native_token_raises(scene, monkeypatch):
+    state, source, dest, _target, selected = scene
+    native = _NativeOccurrenceWithoutToken("Dest:1", component=dest,
+                                            transform2=FakeMatrix3D(t=(3, 4, 0)))
+    nested = _PlacedOccurrence("Root:1+Dest:1", dest, native, "NESTED-DEST")
+    source.occurrences._items[:] = [nested]
+    source.allOccurrences[:] = [nested]
+    state["context"] = nested
+    monkeypatch.setattr(mod._DESTINATION, "resolve", lambda raw: (nested, None))
+    with pytest.raises(RuntimeError, match="top-level parent is the root component"):
+        _ = nested.nativeObject.entityToken
+    assert dest.entityToken == "DEST"
+
+    result = _data(mod.handler(action="move", body="OLD", destination="Root:1+Dest:1"))
+
+    assert state["called"] == 1 and selected not in source.bRepBodies._items
+    assert result["full_path"] == "Root:1+Dest:1"
+    assert result["landed_owner_component"] == "Dest"
+    assert result["definition_effect"]["destination_placements"]["paths"] == ["Root:1+Dest:1"]
+    assert result["selected_world_sample_preserved"] is True
+
+
 def test_move_uses_saved_identity_when_old_wrapper_stales(scene):
     state, source, dest, target, selected = scene
     organize = selected._organization

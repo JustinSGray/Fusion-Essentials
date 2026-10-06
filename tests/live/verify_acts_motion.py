@@ -1178,6 +1178,142 @@ def _nested_owner_rows():
     ])
 
 
+# REVIEW-1005-NESTED-GROUP-PATTERN-OWNER-1 / WHT-V2-NESTED-ATTACHMENT-1: NrEye holds an unlocked
+# NrBezel, a locked NrCowl and a rivet seed; NrRet holds the pair the second group takes.
+_NESTED_RELATION_SETUP = _PART_RECIPE + """
+def run(context):
+    root = _root()
+    _part(root, 'NrAnchor', 0, 80)
+    eye = _part(root, 'NrEye', 0, 0)
+    _part(eye.component, 'NrBezel', 10, 0, ground=False)
+    _part(eye.component, 'NrCowl', 20, 0, ground=True)
+    _part(eye.component, 'NrRivet', 42, 0)
+    ret = _part(root, 'NrRet', 0, 40)
+    _part(ret.component, 'NrDupA', 10, 0)
+    _part(ret.component, 'NrDupB', 20, 0)
+    print(json.dumps({'root': root.name,
+                      'ground': {o.fullPathName: o.isGroundToParent for o in root.allOccurrences}}))
+"""
+
+# Every rigid group and circular pattern with the component whose collection holds it, its own
+# parentComponent, and the pattern axis's component.
+_NESTED_RELATION_STATE = """import adsk.core, adsk.fusion, json
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    groups, patterns = [], []
+    comps = design.allComponents
+    for i in range(comps.count):
+        c = comps.item(i)
+        for k in range(c.rigidGroups.count):
+            g = c.rigidGroups.item(k)
+            groups.append({'walk': c.name, 'parent': g.parentComponent.name, 'name': g.name,
+                           'suppressed': g.isSuppressed})
+        cps = c.features.circularPatternFeatures
+        for k in range(cps.count):
+            p = cps.item(k)
+            patterns.append({'walk': c.name, 'parent': p.parentComponent.name, 'name': p.name,
+                             'axis_component': p.axis.component.name})
+    print(json.dumps({'root': design.rootComponent.name, 'groups': groups, 'patterns': patterns}))
+"""
+
+# A second rigid group, in NrRet, carrying the first group's name.
+_NESTED_RELATION_DUP = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None, 'owned unsaved scratch only'
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    comps = {}
+    for i in range(design.allComponents.count):
+        comps[design.allComponents.item(i).name] = design.allComponents.item(i)
+    first = comps['NrEye'].rigidGroups.item(0)
+    ret = comps['NrRet']
+    coll = adsk.core.ObjectCollection.create()
+    for i in range(ret.occurrences.count):
+        coll.add(ret.occurrences.item(i))
+    group = ret.rigidGroups.add(coll, False)
+    if group.name != first.name:
+        group.name = first.name
+    print(json.dumps({'first': first.name, 'second': group.name,
+                      'owners': [first.parentComponent.name, group.parentComponent.name]}))
+"""
+
+
+def _timeline_owner(key, component):
+    """design_get timeline: the one row named by the recalled feature carries this owner."""
+    def check(p):
+        rows = [r for r in ((p.get("timeline") or {}).get("timeline") or [])
+                if r.get("name") == _RECALL.get(key)]
+        return _measured(f"timeline row '{_RECALL.get(key)}' owned by {component}", rows,
+                         len(rows) == 1 and rows[0].get("component") == component)
+    return check
+
+
+def _nested_relation_rows():
+    """Nested group and pattern replies name their owner; a shared group name resolves by address."""
+    bezel, cowl = "NrEye:1+NrBezel:1", "NrEye:1+NrCowl:1"
+    timeline = {"include": ["timeline"], "max_results": 200}
+
+    def grouped(p):
+        note = p.get("note", "")
+        return _rigid_grouped(2)(p) and _measured(
+            "nested group owner and its unlocked member", p,
+            p.get("component") == "NrEye" and "The group is owned by component 'NrEye'." in note
+            and p.get("members_not_grounded_to_parent") == [bezel]
+            and f"assembly_ground(occurrence='{bezel}', ground_to_parent=true)" in note)
+
+    def patterned(p):
+        axis, note = p.get("axis_component"), p.get("note", "")
+        return _measured("nested pattern owner and its axis owner", p,
+                         p.get("patterned") is True and p.get("quantity") == 5
+                         and p.get("component") == "NrEye" and axis == _RECALL.get("nr_root")
+                         and "The pattern is owned by component 'NrEye'." in note
+                         and f"Its axis belongs to component '{axis}'." in note)
+
+    def native(second):
+        """Require the measured owners and NrRet's given suppression state."""
+        def check(p):
+            groups = sorted([g["parent"], g["walk"], g["suppressed"]] for g in p.get("groups") or [])
+            want = [["NrEye", "NrEye", False]] + ([] if second is None else [["NrRet", "NrRet", second]])
+            pats = p.get("patterns") or []
+            return _measured("native owners and suppression", p,
+                             groups == want and len(pats) == 1
+                             and pats[0]["parent"] == pats[0]["walk"] == "NrEye"
+                             and pats[0]["axis_component"] == p.get("root") == _RECALL.get("nr_root")
+                             and pats[0]["name"] == _RECALL.get("nr_pattern"))
+        return check
+
+    shared = lambda c: _ctx_get(c, "nr_group", "the shared group name")
+    return _scratch("nested_relation", [
+        ("sys_execute_script", {"script": _NESTED_RELATION_SETUP, "read_only": False},
+         lambda p: (p.get("ground") or {}).get(bezel) is False
+         and (p.get("ground") or {}).get(cowl) is True and bool(p.get("root")),
+         ("nr_root", _recall("nr_root", lambda p: p["root"]))),
+        ("assembly_rigid_group", {"occurrences": [bezel, cowl]}, grouped,
+         ("nr_group", _recall("nr_group", lambda p: p["assembly_rigid_group"]))),
+        ("design_get", timeline, _timeline_owner("nr_group", "NrEye"), None),
+        ("model_pattern_circular", {"occurrences": ["NrEye:1+NrRivet:1"], "quantity": 5,
+                                    "total_angle_deg": 360, "axis": "y"}, patterned,
+         ("nr_pattern", _recall("nr_pattern", lambda p: p["feature"]))),
+        ("design_get", timeline, _timeline_owner("nr_pattern", "NrEye"), None),
+        ("sys_execute_script", {"script": _NESTED_RELATION_STATE, "read_only": True}, native(None), None),
+        # The call the group reply names runs as printed.
+        ("assembly_ground", {"occurrence": bezel, "ground_to_parent": True}, _grounded, None),
+        # The plain name is refused listing both addresses; the listed address acts on one group.
+        ("sys_execute_script", {"script": _NESTED_RELATION_DUP, "read_only": False},
+         lambda p: p.get("first") == p.get("second") == _RECALL.get("nr_group")
+         and p.get("owners") == ["NrEye", "NrRet"], None),
+        ("assembly_edit_relations",
+         lambda c: {"kind": "rigid_group", "action": "suppress", "name": shared(c)},
+         _refused("names 2 rigid groups - refusing to guess which one. Pass one as listed: 'NrEye/",
+                  "', 'NrRet/"), None),
+        ("sys_execute_script", {"script": _NESTED_RELATION_STATE, "read_only": True}, native(False), None),
+        ("assembly_edit_relations",
+         lambda c: {"kind": "rigid_group", "action": "suppress", "name": "NrRet/" + shared(c)},
+         lambda p: p.get("is_suppressed") is True, None),
+        ("sys_execute_script", {"script": _NESTED_RELATION_STATE, "read_only": True}, native(True), None),
+    ])
+
+
 # WHT-V2-ASBUILT-AXIS-EFFECT-1: two free carriages and a grounded bridge nested in one chassis.
 _ASBUILT_AXIS_SETUP = _PART_RECIPE + """
 def run(context):
@@ -1222,6 +1358,62 @@ def _asbuilt_axis_rows():
         ("joint_drive", {"joint_name": "WhAxis", "distance": 2, "units": "mm"}, "ok", None),
         ("sys_execute_script", {"script": _PLACED_STATE, "read_only": True},
          _placed("asbuilt_axis_before", _slid_x, "both carriages slid +2 mm along world X"), None),
+    ])
+
+
+# The member's own body moves while its un-grounded child holds the subtree's min corner.
+_DRIVE_OWN_BODY_SETUP = _PART_RECIPE + """
+def run(context):
+    root = _root()
+    _part(root, 'JdAnchor', 0, 60, ground=True)
+    eye = _part(root, 'JdEye', 0, 0, ground=False)
+    child = _part(eye.component, 'JdFree', -30, 0, ground=False)
+    print(json.dumps({'paths': sorted(o.fullPathName for o in root.allOccurrences),
+                      'parent_ground_to_parent': eye.isGroundToParent,
+                      'child_ground_to_parent': child.isGroundToParent}))
+"""
+
+
+def _eye_body_slid(before, now):
+    """The own body translates 5 mm in X; the child, anchor and history stay unchanged."""
+    paths = {'JdAnchor:1', 'JdEye:1', 'JdEye:1+JdFree:1'}
+    if (set(before['placements']) != paths or set(now['placements']) != paths
+            or any(len(r['bodies']) != 1 for r in before['placements'].values())
+            or any(len(r['bodies']) != 1 for r in now['placements'].values())):
+        return False
+    a = before['placements']['JdEye:1']['bodies'][0]
+    b = now['placements']['JdEye:1']['bodies'][0]
+    shift = b[0][0] - a[0][0]
+    return (_all_but(before, now, {'JdEye:1'}) and _near(abs(shift), 5.0, 1e-4)
+            and _near(b[1][0] - a[1][0], shift, 1e-4)
+            and b[0][1:] == a[0][1:] and b[1][1:] == a[1][1:]
+            and now['constraints'] == before['constraints']
+            and now['timeline_count'] == before['timeline_count'])
+
+
+def _drive_own_body_rows():
+    """Verify a slider drive against own geometry, independently of its stationary child."""
+    return _scratch('drive_own_body', [
+        ('sys_execute_script', {'script': _DRIVE_OWN_BODY_SETUP, 'read_only': False},
+         lambda p: p.get('paths') == ['JdAnchor:1', 'JdEye:1', 'JdEye:1+JdFree:1']
+                   and p.get('parent_ground_to_parent') is False
+                   and p.get('child_ground_to_parent') is False, None),
+        ('joint_create_as_built', {
+            'occurrence_one': 'JdEye:1', 'occurrence_two': 'JdAnchor:1',
+            'geometry': 'JdEye:1:origin', 'joint_type': 'slider', 'axis': 'x', 'name': 'JdSlide'},
+         lambda p: _as_built(p) and p.get('joint') == 'JdSlide', None),
+        ('sys_execute_script', {'script': _PLACED_STATE, 'read_only': True},
+         _placed('drive_own_body_before'), None),
+        ('joint_drive', {'joint_name': 'JdSlide', 'distance': 5, 'units': 'mm'},
+         lambda p: _measured('the drive landed and its own body carried it',
+                             {'driven': p.get('driven'), 'moved': p.get('moved')},
+                             p.get('driven') is True
+                             and (p.get('moved') or {}).get('occurrence') == 'JdEye:1'
+                             and _near((p.get('moved') or {}).get('geometry_moved_mm'), 5.0, 1e-3)),
+         None),
+        ('sys_execute_script', {'script': _PLACED_STATE, 'read_only': True},
+         _placed('drive_own_body_before', _eye_body_slid,
+                 "JdEye's own body slid 5 mm, JdFree and the anchor held"), None),
     ])
 
 
@@ -2223,7 +2415,9 @@ _MOTION += _joint_failure_rows()
 _MOTION += _placed_slider_rows()
 _MOTION += _late_input_rows()
 _MOTION += _asbuilt_axis_rows()
+_MOTION += _drive_own_body_rows()
 _MOTION += _nested_owner_rows()
+_MOTION += _nested_relation_rows()
 _MOTION += _crossindex_rows()
 _MOTION += _reused_origin_rows()
 _MOTION += _origin_consumer_rows()

@@ -12,7 +12,8 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from . import _assert, _common, _design_common, _inputs, _sketch_detail, _sweep_common
-from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_address, failed,
+from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_address,
+                                   body_creator, failed,
                                    feature_body_keys as _feature_body_keys,
                                    health as _health, identical_geometry_reply,
                                    later_operand_refusal, matched, operand_source,
@@ -108,8 +109,8 @@ def _rolled_back_row(design, owner, name):
 
 
 def _later_refusal(design, owner, label, index, action, raw, component):
-    """(reorder advice, refusal a move would not cure, open profile, refusal before any roll)."""
-    open_profile = host = None
+    """(reorder advice, unmovable refusal, open profile, refusal before any roll, later-body refusal)."""
+    open_profile = host = later_body = None
     if action == "path":
         operand, _label, refusal = _common.build_path(owner, raw)
         name = raw.split(":", 1)[1].strip() if isinstance(raw, str) and ":" in raw else None
@@ -119,7 +120,7 @@ def _later_refusal(design, owner, label, index, action, raw, component):
             return None, None, False, (
                 f"Editing '{label}': sketch '{name}' at timeline row {row} is rolled back behind "
                 "the marker. Roll to the end with design_edit_timeline(action='roll', to='end'), "
-                "then retry. Nothing was edited.")
+                "then retry. Nothing was edited."), None
     else:
         operand, _solid, open_profile, host, sketch, refusal = _sweep_common.resolve_profile(
             design, owner, raw, False, component)
@@ -134,13 +135,22 @@ def _later_refusal(design, owner, label, index, action, raw, component):
                 if from_sketch and row is None else None)
         if hint:
             return None, None, False, (f"{hint} The {action} sketch timeline row does not read; "
-                                       "nothing was edited.")
+                                       "nothing was edited."), None
+        body = safe(lambda m=member: _common._native_of(m).body)
+        if action == "path" and not from_sketch and body is not None and later_body is None:
+            made, body_name = body_creator(design, body), safe(lambda body=body: body.name)
+            if made and body_name and made[1] > index:
+                later_body = (
+                    f"'path' edge belongs to '{body_name}', made by '{made[0]}' at row {made[1]}, "
+                    f"after '{label}' at row {index}. Use an edge or sketch that exists before row "
+                    f"{index}; a fresh find_geometry handle on that body repeats this refusal.")
     advice = later_operand_refusal(label, index, members) if members else None
     if advice is None:
-        return None, None, False, None
+        return None, None, False, None, later_body
     if action == "profile" and _common.same_component(host, owner) is not True:
-        return advice, _KEEP_OWNER_MODE, open_profile, None
-    return advice, safe(lambda: _operand_error(operand, action, owner, None)), open_profile, None
+        return advice, _KEEP_OWNER_MODE, open_profile, None, None
+    return (advice, safe(lambda: _operand_error(operand, action, owner, None)), open_profile, None,
+            None)
 
 
 def _members_text(addresses):
@@ -348,7 +358,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         return error(f"'{label}' has unreadable timeline identity; nothing was edited.")
     if marker <= index:
         return error(f"'{label}' is after marker {marker}; roll after it with design_edit_timeline.")
-    pending_later_refusal, later_blocker, later_open, unread_row = _later_refusal(
+    pending_later_refusal, later_blocker, later_open, unread_row, later_body = _later_refusal(
         design, component_owner, label, index, action, raw[action], component)
     if unread_row:
         return error(unread_row)
@@ -430,7 +440,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         else:
             operand, _label, refusal = _common.build_path(component_owner, path, left_out)
             if refusal:
-                raise ValueError(refusal)
+                raise ValueError(later_body or refusal)
             desired = _path_members(operand)
             sketch_curve_count = _common.path_sketch_curve_count(component_owner, path)
             checked_operand = operand

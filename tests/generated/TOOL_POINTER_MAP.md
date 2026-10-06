@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 699
+**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 705
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -41,7 +41,7 @@ close orphans, factor duplicated guards into shared helpers.
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 88  (desc 0, note 88)
 - `design_get`  <- 60  (desc 12, note 48)
-- `find_geometry`  <- 55  (desc 14, note 41)
+- `find_geometry`  <- 56  (desc 14, note 42)
 - `design_delete_feature`  <- 39  (desc 16, note 23)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 34  (desc 15, note 19)
@@ -50,7 +50,7 @@ close orphans, factor duplicated guards into shared helpers.
 - `doc_open`  <- 25  (desc 5, note 20)
 - `sketch_create`  <- 25  (desc 7, note 18)
 - `data_get`  <- 24  (desc 9, note 15)
-- `assembly_get`  <- 21  (desc 4, note 17)
+- `doc_get`  <- 23  (desc 10, note 13)
 
 ## The detected guidance surface
 
@@ -362,15 +362,16 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - '' is the first root occurrence and is ground-to-parent; capture can reset this pending move. Release with assembly_ground(occurrence='', ground_to_parent=false) before moving/capturing.
 
 ### `assembly_rigid_group`
+- Occurrences locked together as a rigid group.
 - No active design with components.
 - A rigid group needs at least two occurrences.
 - Rigid group creation returned nothing.
 - ' was created but reports only
 - - it locks parts that were not asked for. Remove it with assembly_edit_relations(kind='rigid_group', name='
 - ', action='delete') and retry.
-- Occurrences locked together as a rigid group.
 - Could not create rigid group:
 - Rigid group '' holds  member(s) but not  - it locks parts that were not asked for. Remove it with assembly_edit_relations(kind='rigid_group', name='', action='delete') and retry.
+- Nested member(s) reading isGroundToParent false: . assembly_ground(occurrence='', ground_to_parent=true) locks one to its parent.
 
 ### `cam_activate_setup`
 - Setup activated and view fit. Use view_screenshot to capture it.
@@ -634,6 +635,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Operation '{operation}' does not accept a write to: {names} (isEditable reads False on each{after}). {applied}  marks each refusing row editable false; set a row it does not mark.
 - This call WROTE {n} parameter(s) on the operation and then restored each one - every restored expression reads back what it held. No other state was read, so re-read the operation with cam_get(incl...
 - This call WROTE {n} parameter(s) on the operation and restored {k} of {n}; {bad} did NOT come back: {rows}. The operation is left holding those values - set each one back by hand.
+- Restored the expression of {k} of {n} parameter(s); {v} came back by VALUE only, the expression now a literal: {rows}. {failed}Operation.hasError reads {flag}.
 - A cutting-TOOL dimension is edited on the document-library entry this operation runs - cam_edit_tools(action='edit', scope='document') - which it reads at once, leaving the toolpath out of date.
 - A row another parameter in the SAME call unlocks is written after it - deburr's numberOfStepovers reads editable once doMultiplePasses is true.
 - ; hasToolpath read True before the set and False after - the suppression DISCARDED the toolpath, and the operation carries none until it is regenerated. Restore it with suppressed=false, then regen...
@@ -1226,13 +1228,22 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - '. Use: list, switch.
 - Data not available (not signed in?).
 - Provide 'hub' - the name or id of the hub to switch to (see action='list').
-- . Switch hubs from the Fusion data panel (the hub dropdown), then retry.
-- Could not switch to hub '
-- ): the re-read after the assignment shows the active hub as
-- - the assignment raised:
-- Active hub switched. This CLOSES documents open before the switch (Fusion reloads the data context). Re-list projects with data_get, and re-resolve any URNs - they are hub-scoped. Reopen the docume...
+- Cannot switch to hub '
+- ': its identity could not be read. Pass hub=<id> from data_get(include=['hubs']) once the id reads.
+- Cannot switch hubs because the active hub identity could not be read. Read data_get(include=['hubs']) and retry once the active hub is known.
+- cloud-backed document(s) have unsaved edits. Use each document's listed activate-and-save or close remedy, then retry, or remain in the current hub. Never-saved modified documents do not block this...
+- Re-list projects and re-resolve hub-scoped URNs with data_get.
+- retained by session handle.
+- The assignment raised after the target became active:
 - ' is already the active hub - nothing to do.
-- Could not switch to hub '' (): the re-read after the assignment shows the active hub as , not the target. Switch hubs from the Fusion data panel (the hub dropdown), then retry.
+- Cannot safely switch hubs because
+- Read doc_get. If an owned document stays unreadable, ask the user to preserve its edits and close it. Retry only when every remaining document identity and save state reads.
+- Cannot safely switch hubs because . Read doc_get. If an owned document stays unreadable, ask the user to preserve its edits and close it. Retry only when every remaining document identity and save ...
+- Cannot switch to hub '': its identity could not be read. Pass hub=<id> from data_get(include=['hubs']) once the id reads.
+- Refusing hub switch:  cloud-backed document(s) have unsaved edits. Use each document's listed activate-and-save or close remedy, then retry, or remain in the current hub. Never-saved modified docum...
+- Could not switch to hub '' (): the re-read after the assignment shows the active hub as , not the target. Switch hubs from the Fusion data panel (the hub dropdown), then verify the open documents.
+- Hub '' became active, but the post-switch document census is incomplete; the exact closed and retained documents are unknown. Read doc_get before continuing.
+- Active hub switched.  document(s) closed;  retained by session handle. Re-list projects and re-resolve hub-scoped URNs with data_get.
 
 ### `data_upload_file`
 - Provide 'file_path' - the full path to a local CAD file.
@@ -1946,9 +1957,15 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Provide 'file_id' - a DataFile id or URL from the data-model tools: a lineage 'id', a 'versionId', or a 'fusionWebURL'/'source_url'.
 - doc_open needs you to DECLARE INTENT. Pass force_api_open=true to open a NORMAL document via the API, OR is_cam_template=true if this is a multi-reference CAM/Manufacture template (the tool then in...
 - . Pass a DataFile 'id'/'versionId' or a 'fusionWebURL' from data_get / design_get(include=['tree']) / cam_get(include=['references']) (it may not exist or you may lack access).
+- The document that opened is '
+- ), not the file asked for (
+- It stays open; discard it with doc_close(name='
+- ', save_changes=false).
 - This is declared a multi-reference CAM template. Opening it (or even resolving its references) via the API crashes Fusion, so the API open is refused. Open it MANUALLY in the Fusion UI (Data Panel ...
 - Could not resolve '' to a file. Tried: . Pass a DataFile 'id'/'versionId' or a 'fusionWebURL' from data_get / design_get(include=['tree']) / cam_get(include=['references']) (it may not exist or you...
+- The document that opened is '' (), not the file asked for (). It stays open; discard it with doc_close(name='', save_changes=false).
 - This is a Configured Design. It is open at its active configuration. Call design_get(include=['configurations']), then design_configure(action='activate', name=...) to switch.
+- The opened document's own id was not compared with the file asked for (a lineage urn did not read); resolved_id is the request. Confirm with doc_get.
 - This open put  documents in the session in s - 'referenced_documents' counts only the DIRECT ones, so it is not that number. doc_get reports the session census as open_count.
 - Document is still loading (open is asynchronous). Call workspace_orient after a moment to confirm it has become the active document before operating on it.
 - The active-document check was unreadable, so activation is unconfirmed. Call doc_get or workspace_orient before operating on the opened document.
@@ -2157,9 +2174,11 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - DrawingPoint.create returned nothing for
 - . The sheet's dimension count reads
 - before). Retry with other points, or on a fresh drawing of the same source (drawing_create).
-- Auto-dimensioned view
-- : the sheet's dimension count went from
-- Auto-dimensioned one view.
+- The sheet's dimension count went from
+- added); they may sit on views projected from view
+- . A manual dimension already on the sheet may stop being drawn after an auto run: check it in drawing_export's PDF.
+- . doc_save persists the drawing.
+- autoDimension returned true.
 - createAutoDimensionInput returned nothing - this sheet cannot be auto-dimensioned.
 - Setting the view did not take - AutoDimensionInput.view reads back null after assigning view index
 - , so the dimensioning would run on no view.
@@ -2181,6 +2200,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Sheet.drawingDimensions.count did not read, so nothing could confirm a placed dimension - action='' is refused. The manual actions need Fusion 2706 or later; action='auto' still runs here.
 - Setting the view did not take - AutoDimensionInput.view reads back null after assigning view index , so the dimensioning would run on no view.
 - autoDimension returned true for view index  with strategy '', but the sheet's dimension count reads  after the call ( before), so no added dimension is confirmed.
+- The sheet's dimension count went from  to  ( added); they may sit on views projected from view . A manual dimension already on the sheet may stop being drawn after an auto run: check it in drawing_...
 
 ### `drawing_edit_revisions`
 - beside 'sheet' - it does not take
@@ -2539,7 +2559,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - . The assignments made before the failure (
 - ) were accepted; no value was read back here, so where the mechanism stands now is not known from this receipt. Read the pose back with assembly_get.
 - ' moved the placement of '
-- mm but its body geometry did not move (
+- mm but its own body geometry did not move (
 - mm) - the transform is a claim, the body corner is the evidence. Read the pose back with assembly_get.
 - '' is coupled by motion link '', whose recorded values are  :  (radians / cm). Applying that RATIO to this command implies a value for '' its enabled limits exclude - . That is arithmetic on the li...
 - Joint '' is  - only revolute, slider, and cylindrical joints can be driven by value. (rigid has no value; for a ball joint pose the part with assembly_move.)
@@ -2556,8 +2576,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - the occurrence walk did not run to the end (a collection would not enumerate, or a depth/node cap was hit), so part of the design was not scanned and these ground_to_parent readings cover only the ...
 - With no motion link on this joint: a parent-locked member is a CANDIDATE cause, checked LAST - release it with assembly_ground(ground_to_parent=false) only once the steps above are ruled out.
 - These observations do not single out a cause. Read the mechanism with assembly_get (per-occurrence ground_to_parent, and the joint limits of every joint in the chain), then re-drive.
-- Drive of '' moved the placement of '' by  mm but its body geometry did not move ( mm) - the transform is a claim, the body corner is the evidence. Read the pose back with assembly_get.
+- Drive of '' moved the placement of '' by  mm but its own body geometry did not move ( mm) - the transform is a claim, the body corner is the evidence. Read the pose back with assembly_get.
 - 'moved' names the member whose placement changed across this drive: delta_mm is how far its origin moved (mm), delta_deg the angle between its before and after orientation (a magnitude, no sense), ...
+- No body of  itself gave a box on both sides of the drive, so geometry_moved_mm is unread there - the placement change is not checked against geometry.
 - NOTE: '' names  joints, so which one the link points at is not established here - the second-member refusal was decided over ALL of them. Rename one in Fusion so the name resolves to a single joint.
 - NOTE: '' is motion-linked to '' by , which reads neither suppressed nor compute-failed - the link couples the two joints, so read the partner back with assembly_get rather than driving it. In xref ...
 - NOTE: '' is motion-linked to '' by , which  - this receipt makes NO claim that the partner moved with it, and the second-member refusal is not armed for this pair. Read '' back with assembly_get to...
@@ -3172,6 +3193,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 's evaluated-health census is unreadable; nothing was edited.
 - ' is unused for action='
 - Editing '': sketch '' at timeline row  is rolled back behind the marker. Roll to the end with design_edit_timeline(action='roll', to='end'), then retry. Nothing was edited.
+- 'path' edge belongs to '', made by '' at row , after '' at row . Use an edge or sketch that exists before row ; a fresh find_geometry handle on that body repeats this refusal.
 
 ### `model_emboss`
 - Profile stamped onto the face(s). 'mode' ECHOES the sign of the depth requested; the call is refused when the body's measured volume moves the other way, so the mode reported here is also the direc...
@@ -3519,10 +3541,11 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Offset face failed: . (The distance may be too large for the geometry, or the faces may not support a uniform offset together - try a smaller distance or fewer faces.)
 
 ### `model_pattern_circular`
+- patterned around the axis.
 - quantity must be >= 2 for a circular pattern.
 - No active design. Open or create a document with components first.
 - were requested. The feature is left in the timeline for inspection - design_delete_feature removes it.
-- patterned around the axis. Pair with view_screenshot to view.
+- Pair with view_screenshot to view.
 - No pattern was created.
 - Circular pattern failed:
 - Pattern '' created  instances but  were requested. The feature is left in the timeline for inspection - design_delete_feature removes it.
@@ -4342,6 +4365,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The solver moved , but satisfying this dimension demanded only  mm of change ( mm measured before it, driven to  mm) - a move far beyond that is what a dimension attached to the UNINTENDED entity l...
 - already stand(s) at the same  ( mm) as . If one of them is already dimensioned in , tie the two with sketch_constrain '' instead of a second , or move one point off that  first.
 - When present, 'solved' is each REFERENCED entity's geometry read back after the solve, with the distance it moved (moved_mm) getting there; geometry the solve moved elsewhere in the sketch is not c...
+- dimensions[] uses numeric line:N or point:N ref(s)  after  in this batch. Ellipse-radius dimensions can add construction axes and endpoints, shifting line and point indices. This entry was refused ...
 - is_driving=false creates a DRIVEN (reference) dimension - the geometry controls it, so value '' cannot drive it. Drop 'value', or leave is_driving true.
 - entity_one '' did not resolve. Use '<type>:<index>' (), optionally with an anchor ':start'/':end'/':mid'/':center', e.g. 'line:0:end'.
 - This distance evaluated NEGATIVE - the solver does not mirror it. It placed the point at the signed offset, flipping it across its reference; if that spot coincides with another point the two merge...
@@ -4777,10 +4801,14 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Could not set up the selection request (main thread unreachable).
 - Could not start the selection request:
 - Could not read the completed selection:
+- A pick landed, but the document it was made in could not be read, so no handle is returned. Read it with doc_get, then sys_get_selection.
+- The pick was made in '
+- ) where it was requested, so no handle is returned. doc_activate the document you want, then request the pick again; or read this pick in its own document with sys_get_selection.
 - Nothing to select: the active design is empty (bodies=0, sketches=0, occurrences=0 design-wide) - a selection request here can only time out. Build or open geometry first; origin construction geome...
 - Click  in the Fusion window (rotate/zoom as needed). You don't need to press anything in Fusion - just select it, then confirm here when ready.
 - Present a one-click confirmation to the user (a structured-output button). When they click it, call sys_get_selection to read the pick, or call sys_request_selection again with wait_seconds>0 to ho...
 - The selection listener did not register - ui.activeSelectionChanged.add() returned false. Only that listener wakes this call, so no hold was started and nothing is waiting on a pick. Retry, or call...
+- The pick was made in '' (), not in '' () where it was requested, so no handle is returned. doc_activate the document you want, then request the pick again; or read this pick in its own document wit...
 - A sys_request_selection call is already waiting (s so far) - only one can be pending at a time. Wait for it to finish or time out, then retry.
 - No selection was made within s. Nothing was picked - an expected outcome, not a tool defect. Do NOT re-fire this tool in a loop: an unanswered hold usually means the user is not at the Fusion windo...
 - The pick listener could NOT be detached (), so it is still registered in Fusion and will fire on the user's next click, into this expired hold that nothing is waiting on. The next sys_request_selec...

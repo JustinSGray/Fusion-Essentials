@@ -24,6 +24,96 @@ sys.path.insert(0, os.path.join(TESTS_DIR, "live"))
 import tool_verify  # noqa: E402
 import verify_acts_cloud as acts  # noqa: E402
 import verify_acts_sheet as sheet  # noqa: E402
+import verify_acts_census as census  # noqa: E402
+
+
+@pytest.fixture
+def owned_cleanup(monkeypatch):
+    name = "SweepFitRefusal." + acts._STAMP
+    record = {"file": {"id": "urn:owned", "name": name},
+              "state": {"is_in_use": True, "is_complete": True}}
+    story = {"data_get": "read", "data_delete_file": "delete"}
+    calls = []
+    replies = [(True, f"Delete failed for '{name}': 2 : InternalValidationError : res"),
+               (False, deepcopy(record))]
+
+    def call(tool, args):
+        calls.append((tool, args))
+        return replies.pop(0)
+
+    monkeypatch.setattr(acts, "facade", lambda key: {"call": call, "STORY": story}[key])
+    monkeypatch.setitem(acts._RECALL, "closed_cloud_delete_limits", [])
+    row = acts._released_then_deleted(name, "fit")[-1]
+    row[1]({"fit_urn": "urn:owned", "fit_home": "session:home"})
+    return row, record, replies, calls, story
+
+
+def test_owned_in_use_refusal_requires_retained_file_and_qualifies_receipt(owned_cleanup):
+    row, record, _, calls, story = owned_cleanup
+    assert row[2](record) is True
+    assert calls == [("data_delete_file", {"document_id": "urn:owned", "confirm_name": record["file"]["name"],
+                                          "expect_document": "session:home"}),
+                     ("data_get", {"file": "urn:owned"})]
+    assert "Successful-delete path on this coupon was not demonstrated" in story["data_get"]
+    assert "urn:owned" in story["data_delete_file"]
+
+
+@pytest.mark.parametrize("fault", ["other_file", "released", "other_error", "after_missing", "after_not_in_use"])
+def test_owned_cleanup_does_not_excuse_other_failures(owned_cleanup, fault):
+    row, record, replies, calls, story = owned_cleanup
+    if fault == "other_file":
+        record["file"]["id"] = "urn:other"
+    elif fault == "released":
+        record["state"]["is_in_use"] = False
+    elif fault == "other_error":
+        replies[0] = (True, "permission denied")
+    elif fault == "after_missing":
+        replies[1] = (True, "not found")
+    else:
+        replies[1][1]["state"]["is_in_use"] = False
+    with pytest.raises(AssertionError):
+        row[2](record)
+    assert story == {"data_get": "read", "data_delete_file": "delete"}
+    assert len([c for c in calls if c[0] == "data_delete_file"]) <= 1
+
+
+def test_owned_cleanup_still_requires_verified_success_on_deleted_path(owned_cleanup):
+    row, record, replies, _, story = owned_cleanup
+    replies[:] = [(False, {"deleted": True, "name": record["file"]["name"], "document_id": "urn:owned",
+                          "forced": False, "absence_observed": True})]
+    assert row[2](record) is True
+    assert story == {"data_get": "read", "data_delete_file": "delete"}
+
+
+@pytest.fixture
+def morph_status(monkeypatch):
+    monkeypatch.setattr(census, "facade", lambda key: None)
+    return {"completed": True, "target": "operation 'MorphPair'",
+            "completion_basis": "operation 'MorphPair'", "elapsed_seconds": 2.3,
+            "live_states": {"valid": 1, "total": 1, "errored": 0, "out_of_date": 0,
+                            "generating": 0, "generating_settled": 0, "unread": 0, "nonfinite": 0},
+            "counts": {"empty_toolpaths": 0}}
+
+
+@pytest.mark.parametrize("fault", [None, "settled_flag", "unsettled_flag", "document_scope", "empty", "invalid", "unread_time"])
+def test_morph_completion_requires_scoped_valid_nonempty_evidence(morph_status, fault):
+    if fault == "settled_flag":
+        morph_status["live_states"].update(generating=1, generating_settled=1)
+    elif fault == "unsettled_flag":
+        morph_status["live_states"]["generating"] = 1
+    elif fault == "document_scope":
+        morph_status["completion_basis"] = "document"
+    elif fault == "empty":
+        morph_status["counts"]["empty_toolpaths"] = 1
+    elif fault == "invalid":
+        morph_status["live_states"].update(valid=0, out_of_date=1)
+    elif fault == "unread_time":
+        morph_status["elapsed_seconds"] = None
+    if fault in (None, "settled_flag"):
+        assert census._morph_completed(morph_status) is True
+    else:
+        with pytest.raises(AssertionError):
+            census._morph_completed(morph_status)
 
 
 def _step(narrative, tool, nth=0):
@@ -520,3 +610,57 @@ class TestTheSharedRasterFixture:
             head = fh.read(8)
         assert head == b"\x89PNG\r\n\x1a\n"
         assert os.path.getsize(path) > 0
+
+
+@pytest.mark.parametrize("active", ["Configuration 1", "B"])
+def test_reopened_lineage_table_accepts_either_active_row_but_requires_its_identities(active):
+    table = {"table_id": "table-id", "configuration_count": 2, "active_configuration": active,
+             "configurations": [{"name": name, "id": name + "-id", "is_active": name == active}
+                                for name in ("Configuration 1", "B")],
+             "columns": [{"id": "width-id", "title": "ProbeW", "type": "parameter"}], "truncated": False}
+    step = next(row for row in acts._lineage_open_rows() if row[0] == "design_get")
+    assert step[2]({"configurations": table}) is True
+    missing_column = deepcopy(table)
+    missing_column["columns"][0]["title"] = "Other"
+    with pytest.raises(AssertionError):
+        step[2]({"configurations": missing_column})
+    missing_row = deepcopy(table)
+    missing_row["configurations"].pop()
+    with pytest.raises(AssertionError):
+        step[2]({"configurations": missing_row})
+
+
+@pytest.mark.parametrize("fault", [None, "wrong_record", "other_error", "timeout"])
+def test_lineage_save_as_is_published_before_close_and_reopen(monkeypatch, fault):
+    rows = acts._lineage_open_rows()
+    publication = next(i for i, row in enumerate(rows) if getattr(row[2], "__name__", "") == "published")
+    assert rows[publication - 1][0] == "doc_save_as"
+    assert [row[0] for row in rows[publication + 1:publication + 4]] == ["doc_activate", "doc_close", "doc_open"]
+    name = "SweepLineageSaveAs." + acts._STAMP
+    complete = {"file": {"id": "urn:owned", "name": name},
+                "location": {"parent_folder": {"path": acts.FOLDER}}, "state": {"is_complete": True}}
+    missing = ("No cloud file resolves from 'urn:owned'. Tried: urn:owned. "
+               "Get a lineage URN from data_get(project=<name>) ('id' on each file).")
+    replies = [(True, missing), (False, complete)]
+    if fault == "wrong_record":
+        complete["file"]["id"] = "urn:other"
+    elif fault == "other_error":
+        replies[0] = (True, "permission denied")
+    elif fault == "timeout":
+        replies[:] = [(True, missing)] * 3
+    calls = []
+    def call(tool, args):
+        calls.append((tool, args))
+        return replies.pop(0)
+    monkeypatch.setitem(acts._RECALL, "lin_saveas", "urn:owned")
+    monkeypatch.setattr(acts, "facade", lambda key: call)
+    monkeypatch.setattr(acts.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(acts, "_SETTLE_POLLS", 3)
+    start = {"active": {"name": name, "document_id": "urn:owned"}}
+    if fault is None:
+        assert rows[publication][2](start) is True
+    else:
+        with pytest.raises(AssertionError):
+            rows[publication][2](start)
+    assert len(calls) == (1 if fault == "other_error" else 3 if fault == "timeout" else 2)
+    assert all(call == ("data_get", {"file": "urn:owned"}) for call in calls)

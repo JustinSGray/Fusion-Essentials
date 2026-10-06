@@ -255,7 +255,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | · | `data_get` | Read the CLOUD data model by scope: hubs and projects, one project's files, its folder tree, one folder's summary, or ONE file's record |
 | · | `data_get_upload_status` | Poll a data_upload_file upload: 'state' is uploading, processing, complete (file_id included) or failed. |
 | ✎ | `data_move_file` | Move ONE cloud file into an EXISTING folder of its own project; it creates nothing. |
-| ✎ | `data_switch_hub` | SWITCH the active Autodesk data hub; a switch that takes closes every open document |
+| ✎ | `data_switch_hub` | Switch the active Autodesk data hub after checking cloud-backed edits; list hubs with data_get(include=['hubs']). |
 | ✎ | `data_upload_file` | Upload a local CAD file into a project |
 
 ### drawing

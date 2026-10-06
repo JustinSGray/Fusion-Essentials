@@ -366,6 +366,30 @@ def later_operand_refusal(label, index, operands):
     return None
 
 
+def body_creator(design, body):
+    """(name, row) of the ONE timeline feature whose bodies hold `body`, else None."""
+    timeline = safe(lambda: design.timeline)
+    native = _common._native_of(body)
+    if native is None:
+        return None
+    key = _common.native_identity(native)
+    hits = []
+    for i in range(counted(lambda: timeline.count) or 0):
+        item = safe(lambda i=i: timeline.item(i))
+        # A group row lists none of its members, so a walk that meets one names no feature.
+        if _common.read_flag(lambda item=item: item.isGroup) is not False:
+            return None
+        bodies = safe(lambda item=item: item.entity.bodies)
+        for k in range(counted(lambda bodies=bodies: bodies.count) or 0):
+            held = _common._native_of(safe(lambda bodies=bodies, k=k: bodies.item(k)))
+            if held is not None and (safe(lambda held=held: held == native) is True or (
+                    key is not None and _common.native_identity(held) == key)):
+                hits.append((safe(lambda item=item: item.name),
+                             counted(lambda item=item: item.index)))
+                break
+    return hits[0] if len(hits) == 1 and None not in hits[0] else None
+
+
 def sketch_address(entity):
     """(sketch, 'profile' or a curve kind, index) naming a native profile or curve, or None."""
     native = _common._native_of(entity)

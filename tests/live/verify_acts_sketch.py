@@ -894,6 +894,13 @@ _SKETCHWORK = [
     ("sketch_add_geometry", {"geometry": [{"kind": "ellipse", "cx": 1090, "cy": 650,
                                            "radius": 30, "minor": 16}],
                              "sketch_name": "DimBench"}, "ok", None),
+    # These parallel lines exist before the ellipse dimensions mint construction axes ahead of them.
+    ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 1095, "y1": 506,
+                                           "x2": 1130, "y2": 506}],
+                             "sketch_name": "DimBench"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 1095, "y1": 526,
+                                           "x2": 1130, "y2": 526}],
+                             "sketch_name": "DimBench"}, "ok", None),
     # the horizontal component of a slanted line's own span: 60 mm across, not its 63.2 mm length.
     ("sketch_dimension", {"dimensions": [{"dim_type": "horizontal_distance",
                                           "entity_one": "line:0:start",
@@ -913,22 +920,36 @@ _SKETCHWORK = [
                                           "entity_two": "circle:0"}],
                           "sketch_name": "DimBench"},
      _dim_measures(26.0), None),
-    ("sketch_dimension", {"dimensions": [{"dim_type": "ellipse_major_radius",
-                                          "entity_one": "ellipse:0"}],
-                          "sketch_name": "DimBench"}, _dim_measures(30.0), None),
-    ("sketch_dimension", {"dimensions": [{"dim_type": "ellipse_minor_radius",
-                                          "entity_one": "ellipse:0"}],
-                          "sketch_name": "DimBench"}, _dim_measures(16.0), None),
+    # Refuse both numeric point and line suffixes after the ellipse dimensions mint axes.
+    ("sketch_dimension", {"dimensions": [
+        {"dim_type": "ellipse_major_radius", "entity_one": "ellipse:0"},
+        {"dim_type": "distance", "entity_one": "point:8", "entity_two": "point:9"},
+        {"dim_type": "linear_diameter", "entity_one": "line:2", "entity_two": "line:3"}],
+        "sketch_name": "DimBench"},
+     _SketchBatchRefusal(lambda p: p.get("dimensioned") == 1
+     and [r.get("dim_type") for r in p.get("results") or []] == ["ellipse_major_radius"]
+     and p.get("failed", {}).get("index") == 1 and p.get("not_attempted") == 1
+     and "'point:8'" in p["failed"]["error"] and "'point:9'" in p["failed"]["error"]
+     and "construction axes and endpoints" in p["failed"]["error"]
+     and "sketch_get(include_entities=true)" in p["failed"]["error"]
+     and p.get("failed_entry_counts", {}).get("change") == {
+         "curves": 0, "points": 0, "constraints": 0, "dimensions": 0}), None),
+    ("sketch_dimension", {"dimensions": [
+        {"dim_type": "ellipse_minor_radius", "entity_one": "ellipse:0"},
+        {"dim_type": "linear_diameter", "entity_one": "line:2", "entity_two": "line:3"}],
+        "sketch_name": "DimBench"},
+     _SketchBatchRefusal(lambda p: p.get("dimensioned") == 1
+     and [r.get("dim_type") for r in p.get("results") or []] == ["ellipse_minor_radius"]
+     and p.get("failed", {}).get("index") == 1 and p.get("not_attempted") == 0
+     and "'line:2'" in p["failed"]["error"] and "'line:3'" in p["failed"]["error"]
+     and "construction axes and endpoints" in p["failed"]["error"]
+     and "sketch_get(include_entities=true)" in p["failed"]["error"]
+     and p.get("failed_entry_counts", {}).get("change") == {
+         "curves": 0, "points": 0, "constraints": 0, "dimensions": 0}), None),
     ("sketch_dimension", {"dimensions": [{"dim_type": "angle", "entity_one": "line:0",
                                           "entity_two": "line:1"}],
                           "sketch_name": "DimBench"}, _angle_measures, None),
-    # The ellipse dimensions above add construction axis lines, so this pair's ids are read, not typed.
-    ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 1095, "y1": 506,
-                                           "x2": 1130, "y2": 506}],
-                             "sketch_name": "DimBench"}, "ok", None),
-    ("sketch_add_geometry", {"geometry": [{"kind": "line", "x1": 1095, "y1": 526,
-                                           "x2": 1130, "y2": 526}],
-                             "sketch_name": "DimBench"}, "ok", None),
+    # sketch_get below supplies current line ids after both ellipse axes were added.
     ("sketch_get", {"sketch_name": "DimBench", "include_entities": True, "max_results": 200},
      "ok", ("dimbench_pair", _dimbench_pair_ids)),
     ("sketch_dimension", lambda c: {"dimensions": [{

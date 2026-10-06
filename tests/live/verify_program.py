@@ -1389,9 +1389,9 @@ EXCLUDED = {
     # entitled) rather than listed here; these two are not driven even with a config.
     "data_create_project": ("mints a real project in the operator's hub - the config names an "
                             "EXISTING project, and a project is not this tier's to create"),
-    "data_switch_hub": ("closes every open document, the story document among them - the cloud_tier "
-                        "probe refuses a config naming a hub other than the active one instead of "
-                        "switching to it"),
+    "data_switch_hub": ("actual switching requires an operator-admitted alternate hub and document "
+                        "census; the cloud act tests the dirty-cloud preflight with native documents "
+                        "and a trapped diagnostic target, without switching hubs"),
 }
 
 # Registered tools NOT yet scripted into STEPS - the honest "todo" ledger. SHRINK-ONLY: scripting a

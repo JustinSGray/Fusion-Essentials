@@ -18,7 +18,6 @@ from . import _common
 from . import _geom
 from . import _inputs
 from . import _write_guard
-from .design_move_occurrence import _corner
 from ._joints import (DRIVES_ANGLE, DRIVES_ANY, DRIVES_SLIDE, all_joints as _all_joints,
                       find_joint as _find_joint,
                       find_joints_by_name as _find_joints_by_name,
@@ -386,6 +385,16 @@ def _delta_deg(before, after):
     return round(math.degrees(math.acos(max(-1.0, min(1.0, (trace - 1.0) / 2.0)))), 4)
 
 
+def _own_corner(occ):
+    """The bbox-min corner (x, y, z) in cm over the bodies `occ` itself places, or None if unread."""
+    # Child occurrences are left out: one not grounded to this member stays where it is while the
+    # member is driven, so a corner taken over the whole subtree can sit on a body that never moved.
+    if occ is None:
+        return None
+    box = _geom.union_box(_geom._subtree_body_boxes(occ, 0))
+    return _geom._coords(safe(lambda: box.minPoint)) if box is not None else None
+
+
 def _moved_rows(members):
     """(rows, readable) over [(occurrence, before-sample, before-corner)]: one row per member whose
     placement changed by MORE than its band, farthest first, with 'geometry_moved_mm' (its own body
@@ -408,7 +417,7 @@ def _moved_rows(members):
             row["delta_mm"] = dmm
         if ddeg is not None:
             row["delta_deg"] = ddeg
-        corner_after = _corner(occ) if corner_before is not None else None
+        corner_after = _own_corner(occ) if corner_before is not None else None
         if corner_after is not None:
             row["geometry_moved_mm"] = round(
                 max(abs(a - b) for a, b in zip(corner_before, corner_after)) * 10.0, 4)
@@ -548,7 +557,7 @@ def handler(joint_name: str = "", angle_deg=None, distance=None, units: str = "m
     occ_one, occ_two = safe(lambda: joint.occurrenceOne), safe(lambda: joint.occurrenceTwo)
     before_one, before_two = _placement(occ_one), _placement(occ_two)
     # The placement is the transform's CLAIM; each member's body corner is the EVIDENCE.
-    corner_one, corner_two = _corner(occ_one), _corner(occ_two)
+    corner_one, corner_two = _own_corner(occ_one), _own_corner(occ_two)
     directions = {}
     if cm is not None:
         slide_dir = _geom.axis_vec(safe(lambda: jm.slideDirectionVector))
@@ -792,7 +801,7 @@ def handler(joint_name: str = "", angle_deg=None, distance=None, units: str = "m
                 _driven_this_session.add(_reg_key(doc_id, joint))
                 return error(
                     f"Drive of '{resolved_name}' moved the placement of '{row['occurrence']}' by "
-                    f"{row.get('delta_mm')} mm but its body geometry did not move "
+                    f"{row.get('delta_mm')} mm but its own body geometry did not move "
                     f"({carried} mm) - the transform is a claim, the body corner is the evidence. "
                     "Read the pose back with assembly_get.")
     if rows:
@@ -803,6 +812,12 @@ def handler(joint_name: str = "", angle_deg=None, distance=None, units: str = "m
                            "delta_mm is how far its origin moved (mm), delta_deg the angle between "
                            "its before and after orientation (a magnitude, no sense), "
                            "geometry_moved_mm how far its own body corner travelled.")
+        unread_geometry = [f"'{r['occurrence']}'" for r in rows[:2]
+                           if "geometry_moved_mm" not in r]
+        if unread_geometry:
+            result["note"] += (f" No body of {' or '.join(unread_geometry)} itself gave a box on "
+                               "both sides of the drive, so geometry_moved_mm is unread there - "
+                               "the placement change is not checked against geometry.")
     elif placement_readable:
         result["moved"] = None
         result["note"] += (f" 'moved' is null - neither member's placement changed by more than "

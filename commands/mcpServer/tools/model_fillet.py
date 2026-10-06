@@ -73,6 +73,30 @@ def _variable_radius_spec(end_radius, positions, radii):
     return {"type": "variable", "end_radius": end, "positions": pos, "radii": rad}, None
 
 
+def _owner_label(edge, owner):
+    """The component definition and placement named by an edge handle."""
+    name = safe(lambda: owner.name) or "unnamed"
+    path = safe(lambda: edge.assemblyContext.fullPathName)
+    return f"component '{name}'" + (f" at '{path}'" if path else "")
+
+
+def _cross_owner_refusal(edges):
+    """Refuse edge handles from distinct component definitions before creating a fillet."""
+    owners = []
+    for edge in edges:
+        owner = safe(lambda edge=edge: edge.body.parentComponent)
+        if owner is None:
+            continue
+        for other, other_edge in owners:
+            if _common.same_component(owner, other) is False:
+                first = _owner_label(other_edge, other)
+                second = _owner_label(edge, owner)
+                return (f"Fillet edge handles span {first} and {second}. Fillet one component's "
+                        "edges per call; no feature was created.")
+        owners.append((owner, edge))
+    return None
+
+
 def _topology_type(key):
     t = adsk.fusion.RuleFilletTopologyTypes
     return {"rounds_and_fillets": t.RoundsAndFilletsRuleFilletTopologyType,
@@ -314,6 +338,12 @@ def handler(body_name: str = "", radius: float = 1.0, units: str = "mm",
             return error("A chord-length fillet needs 'chord_length' - the straight-line distance "
                          "across the rounded corner. 'radius' does not drive this type.")
         variant, size = {"type": "chord_length"}, chord_length
+    if edges not in (None, "", []):
+        resolved_edges, edge_error = _EDGES.resolve(edges)
+        if not edge_error:
+            owner_error = _cross_owner_refusal(resolved_edges)
+            if owner_error:
+                return error(owner_error)
     return _apply("fillet", body_name, size, units, edge_filter, edges, variant=variant,
                   face_handles=faces, tangent_chain=bool(tangent_chain))
 

@@ -4403,6 +4403,40 @@ def _expressions_read(op, want):
 _PE_SETUP = "PartialEditSetup"
 _PE_OP, _MD_OP = "PartialEdit5x", "ModeDiagnosticRough"
 _PE_ROWS = ["multiAxisMachiningType", "toolAxisMode", "tiltTool", "useShaftAndHolder"]
+_DR_OP = "DerivedRestore5x"
+_DR_LIBRARY = "systemlibraryroot://Samples/Milling Tools (Metric)"
+_DR_DERIVED = "(multiAxisMachiningType == 'four_axis') ? 'tilt_to_rotary_axis' : 'vertical'"
+
+
+def _derived_row_read(_ctx):
+    """Read toolAxisMode, tiltToolMode and the operation's hasError natively."""
+    script = """import adsk.core, adsk.cam, json
+
+def run(context):
+    app = adsk.core.Application.get()
+    cam = adsk.cam.CAM.cast(app.activeDocument.products.itemByProductType('CAMProductType'))
+    ops = [s.allOperations.item(j) for s in cam.setups for j in range(s.allOperations.count)
+           if s.allOperations.item(j).name == NAME]
+    assert len(ops) == 1
+    mode = ops[0].parameters.itemByName('toolAxisMode')
+    tilt = ops[0].parameters.itemByName('tiltToolMode')
+    print(json.dumps({'value': mode.value.value, 'expression': mode.expression,
+                      'error': mode.error, 'has_error': ops[0].hasError,
+                      'tilt': tilt.value.value}))
+"""
+    return {"script": script.replace("NAME", repr(_DR_OP)), "read_only": True}
+
+
+def _derived_row_reads(label, expression):
+    """The native read: value vertical, the given expression, no error, tiltToolMode automatic."""
+    def check(p):
+        return _measured(label, p,
+                         p.get("value") == "vertical" and p.get("expression") == expression
+                         and p.get("error") == "" and p.get("has_error") is False
+                         and p.get("tilt") == "automatic")
+    return check
+
+
 _PARTIAL_EDIT_ROWS = [
     ("cam_create_setup", {"models": [_SW_COMP], "name": _PE_SETUP},
      lambda p: p.get("created") is True and p.get("setup_name") == _PE_SETUP, None),
@@ -4415,12 +4449,14 @@ _PARTIAL_EDIT_ROWS = [
     ("cam_edit_operation", {"operation": _PE_OP, "parameters": {
         "multiAxisMachiningType": "'five_axis'", "toolAxisMode": "'lead_lean'",
         "tiltTool": "true", "useShaftAndHolder": "true"}},
-     _refused("did NOT come back", "'toolAxisMode' refused its prior"), None),
-    # the two rows restored first read their prior expressions again; toolAxisMode keeps the request
+     _refused("Restored the expression of 3 of 4", "1 came back by VALUE only",
+              "'toolAxisMode' reads value 'vertical'", "which was NOT restored",
+              "Operation.hasError reads False"), None),
+    # The derived expression is lost; its evaluated vertical value returned while the row was locked.
     ("cam_get", {"include": ["parameters"], "operation": _PE_OP, "parameter_names": _PE_ROWS},
      _expressions_read(_PE_OP, {"multiAxisMachiningType": "'three_axis'",
                                 "useShaftAndHolder": "tiltTool",
-                                "toolAxisMode": "'lead_lean'"}), None),
+                                "toolAxisMode": "'vertical'"}), None),
     ("cam_create_operation", lambda c: {"setup": _PE_SETUP, "strategy": "three_plus_two",
                                         "name": _MD_OP, "tool_scope": "document", "generate": False,
                                         "tool_index": _ctx_get(c, "sw_mill", "the flat mill's index")},
@@ -4431,6 +4467,23 @@ _PARTIAL_EDIT_ROWS = [
     ("cam_get", {"include": ["parameters"], "operation": _MD_OP,
                  "parameter_names": ["roughingType"]},
      _expressions_read(_MD_OP, {"roughingType": "'offset'"}), None),
+    # The bundled 6mm Flat Endmill control: five_axis, then the refused lead_lean.
+    # Fusion refuses the derived default through .expression; the value comes back, as a literal.
+    ("cam_create_operation", {"setup": _PE_SETUP, "strategy": "parallel", "name": _DR_OP,
+                              "tool_library_url": _DR_LIBRARY, "tool_index": 22, "generate": False},
+     lambda p: _op_created(_PE_SETUP, "parallel")(p)
+               and "6mm Flat Endmill" in (p.get("tool") or ""), None),
+    ("cam_edit_operation", {"operation": _DR_OP,
+                            "parameters": {"multiAxisMachiningType": "'five_axis'"}},
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "'five_axis'", None),
+    ("sys_execute_script", _derived_row_read,
+     _derived_row_reads("toolAxisMode holds its derived default before the edit", _DR_DERIVED), None),
+    ("cam_edit_operation", {"operation": _DR_OP, "parameters": {"toolAxisMode": "'lead_lean'"}},
+     _refused("1 came back by VALUE only", "'toolAxisMode' reads value 'vertical' and expression",
+              "CAMParameter.expression refused its prior expression", "Invalid enumeration value",
+              "which was NOT restored", "Operation.hasError reads False"), None),
+    ("sys_execute_script", _derived_row_read,
+     _derived_row_reads("the value is back and the expression is the literal", "'vertical'"), None),
     ("cam_delete", {"entity": _PE_SETUP},
      lambda p: p.get("deleted") is True and p.get("entity_type") == "setup", None),
 ]
@@ -5693,114 +5746,6 @@ def run(context):
     return {"script": script, "read_only": False}
 
 
-def _lookup_gui_args(correlation, unique=False):
-    """Exercise one bundled GUI correlation on the owned operation and return native effects."""
-    script = """import adsk.core, adsk.cam, json, os, sys, types, uuid
-from types import SimpleNamespace
-from contextlib import redirect_stdout
-from io import StringIO
-
-def run(context):
-    app = adsk.core.Application.get()
-    cam = adsk.cam.CAM.cast(app.activeProduct)
-    assert cam is not None and cam.setups.count == 1
-    setup = cam.setups.item(0)
-    assert setup.name == 'LookupGuardSetup' and setup.allOperations.count == 1
-    op = setup.allOperations.item(0)
-    assert op.name == 'LookupGuardOperation'
-    command = next(m for n,m in sys.modules.items() if n.endswith('.commands.updateTools.entry'))
-    attestation = next((m for n,m in sys.modules.items()
-                        if n.endswith('.lib.loaded_attestation')), None)
-    loaded_codes = {
-        'remove_tip_keys': command.remove_tip_keys.__code__,
-        'replace_with_library_tool': command.replace_with_library_tool.__code__,
-        'get_tool': command.LibraryTool.get_tool.__code__,
-    }
-    source_path = os.path.normcase(os.path.realpath(command.__file__))
-    code_path = os.path.normcase(os.path.realpath(
-        loaded_codes['replace_with_library_tool'].co_filename))
-    with open(source_path, 'rb') as source_file:
-        compiled_source = compile(source_file.read(),
-                                  loaded_codes['replace_with_library_tool'].co_filename,
-                                  'exec', dont_inherit=True)
-    def nested_codes(code):
-        for constant in code.co_consts:
-            if isinstance(constant, types.CodeType):
-                yield constant
-                yield from nested_codes(constant)
-    source_codes = {code.co_name: code for code in nested_codes(compiled_source)
-                    if code.co_name in loaded_codes}
-    checks = {'loaded_matcher_matches_source': (
-        source_path == code_path and attestation is not None
-        and set(source_codes) == set(loaded_codes)
-        and all(attestation._code_digest(source_codes[name])
-                == attestation._code_digest(code)
-                for name, code in loaded_codes.items()))}
-    assert checks['loaded_matcher_matches_source'], 'Loaded Update Tools code differs from source'
-    def state():
-        return {'tool': json.loads(op.tool.toJson()), 'preset': {'name': op.toolPreset.name, 'id': op.toolPreset.id} if op.toolPreset else None, 'count': cam.documentToolLibrary.count}
-    before = state()
-    library = adsk.cam.ToolLibrary.createEmpty()
-    library_items = []
-    for index, diameter in enumerate(DIAMETERS):
-        item = json.loads(json.dumps(before['tool']))
-        item['guid'] = str(uuid.uuid4())
-        if CORRELATION == 'Geometry':
-            if UNIQUE:
-                item['description'] = 'SweepGeometryUnique'
-                item['product-id'] = 'SweepGeometryUnique'
-            else:
-                item['description'] = f'SweepGeometryHolder{index}'
-                item['product-id'] = f'SweepGeometryProduct{index}'
-        else:
-            for key in ('DC', 'SFDM', 'shoulder-diameter', 'tip-diameter'):
-                item['geometry'][key] = diameter
-        library.add(adsk.cam.Tool.createFromJson(json.dumps(item)))
-        library_items.append(json.loads(library.item(library.count - 1).toJson()))
-    assert library.count == len(DIAMETERS)
-    def geometry_key(tool_json):
-        geometry = json.loads(json.dumps(tool_json['geometry']),
-                              parse_float=lambda value: round(float(value), 3))
-        return json.dumps(command.remove_tip_keys(geometry))
-    original_ui = command.ui
-    messages = []
-    console = StringIO()
-    try:
-        command.ui = SimpleNamespace(messageBox=lambda message: messages.append(message))
-        with redirect_stdout(console):
-            command.replace_with_library_tool([op], library, CORRELATION)
-    finally:
-        command.ui = original_ui
-    after = state()
-    checks['ui_restored'] = command.ui is original_ui
-    if UNIQUE:
-        if CORRELATION == 'Geometry':
-            checks['unique_tool_landed'] = (
-                after['tool']['description'] == 'SweepGeometryUnique'
-                and after['tool']['product-id'] == 'SweepGeometryUnique'
-                and after['tool']['geometry'] == before['tool']['geometry'])
-        else:
-            checks['unique_tool_landed'] = after['tool']['geometry']['DC'] == DIAMETERS[0]
-        checks['unique_document_entry'] = after['count'] == before['count'] + 1
-        checks['unique_preset_preserved'] = after['preset'] == before['preset']
-        checks['unique_no_notice'] = messages == []
-    else:
-        checks['operation_and_document_tool_state_unchanged'] = after == before
-        checks['ambiguity_named'] = 'ambiguous' in console.getvalue().lower() and CORRELATION in console.getvalue()
-        checks['notice_present'] = len(messages) == 1 and 'could not be correlated' in messages[0]
-        if CORRELATION == 'Geometry':
-            checks['candidate_geometry_equal'] = (
-                len(library_items) == 2
-                and geometry_key(library_items[0]) == geometry_key(library_items[1])
-                and geometry_key(library_items[0]) == geometry_key(before['tool']))
-            checks['candidate_metadata_differs'] = (
-                library_items[0]['description'] != library_items[1]['description']
-                and library_items[0]['product-id'] != library_items[1]['product-id'])
-    print(json.dumps({'passed': all(checks.values()), 'checks': checks, 'correlation': CORRELATION, 'unique': UNIQUE, 'before_diameter': before['tool']['geometry']['DC'], 'after_diameter': after['tool']['geometry']['DC'], 'before_count': before['count'], 'after_count': after['count'], 'preset': after['preset']}))
-"""
-    script = script.replace("DIAMETERS", repr((9,) if unique else (8, 12)))
-    script = script.replace("CORRELATION", repr(correlation)).replace("UNIQUE", repr(unique))
-    return lambda _ctx: {"script": script, "read_only": False}
 
 
 
@@ -5942,14 +5887,6 @@ _CAM_LOOKUP_GUARDS = [
        "tool_scope": "document", "tool_index": 0, "name": "LookupGuardOperation"},
      lambda p: p.get("operation") == "LookupGuardOperation" and p.get("generation_started") is False, None),
     ("sys_execute_script", _lookup_library_args, _lookup_guarded, None),
-    ("sys_execute_script", _lookup_gui_args("Description"), _lookup_guarded, None),
-    ("sys_execute_script", _lookup_gui_args("Product ID"), _lookup_guarded, None),
-    ("sys_execute_script", _lookup_gui_args("Geometry"), _lookup_guarded, None),
-    ("sys_execute_script", _lookup_gui_args("Geometry", unique=True), _lookup_guarded, None),
-    ("sys_execute_script", _lookup_gui_args("Description", unique=True), _lookup_guarded, None),
-    ("cam_get", {"include": ["tool"], "operation": "LookupGuardOperation"},
-     lambda p: _measured("unique GUI match independently reads 9 mm", p.get("tool") or {},
-                        ((p.get("tool") or {}).get("dimensions") or {}).get("diameter") == 9), None),
 ]
 
 _CAM_LOOKUP_GUARDS += _SEEDED_LIBRARY_ROWS

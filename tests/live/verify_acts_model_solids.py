@@ -1727,6 +1727,145 @@ def _edge_extent_rows(duplicate):
 _SOLIDS += _edge_extent_rows(True) + _edge_extent_rows(False)
 
 
+def _cross_owner_fillet_rows():
+    """Refuse fresh edge handles across component owners, then prove the same-owner control edits."""
+    from verify_acts_model_sweep import _retire_compare
+    tag = "cross_owner_fillet"
+    rows = [("doc_get", {}, _home_document, (tag + "_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, tag + "_home", "story")},
+             _new_document, (tag + "_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(
+            c, tag + "_doc", args(c) if callable(args) else args), check, save))
+
+    for name, x, width, height, depth in (
+            ("OwnerA", 100, 10, 10, 10), ("OwnerB", 130, 12, 8, 6)):
+        write("model_create_component", {"name": name, "activate": True, "x": x}, _made_component)
+        write("sketch_create", {"name": name + "S", "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name + "S", "geometry": [
+            {"kind": "rectangle", "x1": 0, "y1": 0, "x2": width, "y2": height}]})
+        write("model_extrude", {"sketch_name": name + "S", "distance": depth}, _extruded,
+              (name + "_body", lambda p: p["result_bodies"][0]))
+    write("design_activate_component", {"occurrence": "root"})
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+
+    def acquire(owner, point, key):
+        return ("find_geometry", {"target": owner + ":1:Body1", "kind": "line_edge",
+            "nearest_to": point, "max_results": 1, "units": "mm"},
+            _cross_owner_edge(owner, point), _fg(key))
+
+    rows += [acquire("OwnerA", [105, 0, 10], tag + "_edge_a"),
+             acquire("OwnerB", [136, 0, 6], tag + "_edge_b")]
+    rows.append(("design_get", {"include": ["tree"], "tree_bodies": True, "tree_handles": True,
+        "max_depth": 4, "max_results": 1000}, _cross_owner_body_handles,
+        (tag + "_body_handles", lambda p: _RECALL[tag + "_body_handles"])))
+    targets = ["", "OwnerA:1", "OwnerB:1"]
+    rows += _retire_reads(tag, targets, [])
+    for owner in ("OwnerA", "OwnerB"):
+        rows.append(("model_inspect", lambda c, owner=owner: {
+            "target": _ctx_get(c, tag + "_body_handles", "body handles")[owner],
+            "include": ["default", "mass"], "per_body": True, "units": "mm",
+            "accuracy": "very_high"},
+            _retire_compare(tag + "_" + owner + "_state", _symmetric_target_body_state, False), None))
+    write("model_fillet", lambda c: {"edges": [
+        _ctx_get(c, tag + "_edge_a", "OwnerA fresh edge"),
+        _ctx_get(c, tag + "_edge_b", "OwnerB fresh edge")],
+        "radius": 1, "units": "mm", "tangent_chain": False},
+        _refused("component 'OwnerA' at 'OwnerA:1'",
+                 "component 'OwnerB' at 'OwnerB:1'",
+                 "Fillet one component's edges per call", "no feature was created"))
+    rows += _retire_reads(tag, targets, [], after=True)
+    for owner in ("OwnerA", "OwnerB"):
+        rows.append(("model_inspect", lambda c, owner=owner: {
+            "target": _ctx_get(c, tag + "_body_handles", "body handles")[owner],
+            "include": ["default", "mass"], "per_body": True, "units": "mm",
+            "accuracy": "very_high"},
+            _retire_compare(tag + "_" + owner + "_state", _symmetric_target_body_state, True), None))
+
+    def duplicated_edge_result(p):
+        note = p.get("note") or ""
+        return _measured("same-owner duplicate edge control",
+                         {"edges_cut": p.get("edges_cut"),
+                          "edges_requested": p.get("edges_requested"),
+                          "faces_created": p.get("faces_created"), "note": note},
+                         p.get("filleted") is True and p.get("edges_cut") == 1
+                         and p.get("edges_requested") == 2
+                         and p.get("faces_created") == 1
+                         and p.get("tangent_chain") is False
+                         and "The 2 handles named 1 distinct edge(s), so each was sent once." in note)
+
+    write("model_fillet", lambda c: {"edges": [
+        _ctx_get(c, tag + "_edge_a", "OwnerA edge")]*2,
+        "radius": 1, "units": "mm", "tangent_chain": False},
+        duplicated_edge_result,
+        (tag + "_feature", _recall(tag + "_feature", lambda p: p["feature"])))
+
+    def changed_owner_a(p):
+        now = _symmetric_target_body_state(p)
+        before = _RECALL.get(tag + "_OwnerA_state")
+        return _measured("same-owner fillet changes only OwnerA material", now,
+            now is not None and before is not None
+            and _near(now["material"].get("volume"), 997.853982, .001)
+            and _near(now["material"].get("area"), 595.2787596, .01)
+            and now["bounds"] == before["bounds"])
+
+    rows += [
+        ("model_inspect", lambda c: {"target": _ctx_get(c, tag + "_body_handles",
+            "body handles")["OwnerA"], "include": ["default", "mass"], "per_body": True,
+            "units": "mm", "accuracy": "very_high"}, changed_owner_a, None),
+        ("model_inspect", lambda c: {"target": _ctx_get(c, tag + "_body_handles",
+            "body handles")["OwnerB"], "include": ["default", "mass"], "per_body": True,
+            "units": "mm", "accuracy": "very_high"},
+         _retire_compare(tag + "_OwnerB_state", _symmetric_target_body_state, True), None),
+        ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                        "tree_handles": True, "max_depth": 10, "max_results": 2000},
+         _edge_extent_history(tag, tag + "_feature", "FilletFeature"), None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, tag + "_home", "story"),
+             "expect_document": _ctx_get(c, tag + "_doc", "scratch")}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, tag + "_doc", "scratch"),
+             "save_changes": False, "expect_document": _ctx_get(c, tag + "_home", "story")},
+         _document_closed, None)]
+    return rows
+
+
+def _cross_owner_body_handles(p):
+    """Require one exact solid-body handle from each recorded component placement."""
+    tree = p.get("tree") or {}
+    nodes = {row.get("full_path"): row for row in tree.get("children") or []}
+    result = {}
+    valid = tree.get("truncated") is False and tree.get("children_truncated") is False
+    for owner in ("OwnerA", "OwnerB"):
+        node = nodes.get(owner + ":1") or {}
+        bodies = node.get("bodies") or []
+        valid = (valid and node.get("body_count") == len(bodies) == 1
+                 and node.get("children_truncated") is not True
+                 and len(bodies) == 1 and bodies[0].get("is_solid") is True
+                 and bodies[0].get("visible") is True
+                 and isinstance(bodies[0].get("handle"), str) and bool(bodies[0]["handle"]))
+        if len(bodies) == 1:
+            result[owner] = bodies[0].get("handle")
+    valid = valid and set(result) == {"OwnerA", "OwnerB"}
+    if valid:
+        _RECALL["cross_owner_fillet_body_handles"] = result
+    return _measured("two exact solid body handles from the placed owner rows", result, valid)
+
+
+def _cross_owner_edge(owner, point):
+    """Require one fresh edge handle at its independently measured position."""
+    def check(p):
+        found = [r for r in p.get("matches") or [] if r.get("position") == point]
+        valid = (p.get("units") == "mm" and p.get("match_count") >= p.get("returned") == 1
+                 and len(found) == 1 and found[0].get("kind") == "line_edge"
+                 and bool(found[0].get("handle")))
+        return _measured(owner + " edge handle at measured point", found, valid)
+    return check
+
+
+_SOLIDS += _cross_owner_fillet_rows()
+
+
 def _placed_extent_pose_state(p):
     """Return the one measured placed stock's complete finite pose, or None when unread."""
     rows = p.get("all_occurrences")
