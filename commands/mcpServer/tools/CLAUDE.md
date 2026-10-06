@@ -287,7 +287,7 @@ Build rules for a read:
 ## Verify on a real document before calling it done
 
 After tests pass: `sys_reload_addin` (it auto-discovers new modules), wait for
-`127.0.0.1:27182/health`, then run the handler on a live document. The server handler is live at
+`127.0.0.1:37182/health`, then run the handler on a live document. The server handler is live at
 once, but the client may keep a stale schema until it reconnects; see CONTRIBUTING.md.
 
 ## Destructive / outward actions

@@ -474,7 +474,7 @@ class TestServerStartupReconciliation:
         monkeypatch.setattr(mcp, "ThreadedHTTPServer", HTTP)
         monkeypatch.setattr(mcp.threading, "Thread", Thread)
         monkeypatch.setattr(jobs, "DrawingJobStore", current_store)
-        result = mcp.start_server("127.0.0.1", 27182)
+        result = mcp.start_server("127.0.0.1", 37182)
         assert result["status"] == mcp.START_OK
         assert order == ["bind", "reconcile", "start"]
         assert old.finish("running", {"isError": False}) is False
@@ -498,7 +498,7 @@ class TestServerStartupReconciliation:
             mcp.drawing_jobs, "DrawingJobStore",
             lambda _root=None: (_ for _ in ()).throw(
                 RuntimeError("store construction failed")))
-        result = mcp.start_server("127.0.0.1", 27182)
+        result = mcp.start_server("127.0.0.1", 37182)
         assert result["status"] == mcp.START_ERROR
         assert len(made) == 1 and made[0].closed is True
 

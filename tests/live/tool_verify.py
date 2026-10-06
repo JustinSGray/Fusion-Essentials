@@ -85,7 +85,7 @@ from verify_core import (  # noqa: F401
     _unparked, _PUSH_OPS, _INSPECT_OPS, _is_inspect, _ARG_LOAD_OPS, _arg_load_sites,
     _TRUTHY_ONLY_CALLS, _callee_name, _inspects_argument, _inspects_payload, predicate_kind,
     EXPORT_DIR, SVG_PATH, SVG96_PATH, write_png, MARKER_PNG, _fg, _fgn, _prof, _matched, _face_up_at,
-    _PATH_LABEL, _path_count, _measured,
+    _PATH_LABEL, _path_count, _measured, _bound_on_harness,
     _RECALL, _recall, _SVG96_MM, _SVG96_TOL, _svg96_extent, _repair_no_op, _made_component,
     _made_component_inactive, _PLANE_NORMAL_AXIS, _datum_plane, _dim_measures, _datum,
     _result_bodies, _extruded, _revolved, _swept, _lofted, _material_assigned, _gap_measured,
@@ -119,7 +119,7 @@ from verify_layout import (  # noqa: F401
 from verify_acts_doc import (  # noqa: F401
     _OVERTURE, _SHOWCASE, _FINALE, _RELOAD_PROBE_GAP_S, _RELOAD_PROBE_TIMEOUT_S,
     _RELOAD_DOWN_POLLS, _RELOAD_UP_POLLS, _RELOAD_SMOKE_QUERY, _server_answers, _poll_health,
-    reload_smoke)
+    _health_bound, reload_smoke)
 
 from verify_acts_sketch import _SKELETON, _SKETCHWORK  # noqa: F401
 

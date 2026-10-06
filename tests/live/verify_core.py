@@ -19,6 +19,7 @@ re-exports this whole surface; import it from there.
 import argparse
 import dis
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -31,7 +32,19 @@ import zlib
 
 import cloud_config
 
-BASE = "http://127.0.0.1:27182"
+
+def _addin_endpoint():
+    """The add-in's endpoint module (commands/mcpServer/endpoint.py), loaded by path."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "commands", "mcpServer", "endpoint.py")
+    spec = importlib.util.spec_from_file_location("fusion_essentials_endpoint", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+ENDPOINT = _addin_endpoint()
+BASE = f"http://{ENDPOINT.HOST}:{ENDPOINT.DEFAULT_PORT}"
 MCP = BASE + "/mcp"
 SERVER_NAME = "Fusion-Essentials MCP Server"
 DOC_PREFIX = "EVAL_sweep"
@@ -885,6 +898,13 @@ def _measured(label, got, ok_):
     if not ok_:
         raise AssertionError(f"{label}: measured {got}")
     return True
+
+
+def _bound_on_harness(source, bound):
+    """True when a published 'bound' row is the endpoint this harness connected on."""
+    return _measured(f"{source} bound endpoint (harness uses {MCP})", bound,
+                     isinstance(bound, dict) and bound.get("mcp_url") == MCP
+                     and bound.get("port") == ENDPOINT.DEFAULT_PORT)
 
 
 # Values a LATER step's predicate has to compare against. A predicate is handed the payload alone,

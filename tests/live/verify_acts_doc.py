@@ -17,7 +17,8 @@ import time
 import urllib.request
 
 from verify_core import (
-    BASE, EXPORT_DIR, NOTE_MAX, SERVER_NAME, SVG_PATH, _RECALL, _activated, _ctx_get,
+    BASE, EXPORT_DIR, MCP, NOTE_MAX, SERVER_NAME, SVG_PATH, _RECALL, _activated, _bound_on_harness,
+    _ctx_get,
     _document_closed, _document_read, _exported_bytes, _extruded, _fg, _home_address,
     _home_document, _imported_curves, _imported_sketches, _made_component, _made_component_inactive,
     _component_metadata, _measured,
@@ -1439,6 +1440,10 @@ _OVERTURE = [
                 <= {f["family"] for f in p["families"]}
                 and all(f["tool_count"] >= 1 and f["entry_tool"] for f in p["families"])
                 and p["tool_count"] >= 150), None),
+    # the map publishes the address the server's socket bound: it has to be the one this run is
+    # talking to, on the add-in's default port.
+    ("sys_capability_map", {},
+     lambda p: _bound_on_harness("sys_capability_map", p["bound"]), None),
     # the read stamp is for DOCUMENT reads: a tool that answers off the registry rather than the
     # active design carries no 'active_document' key at all (design_get's own beat in the FINALE is
     # the other half of this pair).
@@ -1975,6 +1980,12 @@ def _server_answers(timeout=_RELOAD_PROBE_TIMEOUT_S):
     return data.get("server") == SERVER_NAME
 
 
+def _health_bound(timeout=20):
+    """The 'bound' row GET /health publishes right now; a read that fails raises."""
+    with urllib.request.urlopen(BASE + "/health", timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8")).get("bound")
+
+
 def _poll_health(up, polls):
     """Poll /health until it reads `up` (True = answering as this server, False = not), bounded by
     `polls` attempts. True when that state was OBSERVED, False when the budget ran out - a budget
@@ -2217,6 +2228,11 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
         names = [m.get("tool") for m in matches if isinstance(m, dict)]
         if "sys_reload_addin" not in names:
             raise RuntimeError("restarted registry did not return sys_reload_addin")
+        # Two reads of the restarted server, each compared with the URL this run connected on.
+        _bound_on_harness("/health", facade("_health_bound")())
+        mapped = call("sys_capability_map", {})[1]
+        _bound_on_harness("sys_capability_map",
+                          mapped.get("bound") if isinstance(mapped, dict) else None)
         ok, note, fresh = _reload_document_probe(call, canary, home, nonce_name)
         if not ok:
             raise RuntimeError(note)
@@ -2226,7 +2242,8 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
         rows.append(("sys_reload_addin", "pass",
                      f"{restart_note}; the restarted "
                      f"registry returned {len(names)} match(es) for '{_RELOAD_SMOKE_QUERY}', "
-                     "sys_reload_addin among them"))
+                     f"sys_reload_addin among them; /health and sys_capability_map both publish "
+                     f"{MCP} as bound"))
         notes["sys_reload_addin"] = STORY.get("sys_reload_addin", "")
         if valued is not None:
             valued.add("sys_reload_addin")

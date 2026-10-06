@@ -42,7 +42,10 @@ import urllib.request
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TESTS)
-HEALTH = "http://127.0.0.1:27182/health"
+sys.path.insert(0, os.path.join(TESTS, "live"))
+from verify_core import BASE  # noqa: E402  the live harness's one server address
+
+HEALTH = BASE + "/health"
 
 
 def _run(label, cmd, repair):
@@ -120,7 +123,7 @@ def main():
         print("Fusion. Re-run without --offline (Fusion up, add-in enabled) before releasing.")
         return 0
     if not _fusion_up():
-        print("\nLIVE GATE FAILED: Fusion is not reachable on 127.0.0.1:27182.")
+        print("\nLIVE GATE FAILED: Fusion is not reachable on " + BASE + ".")
         print("Start Fusion with the add-in enabled and re-run - or pass --offline to accept an")
         print("unverified-mocks green, visibly.")
         return 1

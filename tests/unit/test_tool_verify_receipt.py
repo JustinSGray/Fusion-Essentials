@@ -1768,13 +1768,22 @@ _SCHEDULED = ("Reload scheduled. Make your next tool call after ~3 seconds - the
               "reconnects automatically.")
 
 
-def _reload_wire(reload_answer=(False, _SCHEDULED), found=("sys_reload_addin", "doc_get")):
+def _harness_bound(port=None):
+    """The 'bound' row a server on the harness's own endpoint publishes."""
+    host, port = verify_core.ENDPOINT.HOST, port or verify_core.ENDPOINT.DEFAULT_PORT
+    return {"host": host, "port": port, "mcp_url": f"http://{host}:{port}/mcp"}
+
+
+def _reload_wire(reload_answer=(False, _SCHEDULED), found=("sys_reload_addin", "doc_get"),
+                 map_bound=None):
     """A mutable session for the reload lifecycle without Autodesk objects."""
     state = {"active": "session:home", "documents": {
         "session:home": "Home", "session:other": "Other"}, "parameters": {}, "seen": []}
 
     def call(tool, args):
         state["seen"].append((tool, dict(args)))
+        if tool == "sys_capability_map":
+            return False, {"bound": map_bound or _harness_bound()}
         if tool == "doc_get":
             active = state["active"]
             return False, {"active": {"name": state["documents"][active],
@@ -1864,9 +1873,11 @@ class TestReloadBeat:
     its skipped bucket instead of banking a row."""
 
     @staticmethod
-    def _drive(monkeypatch, call, answers, story="stubbed reload story"):
+    def _drive(monkeypatch, call, answers, story="stubbed reload story", health_bound=None):
         monkeypatch.setattr(tool_verify, "call", call)
         monkeypatch.setattr(tool_verify, "_server_answers", answers)
+        monkeypatch.setattr(tool_verify, "_health_bound",
+                            lambda: health_bound or _harness_bound())
         monkeypatch.setattr(tool_verify, "STORY", {"sys_reload_addin": story})
         monkeypatch.setattr(tool_verify.time, "sleep", lambda s: None)
         rows, notes, valued = [], {}, set()
@@ -1880,6 +1891,21 @@ class TestReloadBeat:
         assert "answered again" in rows[0][2] and "sys_reload_addin among them" in rows[0][2]
         assert notes["sys_reload_addin"] == "stubbed reload story"
         assert valued == {"sys_reload_addin"}
+        assert f"both publish {tool_verify.MCP} as bound" in rows[0][2]
+
+    @pytest.mark.parametrize("where", ["health", "map"])
+    @pytest.mark.parametrize("wrong", [
+        dict(_harness_bound(), port=40123),
+        dict(_harness_bound(), mcp_url="http://127.0.0.1:40123/mcp"),
+        {"host": None, "port": None, "mcp_url": None},
+    ], ids=["another port", "another url", "no address"])
+    def test_a_restart_on_another_endpoint_banks_nothing(self, monkeypatch, where, wrong):
+        # each read is compared with the URL the harness connected on, on its own: either one
+        # publishing another port, another URL, or no address at all, leaves the beat unbanked.
+        rows, _notes, valued = self._drive(
+            monkeypatch, _reload_wire(map_bound=wrong if where == "map" else None),
+            _health(True, False, True), health_bound=wrong if where == "health" else None)
+        assert rows == [] and valued == set()
 
     @pytest.mark.parametrize("failure", ["nonce", "reload", "registry", "fresh_write"])
     def test_failed_reload_stage_cleans_owned_scratch_and_restores_home(
@@ -2021,6 +2047,7 @@ class TestReloadBeat:
 
         monkeypatch.setattr(tool_verify, "call", call)
         monkeypatch.setattr(tool_verify, "_server_answers", _health(True, False, True))
+        monkeypatch.setattr(tool_verify, "_health_bound", _harness_bound)
         monkeypatch.setattr(tool_verify.time, "sleep", lambda s: None)
         health_rows = iter([_attested_health(), _attested_health(),
                             _attested_health(_reloaded_attestation())])

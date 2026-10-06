@@ -33,7 +33,7 @@ of them is unguarded: treat that as a defect to ledger, not a freedom.
 | test_no_hand_seeded_enums.py | Lint: a MEASURED adsk enum member is never hand-assigned in a unit test - it comes seeded. |
 | test_output_contracts.py | Lint: every tool that DECLARES outputs (a RETURNS spec) must honour the contract. |
 | test_permission_posture.py | Lint: the generated permission presets NEVER auto-allow a hard-to-reverse tool. |
-| test_postconditions_declared.py | Lint: every WRITE/DESTRUCTIVE tool declares HOW its effect is proven - postconditions=[...] for a detachable effect, else verification=Verification(kind=...) from the closed set (item.py). |
+| test_postconditions_declared.py | Check write verification kinds, evidence references, pollers and recorded gap identifiers. |
 | test_prose_budget.py | Prose budget: comments, docstrings and wire sentences under tools/ stay bounded. |
 | test_rename_adoption.py | Gate: no tool renames an entity through a swallowed setattr - apply_rename is the one home. |
 | test_strict_schema.py | Lint: every registered tool's inputSchema carries additionalProperties:false. |

@@ -8,7 +8,8 @@ tool, and tool count - read live from the registry so it can't drift - plus each
 the tool whose read answers it. Pair with sys_find_tool to search within a family. Read-only, no adsk.*.
 """
 
-from ._common import ok
+from ._common import ok, safe
+from .. import endpoint
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register, get_tools, family_of, has_tool, GATED_TOOLS
@@ -101,6 +102,8 @@ def handler() -> dict:
         "family_count": len(out),
         "tool_count": sum(f["tool_count"] for f in out),
         "families": out,
+        # The running server's own socket address; null when no bound address is recorded.
+        "bound": safe(endpoint.bound, None),
         "capabilities": _capabilities_block(),
         "gated": {
             "tools": gated_tools,

@@ -434,8 +434,11 @@ def load_mcp_server():
             importlib.import_module(src)
             sys.modules[f"{_SERVER_PKG_ROOT}.commands.mcpServer.mcp_primitives{suffix}"] = \
                 sys.modules[src]
-        importlib.import_module("mcpServer.version")
-        sys.modules[f"{_SERVER_PKG_ROOT}.commands.mcpServer.version"] = sys.modules["mcpServer.version"]
+        for leaf in ("version", "endpoint"):
+            importlib.import_module("mcpServer." + leaf)
+            shared = sys.modules["mcpServer." + leaf]
+            sys.modules[f"{_SERVER_PKG_ROOT}.commands.mcpServer.{leaf}"] = shared
+            setattr(sys.modules[f"{_SERVER_PKG_ROOT}.commands.mcpServer"], leaf, shared)
 
         server_dir = os.path.join(COMMANDS_DIR, "mcpServer", "server")
         for mod_name in ("drawing_jobs", "task_manager", "mcp_server"):

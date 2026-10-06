@@ -10,12 +10,11 @@ and the resources/* reads over a static catalog the caller hands in) by hand, so
 no external packages are required.
 
 Differences from the sample this was adapted from:
-  - The MCP endpoint is served on the path **/mcp** (to match Fusion's built-in
-    well-known endpoint) in addition to "/".
+  - The MCP endpoint is served on the path **/mcp** in addition to "/".
   - Logging goes through fusion360utils (futil), not raw app.log/print.
   - start_server() distinguishes a port-already-in-use bind failure (EADDRINUSE)
     from other errors and reports it via a structured result, so the caller can
-    tell the user to disable Autodesk's built-in MCP server.
+    name who answers on the port and point the user at the mcp_port setting.
 """
 
 import asyncio
@@ -25,6 +24,7 @@ import json
 import math
 import os
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
@@ -32,14 +32,12 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
 
 from ....lib import fusion360utils as futil
+from .. import endpoint
+from ..endpoint import MCP_PATH
 from ..mcp_primitives.item import Item
 from ..version import __version__
 from .task_manager import TaskManager
 from . import drawing_jobs
-
-# The MCP path served by Fusion's built-in server; we mirror it so clients
-# configured for the well-known endpoint reach us unchanged.
-MCP_PATH = '/mcp'
 
 # A measurement switch: while this marker file exists, tools/list carries no description at any
 # depth - names, types, enums and required flags only - so an eval can measure what the
@@ -83,10 +81,16 @@ INSTRUCTIONS = (
 # Header names (Streamable HTTP transport).
 SESSION_HEADER = 'Mcp-Session-Id'
 
-# Our server's identifying name. Returned by GET /health and used by the
-# post-start self-check to confirm WE are the server answering on the port
-# (vs. Autodesk's built-in server, which reports "MCP HTTP Server").
+# Our server's identifying name: GET /health and initialize's serverInfo both report it, and
+# identify_listener() compares against it to tell our server from any other on a port.
 SERVER_NAME = "Fusion-Essentials MCP Server"
+
+# identify_listener()'s verdicts on who answers an MCP initialize on a port.
+LISTENER_OURS = 'fusion_essentials'
+LISTENER_OTHER = 'other'
+LISTENER_UNIDENTIFIED = 'unidentified'
+# Wall-clock seconds identify_listener() waits for an answer before it abandons the exchange.
+LISTENER_DEADLINE_S = 2.0
 
 # Seconds a main-thread tool task may run before _execute_on_main_thread reports "still running".
 # Tools that legitimately run long (e.g. STEP export, cloud upload) opt out via enforce_timeout=False
@@ -110,7 +114,7 @@ class _AfterSendResponse(dict):
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """HTTP server that handles each request on its own daemon thread."""
     daemon_threads = True
-    allow_reuse_address = False  # we WANT bind to fail loudly if 27182 is taken
+    allow_reuse_address = False  # a taken port must fail the bind, never be shared
 
 
 # Handler kwargs DELIBERATELY absent from a tool's wire schema: the handler accepts the key and
@@ -206,6 +210,8 @@ class SimpleMCPServer:
         # tool name -> {prop: enum spec}, precomputed at registration so enum validation is O(1) per arg.
         self._enum_specs: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.server_info = {"name": name, "version": __version__}
+        # {host, port, mcp_url} read off the bound socket by start_server; None until then.
+        self.bound = None
         self._attestation = attestation
         self._job_store = job_store
         self._job_store_lock = threading.Lock()
@@ -266,7 +272,7 @@ class SimpleMCPServer:
         attestation["schema_fingerprint"] = self.schema_fingerprint()
         return {"status": "healthy", "server": self.name,
                 "version": self.server_info["version"], "session_id": self.session_id,
-                "attestation": attestation}
+                "bound": self.bound, "attestation": attestation}
 
     def register(self, item: Item):
         if not isinstance(item, Item):
@@ -859,8 +865,8 @@ def start_server(host: str, port: int, items=None, resources=None, job_store=Non
     and loads no content itself; an empty catalog means the resources capability
     is never advertised.
 
-    The caller (entry.start) is responsible for surfacing the port-in-use case to
-    the user (likely Autodesk's built-in MCP server holding 27182).
+    Exactly host:port is tried, once. The caller (entry.start) surfaces the
+    port-in-use case to the user; identify_listener() names who answers there.
     """
     try:
         mcp = SimpleMCPServer(resources=resources, job_store=job_store,
@@ -875,7 +881,7 @@ def start_server(host: str, port: int, items=None, resources=None, job_store=Non
             http_server = ThreadedHTTPServer((host, port), handler_cls)
         except OSError as e:
             if e.errno in (errno.EADDRINUSE, errno.EACCES) or getattr(e, 'winerror', None) == 10048:
-                futil.log(f"MCP server: port {port} already in use (likely Fusion's built-in MCP server)")
+                futil.log(f"MCP server: could not bind {host}:{port} ({e})")
                 return {"status": START_PORT_IN_USE, "port": port}
             raise
 
@@ -892,6 +898,9 @@ def start_server(host: str, port: int, items=None, resources=None, job_store=Non
             name=f"FE-MCP-Server-{host}:{port}",
         )
         thread.start()
+        # The socket's own address, not the requested one: /health and sys_capability_map
+        # publish this record. A server object that reports no address leaves it None.
+        mcp.bound = endpoint.record_bound(getattr(http_server, "server_address", None))
         futil.log(f"MCP server started on http://{host}:{port}{MCP_PATH}")
         return {"status": START_OK, "mcp": mcp, "http_server": http_server, "thread": thread}
     except Exception:
@@ -899,35 +908,71 @@ def start_server(host: str, port: int, items=None, resources=None, job_store=Non
         return {"status": START_ERROR, "message": "Failed to start MCP server (see Text Commands log)"}
 
 
-def verify_ownership(host: str, port: int, timeout: float = 2.0):
-    """Probe GET http://host:port/health and check who is answering.
+def _initialize_reply(resp, expired):
+    """The JSON-RPC reply in an initialize response (plain JSON or the first SSE data line), or
+    None once expired() is true or the body passes 64 KiB."""
+    sse = "text/event-stream" in (resp.headers.get("Content-Type") or "")
+    body = b""
+    while len(body) <= 65536 and not expired():
+        chunk = resp.read1(4096)
+        if not chunk:
+            return None if sse else json.loads(body.decode("utf-8"))
+        body += chunk
+        if sse:
+            for line in body.split(b"\n")[:-1]:
+                if line.startswith(b"data:"):
+                    return json.loads(line[5:].decode("utf-8"))
+    return None
 
-    Layer-2 collision check: even after a successful bind, confirm the
-    server replying on the port is actually ours and not, say, Autodesk's built-in
-    server that won an earlier race. Returns one of:
-        "ours"      -> /health reports our SERVER_NAME (all good)
-        "foreign"   -> something else answered (e.g. Autodesk's "MCP HTTP Server")
-        "unreachable" -> nothing answered / error (treat as inconclusive)
 
-    Runs from entry.start() on the main thread; our own server answers on its
-    background thread, so this self-request does not deadlock. Kept short-timeout
-    and fully defensive so it can never hang Fusion startup.
-    """
-    import json as _json
+def identify_listener(host: str, port: int, deadline_s: float = LISTENER_DEADLINE_S):
+    """{kind, name, session_id} of whoever answers an MCP initialize on host:port within
+    deadline_s of wall-clock time; never raises, and blocks its caller no longer than that."""
     import urllib.request
 
-    url = f"http://{host}:{port}/health"
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            data = _json.loads(resp.read().decode("utf-8"))
-        return "ours" if data.get("server") == SERVER_NAME else "foreign"
-    except Exception:
-        return "unreachable"
+    found = {"kind": LISTENER_UNIDENTIFIED, "name": None, "session_id": None}
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+        "clientInfo": {"name": "fusion-essentials-port-check", "version": __version__}}})
+    request = urllib.request.Request(
+        f"http://{host}:{port}{MCP_PATH}", data=body.encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json, text/event-stream"})
+    ends = time.monotonic() + deadline_s
+    answers = []
+
+    def _ask():
+        try:
+            with urllib.request.urlopen(request, timeout=deadline_s) as resp:
+                reply = _initialize_reply(resp, lambda: time.monotonic() >= ends)
+                answers.append((reply["result"]["serverInfo"]["name"],
+                                resp.headers.get(SESSION_HEADER)))
+        except Exception:
+            pass
+
+    # The socket timeout bounds one silent wait, not a reply that keeps dripping, so the
+    # exchange runs on its own thread and is abandoned when the join's deadline passes.
+    asker = threading.Thread(target=_ask, daemon=True, name="FE-MCP-ListenerProbe")
+    asker.start()
+    asker.join(deadline_s)
+    if not answers:
+        return found
+    name, session_id = answers[0]
+    if not isinstance(name, str) or not name:
+        return found
+    found["name"] = name
+    if name == SERVER_NAME:
+        found["kind"] = LISTENER_OURS
+        found["session_id"] = session_id
+    else:
+        found["kind"] = LISTENER_OTHER
+    return found
 
 
 def stop_server(http_server, thread, timeout: float = 5) -> bool:
     """Shut down the HTTP server and join its thread. Safe to call with None."""
     try:
+        endpoint.record_bound(None)
         if http_server:
             http_server.shutdown()
             http_server.server_close()

@@ -814,7 +814,7 @@ class TestTaskManager:
 # ── MCPHandler._origin_ok: the DNS-rebinding guard ──────────────────────────
 #
 # The server binds loopback, but any page in the victim's browser can POST to
-# http://127.0.0.1:27182. The Origin header is the only thing separating a local browser client
+# http://127.0.0.1:37182. The Origin header is the only thing separating a local browser client
 # from a hostile page, so the check must compare the PARSED scheme+hostname: a substring test
 # admits http://localhost.evil.com, which resolves to the attacker's server.
 
@@ -962,7 +962,7 @@ class TestOriginGuard:
     @pytest.mark.parametrize("origin", [
         "http://localhost.evil.com",        # loopback label as a SUBDOMAIN of an attacker domain
         "http://127.0.0.1.evil.com",
-        "http://localhost.evil.com:27182",  # our own port on someone else's host
+        "http://localhost.evil.com:37182",  # our own port on someone else's host
         "https://evil.com",
         "http://evil.localhost.com",
         "http://127.0.0.1@evil.com",        # loopback in the userinfo, not the host
@@ -982,7 +982,7 @@ class TestOriginGuard:
         "http://127.0.0.1:8080",
         "https://localhost",
         "http://[::1]:5000",                # urlsplit().hostname strips the brackets -> '::1'
-        "HTTP://LOCALHOST:27182",           # scheme and host are case-insensitive
+        "HTTP://LOCALHOST:37182",           # scheme and host are case-insensitive
     ])
     def test_loopback_origin_is_allowed(self, mcp_server_module, origin):
         assert _origin_allowed(mcp_server_module, origin) is True
@@ -1030,3 +1030,205 @@ def test_health_read_does_not_end_an_active_capture(mcp_server_module, tmp_path)
     finally:
         loaded_attestation.finish()
         assert sys.getprofile() is prior
+
+
+# -- the bound address: read off the socket, published by /health and sys_capability_map --------
+
+class _NoSocketServer:
+    """ThreadedHTTPServer's surface with no socket; `reported` stands in for the bound address."""
+
+    made = []
+    reported = None
+    refuse = None
+
+    def __init__(self, address, handler_cls):
+        type(self).made.append(address)
+        if type(self).refuse is not None:
+            raise type(self).refuse
+        self.server_address = type(self).reported or address
+
+    def serve_forever(self):
+        raise AssertionError("the serving loop must not run in a unit test")
+
+    def shutdown(self):
+        pass
+
+    def server_close(self):
+        pass
+
+
+class _IdleThread:
+    def __init__(self, target=None, daemon=None, name=None):
+        pass
+
+    def start(self):
+        pass
+
+
+@pytest.fixture
+def socketless(mcp_server_module, monkeypatch):
+    """The real start_server with its bind and serving thread replaced, and a clean bound record."""
+    mcp = mcp_server_module
+    fake = type("Bound", (_NoSocketServer,), {"made": [], "reported": None, "refuse": None,
+                                              "real": mcp.ThreadedHTTPServer})
+    monkeypatch.setattr(mcp, "ThreadedHTTPServer", fake)
+    monkeypatch.setattr(mcp.threading, "Thread", _IdleThread)
+    monkeypatch.setattr(mcp.drawing_jobs, "_DEFAULT_STORE", mcp.drawing_jobs._DEFAULT_STORE)
+    monkeypatch.setattr(mcp.endpoint, "_bound", None)
+    return mcp, fake
+
+
+def _map_reply(monkeypatch):
+    capability_map = load_tool("sys_capability_map")
+    monkeypatch.setattr(capability_map, "get_tools", lambda: [])
+    result = capability_map.handler()
+    assert result["isError"] is False
+    return result["content"][0]["text"]
+
+
+class TestTheBoundAddressIsPublished:
+    def test_health_and_the_capability_map_report_what_the_socket_bound(self, socketless,
+                                                                        monkeypatch):
+        mcp, fake = socketless
+        fake.reported = ("127.0.0.1", 40002)       # the socket's answer, not the port asked for
+        result = mcp.start_server("127.0.0.1", 40001, items=[], job_store=object())
+        assert result["status"] == mcp.START_OK, result
+        expected = {"host": "127.0.0.1", "port": 40002, "mcp_url": "http://127.0.0.1:40002/mcp"}
+        assert result["mcp"].health()["bound"] == expected
+        assert json.loads(_map_reply(monkeypatch))["bound"] == expected
+
+    def test_with_no_running_server_neither_read_states_a_port(self, socketless, monkeypatch):
+        mcp, _fake = socketless
+        result = mcp.start_server("127.0.0.1", 40001, items=[], job_store=object())
+        assert mcp.stop_server(result["http_server"], None) is True
+        text = _map_reply(monkeypatch)
+        assert json.loads(text)["bound"] is None
+        assert str(mcp.endpoint.DEFAULT_PORT) not in text and "40001" not in text
+        assert mcp.SimpleMCPServer().health()["bound"] is None
+
+    def test_a_refused_bind_is_tried_once_on_the_asked_port(self, socketless):
+        import errno
+
+        mcp, fake = socketless
+        fake.refuse = OSError(errno.EADDRINUSE, "address already in use")
+        result = mcp.start_server("127.0.0.1", 40001, items=[], job_store=object())
+        assert result == {"status": mcp.START_PORT_IN_USE, "port": 40001}
+        assert fake.made == [("127.0.0.1", 40001)], "one bind attempt, on exactly the asked port"
+        assert mcp.endpoint.bound() is None
+        assert fake.real.allow_reuse_address is False, "a taken port must refuse the bind"
+
+
+class _Reply:
+    """urlopen's context-manager response: headers, read() and readline() over fixed bytes."""
+
+    def __init__(self, body, content_type="application/json", session=None):
+        self._stream = io.BytesIO(body)
+        self.headers = {"Content-Type": content_type}
+        if session is not None:
+            self.headers["Mcp-Session-Id"] = session
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read1(self, size=-1):
+        return self._stream.read1(size)
+
+
+def _initialize_body(name):
+    return json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"name": name}}})
+
+
+class TestIdentifyListener:
+    def _identify(self, mcp, monkeypatch, reply):
+        import urllib.request
+
+        asked = []
+
+        def urlopen(request, timeout=None):
+            asked.append((request.full_url, request.get_method(), timeout))
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+        found = mcp.identify_listener("127.0.0.1", 40123, deadline_s=1.0)
+        assert asked == [("http://127.0.0.1:40123/mcp", "POST", 1.0)]
+        return found
+
+    def test_our_own_server_is_named_with_its_session(self, mcp_server_module, monkeypatch):
+        mcp = mcp_server_module
+        reply = _Reply(json.dumps(json.loads(_initialize_body(mcp.SERVER_NAME)), indent=2).encode(),
+                       session="s-1")
+        assert self._identify(mcp, monkeypatch, reply) == {
+            "kind": mcp.LISTENER_OURS, "name": mcp.SERVER_NAME, "session_id": "s-1"}
+
+    def test_another_server_is_named_from_an_event_stream_reply(self, mcp_server_module,
+                                                               monkeypatch):
+        mcp = mcp_server_module
+        body = b"event: message\ndata: " + _initialize_body("Some Other Server").encode() + b"\n\n"
+        reply = _Reply(body, content_type="text/event-stream", session="s-2")
+        assert self._identify(mcp, monkeypatch, reply) == {
+            "kind": mcp.LISTENER_OTHER, "name": "Some Other Server", "session_id": None}
+
+    @pytest.mark.parametrize("reply", [
+        OSError("connection refused"),
+        _Reply(b"<html>not an MCP server</html>"),
+        _Reply(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode()),
+    ])
+    def test_no_usable_name_is_unidentified(self, mcp_server_module, monkeypatch, reply):
+        mcp = mcp_server_module
+        assert self._identify(mcp, monkeypatch, reply) == {
+            "kind": mcp.LISTENER_UNIDENTIFIED, "name": None, "session_id": None}
+
+
+class TestIdentifyListenerDeadline:
+    @pytest.mark.parametrize("drip", ["headers", "body"])
+    def test_a_dripping_reply_is_abandoned_at_the_wall_deadline(self, mcp_server_module, drip):
+        # a real loopback listener on an ephemeral port that sends one line every 40 ms for 2.4 s
+        # before its answer - in the response headers or in an event-stream body - so no single
+        # socket wait ever times out.
+        import threading
+        import time
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Dripper(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                head = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                line = b"X-Drip: 1\r\n" if drip == "headers" else b": heartbeat\n"
+                try:
+                    self.wfile.write(head + (b"" if drip == "headers" else b"\r\n"))
+                    for _ in range(60):
+                        self.wfile.write(line)
+                        self.wfile.flush()
+                        time.sleep(0.04)
+                    self.wfile.write((b"\r\n" if drip == "headers" else b"") + b"data: "
+                                     + _initialize_body("Slow Listener").encode() + b"\n\n")
+                except OSError:
+                    pass                    # the abandoned client hung up
+
+            def log_message(self, *args):
+                pass
+
+        mcp = mcp_server_module
+        listener = ThreadingHTTPServer(("127.0.0.1", 0), Dripper)
+        serving = threading.Thread(target=listener.serve_forever, daemon=True)
+        serving.start()
+        try:
+            started = time.monotonic()
+            found = mcp.identify_listener("127.0.0.1", listener.server_address[1], deadline_s=0.3)
+            elapsed = time.monotonic() - started
+            assert found == {"kind": mcp.LISTENER_UNIDENTIFIED, "name": None, "session_id": None}
+            assert elapsed < 1.0, f"the caller waited {elapsed:.2f} s past a 0.3 s deadline"
+            # an exchange abandoned in the body ends itself at its next read instead of
+            # following the drip; one still inside the header read ends with the listener.
+            for probe in [t for t in threading.enumerate() if t.name == "FE-MCP-ListenerProbe"]:
+                probe.join(0.7 if drip == "body" else 5)
+                assert not probe.is_alive(), "the abandoned probe is still reading the drip"
+        finally:
+            listener.shutdown()
+            listener.server_close()
+            serving.join(2)

@@ -390,7 +390,7 @@ def no_transport(mcp, monkeypatch):
 class TestStartServerPublishesTheCatalogItWasHanded:
     def _start(self, mcp, resources_arg):
         result = mcp.start_server(
-            "127.0.0.1", 27182, items=[], resources=resources_arg, job_store=object())
+            "127.0.0.1", 37182, items=[], resources=resources_arg, job_store=object())
         assert result["status"] == mcp.START_OK, result
         assert result["thread"].started, "the serving thread must still be started"
         return result["mcp"]

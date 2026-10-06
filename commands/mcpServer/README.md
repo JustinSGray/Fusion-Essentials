@@ -20,8 +20,9 @@ It is **off by default** and runs only on your own machine (loopback).
    **Enable MCP Server**.
 3. Reload Fusion-Essentials (Add-Ins dialog → Stop, then Run). The setting takes
    effect on reload.
-4. The endpoint is `http://127.0.0.1:27182/mcp`. Open `http://127.0.0.1:27182/health` in a browser
-   and check both `"status": "healthy"` and `"server": "Fusion-Essentials MCP Server"`.
+4. The endpoint is `http://127.0.0.1:37182/mcp`. Open `http://127.0.0.1:37182/health` in a browser
+   and check both `"status": "healthy"` and `"server": "Fusion-Essentials MCP Server"`. The same
+   page shows the address the server bound, under `"bound"`.
 
 Optional tool **families** (`appearance`, `cam`, `data`, `drawing`, `form`, `mesh`, `save`, `surface`) can each
 be disabled with a checkbox under **Settings → MCP Server**, to shrink the tool surface an agent has
@@ -31,13 +32,28 @@ settings, a disabled family takes effect on reload — its tools are not registe
 Reconnect your MCP client after reload so it refreshes its tool list. To disable MCP, untick
 **Enable MCP Server** and reload; stopping the add-in also stops its server.
 
-### Port note
+### The port
 
-Fusion-Essentials binds `127.0.0.1:27182` and checks the responding server's identity. Another
-server conflicts only if it occupies that endpoint; Fusion's built-in MCP server does not always
-use this port. On a collision, stop the process holding it and reload Fusion-Essentials. If that
-process is Fusion's built-in server, turn off **Preferences → Fusion MCP Server**. Its configuration
-is separate from this add-in's settings.
+Fusion-Essentials listens on `http://127.0.0.1:37182/mcp`. The port is its own (it does not share
+Fusion's built-in port 27182), so Fusion's built-in MCP server and this one can run side by side and
+neither has to be turned off. If your MCP client still points at port 27182, change the port in its
+server URL once, or set `mcp_port` as below to keep another port.
+
+To change the port:
+
+1. Open `FusionEssentialsSettings.json`. On Windows it is in `%APPDATA%\GTF_<add-in folder name>`
+   (for example `GTF_Fusion-Essentials`); on macOS, in
+   `~/Library/Application Support/GTF_<add-in folder name>`.
+2. In the group whose `"name"` is `"MCP Server"`, find `"mcp_port"` and set its `"default"` to a free
+   port between 1024 and 49151. The Settings dialog has no field for it.
+3. Reload Fusion-Essentials (Add-Ins dialog → Stop, then Run) and use the new port in your MCP
+   client's server URL.
+
+The server only ever binds the port you set. If the value is not a whole number in that range, or
+something else already answers on the port, the add-in shows a message saying what it found (another
+Fusion session running Fusion-Essentials, another MCP server by the name it reports, or a listener it
+could not identify) and does not start a server. Pick another `mcp_port` or stop the other program,
+then reload.
 
 ## Connecting a client
 
@@ -51,7 +67,7 @@ HTTP transport can connect directly from the same machine — no `mcp-remote`/No
   "mcpServers": {
     "fusion-essentials": {
       "type": "http",
-      "url": "http://127.0.0.1:27182/mcp"
+      "url": "http://127.0.0.1:37182/mcp"
     }
   }
 }

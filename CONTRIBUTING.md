@@ -164,9 +164,13 @@ the [tool-authoring guide](commands/mcpServer/tools/CLAUDE.md) before adding too
 
 ### Behavior that isn't obvious from the code
 
-- The server binds **`127.0.0.1:27182`**, path **`/mcp`**. Startup checks port ownership;
-  another listener on that address prevents startup. Do not assume Fusion's built-in MCP server
-  always uses that port. Confirm the Essentials server identity through `/health`.
+- The server binds **`127.0.0.1:37182`**, path **`/mcp`**. The default port is defined once, in
+  `commands/mcpServer/endpoint.py`; the `mcp_port` setting overrides it and the live harness reads
+  the same definition. Startup binds exactly that port and never tries a second one. When the bind
+  fails, no server starts: the log says so at once, and a message box naming who answers on the port
+  follows within about two seconds. When the bind succeeds but another server answers on the port,
+  the add-in shows the same kind of warning and keeps serving. `/health` and `sys_capability_map`
+  report the address the socket bound as `bound`.
 - `doc_open` is **async**: `documents.open()` returns before the document is active.
 - `sys_execute_script` uses Fusion's `Python.Run` text command. It is **Windows-tested only**;
   the temp-path handling normalizes `\`→`/` for cross-platform use but is **unverified on
@@ -194,7 +198,7 @@ own tools on top of this project, work in this loop:
 1. Edit or add a `tools/*.py` file. A brand-new module is picked up too (verified): on reload, the
    `pkgutil` sweep discovers any `tools/*.py` that exposes `register_tool()`.
 2. Call `sys_reload_addin`. It is deferred: it responds, then the server restarts in about 0.5 s.
-3. Poll `GET http://127.0.0.1:27182/health` until the server is back.
+3. Poll `GET http://127.0.0.1:37182/health` until the server is back.
 4. Call `tools/list` to confirm.
 
 No manual Stop/Run is needed. A manual Stop/Run in Fusion's Add-Ins dialog is only required if the
@@ -210,7 +214,7 @@ before exercising the tool.
 
 ### Driving the server from outside Fusion (for testing)
 
-POST JSON-RPC to `http://127.0.0.1:27182/mcp` with header
+POST JSON-RPC to `http://127.0.0.1:37182/mcp` with header
 `Accept: application/json, text/event-stream`. Example tool call:
 `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"data_get","arguments":{}}}`.
 Diagnostics: `GET /health`, `GET /tools`.

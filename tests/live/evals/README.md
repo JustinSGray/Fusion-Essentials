@@ -17,7 +17,7 @@ py -3 tests/live/evals/proctor.py S13_Surfaced-Bottle --runs 3 --model opus
 
 It needs:
 
-- Fusion up with the add-in loaded (its MCP server on 127.0.0.1:27182);
+- Fusion up with the add-in loaded (its MCP server on 127.0.0.1:37182, the default `mcp_port`);
 - the `claude` CLI on PATH with a login the executor can use (a `claude login` on Windows or Linux,
   or `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, or `ANTHROPIC_API_KEY`, on any platform);
 - the untracked `tests/live/cloud_config.local.json` naming your hub, project and folder (the
